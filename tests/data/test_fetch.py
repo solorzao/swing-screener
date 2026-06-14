@@ -1,0 +1,48 @@
+import pandas as pd
+import pytest
+
+from swing_screener.data import fetch
+
+
+def _df():
+    idx = pd.date_range("2024-01-01", periods=3, freq="1D")
+    return pd.DataFrame(
+        {"open": [1.0, 2, 3], "high": [2.0, 3, 4], "low": [0.5, 1, 2],
+         "close": [1.5, 2, 3], "volume": [100.0, 100, 100]}, index=idx,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _no_sleep(monkeypatch):
+    monkeypatch.setattr(fetch.time, "sleep", lambda *_: None)
+
+
+def test_fetch_bars_caches_second_call(tmp_path, monkeypatch):
+    calls = {"n": 0}
+    def fake_download(ticker, interval, period):
+        calls["n"] += 1
+        return _df()
+    monkeypatch.setattr(fetch, "_download", fake_download)
+
+    a = fetch.fetch_bars("AAPL", "1d", cache_dir=tmp_path)
+    b = fetch.fetch_bars("AAPL", "1d", cache_dir=tmp_path)
+    assert a is not None and b is not None
+    assert len(a) == 3
+    assert calls["n"] == 1  # second call served from parquet cache
+
+
+def test_fetch_bars_returns_none_on_persistent_failure(tmp_path, monkeypatch):
+    def boom(ticker, interval, period):
+        raise RuntimeError("yahoo down")
+    monkeypatch.setattr(fetch, "_download", boom)
+    assert fetch.fetch_bars("AAPL", "1d", cache_dir=tmp_path, retries=3) is None
+
+
+def test_fetch_universe_isolates_failures(tmp_path, monkeypatch):
+    def selective(ticker, interval, period):
+        if ticker == "BAD":
+            raise RuntimeError("nope")
+        return _df()
+    monkeypatch.setattr(fetch, "_download", selective)
+    out = fetch.fetch_universe(["AAPL", "BAD", "MSFT"], "1d", cache_dir=tmp_path)
+    assert set(out.keys()) == {"AAPL", "MSFT"}  # BAD skipped, batch survived
