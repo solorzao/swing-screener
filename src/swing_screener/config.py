@@ -22,6 +22,15 @@ class StrategyConfig:
     stop_buffer_atr: float = 0.25    # stop  = swing_low - buffer * ATR
     target_r_multiple: float = 2.0   # target = entry + R * risk
 
+    # categorization tag thresholds (tunable for the dry-run)
+    penny_price_max: float = 5.0            # price < this -> "penny"
+    speculative_dollar_vol_max: float = 5e6   # avg $vol < this -> "speculative"
+    mid_dollar_vol_max: float = 50e6        # avg $vol < this -> "mid", else "reputable"
+    low_vol_atr_pct_max: float = 0.02       # atr% < this -> "low"
+    med_vol_atr_pct_max: float = 0.05       # atr% < this -> "med", else "high"
+    oversold_rsi_max: float = 35.0          # rsi < this -> oversold
+    avg_dollar_vol_window: int = 20         # bars used for avg dollar volume
+
     # exits
     time_stop_factor: float = 1.0    # time stop = factor * max_hold_bars[tf]
     max_hold_bars: dict[str, int] = field(default_factory=lambda: {

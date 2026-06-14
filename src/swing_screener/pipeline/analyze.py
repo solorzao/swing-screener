@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass
 from typing import cast
 
@@ -19,9 +20,6 @@ _HORIZON_BY_TF: dict[str, str] = {
     "1wk": "long",
     "1mo": "long",
 }
-
-_AVG_DOLLAR_VOL_WINDOW = 20
-
 
 @dataclass(frozen=True)
 class SignalResult:
@@ -52,27 +50,31 @@ def _is_uptrend(frame: pd.DataFrame) -> bool:
     return bool(last["ema_fast"] > last["ema_slow"] and last["close"] > last["ema_slow"])
 
 
-def _quality_tier(price: float, avg_dollar_vol: float) -> str:
-    if price < 5.0:
+def _quality_tier(price: float, avg_dollar_vol: float, cfg: StrategyConfig) -> str:
+    if price < cfg.penny_price_max:
         return "penny"
-    if avg_dollar_vol < 5e6:
+    if avg_dollar_vol < cfg.speculative_dollar_vol_max:
         return "speculative"
-    if avg_dollar_vol < 50e6:
+    if avg_dollar_vol < cfg.mid_dollar_vol_max:
         return "mid"
     return "reputable"
 
 
-def _volatility_tier(atr_pct: float) -> str:
-    if atr_pct < 0.02:
+def _volatility_tier(atr_pct: float, cfg: StrategyConfig) -> str:
+    if atr_pct < cfg.low_vol_atr_pct_max:
         return "low"
-    if atr_pct < 0.05:
+    if atr_pct < cfg.med_vol_atr_pct_max:
         return "med"
     return "high"
 
 
-def _avg_dollar_volume(frame: pd.DataFrame) -> float:
-    tail = frame.tail(_AVG_DOLLAR_VOL_WINDOW)
-    return float((tail["close"] * tail["volume"]).mean())
+def _avg_dollar_volume(frame: pd.DataFrame, cfg: StrategyConfig) -> float:
+    tail = frame.tail(cfg.avg_dollar_vol_window)
+    value = float((tail["close"] * tail["volume"]).mean())
+    # Fail safe: an all-NaN volume window yields NaN, which would otherwise slip
+    # past every "<" check and classify as the most favourable "reputable" tier.
+    # Treat non-finite as zero so it lands in "speculative"/"penny" instead.
+    return value if math.isfinite(value) else 0.0
 
 
 def build_frames(
@@ -134,7 +136,7 @@ def analyze_frames(
         score = score_signal(build_score_inputs(ctx, last_row, mtf_aligned))
 
         price = ctx.trigger_close
-        avg_dollar_vol = _avg_dollar_volume(frame)
+        avg_dollar_vol = _avg_dollar_volume(frame, cfg)
         atr_pct = ctx.atr / price
 
         results.append(
@@ -144,9 +146,9 @@ def analyze_frames(
                 horizon=_HORIZON_BY_TF[tf],
                 score=score,
                 mtf_aligned=mtf_aligned,
-                quality_tier=_quality_tier(price, avg_dollar_vol),
-                volatility_tier=_volatility_tier(atr_pct),
-                oversold=ctx.rsi < 35.0,
+                quality_tier=_quality_tier(price, avg_dollar_vol, cfg),
+                volatility_tier=_volatility_tier(atr_pct, cfg),
+                oversold=ctx.rsi < cfg.oversold_rsi_max,
                 trigger_close=ctx.trigger_close,
                 atr=ctx.atr,
                 rsi=ctx.rsi,
