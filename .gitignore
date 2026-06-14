@@ -19,7 +19,7 @@ secrets.toml
 *.sqlite
 *.sqlite3
 *.db
-data/
+/data/
 cache/
 *.parquet
 charts/
