@@ -56,22 +56,36 @@ def _facts(sig: Signal) -> SignalFacts:
     )
 
 
+def _already_sent(session: Session, kind: str, run_date: date) -> bool:
+    stmt = select(EmailLog).where(EmailLog.kind == kind, EmailLog.run_date == run_date)
+    return session.scalars(stmt).first() is not None
+
+
 def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str | None = None,
                 pdf_dir: Path = Path(".digests"), anthropic_client: object | None = None,
                 smtp_send: SmtpSend = smtp.send_email) -> DigestResult:
     run_date = run_date or date.today()
+    recipient = to or os.environ.get("DIGEST_TO")
+    if not recipient:  # fail fast, before any billable Claude calls
+        raise RuntimeError("no recipient: set DIGEST_TO or pass to=")
     engine = get_engine(db_url)
     with Session(engine) as session:
-        picks = _PICKERS[kind](session, run_date)
-
-        # idempotency: don't re-send the same (kind, run_date)
-        already = session.scalars(
-            select(EmailLog).where(EmailLog.kind == kind, EmailLog.run_date == run_date)
-        ).first()
-        if already is not None:
-            return DigestResult(n_picks=len(picks), pdf_attached=False, sent=False)
-
         alerts = sel.pending_exit_alerts(session, run_date)
+
+        # Exit alerts are urgent and tracked independently of the digest (their own
+        # "exit" idempotency key), so a re-run still delivers an alert that fired
+        # after the day's digest already went out.
+        if alerts and not _already_sent(session, "exit", run_date):
+            alert_email = compose_exit_alert(alerts, run_date)
+            smtp_send(to=recipient, subject=alert_email.subject, text=alert_email.text,
+                      html=alert_email.html, attachments=[])
+            session.add(EmailLog(sent_at=datetime.now(), kind="exit",
+                                 subject=alert_email.subject, run_date=run_date))
+            session.commit()
+
+        picks = _PICKERS[kind](session, run_date)
+        if _already_sent(session, kind, run_date):  # don't re-send the same digest
+            return DigestResult(n_picks=len(picks), pdf_attached=False, sent=False)
 
         digest_picks: list[DigestPick] = []
         pdf_picks: list[PdfPick] = []
@@ -105,14 +119,8 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
             for a in alerts
         ]
         body = compose_digest_body(kind, run_date, digest_picks, alert_lines, has_pdf=pdf_attached)
-        recipient = to or os.environ["DIGEST_TO"]
         smtp_send(to=recipient, subject=body.subject, text=body.text, html=body.html,
                   attachments=([pdf_path] if pdf_path is not None else []))
-
-        if alerts:
-            alert_email = compose_exit_alert(alerts, run_date)
-            smtp_send(to=recipient, subject=alert_email.subject, text=alert_email.text,
-                      html=alert_email.html, attachments=[])
 
         session.add(EmailLog(sent_at=datetime.now(), kind=kind, subject=body.subject,
                              run_date=run_date))

@@ -137,9 +137,9 @@ def analyze_signal(
     made. On any failure, return a deterministic rationale built from the facts
     so the pipeline never blocks on the LLM.
     """
-    client = client or anthropic.Anthropic()
     try:
-        resp = client.messages.create(
+        client = client or anthropic.Anthropic()  # inside try: a key-at-construction
+        resp = client.messages.create(           # SDK must also fall back gracefully
             model=MODEL,
             max_tokens=600,
             system=_SYSTEM,

@@ -60,3 +60,6 @@ The digest never blocks on a failure:
   in `notify/analysis.py` to `claude-opus-4-8`.
 - Secrets are read from the environment now; Phase 5 moves them to Azure Key Vault. Never
   commit a key.
+- Phase 4 adds an `email_log.run_date` column for idempotency. Fresh DBs get it automatically;
+  a `local.db` created before Phase 4 won't — drop the `email_log` table (it only holds send
+  audit rows) or recreate the DB before the first digest run. Phase 5 will add real migrations.

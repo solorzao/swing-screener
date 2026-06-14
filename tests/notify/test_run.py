@@ -2,7 +2,7 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
-from swing_screener.db.models import Signal
+from swing_screener.db.models import ExitEvent, Signal
 from swing_screener.db.session import get_engine
 from swing_screener.notify import run
 
@@ -69,3 +69,29 @@ def test_send_digest_emails_with_pdf_and_is_idempotent(tmp_path):
                            smtp_send=recorder)
     assert res2.sent is False
     assert len(sent) == 1  # recorder not called again
+
+
+def test_exit_alert_delivered_on_rerun_after_event(tmp_path):
+    # an exit event that fires AFTER the digest already went out must still be
+    # delivered on a re-run, even though the digest itself is a no-op.
+    url = f"sqlite:///{tmp_path / 'e.sqlite'}"
+    _seed(url)
+    sent = []
+
+    def recorder(**kwargs):
+        sent.append(kwargs)
+
+    kw = dict(kind="daily", db_url=url, run_date=RUN, to="me@example.com",
+              pdf_dir=tmp_path / "digests", anthropic_client=_FakeClient(), smtp_send=recorder)
+    run.send_digest(**kw)  # first run: digest only (no exit events yet)
+    assert len(sent) == 1
+
+    with Session(get_engine(url)) as s:  # a hard stop fires intraday
+        s.add(ExitEvent(created_date=RUN, is_paper=False, trade_id=1, tier="hard",
+                        reason="stop", message="AMD stopped @ 95"))
+        s.commit()
+
+    res = run.send_digest(**kw)  # re-run: digest no-op, but exit alert still sent
+    assert res.sent is False
+    assert len(sent) == 2
+    assert "Exit" in sent[1]["subject"] and sent[1]["attachments"] == []
