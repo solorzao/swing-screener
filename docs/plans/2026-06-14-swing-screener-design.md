@@ -59,9 +59,13 @@ moved. Every signal therefore carries an ATR-scaled **entry zone** (auto-scales 
 You enter anywhere in `[floor, ceiling]` and do **not chase** above the ceiling. The stop
 sits just below the floor; target is ATR-multiple / prior swing high measured from the zone.
 
-**Fill rules (apply to both suggested entries and shadow-book fills):**
-- Next bar trades within `[floor, ceiling]` → **filled** (at the in-zone price / open if it
-  opens inside).
+**Fill rules:**
+- Next bar trades within `[floor, ceiling]` → **filled**.
+  - **Shadow book uses the worst-case in-zone price** for a long: the highest price the bar
+    traded that is still inside the zone, `min(bar_high, ceiling)`. This deliberately gives
+    the smallest reward / widest risk so the shadow book can only *understate* the screener,
+    never flatter it.
+  - Real-trade *suggestions* show the full zone range — you choose your own fill.
 - Next bar gaps/runs entirely **above the ceiling** → **missed entry** (no fill, recorded).
 - Next bar gaps **below the stop** → **invalidated** (no fill, recorded).
 - This yields a true **fill rate** metric — how many signals were actually enterable.
@@ -198,7 +202,8 @@ target/time-stop → 🟡.
 
 Auto-paper-trade **every valid signal** (not just the emailed top 5), each tagged with its
 rank/score that night. Realistic fills: the next bar must trade **within the entry zone** to
-fill (gaps above the ceiling → *missed*; gaps below the stop → *invalidated*); auto-derived
+fill, **at the worst-case in-zone price** (`min(bar_high, ceiling)` for a long); gaps above
+the ceiling → *missed*; gaps below the stop → *invalidated*; auto-derived
 stop (pullback swing low / EMA50) and target (ATR-multiple / prior swing high); position
 **risk-normalized to 1R** so all trades are comparable. Filled trades are tracked through the
 same exit logic until closed, then scored. Aggregates (win rate, expectancy in R, profit
