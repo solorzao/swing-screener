@@ -34,6 +34,9 @@ class FillCandidate:
     mtf_aligned: bool
     signal_id: int | None
     zone: EntryZone
+    quality_tier: str = ""
+    volatility_tier: str = ""
+    oversold: bool = False
 
 
 def open_from_signals(
@@ -65,6 +68,9 @@ def open_from_signals(
             "signal_score": cand.signal_score,
             "rank": cand.rank,
             "mtf_aligned": cand.mtf_aligned,
+            "quality_tier": cand.quality_tier,
+            "volatility_tier": cand.volatility_tier,
+            "oversold": cand.oversold,
             "fill_status": fill.status,
             "stop": cand.zone.stop,
             "target": cand.zone.target,

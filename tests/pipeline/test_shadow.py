@@ -105,3 +105,17 @@ def test_advance_is_idempotent_same_day():
         assert repo.load_open_paper_trades(s)[0].hold_bars == 1
         advance_open(s, {("AAPL", "1d"): quiet}, CFG, today=date(2024, 1, 4))
         assert repo.load_open_paper_trades(s)[0].hold_bars == 1  # already advanced today
+
+
+def test_open_records_categorization_tags():
+    # tags are denormalized onto the paper trade so the shadow book is sliceable.
+    engine = get_engine("sqlite:///:memory:")
+    cand = FillCandidate(ticker="AAPL", timeframe="1d", horizon="medium", signal_score=0.8,
+                         rank=1, mtf_aligned=True, signal_id=None, zone=ZONE,
+                         quality_tier="reputable", volatility_tier="high", oversold=True)
+    with Session(engine) as s:
+        open_from_signals(s, [cand], {("AAPL", "1d"): (105.0, 97.0)}, fill_date=date(2024, 1, 3))
+        pt = repo.load_open_paper_trades(s)[0]
+        assert pt.quality_tier == "reputable"
+        assert pt.volatility_tier == "high"
+        assert pt.oversold is True

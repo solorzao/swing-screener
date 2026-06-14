@@ -115,9 +115,15 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
             n_charts += 1
         s.commit()
 
+        # NOTE: `rank` here is the rank within the prior-bar (forward-tested) set
+        # being filled this run -- a different ranking space from Signal.rank (which
+        # ranks *today's* freshly published signals). The tags are denormalized onto
+        # the paper trade so the shadow book is sliceable in QC without a join.
         candidates = [
             FillCandidate(pr.ticker, pr.timeframe, pr.horizon, pr.score, rank,
-                          pr.mtf_aligned, None, pr.zone)
+                          pr.mtf_aligned, None, pr.zone,
+                          quality_tier=pr.quality_tier, volatility_tier=pr.volatility_tier,
+                          oversold=pr.oversold)
             for rank, (pr, _h, _l) in enumerate(prior, start=1)
         ]
         next_bars = {(pr.ticker, pr.timeframe): (h, low) for (pr, h, low) in prior}

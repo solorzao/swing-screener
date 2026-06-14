@@ -84,6 +84,11 @@ class PaperTrade(Base):
     signal_score: Mapped[float]
     rank: Mapped[int]
     mtf_aligned: Mapped[bool] = mapped_column(default=False)
+    # categorization tags denormalized from the signal so the shadow book can be
+    # sliced by them in QC without a join back to the (run-date-scoped) signal row.
+    quality_tier: Mapped[str] = mapped_column(default="")
+    volatility_tier: Mapped[str] = mapped_column(default="")
+    oversold: Mapped[bool] = mapped_column(default=False)
     fill_status: Mapped[str]  # filled / missed / invalidated
     entry_date: Mapped[date | None] = mapped_column(default=None)
     entry_price: Mapped[float | None] = mapped_column(default=None)
