@@ -25,7 +25,9 @@ class ExitDecision:
     reason: ExitReason | None
 
 
-def evaluate_exit(trade: OpenTrade, bar: Mapping, cfg: StrategyConfig) -> ExitDecision:
+def evaluate_exit(
+    trade: OpenTrade, bar: Mapping[str, float | bool], cfg: StrategyConfig
+) -> ExitDecision:
     # 1) hard stop: absolute override
     if bar["low"] <= trade.stop:
         return ExitDecision("EXIT", "hard", "stop")
