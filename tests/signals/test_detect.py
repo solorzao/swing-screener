@@ -28,6 +28,23 @@ def test_detects_valid_trigger(bars):
     assert ctx.swing_low < ctx.trigger_close
 
 
+def test_no_signal_when_pullback_has_no_shaved_head(bars):
+    # uptrend, then a pullback whose red bars have LARGE upper wicks (not shaved
+    # heads), then a strong green trigger. The shaved-head gate must reject it.
+    rows = []
+    p = 10.0
+    for _ in range(60):
+        rows.append({"open": p, "high": p + 1.2, "low": p, "close": p + 1.0})
+        p += 1.0
+    for _ in range(3):
+        # bearish (close < open) but high well above the body => big upper wick
+        rows.append({"open": p, "high": p + 2.5, "low": p - 1.5, "close": p - 1.2})
+        p -= 1.2
+    rows.append({"open": p, "high": p + 6.0, "low": p, "close": p + 5.6})
+    ctx = detect_last_bar(build_frame(bars(rows), StrategyConfig()), StrategyConfig())
+    assert ctx is None  # pullback present but no shaved head -> rejected
+
+
 def test_no_signal_during_uptrend_run(bars):
     rows = [{"open": 10 + i, "high": 11 + i, "low": 10 + i, "close": 11 + i} for i in range(60)]
     ctx = detect_last_bar(build_frame(bars(rows), StrategyConfig()), StrategyConfig())

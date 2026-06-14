@@ -50,7 +50,9 @@ def detect_last_bar(f: pd.DataFrame, cfg: StrategyConfig) -> PullbackContext | N
     if len(pullback) < cfg.min_pullback_bars or not saw_shaved_head:
         return None
 
-    swing_low = min(b["ha_low"] for b in pullback)
+    # use the real traded low (not the smoothed HA low) so stops/zones in Task 7
+    # sit off actual price, and the shallow-pullback gate reflects true price.
+    swing_low = min(b["low"] for b in pullback)
     # 3) shallow pullback: stayed above ema_slow (continuation, not reversal)
     if swing_low <= last["ema_slow"]:
         return None
