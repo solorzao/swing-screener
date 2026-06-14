@@ -1,8 +1,11 @@
+from collections import Counter
 from datetime import date
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from swing_screener.db import repo
+from swing_screener.db.models import Signal
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline import run
 
@@ -80,3 +83,26 @@ def test_run_shadow_book_opens_paper_trade(tmp_path, bars, monkeypatch):
         cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts", today=date(2024, 4, 2),
     )
     assert res.n_paper_opened >= 1  # prior-bar signal filled by the appended next bar
+
+
+def test_run_is_idempotent_for_same_day(tmp_path, bars, monkeypatch):
+    def fake_fetch(ticker, *, cache_dir, today, cfg):
+        return {"1d": _firing(bars)} if ticker == "AAPL" else {}
+    monkeypatch.setattr(run, "_fetch_all_timeframes", fake_fetch)
+
+    db = f"sqlite:///{tmp_path / 'db.sqlite'}"
+    today = date(2024, 4, 1)
+    kwargs = dict(
+        universe_path=_write_universe(tmp_path, ["AAPL"]), db_url=db,
+        cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts", today=today,
+    )
+    res1 = run.run_screen(**kwargs)
+    run.run_screen(**kwargs)  # second run for the SAME day
+
+    with Session(get_engine(db)) as s:
+        sigs = list(s.scalars(select(Signal).where(Signal.run_date == today)))
+
+    # exactly one signal per (ticker, timeframe) -- no duplicates from re-running
+    keys = Counter((x.ticker, x.timeframe) for x in sigs)
+    assert all(count == 1 for count in keys.values())
+    assert len(sigs) == res1.n_signals

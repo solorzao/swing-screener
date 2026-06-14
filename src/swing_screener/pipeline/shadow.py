@@ -68,6 +68,7 @@ def open_from_signals(
             "fill_status": fill.status,
             "stop": cand.zone.stop,
             "target": cand.zone.target,
+            "opened_date": fill_date,
         }
 
         risk = fill.price - cand.zone.stop if fill.price is not None else None
@@ -108,6 +109,8 @@ def advance_open(
 ) -> None:
     """Advance every open paper trade by one bar, exiting or holding."""
     for pt in repo.load_open_paper_trades(session):
+        if pt.entry_date == today or pt.last_advanced == today:
+            continue
         bar = latest_bars.get((pt.ticker, pt.timeframe))
         if bar is None:
             continue
@@ -143,6 +146,7 @@ def advance_open(
             pt.exit_reason = decision.reason
             pt.exit_date = today
             pt.hold_bars = held
+            pt.last_advanced = today
             pt.realized_r = (exit_price - pt.entry_price) / pt.risk
 
             repo.record_exit_event(
@@ -156,5 +160,6 @@ def advance_open(
             )
         else:  # HOLD -> persist the running count
             pt.hold_bars = held
+            pt.last_advanced = today
 
     session.commit()

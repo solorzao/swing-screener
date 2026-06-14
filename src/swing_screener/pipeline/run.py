@@ -28,6 +28,7 @@ class RunResult:
     n_signals: int
     n_paper_opened: int
     n_charts: int
+    n_failed: int
 
 
 def _fetch_all_timeframes(ticker: str, *, cache_dir: Path, today: date,
@@ -75,27 +76,26 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
     prior: list[tuple[SignalResult, float, float]] = []  # (prior signal, next_high, next_low)
     latest_bars: dict[tuple[str, str], dict[str, float | bool]] = {}
 
+    n_failed = 0
     for entry in universe:
         try:
             bars_by_tf = _fetch_all_timeframes(entry.ticker, cache_dir=cache_dir,
                                                today=today, cfg=cfg)
+            if not bars_by_tf:
+                continue
+            frames = build_frames(bars_by_tf, cfg)
+            for tf, f in frames.items():
+                if len(f):
+                    latest_bars[(entry.ticker, tf)] = _bar_row(f)
+            today_results.extend(analyze_frames(entry.ticker, frames, cfg))
+            prior_frames = {tf: f.iloc[:-1] for tf, f in frames.items() if len(f) > 1}
+            for pr in analyze_frames(entry.ticker, prior_frames, cfg):
+                last = frames[pr.timeframe].iloc[-1]
+                prior.append((pr, float(last["high"]), float(last["low"])))
         except Exception:  # per-ticker isolation: one bad ticker never aborts the run
-            log.warning("fetch/analyze failed for %s", entry.ticker, exc_info=True)
+            log.warning("ticker %s failed; skipping", entry.ticker, exc_info=True)
+            n_failed += 1
             continue
-        if not bars_by_tf:
-            continue
-
-        frames = build_frames(bars_by_tf, cfg)
-        for tf, f in frames.items():
-            if len(f):
-                latest_bars[(entry.ticker, tf)] = _bar_row(f)
-
-        today_results.extend(analyze_frames(entry.ticker, frames, cfg))
-
-        prior_frames = {tf: f.iloc[:-1] for tf, f in frames.items() if len(f) > 1}
-        for pr in analyze_frames(entry.ticker, prior_frames, cfg):
-            last = frames[pr.timeframe].iloc[-1]
-            prior.append((pr, float(last["high"]), float(last["low"])))
 
     today_results.sort(key=lambda r: r.score, reverse=True)
     prior.sort(key=lambda x: x[0].score, reverse=True)
@@ -103,6 +103,8 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
     n_charts = 0
     n_paper_opened = 0
     with Session(engine) as s:
+        repo.delete_signals_for(s, today)
+        repo.delete_paper_trades_opened_on(s, today)
         signals = [_to_signal(r, rank, today) for rank, r in enumerate(today_results, start=1)]
         repo.save_signals(s, signals)
 
@@ -123,7 +125,8 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         n_paper_opened = sum(1 for t in opened if t.status == "open")
         advance_open(s, latest_bars, cfg, today=today)
 
-    return RunResult(n_signals=len(today_results), n_paper_opened=n_paper_opened, n_charts=n_charts)
+    return RunResult(n_signals=len(today_results), n_paper_opened=n_paper_opened,
+                     n_charts=n_charts, n_failed=n_failed)
 
 
 def main() -> None:
@@ -140,8 +143,8 @@ def main() -> None:
     result = run_screen(universe_path=args.universe, db_url=args.db, cache_dir=args.cache_dir,
                         chart_dir=args.chart_dir, top_charts=args.top_charts,
                         max_tickers=args.max_tickers)
-    log.info("signals=%d paper_opened=%d charts=%d",
-             result.n_signals, result.n_paper_opened, result.n_charts)
+    log.info("signals=%d paper_opened=%d charts=%d failed=%d",
+             result.n_signals, result.n_paper_opened, result.n_charts, result.n_failed)
 
 
 if __name__ == "__main__":

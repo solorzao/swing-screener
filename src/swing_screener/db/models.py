@@ -87,6 +87,8 @@ class PaperTrade(Base):
     fill_status: Mapped[str]  # filled / missed / invalidated
     entry_date: Mapped[date | None] = mapped_column(default=None)
     entry_price: Mapped[float | None] = mapped_column(default=None)
+    opened_date: Mapped[date | None] = mapped_column(default=None)
+    last_advanced: Mapped[date | None] = mapped_column(default=None)
     stop: Mapped[float]
     target: Mapped[float]
     risk: Mapped[float]

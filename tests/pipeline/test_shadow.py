@@ -82,3 +82,26 @@ def test_hold_increments_bars_held():
         advance_open(s, {("AAPL", "1d"): quiet}, CFG, today=date(2024, 1, 4))
         pt = repo.load_open_paper_trades(s)[0]
         assert pt.hold_bars == 1 and pt.status == "open"
+
+
+def test_advance_skips_trade_opened_today():
+    # a trade must never be advanced on the same bar it was filled on.
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        open_from_signals(s, [_cand()], {("AAPL", "1d"): (105.0, 97.0)}, fill_date=date(2024, 1, 3))
+        quiet = {"low": 99.0, "high": 103.0, "close": 100.0, "shaved_head": False, "bearish": False}
+        advance_open(s, {("AAPL", "1d"): quiet}, CFG, today=date(2024, 1, 3))
+        pt = repo.load_open_paper_trades(s)[0]
+        assert pt.status == "open" and pt.hold_bars == 0  # not advanced on its own entry bar
+
+
+def test_advance_is_idempotent_same_day():
+    # re-running advance for the same day must not double-count the bar.
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        open_from_signals(s, [_cand()], {("AAPL", "1d"): (105.0, 97.0)}, fill_date=date(2024, 1, 3))
+        quiet = {"low": 99.0, "high": 103.0, "close": 100.0, "shaved_head": False, "bearish": False}
+        advance_open(s, {("AAPL", "1d"): quiet}, CFG, today=date(2024, 1, 4))
+        assert repo.load_open_paper_trades(s)[0].hold_bars == 1
+        advance_open(s, {("AAPL", "1d"): quiet}, CFG, today=date(2024, 1, 4))
+        assert repo.load_open_paper_trades(s)[0].hold_bars == 1  # already advanced today

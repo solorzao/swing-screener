@@ -3,7 +3,7 @@
 from collections.abc import Sequence
 from datetime import date
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from swing_screener.db.models import ExitEvent, PaperTrade, Signal
@@ -17,6 +17,16 @@ def save_signals(session: Session, signals: Sequence[Signal]) -> None:
 def latest_signals(session: Session, run_date: date) -> list[Signal]:
     stmt = select(Signal).where(Signal.run_date == run_date).order_by(Signal.rank)
     return list(session.scalars(stmt))
+
+
+def delete_signals_for(session: Session, run_date: date) -> None:
+    session.execute(delete(Signal).where(Signal.run_date == run_date))
+    session.commit()
+
+
+def delete_paper_trades_opened_on(session: Session, opened_date: date) -> None:
+    session.execute(delete(PaperTrade).where(PaperTrade.opened_date == opened_date))
+    session.commit()
 
 
 def save_paper_trades(session: Session, trades: Sequence[PaperTrade]) -> None:
