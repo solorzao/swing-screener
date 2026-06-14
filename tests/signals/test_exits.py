@@ -40,3 +40,11 @@ def test_time_stop_advisory():
 def test_hold_when_nothing_triggers():
     d = evaluate_exit(TRADE, _bar(close=102, high=103, low=99), CFG)
     assert d.action == "HOLD"
+
+
+def test_unknown_timeframe_disables_time_stop():
+    # unknown tf -> max_hold_bars.get(tf, 0) == 0 -> the `if limit` guard must
+    # prevent a spurious time-stop exit even at a huge bars_held.
+    trade = OpenTrade(entry=100, stop=95, target=110, timeframe="unknown", bars_held=999)
+    d = evaluate_exit(trade, _bar(close=101, high=102, low=99), CFG)
+    assert d.action == "HOLD"
