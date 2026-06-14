@@ -1,5 +1,37 @@
+import pandas as pd
+
 from swing_screener.config import StrategyConfig
-from swing_screener.pipeline.analyze import analyze_ticker
+from swing_screener.pipeline.analyze import (
+    _avg_dollar_volume,
+    _quality_tier,
+    _volatility_tier,
+    analyze_ticker,
+)
+
+
+def test_quality_tier_thresholds_locked():
+    cfg = StrategyConfig()
+    assert _quality_tier(4.99, 1e12, cfg) == "penny"      # price < 5
+    assert _quality_tier(50.0, 4.9e6, cfg) == "speculative"
+    assert _quality_tier(50.0, 5e6, cfg) == "mid"         # 5e6 not < 5e6
+    assert _quality_tier(50.0, 49e6, cfg) == "mid"
+    assert _quality_tier(50.0, 50e6, cfg) == "reputable"  # 50e6 not < 50e6
+
+
+def test_volatility_tier_thresholds_locked():
+    cfg = StrategyConfig()
+    assert _volatility_tier(0.019, cfg) == "low"
+    assert _volatility_tier(0.02, cfg) == "med"           # 0.02 not < 0.02
+    assert _volatility_tier(0.049, cfg) == "med"
+    assert _volatility_tier(0.05, cfg) == "high"          # 0.05 not < 0.05
+
+
+def test_avg_dollar_volume_nan_window_fails_safe():
+    cfg = StrategyConfig()
+    frame = pd.DataFrame({"close": [10.0] * 5, "volume": [float("nan")] * 5})
+    adv = _avg_dollar_volume(frame, cfg)
+    assert adv == 0.0  # non-finite -> 0, never silently "reputable"
+    assert _quality_tier(10.0, adv, cfg) == "speculative"
 
 
 def _firing(bars):
