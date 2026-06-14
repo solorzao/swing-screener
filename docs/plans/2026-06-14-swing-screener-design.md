@@ -250,6 +250,17 @@ Localhost-only, no auth needed. Charts pulled from Blob.
 - End-to-end integration test on a tiny universe with mocked email + temp SQLite.
 - Engine built test-first.
 
+## CI/CD
+
+- **Repo:** private GitHub repo (`solorzao/swing-screener`).
+- **CI (from Phase 1):** GitHub Actions runs `ruff` + `mypy` + `pytest` (incl. the golden AMD
+  test) on every push and PR. This is the gate that protects signal correctness while the
+  strategy config is tuned.
+- **CD (Phase 5):** on merge to `main`, with CI green, a workflow builds the job container,
+  pushes it to Azure Container Registry, and updates the Container Apps Job. Deploys are
+  gated on passing tests. Secrets via GitHub Actions secrets / OIDC to Azure; no long-lived
+  credentials in the repo.
+
 ## Build roadmap
 
 Azure remains the deployment target throughout; the engine is written/tested before the

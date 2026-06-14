@@ -22,13 +22,22 @@
 
 ---
 
-## Task 0: Project scaffolding
+## Task 0: Project scaffolding + CI ✅ (bootstrapped 2026-06-14)
+
+> Done this session: `pyproject.toml`, `src/swing_screener/__init__.py` + `py.typed`
+> (with `[tool.setuptools.package-data]`), `tests/__init__.py`, `tests/conftest.py`, a
+> `tests/test_smoke.py`, and `.github/workflows/ci.yml` (ruff + mypy + pytest). Verified
+> locally green (ruff clean, mypy clean, pytest 2 passed) and pushed to the private GitHub
+> repo `solorzao/swing-screener`, where CI runs on every push/PR. The remaining tasks build
+> on this. (Original step list kept below for reference.)
 
 **Files:**
 - Create: `pyproject.toml`
 - Create: `src/swing_screener/__init__.py`
+- Create: `src/swing_screener/py.typed`
 - Create: `tests/__init__.py`
 - Create: `tests/conftest.py`
+- Create: `.github/workflows/ci.yml`
 
 **Step 1: Write `pyproject.toml`**
 
@@ -956,7 +965,7 @@ def test_amd_fires_in_pullback_zone_not_in_uptrend():
 | **2. Data + pipeline + shadow book + charts (local, SQLite)** | Real bars flow through the engine nightly on your PC | universe loader; yfinance fetch + 1h→4h / 1d→1wk/1mo resampling with per-ticker isolation + cache; SQLAlchemy models (`universe`, `signals`, `trades`, `paper_trades`, `exit_events`, `email_log`); orchestrator that runs all timeframes, computes MTF alignment + score, writes signals, opens shadow trades (worst-case fill), advances open paper trades through exits; `mplfinance` annotated chart renderer (HA + EMA + shaded pullback/entry zone + stop/target). **Local dry-run for a couple weeks to validate signal quality.** |
 | **3. Dashboard (local Streamlit)** | The 6 tabs over the local DB | Today's Candidates (filters, chart, "Take this trade"); Active Trades (live P/L, exit badges); Trade entry/management; Closed trades; Screener Performance (win rate / avg-R by rank bucket, fill rate, equity curve); Exit Log. Bind to `127.0.0.1`. |
 | **4. Email + LLM analysis** | The digests + alerts | Claude API client (Sonnet 4.6) that narrates deterministic facts into a rationale; email composer (daily top-5, weekly, monthly, exit alerts) with inline CID charts; Gmail SMTP sender; graceful degradation (LLM/chart failures still send). |
-| **5. Deploy to Azure** | Move the job to the cloud | Containerize the orchestrator; Azure Container Apps Jobs cron schedules (post-close, pre-open, 4h, weekly, monthly, ET/DST-aware); migrate store to Azure SQL serverless + Blob; Key Vault + managed identity; health heartbeat + App Insights. Dashboard stays local, points at Azure SQL/Blob via `az login`. |
+| **5. Deploy to Azure + CD** | Move the job to the cloud | Containerize the orchestrator; Azure Container Apps Jobs cron schedules (post-close, pre-open, 4h, weekly, monthly, ET/DST-aware); migrate store to Azure SQL serverless + Blob; Key Vault + managed identity; health heartbeat + App Insights. **CD workflow: on merge to `main` (CI green) build image → push to ACR → update the Container Apps Job, via GitHub→Azure OIDC.** Dashboard stays local, points at Azure SQL/Blob via `az login`. |
 | **6. Options module** | Phase 2 product feature | Revisit once on a paid data feed (~$30+/mo): options chains, basic greeks/IV, liquidity filters, call suggestions on bullish triggers. |
 
 ---
