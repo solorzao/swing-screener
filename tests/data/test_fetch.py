@@ -1,3 +1,5 @@
+from datetime import date
+
 import pandas as pd
 import pytest
 
@@ -46,3 +48,16 @@ def test_fetch_universe_isolates_failures(tmp_path, monkeypatch):
     monkeypatch.setattr(fetch, "_download", selective)
     out = fetch.fetch_universe(["AAPL", "BAD", "MSFT"], "1d", cache_dir=tmp_path)
     assert set(out.keys()) == {"AAPL", "MSFT"}  # BAD skipped, batch survived
+
+
+def test_corrupt_cache_falls_through_to_download(tmp_path, monkeypatch):
+    # a corrupt/partial cache file must not break isolation: re-download instead
+    cache_file = fetch._cache_path(tmp_path, "1d", "AAPL", date.today())
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    cache_file.write_text("not a real parquet file")
+    monkeypatch.setattr(fetch, "_download", lambda *a, **k: _df())
+
+    out = fetch.fetch_bars("AAPL", "1d", cache_dir=tmp_path)
+    assert out is not None and len(out) == 3  # recovered via re-download
+    # and the cache was overwritten with a valid parquet (next read succeeds)
+    assert pd.read_parquet(cache_file).shape[0] == 3

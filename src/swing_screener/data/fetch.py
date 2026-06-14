@@ -1,4 +1,3 @@
-import importlib.util
 import logging
 import time
 from datetime import date
@@ -12,29 +11,9 @@ log = logging.getLogger(__name__)
 _COLS = ["open", "high", "low", "close", "volume"]
 
 
-def _has_parquet_engine() -> bool:
-    """True if pandas can read/write parquet (pyarrow or fastparquet installed)."""
-    return any(importlib.util.find_spec(m) is not None for m in ("pyarrow", "fastparquet"))
-
-
 def _cache_path(cache_dir: Path, interval: str, ticker: str, today: date) -> Path:
-    """On-disk cache location. Uses parquet when an engine is available, else falls
-    back to pickle so the cache still works in environments without pyarrow."""
-    ext = "parquet" if _has_parquet_engine() else "pkl"
-    return Path(cache_dir) / interval / f"{ticker}_{today:%Y%m%d}.{ext}"
-
-
-def _read_cache(path: Path) -> pd.DataFrame:
-    if path.suffix == ".parquet":
-        return pd.read_parquet(path)
-    return pd.read_pickle(path)
-
-
-def _write_cache(df: pd.DataFrame, path: Path) -> None:
-    if path.suffix == ".parquet":
-        df.to_parquet(path)
-    else:
-        df.to_pickle(path)
+    """On-disk parquet cache location, keyed by (interval, ticker, day)."""
+    return Path(cache_dir) / interval / f"{ticker}_{today:%Y%m%d}.parquet"
 
 
 def _download(ticker: str, interval: str, period: str) -> pd.DataFrame:
@@ -55,7 +34,10 @@ def fetch_bars(ticker: str, interval: str, *, cache_dir: Path, period: str = "2y
     today = today or date.today()
     cache_file = _cache_path(cache_dir, interval, ticker, today)
     if cache_file.exists():
-        return _read_cache(cache_file)
+        try:
+            return pd.read_parquet(cache_file)
+        except Exception as err:  # corrupt/partial cache: fall through to a re-download
+            log.warning("cache read failed for %s %s, re-fetching: %s", ticker, interval, err)
 
     last_err: Exception | None = None
     for attempt in range(retries):
@@ -64,18 +46,24 @@ def fetch_bars(ticker: str, interval: str, *, cache_dir: Path, period: str = "2y
             if df is None or df.empty:
                 raise ValueError("empty frame")
             cache_file.parent.mkdir(parents=True, exist_ok=True)
-            _write_cache(df, cache_file)
+            df.to_parquet(cache_file)
             return df
         except Exception as err:  # isolation is the whole point: never propagate
             last_err = err
-            time.sleep(backoff * (2 ** attempt))
+            if attempt < retries - 1:  # don't sleep after the final attempt
+                time.sleep(backoff * (2 ** attempt))
     log.warning("fetch failed for %s %s after %d tries: %s", ticker, interval, retries, last_err)
     return None
 
 
 def fetch_universe(tickers: list[str], interval: str, *, cache_dir: Path,
                    **kwargs: object) -> dict[str, pd.DataFrame]:
-    """Fetch many tickers; silently skip those that fail (isolation)."""
+    """Fetch many tickers; silently skip those that fail (isolation).
+
+    Serial by design: this is a nightly after-close batch and the cache makes
+    re-runs cheap. If cold-run latency over the full universe becomes a problem,
+    parallelize here with a thread pool (work is I/O-bound and per-ticker isolated).
+    """
     out: dict[str, pd.DataFrame] = {}
     for ticker in tickers:
         df = fetch_bars(ticker, interval, cache_dir=cache_dir, **kwargs)  # type: ignore[arg-type]
