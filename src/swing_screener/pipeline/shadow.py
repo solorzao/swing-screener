@@ -70,17 +70,22 @@ def open_from_signals(
             "target": cand.zone.target,
         }
 
-        if fill.status == "filled":
-            assert fill.price is not None  # filled always carries a price
+        risk = fill.price - cand.zone.stop if fill.price is not None else None
+        if fill.status == "filled" and risk is not None and risk > 0:
             trade = PaperTrade(
                 **common,
                 entry_price=fill.price,
                 entry_date=fill_date,
-                risk=fill.price - cand.zone.stop,
+                risk=risk,
                 status="open",
                 hold_bars=0,
             )
-        else:  # missed / invalidated -> terminal, never opened
+        else:
+            # missed/invalidated, OR a degenerate fill with non-positive risk that
+            # we cannot honestly trade -> downgrade to invalidated, terminal, never
+            # opened. This keeps every open trade's risk strictly positive so
+            # advance_open's realized_r division can never divide by zero.
+            common["fill_status"] = "invalidated" if fill.status == "filled" else fill.status
             trade = PaperTrade(
                 **common,
                 entry_price=None,
@@ -121,6 +126,11 @@ def advance_open(
         decision = evaluate_exit(trade, bar, cfg)
 
         if decision.action == "EXIT":
+            # Exit-price modelling is deliberately asymmetric with entries: entries
+            # are worst-cased (top of zone), but stop/target exits assume a clean
+            # fill at the level (a gap-through bar fills worse in reality). So the
+            # shadow book records stops/targets slightly favourably; momentum/time
+            # exits use the bar close, which is realistic.
             if decision.reason == "stop":
                 exit_price = pt.stop
             elif decision.reason == "target":

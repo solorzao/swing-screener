@@ -23,6 +23,22 @@ def _all_paper_trades(session):
     return list(session.scalars(select(PaperTrade)))
 
 
+def test_nonpositive_risk_fill_is_downgraded_to_invalidated():
+    # a degenerate zone whose worst-case fill sits at/below the stop yields
+    # risk <= 0; it must be downgraded to invalidated (never opened), so the
+    # later realized_r division can never hit a zero divisor.
+    engine = get_engine("sqlite:///:memory:")
+    degenerate = EntryZone(floor=100.0, ceiling=101.0, stop=101.0, target=110.0,
+                           risk=0.0, reference=100.5)
+    cand = FillCandidate(ticker="AAPL", timeframe="1d", horizon="medium", signal_score=0.8,
+                         rank=1, mtf_aligned=True, signal_id=None, zone=degenerate)
+    with Session(engine) as s:
+        open_from_signals(s, [cand], {("AAPL", "1d"): (100.5, 100.0)}, fill_date=date(2024, 1, 3))
+        assert repo.load_open_paper_trades(s) == []
+        pt = _all_paper_trades(s)[0]
+        assert pt.fill_status == "invalidated" and pt.entry_price is None
+
+
 def test_missed_when_next_bar_gaps_above_ceiling():
     engine = get_engine("sqlite:///:memory:")
     with Session(engine) as s:
