@@ -25,3 +25,10 @@ def test_missed_when_gap_above_ceiling():
 def test_invalidated_when_gap_below_stop():
     res = resolve_fill(ZONE, bar_high=93.0, bar_low=90.0)
     assert res.status == "invalidated"
+
+
+def test_invalidated_when_bar_entirely_below_floor_without_stop_breach():
+    # bar sits below the zone floor but never tags the stop -> still no entry
+    res = resolve_fill(ZONE, bar_high=95.5, bar_low=94.5)
+    assert res.status == "invalidated"
+    assert res.price is None

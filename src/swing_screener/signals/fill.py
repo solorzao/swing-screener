@@ -1,11 +1,14 @@
 from dataclasses import dataclass
+from typing import Literal
 
 from swing_screener.signals.entry_zone import EntryZone
+
+FillStatus = Literal["filled", "missed", "invalidated"]
 
 
 @dataclass(frozen=True)
 class FillResult:
-    status: str           # "filled" | "missed" | "invalidated"
+    status: FillStatus
     price: float | None   # worst-case in-zone long fill, or None
 
 
