@@ -22,7 +22,7 @@ secrets.toml
 /data/
 cache/
 *.parquet
-charts/
+/charts/
 *.png
 
 # Tooling
