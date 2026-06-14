@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+*.env
+secrets.toml
+.streamlit/secrets.toml
+
+# Local data / caches
+*.sqlite
+*.sqlite3
+*.db
+data/
+cache/
+*.parquet
+charts/
+*.png
+
+# Tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# OS / IDE
+.DS_Store
+.vs/
+.idea/
+.vscode/
+*.user
