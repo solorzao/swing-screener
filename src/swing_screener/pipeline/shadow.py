@@ -1,0 +1,150 @@
+"""Shadow book: auto paper-trading of every screener signal.
+
+Two entry points drive the shadow book across daily runs:
+
+* ``open_from_signals`` resolves each candidate's fill against the bar that
+  follows its trigger and records a ``PaperTrade`` (open for fills, terminal
+  for missed/invalidated).
+* ``advance_open`` walks every still-open paper trade forward one bar, exiting
+  on a hard stop / momentum flip / target / time stop and otherwise bumping the
+  running hold count.
+"""
+
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import date
+
+from sqlalchemy.orm import Session
+
+from swing_screener.config import StrategyConfig
+from swing_screener.db import repo
+from swing_screener.db.models import PaperTrade
+from swing_screener.signals.entry_zone import EntryZone
+from swing_screener.signals.exits import OpenTrade, evaluate_exit
+from swing_screener.signals.fill import resolve_fill
+
+
+@dataclass(frozen=True)
+class FillCandidate:
+    ticker: str
+    timeframe: str
+    horizon: str
+    signal_score: float
+    rank: int
+    mtf_aligned: bool
+    signal_id: int | None
+    zone: EntryZone
+
+
+def open_from_signals(
+    session: Session,
+    candidates: Sequence[FillCandidate],
+    next_bars: Mapping[tuple[str, str], tuple[float, float]],
+    *,
+    fill_date: date,
+) -> list[PaperTrade]:
+    """Resolve each candidate against its next bar and persist a paper trade.
+
+    Candidates without a next bar yet are skipped (resolved on a later run).
+    Filled trades open at the worst-case in-zone price; missed/invalidated
+    trades are recorded as terminal (``status="closed"``) and never advanced.
+    """
+    trades: list[PaperTrade] = []
+    for cand in candidates:
+        bar = next_bars.get((cand.ticker, cand.timeframe))
+        if bar is None:
+            continue
+        bar_high, bar_low = bar
+        fill = resolve_fill(cand.zone, bar_high, bar_low)
+
+        common = {
+            "ticker": cand.ticker,
+            "timeframe": cand.timeframe,
+            "horizon": cand.horizon,
+            "signal_id": cand.signal_id,
+            "signal_score": cand.signal_score,
+            "rank": cand.rank,
+            "mtf_aligned": cand.mtf_aligned,
+            "fill_status": fill.status,
+            "stop": cand.zone.stop,
+            "target": cand.zone.target,
+        }
+
+        if fill.status == "filled":
+            assert fill.price is not None  # filled always carries a price
+            trade = PaperTrade(
+                **common,
+                entry_price=fill.price,
+                entry_date=fill_date,
+                risk=fill.price - cand.zone.stop,
+                status="open",
+                hold_bars=0,
+            )
+        else:  # missed / invalidated -> terminal, never opened
+            trade = PaperTrade(
+                **common,
+                entry_price=None,
+                entry_date=None,
+                risk=cand.zone.risk,
+                status="closed",
+            )
+        trades.append(trade)
+
+    repo.save_paper_trades(session, trades)
+    return trades
+
+
+def advance_open(
+    session: Session,
+    latest_bars: Mapping[tuple[str, str], Mapping[str, float | bool]],
+    cfg: StrategyConfig,
+    *,
+    today: date,
+) -> None:
+    """Advance every open paper trade by one bar, exiting or holding."""
+    for pt in repo.load_open_paper_trades(session):
+        bar = latest_bars.get((pt.ticker, pt.timeframe))
+        if bar is None:
+            continue
+
+        # Open (filled) trades always carry a concrete entry and risk.
+        assert pt.entry_price is not None and pt.risk is not None
+
+        held = (pt.hold_bars or 0) + 1
+        trade = OpenTrade(
+            entry=pt.entry_price,
+            stop=pt.stop,
+            target=pt.target,
+            timeframe=pt.timeframe,
+            bars_held=held,
+        )
+        decision = evaluate_exit(trade, bar, cfg)
+
+        if decision.action == "EXIT":
+            if decision.reason == "stop":
+                exit_price = pt.stop
+            elif decision.reason == "target":
+                exit_price = pt.target
+            else:
+                exit_price = float(bar["close"])
+
+            pt.status = "closed"
+            pt.exit_price = exit_price
+            pt.exit_reason = decision.reason
+            pt.exit_date = today
+            pt.hold_bars = held
+            pt.realized_r = (exit_price - pt.entry_price) / pt.risk
+
+            repo.record_exit_event(
+                session,
+                is_paper=True,
+                trade_id=pt.id,
+                tier=decision.tier or "",
+                reason=decision.reason or "",
+                message=f"{pt.ticker} {pt.timeframe} {decision.reason} @ {exit_price}",
+                created_date=today,
+            )
+        else:  # HOLD -> persist the running count
+            pt.hold_bars = held
+
+    session.commit()
