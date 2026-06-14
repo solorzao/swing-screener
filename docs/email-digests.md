@@ -24,7 +24,7 @@ Claude-written rationale per pick, and fires urgent **exit alerts** for active t
 ## Run it
 
 ```powershell
-$env:ANTHROPIC_API_KEY = "sk-ant-..."
+$env:ANTHROPIC_API_KEY = "<your-anthropic-api-key>"
 $env:GMAIL_ADDRESS = "you@gmail.com"
 $env:GMAIL_APP_PASSWORD = "xxxx xxxx xxxx xxxx"
 $env:DIGEST_TO = "you@gmail.com"
