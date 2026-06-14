@@ -1,0 +1,8 @@
+# Dashboard is private and local-only: bind to loopback so it is never reachable
+# on the LAN even if `streamlit run` is invoked without the address flag.
+[server]
+address = "127.0.0.1"
+headless = true
+
+[browser]
+gatherUsageStats = false

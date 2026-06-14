@@ -19,6 +19,12 @@ def latest_signals(session: Session, run_date: date) -> list[Signal]:
     return list(session.scalars(stmt))
 
 
+def latest_run_date(session: Session) -> date | None:
+    """The most recent run_date present in the signals table, or None if empty."""
+    stmt = select(Signal.run_date).order_by(Signal.run_date.desc()).limit(1)
+    return session.scalars(stmt).first()
+
+
 def delete_signals_for(session: Session, run_date: date) -> None:
     session.execute(delete(Signal).where(Signal.run_date == run_date))
     session.commit()

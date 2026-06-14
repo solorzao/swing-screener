@@ -137,11 +137,13 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the swing screener nightly pipeline.")
-    parser.add_argument("--db", default="sqlite:///swing_screener.db")
+    # defaults match the dashboard + scripts/run_local.py so a bare pipeline run
+    # and a bare dashboard launch point at the same DB/cache.
+    parser.add_argument("--db", default="sqlite:///local.db")
     parser.add_argument("--universe", type=Path,
                         default=Path("src/swing_screener/data/universe_seed.csv"))
-    parser.add_argument("--cache-dir", type=Path, default=Path("cache"))
-    parser.add_argument("--chart-dir", type=Path, default=Path("charts"))
+    parser.add_argument("--cache-dir", type=Path, default=Path(".cache"))
+    parser.add_argument("--chart-dir", type=Path, default=Path(".charts"))
     parser.add_argument("--top-charts", type=int, default=5)
     parser.add_argument("--max-tickers", type=int, default=None)
     args = parser.parse_args()

@@ -45,3 +45,18 @@ def test_app_renders_with_seeded_data(tmp_path, monkeypatch):
     # the seeded ticker surfaces somewhere across the rendered tabs
     rendered = " ".join(str(getattr(el, "value", "")) for el in at.markdown)
     assert "AMD" in rendered or any("AMD" in str(df.value.to_string()) for df in at.dataframe)
+
+
+def test_active_trades_survives_malformed_trade(tmp_path, monkeypatch):
+    # a zero-risk trade (stop == entry) makes position_pl raise; with a live quote
+    # available the Active Trades tab must not crash (the render guard catches it).
+    url = f"sqlite:///{tmp_path / 'bad.sqlite'}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    monkeypatch.setattr(quotes, "latest_closes", lambda tickers, **kw: {"BAD": 50.0})
+    engine = get_engine(url)
+    with Session(engine) as s:
+        s.add(Trade(ticker="BAD", timeframe="1d", horizon="medium", entry_date=date.today(),
+                    entry_price=100.0, size=10.0, stop=100.0, target=110.0))
+        s.commit()
+    at = AppTest.from_file(APP).run()
+    assert not at.exception

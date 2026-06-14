@@ -43,10 +43,12 @@ def _cache_dir() -> Path:
 
 def _render_candidates(session: Session) -> None:
     st.subheader("Today's Candidates")
-    signals = repo.latest_signals(session, date.today())
+    run_date = repo.latest_run_date(session)
+    signals = repo.latest_signals(session, run_date) if run_date else []
     if not signals:
         st.write("No candidates yet — run the screener.")
         return
+    st.caption(f"Latest run: {run_date}")
 
     rows = [
         {
@@ -64,7 +66,7 @@ def _render_candidates(session: Session) -> None:
         }
         for s in signals
     ]
-    st.dataframe(rows, use_container_width=True)
+    st.dataframe(rows, width="stretch")
 
     for s in signals:
         if s.chart_path and Path(s.chart_path).exists():
@@ -102,13 +104,25 @@ def _render_active(session: Session) -> None:
             )
             continue
 
-        pl = position_pl(
-            entry=t.entry_price,
-            stop=t.stop,
-            target=t.target,
-            size=t.size,
-            current_price=price,
-        )
+        try:
+            pl = position_pl(
+                entry=t.entry_price,
+                stop=t.stop,
+                target=t.target,
+                size=t.size,
+                current_price=price,
+            )
+        except ValueError:
+            # malformed trade (non-positive risk) — show the price but no P/L
+            # rather than letting one bad row crash the whole tab.
+            rows.append(
+                {
+                    "ticker": t.ticker, "entry": t.entry_price, "size": t.size,
+                    "price": price, "unrealized_$": "—", "unrealized_%": "—",
+                    "R": "—", "stop": t.stop, "target": t.target, "status": "⚠️",
+                }
+            )
+            continue
         if price <= t.stop:
             badge = "🔴"
         elif price >= t.target:
@@ -129,7 +143,7 @@ def _render_active(session: Session) -> None:
                 "status": badge,
             }
         )
-    st.dataframe(rows, use_container_width=True)
+    st.dataframe(rows, width="stretch")
 
 
 def _render_entry(session: Session) -> None:
@@ -145,22 +159,29 @@ def _render_entry(session: Session) -> None:
         notes = st.text_area("Notes", value="")
         submitted = st.form_submit_button("Add trade")
 
-    if submitted and ticker:
-        trade = Trade(
-            ticker=ticker.strip().upper(),
-            timeframe=timeframe,
-            horizon=horizon,
-            entry_date=date.today(),
-            entry_price=entry_price,
-            size=size,
-            stop=stop,
-            target=target,
-            notes=notes,
-        )
-        repo.add_trade(session, trade)
-        st.success(f"Added trade for {trade.ticker}.")
-    elif submitted:
-        st.warning("Ticker is required.")
+    if submitted:
+        if not ticker:
+            st.warning("Ticker is required.")
+        elif entry_price <= 0 or size <= 0:
+            st.warning("Entry price and size must be positive.")
+        elif stop >= entry_price:
+            st.warning("Stop must be below the entry price (long).")
+        elif target <= entry_price:
+            st.warning("Target must be above the entry price (long).")
+        else:
+            trade = Trade(
+                ticker=ticker.strip().upper(),
+                timeframe=timeframe,
+                horizon=horizon,
+                entry_date=date.today(),
+                entry_price=entry_price,
+                size=size,
+                stop=stop,
+                target=target,
+                notes=notes,
+            )
+            repo.add_trade(session, trade)
+            st.success(f"Added trade for {trade.ticker}.")
 
 
 def _render_closed(session: Session) -> None:
@@ -188,7 +209,7 @@ def _render_closed(session: Session) -> None:
                 "exit_reason": t.exit_reason or "",
             }
         )
-    st.dataframe(rows, use_container_width=True)
+    st.dataframe(rows, width="stretch")
     st.metric("Cumulative realized P/L", f"${cumulative:,.2f}")
 
 
@@ -246,7 +267,7 @@ def _render_exits(session: Session) -> None:
         }
         for e in events
     ]
-    st.dataframe(rows, use_container_width=True)
+    st.dataframe(rows, width="stretch")
 
 
 def render() -> None:
