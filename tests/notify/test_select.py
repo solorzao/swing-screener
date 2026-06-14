@@ -18,10 +18,12 @@ def _sig(ticker, tf, rank):
 def _seed():
     engine = get_engine("sqlite:///:memory:")
     with Session(engine) as s:
+        # ranks are globally unique across timeframes (as the orchestrator assigns
+        # them); the 1wk signal MSFT outranks some 1d signals.
         s.add_all([
-            _sig("AMD", "1d", 1), _sig("AEP", "1d", 2), _sig("AES", "1d", 3),
+            _sig("AMD", "1d", 1), _sig("AEP", "1d", 2), _sig("MSFT", "1wk", 3),
             _sig("A", "1d", 4), _sig("AAPL", "1d", 5), _sig("ABBV", "1d", 6),
-            _sig("MSFT", "1wk", 1), _sig("NVDA", "1mo", 1),
+            _sig("NVDA", "1mo", 7),
         ])
         s.add_all([
             ExitEvent(created_date=RUN, is_paper=False, trade_id=10, tier="hard",
@@ -33,10 +35,11 @@ def _seed():
         return s, engine  # keep session open for the test
 
 
-def test_daily_top_n_ordered_by_rank():
+def test_daily_top_n_is_overall_rank_across_timeframes():
     s, _ = _seed()
     picks = sel.daily_picks(s, RUN, top_n=5)
-    assert [p.ticker for p in picks] == ["AMD", "AEP", "AES", "A", "AAPL"]  # rank 1..5, capped at 5
+    # top 5 by global rank — includes the rank-3 weekly signal (MSFT), capped at 5
+    assert [p.ticker for p in picks] == ["AMD", "AEP", "MSFT", "A", "AAPL"]
 
 
 def test_weekly_and_monthly_filter_by_timeframe():

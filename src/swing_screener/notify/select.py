@@ -13,8 +13,19 @@ from swing_screener.db.models import ExitEvent, Signal
 
 
 def daily_picks(session: Session, run_date: date, *, top_n: int = 5) -> list[Signal]:
-    """Top-N daily-timeframe signals for the run date, ordered by rank (best first)."""
-    return _by_timeframe(session, run_date, "1d", top_n)
+    """Top-N signals overall for the run date (any timeframe), ranked best first.
+
+    The daily digest is the day's best picks across all timeframes (ranks are
+    assigned globally by the orchestrator); weekly_picks and monthly_picks are
+    the timeframe-specific cadences.
+    """
+    stmt = (
+        select(Signal)
+        .where(Signal.run_date == run_date)
+        .order_by(Signal.rank)
+        .limit(top_n)
+    )
+    return list(session.scalars(stmt))
 
 
 def _by_timeframe(session: Session, run_date: date, timeframe: str, top_n: int) -> list[Signal]:
