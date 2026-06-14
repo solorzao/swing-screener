@@ -1,5 +1,8 @@
+import pandas as pd
+
 from swing_screener.config import StrategyConfig
 from swing_screener.signals.exits import evaluate_exit, OpenTrade
+from swing_screener.signals.frame import build_frame
 
 CFG = StrategyConfig()
 TRADE = OpenTrade(entry=100.0, stop=95.0, target=110.0, timeframe="1d", bars_held=3)
@@ -48,3 +51,16 @@ def test_unknown_timeframe_disables_time_stop():
     trade = OpenTrade(entry=100, stop=95, target=110, timeframe="unknown", bars_held=999)
     d = evaluate_exit(trade, _bar(close=101, high=102, low=99), CFG)
     assert d.action == "HOLD"
+
+
+def test_evaluate_exit_accepts_real_frame_row():
+    # a real enriched frame row is a pd.Series; evaluate_exit must handle it
+    df = pd.DataFrame(
+        {"open": [10, 11, 12], "high": [11, 12, 13], "low": [9, 10, 11],
+         "close": [10.5, 11.5, 12.5], "volume": [1_000_000] * 3},
+        index=pd.date_range("2024-01-01", periods=3, freq="D"),
+    )
+    row = build_frame(df, CFG).iloc[-1]
+    trade = OpenTrade(entry=12.0, stop=10.5, target=20.0, timeframe="1d", bars_held=1)
+    d = evaluate_exit(trade, row, CFG)
+    assert d.action in ("EXIT", "HOLD")  # runs without KeyError/TypeError on a Series

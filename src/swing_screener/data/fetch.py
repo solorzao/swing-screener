@@ -1,0 +1,72 @@
+import logging
+import time
+from datetime import date
+from pathlib import Path
+
+import pandas as pd
+import yfinance as yf
+
+log = logging.getLogger(__name__)
+
+_COLS = ["open", "high", "low", "close", "volume"]
+
+
+def _cache_path(cache_dir: Path, interval: str, ticker: str, today: date) -> Path:
+    """On-disk parquet cache location, keyed by (interval, ticker, day)."""
+    return Path(cache_dir) / interval / f"{ticker}_{today:%Y%m%d}.parquet"
+
+
+def _download(ticker: str, interval: str, period: str) -> pd.DataFrame:
+    """Thin, mockable wrapper around yfinance. Returns OHLCV with lowercase columns."""
+    df = yf.download(ticker, interval=interval, period=period,
+                     auto_adjust=False, progress=False)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    df = df.rename(columns=str.lower)
+    return df[_COLS]
+
+
+def fetch_bars(ticker: str, interval: str, *, cache_dir: Path, period: str = "2y",
+               today: date | None = None, retries: int = 3,
+               backoff: float = 0.5) -> pd.DataFrame | None:
+    """Fetch OHLCV for one ticker, cached per (interval, ticker, day). Returns None
+    on persistent failure (per-ticker isolation: never raises to the caller)."""
+    today = today or date.today()
+    cache_file = _cache_path(cache_dir, interval, ticker, today)
+    if cache_file.exists():
+        try:
+            return pd.read_parquet(cache_file)
+        except Exception as err:  # corrupt/partial cache: fall through to a re-download
+            log.warning("cache read failed for %s %s, re-fetching: %s", ticker, interval, err)
+
+    last_err: Exception | None = None
+    for attempt in range(retries):
+        try:
+            df = _download(ticker, interval, period)
+            if df is None or df.empty:
+                raise ValueError("empty frame")
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            df.to_parquet(cache_file)
+            return df
+        except Exception as err:  # isolation is the whole point: never propagate
+            last_err = err
+            if attempt < retries - 1:  # don't sleep after the final attempt
+                time.sleep(backoff * (2 ** attempt))
+    log.warning("fetch failed for %s %s after %d tries: %s", ticker, interval, retries, last_err)
+    return None
+
+
+def fetch_universe(tickers: list[str], interval: str, *, cache_dir: Path,
+                   **kwargs: object) -> dict[str, pd.DataFrame]:
+    """Fetch many tickers; silently skip those that fail (isolation).
+
+    Serial by design: this is a nightly after-close batch and the cache makes
+    re-runs cheap. If cold-run latency over the full universe becomes a problem,
+    parallelize here with a thread pool (work is I/O-bound and per-ticker isolated).
+    """
+    out: dict[str, pd.DataFrame] = {}
+    for ticker in tickers:
+        df = fetch_bars(ticker, interval, cache_dir=cache_dir, **kwargs)  # type: ignore[arg-type]
+        if df is not None:
+            out[ticker] = df
+    return out
