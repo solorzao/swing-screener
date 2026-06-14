@@ -76,6 +76,14 @@ py -3.12 -m venv .venv
 Full run instructions, flags, and how to inspect results:
 [`docs/running-locally.md`](docs/running-locally.md).
 
+**Dashboard** (browse candidates, track trades + live P/L, review screener performance):
+
+```powershell
+.\.venv\Scripts\python -m streamlit run src\swing_screener\dashboard\app.py --server.address 127.0.0.1
+```
+
+See [`docs/dashboard.md`](docs/dashboard.md).
+
 ## Project layout
 
 ```
@@ -119,7 +127,7 @@ It is **idempotent per run-date** (safe to re-run a day) and isolates per-ticker
 | 1 | Engine core (HA, signals, entry zones, exits, scoring; AMD golden test) | ✅ done |
 | 2 | Data pipeline + SQLite persistence + shadow book + charts + orchestrator | ✅ done |
 | — | **Local dry-run** (run nightly ~1–2 weeks to accumulate the shadow book) | ◻ in progress |
-| 3 | Local Streamlit dashboard (candidates, active trades, P/L, screener performance) | 📋 planned |
+| 3 | Local Streamlit dashboard (candidates, active trades, P/L, screener performance) | ✅ done |
 | 4 | Email digests (daily top-5 / weekly / monthly) + Claude-written analysis + exit alerts | 📋 planned |
 | 5 | Deploy to Azure (Container Apps Jobs, Azure SQL, Blob, Key Vault) + CD on merge | 📋 planned |
 | 6 | Options module (needs a paid data feed) | 📋 later |

@@ -37,10 +37,10 @@ Sanity-check on a small slice first:
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--db` | `sqlite:///swing_screener.db` | SQLAlchemy DB URL (same code targets Azure SQL later) |
+| `--db` | `sqlite:///local.db` | SQLAlchemy DB URL — matches the dashboard's default so both agree (same code targets Azure SQL later) |
 | `--universe` | `src/swing_screener/data/universe_seed.csv` | ticker list to scan |
-| `--cache-dir` | `cache` | parquet bar cache (keyed per ticker/interval/day) |
-| `--chart-dir` | `charts` | annotated HA chart PNGs for the top picks |
+| `--cache-dir` | `.cache` | parquet bar cache (keyed per ticker/interval/day) |
+| `--chart-dir` | `.charts` | annotated HA chart PNGs for the top picks |
 | `--top-charts` | `5` | how many top-ranked signals get a chart |
 | `--max-tickers` | (all) | cap the universe for a quick run |
 

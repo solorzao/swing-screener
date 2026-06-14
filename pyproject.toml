@@ -9,6 +9,7 @@ dependencies = [
     "mplfinance>=0.12",
     "yfinance>=0.2",
     "pyarrow>=15",
+    "streamlit>=1.38",
 ]
 
 [project.optional-dependencies]
