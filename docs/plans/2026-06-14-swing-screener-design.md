@@ -47,6 +47,25 @@ HA_Low   = min(L, HA_Open, HA_Close)
 Thresholds (EMA lengths, max pullback depth, min green-body size) are **config**, tuned
 against live output and the golden test, not architecture.
 
+### Entry zone (range, not a single price)
+
+The trigger fires on a *closed* bar, so entries happen on the next bar — price has already
+moved. Every signal therefore carries an ATR-scaled **entry zone** (auto-scales across
+4h/D/W/M):
+
+- **Floor** = pullback support (EMA50 / prior swing low) + a small buffer.
+- **Ceiling** = trigger bar's close + ~0.25–0.5×ATR buffer.
+
+You enter anywhere in `[floor, ceiling]` and do **not chase** above the ceiling. The stop
+sits just below the floor; target is ATR-multiple / prior swing high measured from the zone.
+
+**Fill rules (apply to both suggested entries and shadow-book fills):**
+- Next bar trades within `[floor, ceiling]` → **filled** (at the in-zone price / open if it
+  opens inside).
+- Next bar gaps/runs entirely **above the ceiling** → **missed entry** (no fill, recorded).
+- Next bar gaps **below the stop** → **invalidated** (no fill, recorded).
+- This yields a true **fill rate** metric — how many signals were actually enterable.
+
 ### Multi-timeframe handling: "flag all, boost aligned"
 
 Screen every timeframe independently; surface any valid signal tagged with its horizon.
@@ -139,8 +158,8 @@ Azure job and the local dashboard — they never talk directly.
 ## Analysis, charts & email
 
 - **Charts** — `mplfinance` renders annotated HA charts (HA candles, EMA20/50, shaded
-  pullback zone, marked trigger bar, entry/stop/target lines). PNGs to private Blob. For
-  MTF-aligned plays, render the trade timeframe plus the next one up.
+  pullback zone, marked trigger bar, shaded **entry zone** band, stop/target lines). PNGs to
+  private Blob. For MTF-aligned plays, render the trade timeframe plus the next one up.
 - **LLM analysis** — only the shortlist hits Claude. Inputs are the computed facts; output
   is a tight rationale (why it qualifies, conviction, entry/stop/target reasoning, horizon).
   The model narrates deterministic findings — it does not invent signals.
@@ -161,12 +180,13 @@ a managed identity. The local dashboard authenticates with the user's `az login`
 Tables:
 - `universe` — tickers + name, exchange, market cap, avg dollar volume (refreshed weekly).
 - `signals` — every detected signal per run: ticker, timeframe, run date, metrics, composite
-  score, that-night rank, chart blob paths.
+  score, that-night rank, **entry zone (floor/ceiling), stop, target**, chart blob paths.
 - `trades` — **real trades** (manual): ticker, horizon, entry date/price, size, stop, target,
   status, exit date/price/reason, notes, linked `signal_id`. P/L computed live from latest bars.
 - `paper_trades` — **shadow book**: identical shape + QC fields (signal score, rank,
-  MTF-alignment, realized R, hold bars, exit reason). Auto-opened from every valid signal,
-  filled at next-bar open, risk-normalized to 1R.
+  MTF-alignment, **fill status** [filled / missed / invalidated], realized R, hold bars,
+  exit reason). Auto-opened from every valid signal; **filled only if the next bar trades
+  within the entry zone** (else recorded as missed/invalidated), risk-normalized to 1R.
 - `exit_events` — every exit alert fired (trade/paper, type, strength tier, date, message).
 - `email_log` — what was sent when (idempotency / audit).
 
@@ -177,24 +197,26 @@ target/time-stop → 🟡.
 ## Shadow book (screener quality control)
 
 Auto-paper-trade **every valid signal** (not just the emailed top 5), each tagged with its
-rank/score that night. Realistic fills: entry at the **next bar's open** after the signal;
-auto-derived stop (pullback swing low / EMA50) and target (ATR-multiple / prior swing high);
-position **risk-normalized to 1R** so all trades are comparable. Tracked through the same exit
-logic until closed, then scored. Aggregates (win rate, expectancy in R, profit factor, avg
-hold) are sliced by timeframe, quality tier, volatility, MTF-alignment, and **rank bucket** —
-answering "does the ranking actually pick winners?" Stored separately from real trades.
+rank/score that night. Realistic fills: the next bar must trade **within the entry zone** to
+fill (gaps above the ceiling → *missed*; gaps below the stop → *invalidated*); auto-derived
+stop (pullback swing low / EMA50) and target (ATR-multiple / prior swing high); position
+**risk-normalized to 1R** so all trades are comparable. Filled trades are tracked through the
+same exit logic until closed, then scored. Aggregates (win rate, expectancy in R, profit
+factor, avg hold, and **fill rate**) are sliced by timeframe, quality tier, volatility,
+MTF-alignment, and **rank bucket** — answering both "does the ranking actually pick winners?"
+and "how often could I actually enter?" Stored separately from real trades.
 
 ## Dashboard tabs (local Streamlit)
 
 1. **Today's Candidates** — ranked signals; filters for timeframe/horizon/quality/volatility;
-   chart + Claude rationale + suggested entry/stop/target + MTF badge. "Take this trade"
-   pre-fills the entry form.
+   chart + Claude rationale + suggested **entry zone** / stop / target + MTF badge. "Take this
+   trade" pre-fills the entry form (with the zone).
 2. **Active Trades** — open positions: live price, unrealized P/L ($ and %), size, entry,
    stop, target, distance-to-target/stop, live exit-alert badge, expandable chart.
 3. **Trade Entry / Management** — manual form; edit/close trades.
 4. **Closed Trades** — realized history, per-trade + cumulative P/L, hold time, exit reason.
 5. **Screener Performance** — shadow-book aggregates; headline chart of win rate / avg-R by
-   rank bucket; paper-book equity curve.
+   rank bucket; **fill rate** (filled vs missed vs invalidated); paper-book equity curve.
 6. **Exit Log** — every alert fired, when, and outcome.
 
 Localhost-only, no auth needed. Charts pulled from Blob.
