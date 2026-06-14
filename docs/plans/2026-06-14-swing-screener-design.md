@@ -167,12 +167,18 @@ Azure job and the local dashboard — they never talk directly.
 - **LLM analysis** — only the shortlist hits Claude. Inputs are the computed facts; output
   is a tight rationale (why it qualifies, conviction, entry/stop/target reasoning, horizon).
   The model narrates deterministic findings — it does not invent signals.
-- **Emails:**
-  - **Daily** (pre-open): top 5 stock picks, each with rationale + inline (CID) chart, plus
-    any exit alerts on active trades.
-  - **Weekly** (one day/week): top Weekly-timeframe plays.
-  - **Monthly** (once/month): top Monthly-timeframe plays.
-  - **Exit alerts** ride along with the detecting run; hard stops can fire their own urgent email.
+- **Emails = concise summary body + detailed PDF attachment.** Each digest email is a
+  quick scan; the depth lives in an attached PDF.
+  - **Email body (scannable):** a ranked summary of the day's picks — per pick: ticker,
+    **trade type** (short / medium / long term, from the timeframe), and the **core
+    one-line reason**. Plus any exit alerts on active trades, and a pointer to the PDF.
+  - **Attached PDF (detailed analysis):** one PDF per digest, a section per pick, each with:
+    the **annotated chart** marking the important levels (entry zone, stop, target, EMA20/50),
+    **target entry & exit** prices, **trade type / horizon**, the full Claude rationale, the
+    categorization tags (quality / volatility / oversold), MTF alignment, and the R:R.
+  - **Daily** (pre-open): top 5 stock picks (summary + PDF).
+  - **Weekly** (one day/week) and **Monthly** (once/month): same shape, for their timeframes.
+  - **Exit alerts** stay as concise, urgent emails (no PDF); hard stops can fire their own.
 
 ## Storage & data model
 
@@ -237,8 +243,9 @@ Localhost-only, no auth needed. Charts pulled from Blob.
 **Error handling / resilience:**
 - yfinance is unofficial and rate-limits cloud IPs: **per-ticker isolation**, retry-with-backoff,
   optional Stooq fallback, last-good-bar cache.
-- **Graceful degradation:** LLM down → email sends with deterministic facts; charts fail →
-  text-only email. Never block the alert.
+- **Graceful degradation:** LLM down → the summary email still sends with the deterministic
+  facts (no rationale); PDF/chart generation fails → send the summary email without the
+  attachment. Never block the alert.
 - **Idempotency:** runs keyed by date; `email_log` prevents double-sends.
 - **Health heartbeat:** if the evening run is missing, the pre-open job emails a warning.
   Logs to Application Insights.
@@ -269,7 +276,9 @@ cloud cron is flipped on.
 1. **Engine core** — HA + signal + exit + ranking, tested, validated vs. the user's charts.
 2. **Pipeline + shadow book + charts** — universe fetch, nightly pipeline → SQLite, mplfinance.
 3. **Dashboard** — Streamlit tabs over the local DB.
-4. **Email + LLM analysis** — Gmail SMTP, Claude rationale, three cadences + exit alerts.
+4. **Email + LLM analysis** — Gmail SMTP, Claude rationale, concise **summary emails + detailed
+   PDF attachments** (per-pick: annotated chart, levels, target entry/exit, trade type, R:R),
+   three cadences + exit alerts.
 5. **Deploy to Azure** — Container Apps Jobs, SQL serverless, Blob, Key Vault.
 6. **Options module** — phase 2, when a paid feed is added.
 
