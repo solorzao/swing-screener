@@ -75,6 +75,21 @@ def _avg_dollar_volume(frame: pd.DataFrame) -> float:
     return float((tail["close"] * tail["volume"]).mean())
 
 
+def build_frames(
+    bars_by_tf: dict[str, pd.DataFrame],
+    cfg: StrategyConfig,
+) -> dict[str, pd.DataFrame]:
+    """Enrich each provided timeframe's OHLCV once. Empty frames are skipped so
+    build_frame is never asked to enrich nothing. Pure (no I/O)."""
+    frames: dict[str, pd.DataFrame] = {}
+    for tf in TIMEFRAME_ORDER:
+        df = bars_by_tf.get(tf)
+        if df is None or len(df) == 0:
+            continue
+        frames[tf] = build_frame(df, cfg)
+    return frames
+
+
 def analyze_ticker(
     ticker: str,
     bars_by_tf: dict[str, pd.DataFrame],
@@ -82,20 +97,21 @@ def analyze_ticker(
 ) -> list[SignalResult]:
     """Run the signal engine across the provided timeframes for one ticker.
 
-    Pure (no I/O). Builds each provided timeframe's enriched frame once, then for
-    each timeframe in low->high order emits a SignalResult when a trigger fires
-    and a non-degenerate entry zone exists. MTF alignment is read from the
-    next-higher provided timeframe's last bar.
+    Pure (no I/O). Convenience wrapper that builds the enriched frames and then
+    analyzes them (see analyze_frames).
     """
-    # Build each provided timeframe's enriched frame once; skip empty frames so
-    # build_frame is never asked to enrich nothing.
-    frames: dict[str, pd.DataFrame] = {}
-    for tf in TIMEFRAME_ORDER:
-        df = bars_by_tf.get(tf)
-        if df is None or len(df) == 0:
-            continue
-        frames[tf] = build_frame(df, cfg)
+    return analyze_frames(ticker, build_frames(bars_by_tf, cfg), cfg)
 
+
+def analyze_frames(
+    ticker: str,
+    frames: dict[str, pd.DataFrame],
+    cfg: StrategyConfig,
+) -> list[SignalResult]:
+    """Analyze pre-built enriched frames for one ticker. For each timeframe in
+    low->high order, emit a SignalResult when a trigger fires and a non-degenerate
+    entry zone exists. MTF alignment is read from the next-higher provided
+    timeframe's last bar. Pure (no I/O)."""
     results: list[SignalResult] = []
     for i, tf in enumerate(TIMEFRAME_ORDER):
         frame = frames.get(tf)
