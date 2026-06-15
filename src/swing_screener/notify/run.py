@@ -13,6 +13,7 @@ injectable seams so tests never hit the network or send mail.
 """
 
 import argparse
+import hashlib
 import logging
 import os
 from collections.abc import Callable
@@ -21,9 +22,10 @@ from datetime import date, datetime
 from pathlib import Path
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from swing_screener.db.models import EmailLog, Signal
+from swing_screener.db.models import EmailLog, ExitEvent, Signal
 from swing_screener.db.session import get_engine
 from swing_screener.notify import select as sel
 from swing_screener.notify import smtp
@@ -47,24 +49,63 @@ class DigestResult:
     sent: bool
 
 
+def _exit_alert_key(alerts: list[ExitEvent]) -> str:
+    """Deterministic key over the SET of exit-event ids (sha1, 40 chars).
+
+    Idempotency is keyed on the *set of events*, not the calendar day, so a later
+    hour with a NEW exit yields a different key (and thus a new alert) while a
+    re-run over the same events maps to the same key (a no-op). Sorting by id
+    makes the key order-independent; it distinguishes {1,2} from {1,2,3} from
+    {1,3}. The 40-char sha1 hexdigest fits ``EmailLog.alert_key`` (String(64)).
+    """
+    ids = ",".join(str(a.id) for a in sorted(alerts, key=lambda a: a.id))
+    return hashlib.sha1(ids.encode()).hexdigest()
+
+
+def _exit_already_sent(session: Session, run_date: date, alert_key: str) -> bool:
+    """True if an exit alert for this exact event set already logged on this date."""
+    stmt = select(EmailLog).where(
+        EmailLog.kind == "exit",
+        EmailLog.run_date == run_date,
+        EmailLog.alert_key == alert_key,
+    )
+    return session.scalars(stmt).first() is not None
+
+
 def _emit_pending_exit_alert(session: Session, run_date: date, recipient: str,
                              smtp_send: SmtpSend) -> bool:
     """Send a standalone exit-alert email if real exit events are pending today.
 
-    Exit alerts are urgent and tracked independently of the digest (their own
-    per-day ``kind="exit"`` idempotency key), so a re-run still delivers an alert
-    that fired after the day's digest already went out. Returns True iff an email
-    was sent. Shared by ``send_digest`` and the ``exit`` run path.
+    Exit alerts are urgent and tracked independently of the digest, keyed on the
+    SET of pending exit events (see ``_exit_alert_key``) rather than the calendar
+    day. That makes the hourly cadence work: a NEW exit firing later in the
+    session produces a fresh key and a new alert, while a re-run over the same
+    events is a no-op. Returns True iff an email was sent. Shared by
+    ``send_digest`` and the ``exit`` run path.
+
+    Ordering is deliberate: we SEND then LOG (not log-then-send). An exit alert
+    can be an urgent hard stop, so we prioritize never LOSING it over strictly
+    preventing a rare duplicate -- if the SMTP send fails we leave no log row, so
+    the next hourly run retries. The unique constraint plus the
+    ``_exit_already_sent`` pre-check make the common sequential re-run a clean
+    no-op; the ``IntegrityError`` catch only guards the rare concurrent-replica
+    race (which may double-send -- accepted).
     """
     alerts = sel.pending_exit_alerts(session, run_date)
-    if not alerts or _already_sent(session, "exit", run_date):
+    if not alerts:
+        return False
+    key = _exit_alert_key(alerts)
+    if _exit_already_sent(session, run_date, key):
         return False
     alert_email = compose_exit_alert(alerts, run_date)
     smtp_send(to=recipient, subject=alert_email.subject, text=alert_email.text,
-              html=alert_email.html, attachments=[])
+              html=alert_email.html, attachments=[])  # SEND FIRST (see docstring)
     session.add(EmailLog(sent_at=datetime.now(), kind="exit",
-                         subject=alert_email.subject, run_date=run_date))
-    session.commit()
+                         subject=alert_email.subject, run_date=run_date, alert_key=key))
+    try:
+        session.commit()
+    except IntegrityError:  # lost the concurrent-replica race; the row already exists
+        session.rollback()
     return True
 
 
@@ -149,7 +190,7 @@ def run_exit_check_and_alert(*, db_url: str, run_date: date | None = None, to: s
     two-step path. (a) ``run_exit_check`` records ``is_paper=False`` ExitEvents
     for any open real trade whose latest bar trips an exit, then (b) the shared
     ``_emit_pending_exit_alert`` helper emails them (subject "Exit", no PDF),
-    reusing the existing per-day ``kind="exit"`` EmailLog idempotency.
+    deduped per exit-event-SET so a later hour with a NEW exit still alerts.
     """
     run_date = run_date or date.today()
     recipient = to or os.environ.get("DIGEST_TO")
