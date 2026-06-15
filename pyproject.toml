@@ -10,7 +10,7 @@ dependencies = [
     "yfinance>=0.2",
     "pyarrow>=15",
     "streamlit>=1.38",
-    "anthropic>=0.40",
+    "anthropic>=0.51",  # >=0.51 for the server-side web_search tool (deep analysis)
     "reportlab>=4.0",
 ]
 
