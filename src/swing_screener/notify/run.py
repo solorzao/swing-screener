@@ -15,7 +15,6 @@ injectable seams so tests never hit the network or send mail.
 import argparse
 import hashlib
 import logging
-import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -25,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from swing_screener.config_secrets import get_secret
 from swing_screener.db.models import EmailLog, ExitEvent, Signal
 from swing_screener.db.session import get_engine
 from swing_screener.notify import select as sel
@@ -34,6 +34,7 @@ from swing_screener.notify.analysis import SignalFacts, analyze_signal
 from swing_screener.notify.body import AlertLine, DigestPick, compose_digest_body
 from swing_screener.notify.pdf import PdfPick, build_digest_pdf
 from swing_screener.pipeline.exitcheck import ExitCheckResult, LatestBarsFn, run_exit_check
+from swing_screener.settings import load_settings
 
 log = logging.getLogger(__name__)
 
@@ -128,7 +129,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                 pdf_dir: Path = Path(".digests"), anthropic_client: object | None = None,
                 smtp_send: SmtpSend = smtp.send_email) -> DigestResult:
     run_date = run_date or date.today()
-    recipient = to or os.environ.get("DIGEST_TO")
+    recipient = to or get_secret("DIGEST_TO")
     if not recipient:  # fail fast, before any billable Claude calls
         raise RuntimeError("no recipient: set DIGEST_TO or pass to=")
     engine = get_engine(db_url)
@@ -193,7 +194,7 @@ def run_exit_check_and_alert(*, db_url: str, run_date: date | None = None, to: s
     deduped per exit-event-SET so a later hour with a NEW exit still alerts.
     """
     run_date = run_date or date.today()
-    recipient = to or os.environ.get("DIGEST_TO")
+    recipient = to or get_secret("DIGEST_TO")
     if not recipient:
         raise RuntimeError("no recipient: set DIGEST_TO or pass to=")
 
@@ -208,10 +209,11 @@ def run_exit_check_and_alert(*, db_url: str, run_date: date | None = None, to: s
 
 
 def main() -> None:
+    settings = load_settings()  # absolute paths + env-resolved DB URL (container-safe)
     parser = argparse.ArgumentParser(description="Send a swing-screener email digest.")
     parser.add_argument("--kind", choices=["daily", "weekly", "monthly", "exit"], default="daily")
-    parser.add_argument("--db", default="sqlite:///local.db")
-    parser.add_argument("--pdf-dir", type=Path, default=Path(".digests"))
+    parser.add_argument("--db", default=settings.db_url)
+    parser.add_argument("--pdf-dir", type=Path, default=settings.pdf_dir)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     if args.kind == "exit":

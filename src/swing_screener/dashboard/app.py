@@ -1,16 +1,17 @@
 """Local Streamlit dashboard over the screener's SQLite store.
 
-Reads its DB URL from ``SWING_DB_URL`` (default ``sqlite:///local.db``) and the
-quote cache directory from ``SWING_CACHE_DIR`` (default ``.cache``) so tests can
-point them at temp locations. Streamlit runs this file top-to-bottom on every
-rerun, so :func:`render` is called unconditionally at the bottom.
+Configuration comes from the centralized :func:`load_settings` (DB URL from
+``SWING_DB_URL`` default ``sqlite:///local.db``; quote cache directory from
+``SWING_CACHE_DIR`` default ``.cache``, resolved absolute so a container with a
+different cwd still works) so tests can point them at temp locations. Streamlit
+runs this file top-to-bottom on every rerun, so :func:`render` is called
+unconditionally at the bottom and reads settings fresh each run.
 
 Each tab is a small ``_render_*`` function taking an open :class:`Session`.
 Quotes are fetched through ``quotes.latest_closes`` (a module attribute) so a
 test can monkeypatch that seam and avoid the network.
 """
 
-import os
 from datetime import date
 from pathlib import Path
 
@@ -24,8 +25,7 @@ from swing_screener.dashboard.pl import position_pl
 from swing_screener.db import repo
 from swing_screener.db.models import ExitEvent, PaperTrade, Trade
 from swing_screener.db.session import get_engine
-
-DB_URL = os.environ.get("SWING_DB_URL", "sqlite:///local.db")
+from swing_screener.settings import load_settings
 
 TAB_LABELS = [
     "Today's Candidates",
@@ -38,7 +38,7 @@ TAB_LABELS = [
 
 
 def _cache_dir() -> Path:
-    return Path(os.environ.get("SWING_CACHE_DIR", ".cache"))
+    return load_settings().cache_dir
 
 
 def _render_candidates(session: Session) -> None:
@@ -272,8 +272,9 @@ def _render_exits(session: Session) -> None:
 
 def render() -> None:
     st.title("Swing Screener")
-    engine = get_engine(DB_URL)  # ensure tables exist; empty DB is fine
-    st.sidebar.caption(f"DB: {DB_URL}")
+    db_url = load_settings().db_url  # read fresh each rerun (env-resolved)
+    engine = get_engine(db_url)  # ensure tables exist; empty DB is fine
+    st.sidebar.caption(f"DB: {db_url}")
 
     renderers = [
         _render_candidates,
