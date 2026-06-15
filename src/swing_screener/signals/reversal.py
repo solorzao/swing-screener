@@ -1,14 +1,14 @@
-"""Reversal-play detector: oversold names showing a strong sign of life.
+"""Reversal-play detector: a Heiken-Ashi reversal out of a downtrend.
 
-The complement to the pullback-continuation engine. Where that finds shallow
-pullbacks inside an uptrend, this finds beaten-down names that recently
-capitulated (RSI dipped below ``reversal_oversold_rsi_max``) and just printed a
-strong bullish Heiken-Ashi "sign of life" -- the dead-cat-bounce / relief-rally
-setup. Two strengths are surfaced and tagged:
+The HA-first complement to the pullback-continuation engine. Like the rest of the
+system this is **Heiken-Ashi centric**: the GATE is HA structure -- a run of red
+HA candles (downtrend) that flips green -- on a name beaten below its slow EMA.
+RSI is NOT a filter here; it only feeds the score (a deeper-oversold bounce ranks
+higher). This catches dead-cat bounces / relief rallies. Two strengths are tagged:
 
-* ``early``     -- the latest bar IS the fresh bounce (anticipatory).
-* ``confirmed`` -- the prior bar bounced and the latest bar followed through
-  (closed above the bounce bar's high).
+* ``early``     -- the latest bar IS the fresh green flip (anticipatory).
+* ``confirmed`` -- the prior bar flipped and the latest bar followed through
+  (closed above the flip bar's high).
 
 Targets are mean-reversion levels: the nearest resistance above the entry (the
 slow-EMA reclaim or the recent swing high), with a measured-move fallback. All
@@ -34,11 +34,13 @@ class ReversalContext:
     reversal_low: float    # capitulation low over the decline window (stop reference)
     bounce_high: float     # high of the sign-of-life bar (entry reference)
     rsi: float             # current RSI
-    min_rsi: float         # lowest RSI in the oversold window (capitulation depth)
+    min_rsi: float         # lowest RSI in the lookback window (oversold depth, scoring only)
     strength: str          # EARLY | CONFIRMED
-    body_frac: float       # bounce-bar body / range (momentum)
-    shaved_bottom: bool    # bounce bar closed on its low-side wick (buyers in control)
-    volume_ratio: float    # bounce-bar volume / recent average
+    body_frac: float       # flip-bar body / range (HA momentum)
+    shaved_bottom: bool    # flip bar closed on its low-side wick (buyers in control)
+    red_run: int           # bearish HA bars in the decline window (downtrend strength)
+    decline_bars: int      # decline window size (to normalize red_run)
+    volume_ratio: float    # flip-bar volume / recent average
     ema_slow: float        # slow EMA (reclaim target)
     swing_high: float      # recent swing high (resistance target)
 
@@ -46,12 +48,13 @@ class ReversalContext:
 def detect_reversal(f: pd.DataFrame, cfg: StrategyConfig) -> ReversalContext | None:
     """Return a ReversalContext if the last closed bar completes a reversal setup.
 
-    Gates: (1) RSI dipped below ``reversal_oversold_rsi_max`` within the lookback
-    (recent capitulation); (2) the decline low sits below the slow EMA (genuinely
-    beaten down, not a shallow dip in an uptrend); (3) a Heiken-Ashi "sign of
-    life" -- a green bar flipping out of red -- either on the latest bar
-    (``early``) or on the prior bar with a follow-through close today
-    (``confirmed``). Momentum/volume/depth are left to ``score_reversal``.
+    HA-CENTRIC gates: (1) a Heiken-Ashi downtrend -- at least
+    ``reversal_min_bearish_bars`` red HA candles in the decline window;
+    (2) the decline low sits below the slow EMA (genuinely beaten down, not a
+    shallow dip in an uptrend); (3) the HA flip -- a green bar out of red, either
+    on the latest bar (``early``) or on the prior bar with a follow-through close
+    today (``confirmed``). RSI is NOT gated here; ``min_rsi`` is carried only so
+    ``score_reversal`` can reward a deeper-oversold bounce.
     """
     need = max(cfg.ema_slow, cfg.reversal_oversold_lookback, cfg.reversal_decline_bars) + 3
     if len(f) < need:
@@ -61,14 +64,14 @@ def detect_reversal(f: pd.DataFrame, cfg: StrategyConfig) -> ReversalContext | N
     prev = f.iloc[-2]
     prev2 = f.iloc[-3]
 
-    # 1) recent capitulation: the oversold window dipped below the RSI floor.
-    window = f.iloc[-(cfg.reversal_oversold_lookback + 1):]
-    min_rsi = float(window["rsi"].min())
-    if min_rsi >= cfg.reversal_oversold_rsi_max:
+    # 1) HA downtrend: enough red HA candles in the decline window. The green flip
+    #    bar(s) are bullish, so they don't count toward the red run.
+    decline = f.iloc[-(cfg.reversal_decline_bars + 1):]
+    red_run = int(decline["bearish"].sum())
+    if red_run < cfg.reversal_min_bearish_bars:
         return None
 
     # 2) beaten-down context: the decline low is below the slow EMA.
-    decline = f.iloc[-(cfg.reversal_decline_bars + 1):]
     reversal_low = float(decline["low"].min())
     if reversal_low >= float(last["ema_slow"]):
         return None
@@ -82,6 +85,8 @@ def detect_reversal(f: pd.DataFrame, cfg: StrategyConfig) -> ReversalContext | N
     else:
         return None
 
+    # RSI depth is scoring-only (no gate): the lowest RSI over the lookback window.
+    min_rsi = float(f.iloc[-(cfg.reversal_oversold_lookback + 1):]["rsi"].min())
     avg_vol = float(f["volume"].tail(cfg.avg_dollar_vol_window).mean())
     vol_ratio = float(bounce["volume"]) / avg_vol if avg_vol > 0 else 1.0
 
@@ -96,6 +101,8 @@ def detect_reversal(f: pd.DataFrame, cfg: StrategyConfig) -> ReversalContext | N
         strength=strength,
         body_frac=float(bounce["body_frac"]),
         shaved_bottom=bool(bounce["shaved_bottom"]),
+        red_run=red_run,
+        decline_bars=cfg.reversal_decline_bars,
         volume_ratio=vol_ratio,
         ema_slow=float(last["ema_slow"]),
         swing_high=float(decline["high"].max()),
@@ -124,12 +131,14 @@ def compute_reversal_zone(ctx: ReversalContext, cfg: StrategyConfig) -> EntryZon
 
 @dataclass(frozen=True)
 class ReversalScoreInputs:
-    min_rsi: float          # capitulation depth (lower = deeper)
-    rsi_floor: float        # the oversold threshold (cfg.reversal_oversold_rsi_max)
-    body_frac: float        # bounce body strength
-    shaved_bottom: bool
-    volume_ratio: float     # bounce volume / average
+    body_frac: float        # HA flip-bar body strength
+    shaved_bottom: bool     # HA flip-bar quality (buyers in control)
+    red_run: int            # bearish HA bars in the decline (downtrend strength)
+    decline_bars: int       # decline window (to normalize red_run)
+    volume_ratio: float     # flip volume / average
     confirmed: bool
+    min_rsi: float          # oversold depth (lower = deeper) -- a confirm, not a gate
+    rsi_floor: float        # the oversold reference (cfg.reversal_oversold_rsi_max)
 
 
 def _clip01(x: float) -> float:
@@ -137,11 +146,14 @@ def _clip01(x: float) -> float:
 
 
 def score_reversal(s: ReversalScoreInputs) -> float:
-    """0..1 conviction for a reversal play: deeper oversold + a stronger, higher-
-    volume bounce + confirmation all raise the score."""
-    depth = _clip01((s.rsi_floor - s.min_rsi) / s.rsi_floor) if s.rsi_floor > 0 else 0.0
-    momentum = 0.6 * _clip01(s.body_frac) + 0.4 * (1.0 if s.shaved_bottom else 0.0)
+    """0..1 conviction. HA-CENTRIC: the flip-bar strength and the downtrend it
+    reverses dominate; volume + confirmation matter; oversold RSI depth is only a
+    smaller confirmation (so the screener isn't RSI-driven)."""
+    bounce = 0.6 * _clip01(s.body_frac) + 0.4 * (1.0 if s.shaved_bottom else 0.0)  # HA flip
+    downtrend = _clip01(s.red_run / max(s.decline_bars, 1))                        # HA red run
     volume = _clip01(s.volume_ratio - 1.0)        # 2x average volume saturates
     confirmation = 1.0 if s.confirmed else 0.0
-    score = 0.35 * depth + 0.30 * momentum + 0.20 * volume + 0.15 * confirmation
+    depth = _clip01((s.rsi_floor - s.min_rsi) / s.rsi_floor) if s.rsi_floor > 0 else 0.0
+    # HA factors (bounce+downtrend) = 0.55; RSI depth only 0.15.
+    score = 0.35 * bounce + 0.20 * downtrend + 0.15 * volume + 0.15 * confirmation + 0.15 * depth
     return _clip01(score)
