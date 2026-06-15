@@ -50,3 +50,13 @@ target-version = "py312"
 python_version = "3.12"
 packages = ["swing_screener"]
 ignore_missing_imports = true
+
+# The repo's top-level alembic/ migrations dir shadows the `alembic` PyPI package
+# for mypy's import resolution (it is not installed in CI -- it's in the optional
+# `azure` extra). At runtime the installed package wins (it has __init__.py); for
+# mypy, skip-following the import so `from alembic import command` is treated as
+# Any rather than resolving to the local migrations dir (which lacks `command`).
+[[tool.mypy.overrides]]
+module = ["alembic.*", "alembic"]
+follow_imports = "skip"
+ignore_missing_imports = true

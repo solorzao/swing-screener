@@ -14,7 +14,11 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("alembic")
+# Import the real submodule, not just "alembic": the repo's top-level alembic/
+# migrations dir is importable as a namespace package, so importorskip("alembic")
+# would falsely succeed when the PyPI package (azure extra) is absent. alembic
+# ships in the optional azure extra, so CI (.[dev] only) skips these.
+pytest.importorskip("alembic.command")
 
 from alembic import command  # noqa: E402
 from alembic.config import Config  # noqa: E402
