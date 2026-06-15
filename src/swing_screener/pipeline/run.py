@@ -104,6 +104,30 @@ class RunResult:
     n_failed: int
 
 
+# Cadences that select per-timeframe rather than from the global ranking. The
+# weekly/monthly digests pick the top-N within these timeframes, so such a pick
+# can rank below the global top-N -- it must still be charted or the digest shows
+# it with no chart. Mirrors notify.select.{weekly,monthly}_picks.
+_DIGEST_TIMEFRAMES = ("1wk", "1mo")
+
+
+def _digest_chart_indices(results: list[SignalResult], top_n: int) -> list[int]:
+    """Indices into score-sorted ``results`` for every signal a digest can pick.
+
+    Charts are rendered for the UNION of the global top-N (the daily digest) and
+    the top-N within each per-timeframe cadence (weekly=1wk, monthly=1mo). Without
+    the per-timeframe slices a weekly/monthly pick ranked below the global top-N
+    would reach the digest with no chart. ``results`` is sorted by score
+    descending, so a timeframe's first ``top_n`` entries are exactly its picks.
+    Kept in sync with notify.select, whose pickers all default to top_n=5.
+    """
+    idx = set(range(min(top_n, len(results))))  # global top-N (daily digest)
+    for tf in _DIGEST_TIMEFRAMES:
+        tf_indices = [i for i, r in enumerate(results) if r.timeframe == tf]
+        idx.update(tf_indices[:top_n])
+    return sorted(idx)
+
+
 def _fetch_all_timeframes(ticker: str, *, cache_dir: Path, today: date,
                           cfg: StrategyConfig) -> dict[str, pd.DataFrame]:
     """Fetch + resample the four timeframes for one ticker. Thin glue over the
@@ -189,7 +213,11 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         signals = [_to_signal(r, rank, today) for rank, r in enumerate(today_results, start=1)]
         repo.save_signals(s, signals)
 
-        for rank, r in enumerate(today_results[:top_charts], start=1):
+        # Chart every signal any digest can select -- the global top-N plus each
+        # per-timeframe cadence's top-N -- not just the global top-N, so weekly /
+        # monthly picks ranked below it still carry a chart.
+        for i in _digest_chart_indices(today_results, top_charts):
+            r = today_results[i]
             basename = f"{r.ticker}_{r.timeframe}_{today:%Y%m%d}.png"
             path = Path(chart_dir) / basename
             render_chart(r.frame, r.ctx, r.zone, path)
@@ -199,9 +227,9 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
                 # blob KEY (what pdf/dashboard download back by), not a local path.
                 key = f"{today:%Y%m%d}/{basename}"
                 upload_chart(path, key)
-                signals[rank - 1].chart_path = key
+                signals[i].chart_path = key
             else:
-                signals[rank - 1].chart_path = str(path)
+                signals[i].chart_path = str(path)
             n_charts += 1
         s.commit()
 
