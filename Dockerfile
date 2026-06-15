@@ -7,9 +7,10 @@
 # NOT built in CI -- a manual `docker build` smoke runs at deploy time. Keep it
 # correct rather than clever.
 
-# python:3.12-slim (Debian 12 "bookworm"). Digest-pinned for reproducible builds;
-# bump the digest deliberately when refreshing the base image.
-FROM python:3.12-slim@sha256:d764629ce0ddd8c71fd371e9901efb324a95789d2315a47db7e4d27e78f1b0e9
+# Pinned to python:3.12-slim-BOOKWORM (Debian 12), NOT plain -slim which has
+# rolled to Debian 13 "trixie" -- bookworm matches Microsoft's debian/12 ODBC
+# repo below. Digest-pinned for reproducible builds; bump deliberately.
+FROM python:3.12-slim-bookworm@sha256:76d4b7b6305788c6b4c6a19d6a22a3921bf802e9af4d5e1e5bd771208dba74bf
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
@@ -19,20 +20,19 @@ ENV PYTHONUNBUFFERED=1 \
 # reportlab (libfreetype6, libpng16-16, fontconfig), plus Microsoft ODBC Driver
 # 18 for SQL Server (Azure SQL).
 #
-# KNOWN FRAGILITY: Microsoft periodically rotates the packages.microsoft.com
-# signing key and/or the repo URL, which breaks THIS layer's `apt-get install
-# msodbcsql18`. If a CD `docker build` fails here, refresh the key/repo lines
-# below (see https://learn.microsoft.com/sql/connect/odbc/linux-mac/). The
-# reliable fallback is server-side `az acr build`, which is less sensitive to
-# local key drift.
+# The MS repo line is written DIRECTLY (single bracket with arch + signed-by)
+# rather than sed-editing the downloaded prod.list: the modern prod.list already
+# carries an [arch=...] group, so injecting a second [signed-by=...] bracket
+# produces a malformed "URI parse" sources entry. KNOWN FRAGILITY: Microsoft
+# rotates the packages.microsoft.com signing key periodically; if this layer
+# fails, refresh the key (see https://learn.microsoft.com/sql/connect/odbc/linux-mac/).
 # ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl gnupg2 apt-transport-https ca-certificates \
         unixodbc unixodbc-dev \
         libfreetype6 libpng16-16 fontconfig \
     && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
-    && curl -fsSL https://packages.microsoft.com/config/debian/12/prod.list -o /etc/apt/sources.list.d/mssql-release.list \
-    && sed -i 's|https://packages|[signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages|' /etc/apt/sources.list.d/mssql-release.list \
+    && echo "deb [arch=amd64,arm64,armhf signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" > /etc/apt/sources.list.d/mssql-release.list \
     && apt-get update && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
