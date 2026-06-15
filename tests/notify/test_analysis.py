@@ -54,3 +54,26 @@ def test_graceful_fallback_when_api_fails():
 
 def test_risk_reward_property():
     assert _facts().risk_reward == (110.0 - 101.0) / (101.0 - 95.0)
+
+
+def test_atr_pct_property():
+    # ATR is stored in dollars; atr_pct normalizes it to a fraction of price so
+    # the signal is comparable across high- and low-priced names.
+    assert _facts().atr_pct == 4.0 / 100.0
+
+
+def test_atr_pct_property_guards_zero_price():
+    facts = SignalFacts(
+        ticker="X", timeframe="1d", trade_type="medium", score=0.5, mtf_aligned=False,
+        quality_tier="mid", volatility_tier="low", oversold=False,
+        trigger_close=0.0, atr=4.0, rsi=50.0, entry_floor=1.0, entry_ceiling=2.0,
+        stop=0.5, target=3.0,
+    )
+    assert facts.atr_pct == 0.0  # no ZeroDivisionError on a degenerate price
+
+
+def test_deterministic_rationale_shows_atr_as_percent_not_dollars():
+    # atr=4.0 on trigger_close=100.0 -> 4.0% of price. The narration must express
+    # ATR as a percentage, never the bare dollar figure.
+    out = analyze_signal(_facts(), client=_BoomClient())  # forces deterministic path
+    assert "ATR of 4.0% of price" in out.rationale  # percentage, not the raw dollar ATR
