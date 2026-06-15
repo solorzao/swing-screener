@@ -83,6 +83,7 @@ def test_deep_analysis_builds_image_tool_thinking_and_parses_citations():
     assert out.core_reason == "Strong continuation."
     assert "Clean setup into target." in out.rationale
     assert "reuters.com/x" in out.rationale  # citation appended as a source
+    assert out.is_deep is True  # marks the output as the genuine deep path
 
     kw = client.kwargs
     assert kw["model"] == "claude-opus-4-8"
@@ -123,6 +124,7 @@ def test_deep_analysis_falls_back_to_deterministic_on_error():
     out = analyze_signal_deep(_facts(), client=_BoomClient())
     assert out.core_reason  # deterministic core, non-empty
     assert "ATR of 4.0% of price" in out.rationale  # deterministic rationale (percent ATR)
+    assert out.is_deep is False  # a fallback is NOT labelled deep
 
 
 def test_deep_analysis_falls_back_on_empty_reply():

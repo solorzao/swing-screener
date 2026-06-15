@@ -76,6 +76,7 @@ class SignalFacts:
 class SignalAnalysis:
     core_reason: str
     rationale: str
+    is_deep: bool = False  # True only when the Opus deep path actually produced this
 
 
 def _deterministic_core(facts: SignalFacts) -> str:
@@ -201,21 +202,24 @@ _REASONING_EFFORT = {"low": "low", "medium": "medium", "high": "high"}
 _REASONING_MAX_TOKENS = {"none": 2000, "low": 6000, "medium": 10000, "high": 16000}
 
 _DEEP_SYSTEM = (
-    "You are an equity research assistant for a swing trader. You are given a "
-    "price chart image, a set of DETERMINISTIC signal facts already computed by a "
-    "rules engine (treat the entry zone, stop, and target as ground truth -- never "
-    "change them), company fundamentals, and recent news. Use the web_search tool "
-    "to check current market sentiment and industry/sector trends for this ticker. "
-    "Then write an analytical read of the setup that weighs the technicals (chart + "
-    "facts) against the fundamentals, news, sentiment, and sector trend.\n\n"
-    "Rules: never invent or alter price levels. Cite sources for external claims. "
-    "Be balanced -- name the risks, not just the bull case. This is informational "
-    "analysis, NOT financial advice or a recommendation to trade.\n\n"
-    "Reply in exactly this shape: a first line beginning with 'CORE: ' then one "
-    "concise sentence on why this setup stands out (or its key risk), then a blank "
-    "line, then a 3-6 sentence rationale referencing the timeframe, the chart "
-    "structure, the entry zone/stop/target, and what the fundamentals/news/"
-    "sentiment add."
+    "You are an equity research assistant for a swing trader. You receive a price "
+    "chart image, DETERMINISTIC signal facts already computed by a rules engine "
+    "(treat the entry zone, stop, and target as ground truth -- never change them), "
+    "company fundamentals, and recent news. Use the web_search tool to check "
+    "current market sentiment and industry/sector trends.\n\n"
+    "Output ONLY the finished analysis. Do NOT narrate your process, mention "
+    "searching or 'looking', or include any preamble, filler, or meta-commentary. "
+    "Never invent or alter price levels. Cite sources for external claims. Be "
+    "concise and balanced. This is informational analysis, NOT financial advice.\n\n"
+    "Format your reply EXACTLY as these labelled lines (one per line, each 1-2 "
+    "sentences, no bullet characters, no extra sections):\n"
+    "CORE: <one sentence -- why this setup stands out, or its key risk>\n"
+    "Read: <the overall take>\n"
+    "Technicals: <from the chart + facts; reference the timeframe and entry "
+    "zone/stop/target>\n"
+    "Fundamentals: <from the financials>\n"
+    "Sentiment: <from recent news + web search; cite>\n"
+    "Risk: <the single most important risk>"
 )
 
 
@@ -327,12 +331,8 @@ def analyze_signal_deep(
         if not text.strip():
             raise ValueError("empty model response")
         analysis = _parse(text, facts)
-        if sources:
-            analysis = SignalAnalysis(
-                core_reason=analysis.core_reason,
-                rationale=analysis.rationale + _format_sources(sources),
-            )
-        return analysis
+        rationale = analysis.rationale + (_format_sources(sources) if sources else "")
+        return SignalAnalysis(core_reason=analysis.core_reason, rationale=rationale, is_deep=True)
     except Exception:
         log.warning(
             "deep analysis failed for %s %s; using deterministic fallback",

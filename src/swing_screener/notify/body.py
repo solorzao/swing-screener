@@ -23,6 +23,7 @@ class DigestPick:
     name: str
     trade_type: str
     core_reason: str
+    is_deep: bool = False  # got the Opus deep analysis (vs. the standard narration)
 
 
 @dataclass(frozen=True)
@@ -61,7 +62,8 @@ def compose_digest_body(
     if picks:
         for i, p in enumerate(picks, start=1):
             label = f"{p.ticker} - {p.name}" if p.name else p.ticker
-            lines.append(f"{i}. {label} [{p.trade_type}] — {p.core_reason}")
+            tag = f"{p.trade_type} · Deep Analysis" if p.is_deep else p.trade_type
+            lines.append(f"{i}. {label} [{tag}] — {p.core_reason}")
     else:
         lines.append(f"No qualifying setups for {run_date}.")
 
@@ -84,7 +86,8 @@ def compose_digest_body(
         items = "".join(
             f"<li>{escape(p.ticker)}"
             f"{' - ' + escape(p.name) if p.name else ''} "
-            f"[{escape(p.trade_type)}] — {escape(p.core_reason)}</li>"
+            f"[{escape(p.trade_type)}{' · <b>Deep Analysis</b>' if p.is_deep else ''}] "
+            f"— {escape(p.core_reason)}</li>"
             for p in picks
         )
         html_parts.append(f"<ol>{items}</ol>")
