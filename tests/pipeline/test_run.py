@@ -1,5 +1,6 @@
 from collections import Counter
 from datetime import date
+from types import SimpleNamespace
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -8,6 +9,33 @@ from swing_screener.db import repo
 from swing_screener.db.models import PaperTrade, Signal
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline import run
+
+
+def _r(tf):
+    """Lightweight SignalResult stand-in: _digest_chart_indices reads only .timeframe."""
+    return SimpleNamespace(timeframe=tf)
+
+
+def test_digest_chart_indices_unions_global_and_per_timeframe_picks():
+    # results are score-sorted (index == global rank-1). The global top-5 is
+    # indices 0..4; the per-timeframe cadences (weekly=1wk, monthly=1mo) each pick
+    # their own top-5, which can sit BELOW the global top-5 and would otherwise get
+    # no chart. Here the 1wk picks at 6,7 and the 1mo pick at 5 must still chart.
+    results = [_r("1d"), _r("1d"), _r("4h"), _r("1d"), _r("1d"),
+               _r("1mo"), _r("1wk"), _r("1wk")]
+    idx = run._digest_chart_indices(results, top_n=5)
+
+    assert set(range(5)) <= set(idx)  # global top-5 always charted (the daily digest)
+    assert 5 in idx                   # 1mo pick below the global top-5 (monthly digest)
+    assert 6 in idx and 7 in idx      # 1wk picks below the global top-5 (weekly digest)
+    assert idx == sorted(idx)         # returned in ascending index order
+
+
+def test_digest_chart_indices_caps_each_timeframe_at_top_n():
+    # seven 1wk signals: the digest only selects the top-5 per timeframe, so the
+    # 6th/7th weekly signal is never picked and must not be charted (no waste).
+    results = [_r("1wk")] * 7
+    assert run._digest_chart_indices(results, top_n=5) == [0, 1, 2, 3, 4]
 
 
 def _firing(bars):
