@@ -16,6 +16,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11", "pandas-stubs"]
+azure = [
+    "pyodbc>=5.1",
+    "azure-identity>=1.17",
+    "azure-keyvault-secrets>=4.8",
+    "azure-storage-blob>=12.20",
+    "alembic>=1.13",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
