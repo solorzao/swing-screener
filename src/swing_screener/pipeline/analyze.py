@@ -9,6 +9,13 @@ from swing_screener.signals.build_score import build_score_inputs
 from swing_screener.signals.detect import PullbackContext, detect_last_bar
 from swing_screener.signals.entry_zone import EntryZone, compute_zone
 from swing_screener.signals.frame import build_frame
+from swing_screener.signals.reversal import (
+    ReversalContext,
+    ReversalScoreInputs,
+    compute_reversal_zone,
+    detect_reversal,
+    score_reversal,
+)
 from swing_screener.signals.score import score_signal
 
 # low -> high timeframe order
@@ -40,8 +47,10 @@ class SignalResult:
     target: float
     # carried for downstream charting (T11) + shadow book (T12); not asserted.
     frame: pd.DataFrame
-    ctx: PullbackContext
+    ctx: PullbackContext | ReversalContext
     zone: EntryZone
+    play_type: str = "continuation"   # "continuation" | "reversal"
+    strength: str | None = None       # reversal only: "early" | "confirmed"
 
 
 def _is_uptrend(frame: pd.DataFrame) -> bool:
@@ -162,4 +171,46 @@ def analyze_frames(
             )
         )
 
+    return results
+
+
+def analyze_reversals(
+    ticker: str,
+    frames: dict[str, pd.DataFrame],
+    cfg: StrategyConfig,
+) -> list[SignalResult]:
+    """Reversal-play candidates (oversold bounce / relief rally) across the provided
+    timeframes. The counter-trend complement to ``analyze_frames``: per timeframe,
+    emit a reversal ``SignalResult`` (``play_type="reversal"``) when a reversal
+    triggers and yields a non-degenerate zone. Pure (no I/O)."""
+    results: list[SignalResult] = []
+    for tf in TIMEFRAME_ORDER:
+        frame = frames.get(tf)
+        if frame is None:
+            continue
+        ctx = detect_reversal(frame, cfg)
+        if ctx is None:
+            continue
+        zone = compute_reversal_zone(ctx, cfg)
+        if zone is None:
+            continue
+
+        price = ctx.trigger_close
+        avg_dollar_vol = _avg_dollar_volume(frame, cfg)
+        atr_pct = ctx.atr / price if price else 0.0
+        score = score_reversal(ReversalScoreInputs(
+            min_rsi=ctx.min_rsi, rsi_floor=cfg.reversal_oversold_rsi_max,
+            body_frac=ctx.body_frac, shaved_bottom=ctx.shaved_bottom,
+            volume_ratio=ctx.volume_ratio, confirmed=(ctx.strength == "confirmed"),
+        ))
+        results.append(SignalResult(
+            ticker=ticker, timeframe=tf, horizon=_HORIZON_BY_TF[tf], score=score,
+            mtf_aligned=False,  # reversals are counter-trend; no MTF requirement
+            quality_tier=_quality_tier(price, avg_dollar_vol, cfg),
+            volatility_tier=_volatility_tier(atr_pct, cfg), oversold=True,
+            trigger_close=ctx.trigger_close, atr=ctx.atr, rsi=ctx.rsi,
+            entry_floor=zone.floor, entry_ceiling=zone.ceiling, stop=zone.stop,
+            target=zone.target, frame=frame, ctx=ctx, zone=zone,
+            play_type="reversal", strength=ctx.strength,
+        ))
     return results

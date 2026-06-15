@@ -55,3 +55,20 @@ def test_weekly_monthly_titles():
     cw = compose_digest_body("weekly", date(2026, 6, 15), [], [], has_pdf=False)
     cm = compose_digest_body("monthly", date(2026, 6, 15), [], [], has_pdf=False)
     assert "Weekly" in cw.subject and "Monthly" in cm.subject
+
+
+def test_reversal_section_renders_with_strength_tag():
+    cont = [DigestPick("AMD", "Advanced Micro Devices", "medium", "Continuation.", score=0.9)]
+    rev = [DigestPick("GME", "GameStop", "short", "Oversold bounce.", score=0.7,
+                      strength="confirmed")]
+    c = compose_digest_body("daily", date(2026, 6, 15), cont, [], has_pdf=False,
+                            reversal_picks=rev)
+    assert "Top 5 - Continuation Plays" in c.text and "Top 5 - Reversal Plays" in c.text
+    assert "[short · confirmed]" in c.text          # reversal strength tagged
+    assert "<h3>Top 5 - Reversal Plays</h3>" in c.html
+
+
+def test_reversal_section_omitted_when_none():
+    cont = [DigestPick("AMD", "Advanced Micro Devices", "medium", "Continuation.", score=0.9)]
+    c = compose_digest_body("weekly", date(2026, 6, 15), cont, [], has_pdf=False)  # no reversals
+    assert "Reversal Plays" not in c.text and "Reversal Plays" not in c.html

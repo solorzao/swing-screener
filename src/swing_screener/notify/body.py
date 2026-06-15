@@ -16,6 +16,7 @@ from html import escape
 _BADGE = {"hard": "🔴", "strong": "🟠", "advisory": "🟡"}
 _KIND_TITLE = {"daily": "Daily", "weekly": "Weekly", "monthly": "Monthly"}
 CONTINUATION_TITLE = "Top 5 - Continuation Plays"
+REVERSAL_TITLE = "Top 5 - Reversal Plays"
 
 
 @dataclass(frozen=True)
@@ -25,7 +26,18 @@ class DigestPick:
     trade_type: str
     core_reason: str
     score: float
+    strength: str | None = None  # reversal only: "early" / "confirmed"
     is_deep: bool = False  # got the Opus deep analysis (vs. the standard narration)
+
+
+def _tag(p: "DigestPick", *, html: bool = False) -> str:
+    """The bracketed tag: trade type, then reversal strength, then a deep marker."""
+    parts = [p.trade_type]
+    if p.strength:
+        parts.append(p.strength)
+    if p.is_deep:
+        parts.append("<b>Deep Analysis</b>" if html else "Deep Analysis")
+    return " · ".join(parts)
 
 
 @dataclass(frozen=True)
@@ -51,8 +63,7 @@ def _section_text(title: str, picks: Sequence[DigestPick], run_date: date) -> li
         return rows
     for i, p in enumerate(picks, start=1):
         label = f"{p.ticker} - {p.name}" if p.name else p.ticker
-        tag = f"{p.trade_type} · Deep Analysis" if p.is_deep else p.trade_type
-        rows.append(f"{i}. {label} [{tag}] · score {p.score:.2f} — {p.core_reason}")
+        rows.append(f"{i}. {label} [{_tag(p)}] · score {p.score:.2f} — {p.core_reason}")
     return rows
 
 
@@ -63,8 +74,7 @@ def _section_html(title: str, picks: Sequence[DigestPick], run_date: date) -> st
     items = "".join(
         f"<li><b>{escape(p.ticker)}</b>"
         f"{' — ' + escape(p.name) if p.name else ''} "
-        f"· [{escape(p.trade_type)}{' · <b>Deep Analysis</b>' if p.is_deep else ''}]"
-        f" · score <b>{p.score:.2f}</b><br>{escape(p.core_reason)}</li>"
+        f"· [{_tag(p, html=True)}] · score <b>{p.score:.2f}</b><br>{escape(p.core_reason)}</li>"
         for p in picks
     )
     return f"<h3>{escape(title)}</h3><ol>{items}</ol>"
@@ -77,18 +87,22 @@ def compose_digest_body(
     exit_alerts: Sequence[AlertLine],
     *,
     has_pdf: bool,
+    reversal_picks: Sequence[DigestPick] | None = None,
 ) -> EmailContent:
     """Render a digest into subject, plain-text, and HTML bodies.
 
     ``kind`` selects the subject ("daily"/"weekly"/"monthly"). ``picks`` are the
-    continuation plays, rendered under their section title (the subject is NOT
-    repeated in the body). Exit alerts, if any, get their own badged section, and
-    a PDF pointer is appended when ``has_pdf``.
+    continuation plays. ``reversal_picks`` (when not None) adds a second
+    "Reversal Plays" section -- pass an empty list to show it as "no setups", or
+    None to omit the section entirely (weekly/monthly). Exit alerts get their own
+    badged section, and a PDF pointer is appended when ``has_pdf``.
     """
     subject = f"Swing Screener - {_KIND_TITLE[kind]} Picks ({run_date})"
 
     # --- plain text ---
     lines = _section_text(CONTINUATION_TITLE, picks, run_date)
+    if reversal_picks is not None:
+        lines += ["", *_section_text(REVERSAL_TITLE, reversal_picks, run_date)]
     if exit_alerts:
         lines += ["", "Exit alerts:"]
         for a in exit_alerts:
@@ -99,6 +113,8 @@ def compose_digest_body(
 
     # --- html ---
     html_parts = [_section_html(CONTINUATION_TITLE, picks, run_date)]
+    if reversal_picks is not None:
+        html_parts.append(_section_html(REVERSAL_TITLE, reversal_picks, run_date))
     if exit_alerts:
         items = "".join(
             f"<li>{_BADGE.get(a.tier, '')} {escape(a.ticker)} — "
