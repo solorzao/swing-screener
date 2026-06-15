@@ -61,6 +61,10 @@ def test_send_digest_emails_with_pdf_and_is_idempotent(tmp_path):
     email = sent[0]
     assert email["to"] == "me@example.com"
     assert "AMD" in email["text"]
+    # the company name (from the universe seed CSV) is threaded into the body
+    assert "Advanced Micro Devices" in email["text"]
+    assert "American Electric Power" in email["text"]
+    assert "Advanced Micro Devices" in email["html"]
     assert len(email["attachments"]) == 1  # the PDF
     assert str(email["attachments"][0]).endswith(".pdf")
 

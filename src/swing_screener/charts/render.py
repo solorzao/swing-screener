@@ -34,10 +34,19 @@ def render_chart(frame: pd.DataFrame, ctx: PullbackContext, zone: EntryZone,
     }
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    mpf.plot(
+    fig, axlist = mpf.plot(
         plot_df, type="candle", style="charles", volume=False,
-        addplot=addplots, hlines=hlines,
-        title=f"trigger {ctx.trigger_ts:%Y-%m-%d}",
-        savefig={"fname": str(out_path), "dpi": 100, "bbox_inches": "tight"},
+        addplot=addplots, hlines=hlines, returnfig=True,
     )
+    # Trigger date as a small gray label in the top-left corner (a friendly
+    # format, e.g. "trigger Jun 15, 2026") rather than a centered title.
+    axlist[0].text(
+        0.01, 0.98, f"trigger {ctx.trigger_ts:%b %d, %Y}",
+        transform=axlist[0].transAxes, ha="left", va="top",
+        fontsize=8, color="#666666",
+    )
+    fig.savefig(str(out_path), dpi=100, bbox_inches="tight")
+    import matplotlib.pyplot as plt  # already safe under Agg
+
+    plt.close(fig)
     return out_path

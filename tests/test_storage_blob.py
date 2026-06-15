@@ -152,7 +152,8 @@ def test_pipeline_blob_disabled_keeps_local_path(tmp_path, bars, monkeypatch):
 # ---------------------------------------------------------------------------
 def _pick(ticker="AMD", chart=None):
     return PdfPick(
-        ticker=ticker, trade_type="medium", score=0.92, chart_path=chart,
+        ticker=ticker, name="Advanced Micro Devices", trade_type="medium", score=0.92,
+        chart_path=chart,
         entry_floor=96.0, entry_ceiling=101.0, stop=95.0, target=110.0, risk_reward=1.5,
         quality_tier="reputable", volatility_tier="high", oversold=False, mtf_aligned=True,
         rationale="AMD daily uptrend intact; shallow pullback held EMA50.",

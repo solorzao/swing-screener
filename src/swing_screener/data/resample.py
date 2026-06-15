@@ -24,6 +24,12 @@ def resample_ohlcv(df: pd.DataFrame, rule: str) -> pd.DataFrame:
     unit = "".join(c for c in rule if c.isalpha()).lower()
     if unit in {"h", "min", "t", "s", "ms", "us", "ns"}:
         out = df.resample(rule, origin="start").agg(_AGG)
-    else:
-        out = df.resample(rule).agg(_AGG)
-    return out.dropna(subset=["open", "high", "low", "close"])
+        return out.dropna(subset=["open", "high", "low", "close"])
+    # Calendar branch (W/ME): pandas RIGHT-labels each bar at the period END (the
+    # week-ending Sunday / month-end), so the current in-progress bucket is stamped
+    # in the FUTURE. Relabel each bar by the LAST underlying trading day in its
+    # bucket so a bar is never dated past its last real bar.
+    out = df.resample(rule).agg(_AGG).dropna(subset=["open", "high", "low", "close"])
+    last_ts = pd.Series(df.index, index=df.index).resample(rule).last()
+    out.index = out.index.map(last_ts.to_dict())
+    return out

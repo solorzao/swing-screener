@@ -25,6 +25,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from swing_screener.config_secrets import get_secret
+from swing_screener.data.universe import names_by_ticker
 from swing_screener.db.models import EmailLog, ExitEvent, Signal
 from swing_screener.db.session import get_engine
 from swing_screener.notify import select as sel
@@ -142,14 +143,16 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         if _already_sent(session, kind, run_date):  # don't re-send the same digest
             return DigestResult(n_picks=len(picks), pdf_attached=False, sent=False)
 
+        names = names_by_ticker()  # ticker -> company name, loaded once
         digest_picks: list[DigestPick] = []
         pdf_picks: list[PdfPick] = []
         for sig in picks:
             facts = _facts(sig)
             analysis = analyze_signal(facts, client=anthropic_client)  # type: ignore[arg-type]
-            digest_picks.append(DigestPick(sig.ticker, sig.horizon, analysis.core_reason))
+            name = names.get(sig.ticker, "")
+            digest_picks.append(DigestPick(sig.ticker, name, sig.horizon, analysis.core_reason))
             pdf_picks.append(PdfPick(
-                ticker=sig.ticker, trade_type=sig.horizon, score=sig.score,
+                ticker=sig.ticker, name=name, trade_type=sig.horizon, score=sig.score,
                 chart_path=sig.chart_path, entry_floor=sig.entry_floor,
                 entry_ceiling=sig.entry_ceiling, stop=sig.stop, target=sig.target,
                 risk_reward=facts.risk_reward, quality_tier=sig.quality_tier,
