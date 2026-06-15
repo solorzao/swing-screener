@@ -137,10 +137,14 @@ It is **idempotent per run-date** (safe to re-run a day) and isolates per-ticker
 | — | **Local dry-run** (run nightly ~1–2 weeks to accumulate the shadow book) | ◻ in progress |
 | 3 | Local Streamlit dashboard (candidates, active trades, P/L, screener performance) | ✅ done |
 | 4 | Email digests (summary + detailed PDF) + Claude-written analysis + exit alerts | ✅ done |
-| 5 | Deploy to Azure (Container Apps Jobs, Azure SQL, Blob, Key Vault) + CD on merge | 📋 planned |
+| 5 | Deploy to Azure (Container Apps Jobs, Azure SQL, Blob, Key Vault) + CD on merge | 🚧 code done · deploy pending |
 | 6 | Options module (needs a paid data feed) | 📋 later |
 
-Plans live in [`docs/plans/`](docs/plans/).
+Plans live in [`docs/plans/`](docs/plans/). Phase 5's code is implemented and tested
+(mssql-aware engine, Alembic migrations, Key-Vault secrets, blob-backed charts, the
+container ENTRYPOINT gate, the Bicep IaC under [`infra/`](infra/), and the OIDC CD
+workflow); the one-time Azure provisioning + cutover is run from the
+[deploy runbook](docs/azure-deploy.md).
 
 ## Notes
 

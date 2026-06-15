@@ -43,3 +43,8 @@ $env:SWING_CACHE_DIR = ".cache"   # reused for live-quote lookups
 - The **Claude-written rationale** on candidates arrives in Phase 4 (email + LLM). Phase 3 shows
   the deterministic metrics + charts.
 - Live quotes use the cached daily close (delayed, free yfinance); a ticker with no quote shows "—".
+- The dashboard **stays local even after the Azure deploy** (Phase 5) — there is no hosted/public
+  dashboard. To view the cloud data, `az login` and point `SWING_DB_URL` at Azure SQL
+  (`Authentication=ActiveDirectoryDefault`) and `SWING_BLOB_ACCOUNT_URL` at the chart container;
+  see the [Azure deploy runbook](azure-deploy.md). It reads candidates from Azure SQL and
+  downloads charts from Blob using your Entra identity (no stored credentials).

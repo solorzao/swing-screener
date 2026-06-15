@@ -58,8 +58,10 @@ The digest never blocks on a failure:
 - The model **narrates the deterministic facts** the engine computed — the system prompt
   forbids inventing setups or levels. To switch to richer write-ups, change the model constant
   in `notify/analysis.py` to `claude-opus-4-8`.
-- Secrets are read from the environment now; Phase 5 moves them to Azure Key Vault. Never
-  commit a key.
-- Phase 4 adds an `email_log.run_date` column for idempotency. Fresh DBs get it automatically;
-  a `local.db` created before Phase 4 won't — drop the `email_log` table (it only holds send
-  audit rows) or recreate the DB before the first digest run. Phase 5 will add real migrations.
+- Secrets are resolved by `config_secrets.get_secret`: **environment variables locally**, and
+  in Azure from **Key Vault** (when `KEY_VAULT_URL` is set) via the job's managed identity — no
+  stored credentials, and secret **values are never logged**. Never commit a key. See the
+  [Azure deploy runbook](azure-deploy.md).
+- The schema is owned by **Alembic** (`alembic upgrade head`); the pipeline self-migrates on
+  mssql startup. A `local.db` created before Phase 4 predates the `email_log.run_date`/`alert_key`
+  columns — recreate it (or `alembic upgrade head` against it) before the first digest run.
