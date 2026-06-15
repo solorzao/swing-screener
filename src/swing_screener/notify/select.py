@@ -13,15 +13,27 @@ from swing_screener.db.models import ExitEvent, Signal
 
 
 def daily_picks(session: Session, run_date: date, *, top_n: int = 5) -> list[Signal]:
-    """Top-N signals overall for the run date (any timeframe), ranked best first.
+    """Top-N CONTINUATION signals overall for the run date (any timeframe).
 
-    The daily digest is the day's best picks across all timeframes (ranks are
-    assigned globally by the orchestrator); weekly_picks and monthly_picks are
-    the timeframe-specific cadences.
+    The daily digest is the day's best continuation picks across all timeframes;
+    weekly_picks/monthly_picks are the timeframe-specific cadences, and
+    reversal_picks is the separate oversold-bounce list.
     """
     stmt = (
         select(Signal)
-        .where(Signal.run_date == run_date)
+        .where(Signal.run_date == run_date, Signal.play_type == "continuation")
+        .order_by(Signal.rank)
+        .limit(top_n)
+    )
+    return list(session.scalars(stmt))
+
+
+def reversal_picks(session: Session, run_date: date, *, top_n: int = 5) -> list[Signal]:
+    """Top-N REVERSAL signals overall for the run date (any timeframe) -- the
+    oversold-bounce / relief-rally list, ranked best first."""
+    stmt = (
+        select(Signal)
+        .where(Signal.run_date == run_date, Signal.play_type == "reversal")
         .order_by(Signal.rank)
         .limit(top_n)
     )
@@ -31,7 +43,8 @@ def daily_picks(session: Session, run_date: date, *, top_n: int = 5) -> list[Sig
 def _by_timeframe(session: Session, run_date: date, timeframe: str, top_n: int) -> list[Signal]:
     stmt = (
         select(Signal)
-        .where(Signal.run_date == run_date, Signal.timeframe == timeframe)
+        .where(Signal.run_date == run_date, Signal.timeframe == timeframe,
+               Signal.play_type == "continuation")
         .order_by(Signal.rank)
         .limit(top_n)
     )

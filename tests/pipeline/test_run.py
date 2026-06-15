@@ -87,6 +87,42 @@ def test_run_persists_ranked_signals_and_writes_charts(tmp_path, bars, monkeypat
     assert list((tmp_path / "charts").glob("AAPL_1d_*.png"))  # chart written
 
 
+def _reversal(bars):
+    """Flat base, an RSI-crushing decline below the slow EMA, then a strong green flip."""
+    rows, p = [], 100.0
+    for i in range(46):
+        o = p
+        c = p + (0.5 if i % 2 else -0.5)
+        rows.append({"open": o, "high": max(o, c) + 0.3, "low": min(o, c) - 0.3, "close": c})
+        p = c
+    for _ in range(14):
+        o = p
+        c = p - 2.2
+        rows.append({"open": o, "high": o + 0.2, "low": c - 0.3, "close": c})
+        p = c
+    rows.append({"open": p + 0.2, "high": p + 12.5, "low": p - 0.1, "close": p + 12.0,
+                 "volume": 3_000_000.0})
+    return bars(rows)
+
+
+def test_run_screens_and_charts_a_reversal_play(tmp_path, bars, monkeypatch):
+    def fake_fetch(ticker, *, cache_dir, today, cfg):
+        return {"1d": _reversal(bars)} if ticker == "GME" else {}
+    monkeypatch.setattr(run, "_fetch_all_timeframes", fake_fetch)
+
+    db = f"sqlite:///{tmp_path / 'db.sqlite'}"
+    res = run.run_screen(
+        universe_path=_write_universe(tmp_path, ["GME"]), db_url=db,
+        cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts", today=date(2024, 4, 1),
+    )
+    assert res.n_reversals >= 1
+    with Session(get_engine(db)) as s:
+        revs = list(s.scalars(select(Signal).where(Signal.play_type == "reversal")))
+    assert any(x.ticker == "GME" for x in revs)
+    assert revs[0].strength in ("early", "confirmed")
+    assert list((tmp_path / "charts").glob("GME_1d_*.png"))  # reversal chart written
+
+
 def test_run_isolates_failing_tickers(tmp_path, bars, monkeypatch):
     def fake_fetch(ticker, *, cache_dir, today, cfg):
         if ticker == "BAD":

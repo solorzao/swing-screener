@@ -37,6 +37,8 @@ class FillCandidate:
     quality_tier: str = ""
     volatility_tier: str = ""
     oversold: bool = False
+    play_type: str = "continuation"
+    strength: str | None = None
 
 
 def open_from_signals(
@@ -64,6 +66,8 @@ def open_from_signals(
             "ticker": cand.ticker,
             "timeframe": cand.timeframe,
             "horizon": cand.horizon,
+            "play_type": cand.play_type,
+            "strength": cand.strength,
             "signal_id": cand.signal_id,
             "signal_score": cand.signal_score,
             "rank": cand.rank,

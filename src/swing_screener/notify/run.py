@@ -186,39 +186,52 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
             return DigestResult(n_picks=len(picks), pdf_attached=False, sent=False)
 
         names = names_by_ticker()  # ticker -> company name, loaded once
-        digest_picks: list[DigestPick] = []
-        pdf_picks: list[PdfPick] = []
-        for i, sig in enumerate(picks):
-            facts = _facts(sig)
-            if deep_on and i < cfg.deep_analysis_top_n:
-                # Opus analyst: chart image + fundamentals/news + web-searched sentiment.
-                context_text = market_context.context_block(
-                    get_fundamentals(sig.ticker), get_news(sig.ticker))
-                analysis = deep_analyze(
-                    facts, chart_bytes=load_chart(sig.chart_path), context_text=context_text,
-                    client=anthropic_client,  # type: ignore[arg-type]  # test seam may be a fake
-                    model=cfg.analysis_model, reasoning=cfg.analysis_reasoning,
-                    max_searches=cfg.analysis_max_searches)
-            else:
-                analysis = analyze_signal(facts, client=anthropic_client)  # type: ignore[arg-type]
-            name = names.get(sig.ticker, "")
-            digest_picks.append(DigestPick(sig.ticker, name, sig.horizon, analysis.core_reason,
-                                           score=sig.score, is_deep=analysis.is_deep))
-            pdf_picks.append(PdfPick(
-                ticker=sig.ticker, name=name, trade_type=sig.horizon, score=sig.score,
-                chart_path=sig.chart_path, entry_floor=sig.entry_floor,
-                entry_ceiling=sig.entry_ceiling, stop=sig.stop, target=sig.target,
-                risk_reward=facts.risk_reward, quality_tier=sig.quality_tier,
-                volatility_tier=sig.volatility_tier, oversold=sig.oversold,
-                mtf_aligned=sig.mtf_aligned, atr_pct=facts.atr_pct,
-                rationale=analysis.rationale, is_deep=analysis.is_deep,
-            ))
+
+        def _build_picks(sigs: list[Signal]) -> tuple[list[DigestPick], list[PdfPick]]:
+            """Build the (DigestPick, PdfPick) lists for a set of signals, running the
+            Opus deep analyst on the top-N when enabled."""
+            dps: list[DigestPick] = []
+            pps: list[PdfPick] = []
+            for i, sig in enumerate(sigs):
+                facts = _facts(sig)
+                if deep_on and i < cfg.deep_analysis_top_n:
+                    # Opus analyst: chart image + fundamentals/news + web-searched sentiment.
+                    context_text = market_context.context_block(
+                        get_fundamentals(sig.ticker), get_news(sig.ticker))
+                    analysis = deep_analyze(
+                        facts, chart_bytes=load_chart(sig.chart_path), context_text=context_text,
+                        client=anthropic_client,  # type: ignore[arg-type]  # test seam may be a fake
+                        model=cfg.analysis_model, reasoning=cfg.analysis_reasoning,
+                        max_searches=cfg.analysis_max_searches)
+                else:
+                    analysis = analyze_signal(facts, client=anthropic_client)  # type: ignore[arg-type]
+                name = names.get(sig.ticker, "")
+                dps.append(DigestPick(sig.ticker, name, sig.horizon, analysis.core_reason,
+                                      score=sig.score, strength=sig.strength,
+                                      is_deep=analysis.is_deep))
+                pps.append(PdfPick(
+                    ticker=sig.ticker, name=name, trade_type=sig.horizon, score=sig.score,
+                    chart_path=sig.chart_path, entry_floor=sig.entry_floor,
+                    entry_ceiling=sig.entry_ceiling, stop=sig.stop, target=sig.target,
+                    risk_reward=facts.risk_reward, quality_tier=sig.quality_tier,
+                    volatility_tier=sig.volatility_tier, oversold=sig.oversold,
+                    mtf_aligned=sig.mtf_aligned, atr_pct=facts.atr_pct,
+                    rationale=analysis.rationale, is_deep=analysis.is_deep, strength=sig.strength))
+            return dps, pps
+
+        digest_picks, pdf_picks = _build_picks(picks)
+        # Reversal "Top 5" -- daily digest only for now (weekly/monthly stay continuation).
+        reversal_digest: list[DigestPick] | None = None
+        reversal_pdf: list[PdfPick] = []
+        if kind == "daily":
+            reversal_digest, reversal_pdf = _build_picks(sel.reversal_picks(session, run_date))
 
         pdf_path: Path | None = None
-        if digest_picks:
+        if digest_picks or reversal_pdf:
             try:
                 pdf_path = build_digest_pdf(
-                    pdf_picks, Path(pdf_dir) / f"{kind}_{run_date:%Y%m%d}.pdf"
+                    pdf_picks, Path(pdf_dir) / f"{kind}_{run_date:%Y%m%d}.pdf",
+                    reversal_picks=reversal_pdf or None,
                 )
             except Exception:  # PDF must never block the email
                 log.warning("PDF build failed for %s %s", kind, run_date, exc_info=True)
@@ -230,7 +243,8 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                       tier=a.tier, reason=a.reason, message=a.message)
             for a in alerts
         ]
-        body = compose_digest_body(kind, run_date, digest_picks, alert_lines, has_pdf=pdf_attached)
+        body = compose_digest_body(kind, run_date, digest_picks, alert_lines,
+                                   has_pdf=pdf_attached, reversal_picks=reversal_digest)
         send(to=recipient, subject=body.subject, text=body.text, html=body.html,
              attachments=([pdf_path] if pdf_path is not None else []))
 

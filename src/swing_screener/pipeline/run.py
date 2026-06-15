@@ -18,7 +18,12 @@ from swing_screener.data.universe import load_universe
 from swing_screener.db import repo
 from swing_screener.db.models import Signal
 from swing_screener.db.session import get_engine
-from swing_screener.pipeline.analyze import SignalResult, analyze_frames, build_frames
+from swing_screener.pipeline.analyze import (
+    SignalResult,
+    analyze_frames,
+    analyze_reversals,
+    build_frames,
+)
 from swing_screener.pipeline.shadow import FillCandidate, advance_open, open_from_signals
 from swing_screener.settings import load_settings
 from swing_screener.storage.blob import blob_enabled, upload_chart
@@ -98,10 +103,11 @@ def _migrate_with_retry(
 
 @dataclass(frozen=True)
 class RunResult:
-    n_signals: int
+    n_signals: int      # continuation + reversal signals persisted
     n_paper_opened: int
     n_charts: int
     n_failed: int
+    n_reversals: int = 0
 
 
 # Cadences that select per-timeframe rather than from the global ranking. The
@@ -152,11 +158,27 @@ def _bar_row(frame: pd.DataFrame) -> dict[str, float | bool]:
 def _to_signal(r: SignalResult, rank: int, run_date: date) -> Signal:
     return Signal(
         run_date=run_date, ticker=r.ticker, timeframe=r.timeframe, horizon=r.horizon,
+        play_type=r.play_type, strength=r.strength,
         score=r.score, rank=rank, mtf_aligned=r.mtf_aligned, quality_tier=r.quality_tier,
         volatility_tier=r.volatility_tier, oversold=r.oversold, trigger_close=r.trigger_close,
         atr=r.atr, rsi=r.rsi, entry_floor=r.entry_floor, entry_ceiling=r.entry_ceiling,
         stop=r.stop, target=r.target,
     )
+
+
+def _render_and_attach(r: SignalResult, signal: Signal, chart_dir: Path, today: date) -> None:
+    """Render ``r``'s chart and attach the path/blob-key to its ``signal`` row."""
+    basename = f"{r.ticker}_{r.timeframe}_{today:%Y%m%d}.png"
+    path = Path(chart_dir) / basename
+    render_chart(r.frame, r.ctx, r.zone, path)
+    if blob_enabled():
+        # In Azure the filesystem is not shared across executions, so the PNG lives
+        # in a private blob container; chart_path becomes the blob KEY.
+        key = f"{today:%Y%m%d}/{basename}"
+        upload_chart(path, key)
+        signal.chart_path = key
+    else:
+        signal.chart_path = str(path)
 
 
 def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: Path,
@@ -177,7 +199,8 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         universe = universe[:max_tickers]
     engine = get_engine(db_url)
 
-    today_results: list[SignalResult] = []
+    today_results: list[SignalResult] = []      # continuation
+    today_reversals: list[SignalResult] = []     # reversal
     prior: list[tuple[SignalResult, float, float]] = []  # (prior signal, next_high, next_low)
     latest_bars: dict[tuple[str, str], dict[str, float | bool]] = {}
 
@@ -193,8 +216,13 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
                 if len(f):
                     latest_bars[(entry.ticker, tf)] = _bar_row(f)
             today_results.extend(analyze_frames(entry.ticker, frames, cfg))
+            today_reversals.extend(analyze_reversals(entry.ticker, frames, cfg))
+            # Prior-bar signals (both play types) feed the shadow book: a signal that
+            # fired on the prior bar is filled if today's bar trades into its zone.
             prior_frames = {tf: f.iloc[:-1] for tf, f in frames.items() if len(f) > 1}
-            for pr in analyze_frames(entry.ticker, prior_frames, cfg):
+            prior_signals = (analyze_frames(entry.ticker, prior_frames, cfg)
+                             + analyze_reversals(entry.ticker, prior_frames, cfg))
+            for pr in prior_signals:
                 last = frames[pr.timeframe].iloc[-1]
                 prior.append((pr, float(last["high"]), float(last["low"])))
         except Exception:  # per-ticker isolation: one bad ticker never aborts the run
@@ -203,54 +231,53 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
             continue
 
     today_results.sort(key=lambda r: r.score, reverse=True)
-    prior.sort(key=lambda x: x[0].score, reverse=True)
+    today_reversals.sort(key=lambda r: r.score, reverse=True)
 
     n_charts = 0
     n_paper_opened = 0
     with Session(engine) as s:
         repo.delete_signals_for(s, today)
         repo.delete_paper_trades_opened_on(s, today)
-        signals = [_to_signal(r, rank, today) for rank, r in enumerate(today_results, start=1)]
-        repo.save_signals(s, signals)
+        # Rank WITHIN each play_type (independent top-N lists for the two sections).
+        cont_signals = [_to_signal(r, rank, today)
+                        for rank, r in enumerate(today_results, start=1)]
+        rev_signals = [_to_signal(r, rank, today)
+                       for rank, r in enumerate(today_reversals, start=1)]
+        repo.save_signals(s, cont_signals + rev_signals)
 
-        # Chart every signal any digest can select -- the global top-N plus each
-        # per-timeframe cadence's top-N -- not just the global top-N, so weekly /
-        # monthly picks ranked below it still carry a chart.
+        # Continuation: chart the global top-N plus each per-timeframe cadence's top-N
+        # (daily/weekly/monthly). Reversal: a single daily top-N list, so chart its top-N.
         for i in _digest_chart_indices(today_results, top_charts):
-            r = today_results[i]
-            basename = f"{r.ticker}_{r.timeframe}_{today:%Y%m%d}.png"
-            path = Path(chart_dir) / basename
-            render_chart(r.frame, r.ctx, r.zone, path)
-            if blob_enabled():
-                # In Azure the filesystem is not shared across executions, so the
-                # PNG lives in a private blob container. chart_path becomes the
-                # blob KEY (what pdf/dashboard download back by), not a local path.
-                key = f"{today:%Y%m%d}/{basename}"
-                upload_chart(path, key)
-                signals[i].chart_path = key
-            else:
-                signals[i].chart_path = str(path)
+            _render_and_attach(today_results[i], cont_signals[i], chart_dir, today)
+            n_charts += 1
+        for i in range(min(top_charts, len(today_reversals))):
+            _render_and_attach(today_reversals[i], rev_signals[i], chart_dir, today)
             n_charts += 1
         s.commit()
 
         # NOTE: `rank` here is the rank within the prior-bar (forward-tested) set
-        # being filled this run -- a different ranking space from Signal.rank (which
-        # ranks *today's* freshly published signals). The tags are denormalized onto
-        # the paper trade so the shadow book is sliceable in QC without a join.
+        # being filled this run -- a different ranking space from Signal.rank. Ranked
+        # within play_type so continuation and reversal shadow trades each rank from 1.
+        prior_cont = sorted((x for x in prior if x[0].play_type == "continuation"),
+                            key=lambda x: x[0].score, reverse=True)
+        prior_rev = sorted((x for x in prior if x[0].play_type == "reversal"),
+                           key=lambda x: x[0].score, reverse=True)
         candidates = [
             FillCandidate(pr.ticker, pr.timeframe, pr.horizon, pr.score, rank,
-                          pr.mtf_aligned, None, pr.zone,
-                          quality_tier=pr.quality_tier, volatility_tier=pr.volatility_tier,
-                          oversold=pr.oversold)
-            for rank, (pr, _h, _l) in enumerate(prior, start=1)
+                          pr.mtf_aligned, None, pr.zone, quality_tier=pr.quality_tier,
+                          volatility_tier=pr.volatility_tier, oversold=pr.oversold,
+                          play_type=pr.play_type, strength=pr.strength)
+            for group in (prior_cont, prior_rev)
+            for rank, (pr, _h, _l) in enumerate(group, start=1)
         ]
         next_bars = {(pr.ticker, pr.timeframe): (h, low) for (pr, h, low) in prior}
         opened = open_from_signals(s, candidates, next_bars, fill_date=today)
         n_paper_opened = sum(1 for t in opened if t.status == "open")
         advance_open(s, latest_bars, cfg, today=today)
 
-    return RunResult(n_signals=len(today_results), n_paper_opened=n_paper_opened,
-                     n_charts=n_charts, n_failed=n_failed)
+    return RunResult(n_signals=len(today_results) + len(today_reversals),
+                     n_paper_opened=n_paper_opened, n_charts=n_charts, n_failed=n_failed,
+                     n_reversals=len(today_reversals))
 
 
 def _resolve_db_url(cli_db: str | None) -> str:

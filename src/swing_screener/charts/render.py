@@ -9,10 +9,11 @@ import pandas as pd  # noqa: E402
 
 from swing_screener.signals.detect import PullbackContext  # noqa: E402
 from swing_screener.signals.entry_zone import EntryZone  # noqa: E402
+from swing_screener.signals.reversal import ReversalContext  # noqa: E402
 
 
-def render_chart(frame: pd.DataFrame, ctx: PullbackContext, zone: EntryZone,
-                 out_path: Path, *, lookback: int = 80) -> Path:
+def render_chart(frame: pd.DataFrame, ctx: PullbackContext | ReversalContext,
+                 zone: EntryZone, out_path: Path, *, lookback: int = 80) -> Path:
     """Render an annotated Heiken Ashi chart (HA candles + EMA20/50 + entry zone /
     stop / target lines) to a PNG. Returns the path written."""
     view = frame.tail(lookback)

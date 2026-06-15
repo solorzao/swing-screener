@@ -52,3 +52,24 @@ def test_exit_alerts_only_real_trades():
     s, _ = _seed()
     alerts = sel.pending_exit_alerts(s, RUN)
     assert len(alerts) == 1 and alerts[0].reason == "stop" and alerts[0].is_paper is False
+
+
+def _rev(ticker, rank, strength="early"):
+    return Signal(run_date=RUN, ticker=ticker, timeframe="1d", horizon="medium",
+                  play_type="reversal", strength=strength, score=1.0 / rank, rank=rank,
+                  trigger_close=50.0, atr=2.0, rsi=22.0, entry_floor=50.0, entry_ceiling=52.0,
+                  stop=47.0, target=58.0)
+
+
+def test_reversal_picks_are_separate_from_continuation():
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add_all([_sig("AMD", "1d", 1), _sig("AEP", "1d", 2)])           # continuation
+        s.add_all([_rev("GME", 1, "confirmed"), _rev("BBBY", 2, "early")])  # reversal
+        s.commit()
+
+        cont = sel.daily_picks(s, RUN)
+        rev = sel.reversal_picks(s, RUN)
+        assert [p.ticker for p in cont] == ["AMD", "AEP"]   # reversals excluded
+        assert [p.ticker for p in rev] == ["GME", "BBBY"]   # only reversals, by rank
+        assert rev[0].strength == "confirmed" and rev[0].play_type == "reversal"

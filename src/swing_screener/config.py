@@ -31,6 +31,12 @@ class StrategyConfig:
     oversold_rsi_max: float = 35.0          # rsi < this -> oversold
     avg_dollar_vol_window: int = 20         # bars used for avg dollar volume
 
+    # reversal screener (oversold bounce / relief rally -> the "Reversal Plays" list)
+    reversal_oversold_rsi_max: float = 25.0   # recent RSI must dip below this (capitulation)
+    reversal_oversold_lookback: int = 5       # bars to look back for the oversold dip
+    reversal_decline_bars: int = 6            # window for the capitulation low + swing-high resistance
+    reversal_target_r_multiple: float = 2.0   # fallback target R when no clean resistance sits above
+
     # exits
     time_stop_factor: float = 1.0    # time stop = factor * max_hold_bars[tf]
     max_hold_bars: dict[str, int] = field(default_factory=lambda: {

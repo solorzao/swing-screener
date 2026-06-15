@@ -49,6 +49,7 @@ class PdfPick:
     atr_pct: float  # ATR as a fraction of price (e.g. 0.023 == 2.3%), not dollars
     rationale: str
     is_deep: bool = False  # got the Opus deep analysis -> labelled + structured
+    strength: str | None = None  # reversal only: "early" / "confirmed"
 
 
 def _rationale_flowables(text: str, styles: dict) -> list:
@@ -89,9 +90,10 @@ def build_story(picks: Sequence[PdfPick]) -> list:
 
     for i, p in enumerate(picks):
         name_part = f" - {p.name}" if p.name else ""
+        kind_part = f"{p.trade_type} · {p.strength}" if p.strength else p.trade_type
         story.append(
             Paragraph(
-                f"{p.ticker}{name_part} &nbsp; [{p.trade_type}] "
+                f"{p.ticker}{name_part} &nbsp; [{kind_part}] "
                 f"&nbsp; score {p.score:.2f}",
                 styles["Title"],
             )
@@ -147,15 +149,25 @@ def build_story(picks: Sequence[PdfPick]) -> list:
     return story
 
 
-def build_digest_pdf(picks: Sequence[PdfPick], out_path: Path) -> Path:
-    """Render ``picks`` into a multi-section PDF at ``out_path`` and return it.
+def build_digest_pdf(picks: Sequence[PdfPick], out_path: Path, *,
+                     reversal_picks: Sequence[PdfPick] | None = None) -> Path:
+    """Render ``picks`` (continuation) into a multi-section PDF and return it.
 
-    One section per pick, separated by page breaks. A pick whose ``chart_path``
-    is ``None`` or does not exist on disk is rendered without its image. An
-    empty ``picks`` sequence still produces a valid (placeholder) PDF.
+    One section per pick, separated by page breaks. ``reversal_picks``, when
+    non-empty, are appended after a "REVERSAL PLAYS" divider. A pick whose
+    ``chart_path`` is ``None``/missing renders without its image; an empty
+    ``picks`` sequence still produces a valid (placeholder) PDF.
     """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    story = build_story(picks)
+    if reversal_picks:
+        styles = getSampleStyleSheet()
+        story.append(PageBreak())
+        story.append(Paragraph(
+            '<font color="#b4561a"><b>REVERSAL PLAYS</b></font>', styles["Title"]))
+        story.append(Spacer(1, 0.15 * inch))
+        story.extend(build_story(reversal_picks))
     doc = SimpleDocTemplate(str(out_path), pagesize=letter)
-    doc.build(build_story(picks))
+    doc.build(story)
     return out_path

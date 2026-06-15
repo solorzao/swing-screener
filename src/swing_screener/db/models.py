@@ -33,6 +33,10 @@ class Signal(Base):
     ticker: Mapped[str] = mapped_column(String(16), index=True)
     timeframe: Mapped[str] = mapped_column(String(32))
     horizon: Mapped[str] = mapped_column(String(32))
+    # "continuation" (the pullback engine) or "reversal" (the oversold-bounce engine).
+    play_type: Mapped[str] = mapped_column(String(16), default="continuation", index=True)
+    # reversal strength: "early" / "confirmed"; None for continuation plays.
+    strength: Mapped[str | None] = mapped_column(String(16), default=None)
     score: Mapped[float]
     rank: Mapped[int]
     mtf_aligned: Mapped[bool] = mapped_column(default=False)
@@ -80,6 +84,10 @@ class PaperTrade(Base):
     ticker: Mapped[str] = mapped_column(String(16), index=True)
     timeframe: Mapped[str] = mapped_column(String(32))
     horizon: Mapped[str] = mapped_column(String(32))
+    # denormalized from the signal so the shadow book can be sliced by play_type
+    # (continuation vs reversal) in QC without a join.
+    play_type: Mapped[str] = mapped_column(String(16), default="continuation", index=True)
+    strength: Mapped[str | None] = mapped_column(String(16), default=None)
     signal_id: Mapped[int | None] = mapped_column(ForeignKey("signals.id"), default=None)
     signal_score: Mapped[float]
     rank: Mapped[int]
