@@ -1,4 +1,5 @@
 import logging
+import random
 import time
 from datetime import date
 from pathlib import Path
@@ -28,9 +29,14 @@ def _download(ticker: str, interval: str, period: str) -> pd.DataFrame:
 
 def fetch_bars(ticker: str, interval: str, *, cache_dir: Path, period: str = "2y",
                today: date | None = None, retries: int = 3,
-               backoff: float = 0.5) -> pd.DataFrame | None:
+               backoff: float = 0.5, jitter: float = 0.5) -> pd.DataFrame | None:
     """Fetch OHLCV for one ticker, cached per (interval, ticker, day). Returns None
-    on persistent failure (per-ticker isolation: never raises to the caller)."""
+    on persistent failure (per-ticker isolation: never raises to the caller).
+
+    Retries use exponential backoff plus random ``jitter`` so that, across the
+    ~500-ticker universe, retries do not fire in lockstep -- a synchronized retry
+    storm looks bot-like and worsens rate-limiting (a real risk from Azure
+    datacenter IPs; see the deploy runbook's yfinance go/no-go gate)."""
     today = today or date.today()
     cache_file = _cache_path(cache_dir, interval, ticker, today)
     if cache_file.exists():
@@ -51,7 +57,7 @@ def fetch_bars(ticker: str, interval: str, *, cache_dir: Path, period: str = "2y
         except Exception as err:  # isolation is the whole point: never propagate
             last_err = err
             if attempt < retries - 1:  # don't sleep after the final attempt
-                time.sleep(backoff * (2 ** attempt))
+                time.sleep(backoff * (2 ** attempt) + random.uniform(0, jitter))
     log.warning("fetch failed for %s %s after %d tries: %s", ticker, interval, retries, last_err)
     return None
 

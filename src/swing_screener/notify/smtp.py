@@ -5,11 +5,12 @@ a PDF attachment) and exit alerts. Credentials default to the ``GMAIL_ADDRESS``
 and ``GMAIL_APP_PASSWORD`` environment variables but can be overridden by args.
 """
 
-import os
 import smtplib
 from collections.abc import Sequence
 from email.message import EmailMessage
 from pathlib import Path
+
+from swing_screener.config_secrets import require_secret
 
 
 def send_email(
@@ -29,8 +30,11 @@ def send_email(
     set; when ``html`` is given it is added as an alternative part. Each path in
     ``attachments`` is read and attached as an ``application/pdf`` part.
     """
-    sender = sender or os.environ["GMAIL_ADDRESS"]
-    password = password or os.environ["GMAIL_APP_PASSWORD"]
+    # Function args take precedence; only the fallback resolves via the secrets
+    # layer (env first, then Key Vault). require_secret is called only when the
+    # arg is missing, so passing explicit creds never touches the resolver.
+    sender = sender or require_secret("GMAIL_ADDRESS")
+    password = password or require_secret("GMAIL_APP_PASSWORD")
 
     msg = EmailMessage()
     msg["From"] = sender

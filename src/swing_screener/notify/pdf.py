@@ -7,6 +7,7 @@ and the Claude rationale. A missing or nonexistent chart degrades gracefully —
 the section renders without the image rather than crashing.
 """
 
+import io
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,8 @@ from reportlab.platypus import (
     Table,
     TableStyle,
 )
+
+from swing_screener.storage.blob import blob_enabled, download_bytes
 
 
 @dataclass(frozen=True)
@@ -70,7 +73,20 @@ def build_digest_pdf(picks: Sequence[PdfPick], out_path: Path) -> Path:
             )
         )
         story.append(Spacer(1, 0.1 * inch))
-        if p.chart_path and Path(p.chart_path).exists():
+        if blob_enabled():
+            # chart_path is a blob KEY, not a filesystem path -- stat'ing it would
+            # always miss, so fetch by key instead. A missing/aged-out blob (any
+            # exception) degrades to the same chartless section as the local path.
+            if p.chart_path:
+                try:
+                    data = download_bytes(p.chart_path)
+                    story.append(
+                        Image(io.BytesIO(data), width=6.5 * inch, height=3.2 * inch)
+                    )
+                    story.append(Spacer(1, 0.1 * inch))
+                except Exception:
+                    pass
+        elif p.chart_path and Path(p.chart_path).exists():
             story.append(Image(p.chart_path, width=6.5 * inch, height=3.2 * inch))
             story.append(Spacer(1, 0.1 * inch))
         levels = [

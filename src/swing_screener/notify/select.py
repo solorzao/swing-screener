@@ -50,9 +50,11 @@ def monthly_picks(session: Session, run_date: date, *, top_n: int = 5) -> list[S
 
 def pending_exit_alerts(session: Session, run_date: date) -> list[ExitEvent]:
     """Exit events for REAL trades on the given date (paper-trade events excluded)."""
+    # `== False` renders `is_paper = 0`; `.is_(False)` renders `IS 0`, which is a
+    # syntax error on SQL Server (valid only on SQLite).
     stmt = (
         select(ExitEvent)
-        .where(ExitEvent.created_date == run_date, ExitEvent.is_paper.is_(False))
+        .where(ExitEvent.created_date == run_date, ExitEvent.is_paper == False)  # noqa: E712
         .order_by(ExitEvent.id.desc())
     )
     return list(session.scalars(stmt))

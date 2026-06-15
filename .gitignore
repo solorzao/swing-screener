@@ -41,3 +41,6 @@ htmlcov/
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Bicep build artifact (compiled ARM template; deploy uses the .bicep directly)
+infra/main.json

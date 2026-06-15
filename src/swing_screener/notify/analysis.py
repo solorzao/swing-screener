@@ -12,6 +12,8 @@ from dataclasses import dataclass
 
 import anthropic
 
+from swing_screener.config_secrets import get_secret
+
 log = logging.getLogger(__name__)
 
 MODEL = "claude-sonnet-4-6"
@@ -138,7 +140,10 @@ def analyze_signal(
     so the pipeline never blocks on the LLM.
     """
     try:
-        client = client or anthropic.Anthropic()  # inside try: a key-at-construction
+        # inside try: a missing key at construction (or a failing call) falls
+        # back to the deterministic rationale. get_secret resolves env first,
+        # then Key Vault; the injected client seam bypasses this entirely.
+        client = client or anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
         resp = client.messages.create(           # SDK must also fall back gracefully
             model=MODEL,
             max_tokens=600,

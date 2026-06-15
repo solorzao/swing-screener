@@ -1,5 +1,8 @@
 import argparse
 import logging
+import os
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -17,10 +20,80 @@ from swing_screener.db.models import Signal
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.analyze import SignalResult, analyze_frames, build_frames
 from swing_screener.pipeline.shadow import FillCandidate, advance_open, open_from_signals
+from swing_screener.settings import load_settings
+from swing_screener.storage.blob import blob_enabled, upload_chart
 
 log = logging.getLogger(__name__)
 
 _BAR_KEYS = ("low", "high", "close", "shaved_head", "bearish")
+
+# Azure SQL serverless error raised while the database is auto-resuming from a
+# paused state: the first connection of the day fails with this until the DB
+# wakes (~1 min). Retried (not fatal); any OTHER error is a real misconfig.
+_SERVERLESS_RESUMING = "40613"
+
+
+def _alembic_dir() -> Path:
+    """Directory holding ``alembic.ini`` + ``alembic/``.
+
+    NOT relative to this file: in a non-editable install (the container) the
+    package lives in ``site-packages`` while the Dockerfile copies the migration
+    files to the WORKDIR (``/app``). So resolve from ``SWING_ALEMBIC_DIR`` (set to
+    ``/app`` in the image) or the current working directory (the repo root
+    locally, the WORKDIR in the container) -- never the package location.
+    """
+    return Path(os.environ.get("SWING_ALEMBIC_DIR", ".")).resolve()
+
+
+def _alembic_upgrade(db_url: str) -> None:
+    """Run ``alembic upgrade head`` against ``db_url`` (the live path).
+
+    Alembic -- not ``create_all`` -- owns the Azure SQL schema, so the pipeline
+    must upgrade before it screens. The import is LAZY because alembic ships in
+    the optional ``azure`` extra and is absent in CI / local sqlite runs; tests
+    monkeypatch this whole function so it never executes there.
+    """
+    from alembic import command
+    from alembic.config import Config
+
+    base = _alembic_dir()
+    cfg = Config(str(base / "alembic.ini"))
+    cfg.set_main_option("script_location", str(base / "alembic"))
+    cfg.set_main_option("sqlalchemy.url", db_url)
+    command.upgrade(cfg, "head")
+
+
+def _migrate_with_retry(
+    db_url: str,
+    *,
+    attempts: int = 5,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    upgrade_fn: Callable[[str], None] | None = None,
+) -> None:
+    """Run the migration, tolerating Azure SQL serverless cold-resume.
+
+    A paused serverless DB rejects the first connection with error 40613 while
+    it wakes; we back off and retry up to ``attempts``. Any other failure is a
+    real problem (bad URL, auth, broken migration) and is re-raised IMMEDIATELY
+    with no retry. ``sleep_fn``/``upgrade_fn`` are injectable so tests run
+    instantly and fully offline.
+    """
+    upgrade = upgrade_fn or _alembic_upgrade
+    for attempt in range(1, attempts + 1):
+        try:
+            upgrade(db_url)
+            return
+        except Exception as exc:  # noqa: BLE001 -- inspect message, decide retry
+            if _SERVERLESS_RESUMING not in str(exc):
+                raise  # not a resume; fail fast on the real error
+            if attempt == attempts:
+                raise  # exhausted: surface the last 40613 to the caller
+            backoff = 2.0 * attempt
+            log.warning(
+                "db resuming (40613); migration attempt %d/%d failed, retrying in %.0fs",
+                attempt, attempts, backoff,
+            )
+            sleep_fn(backoff)
 
 
 @dataclass(frozen=True)
@@ -64,9 +137,17 @@ def _to_signal(r: SignalResult, rank: int, run_date: date) -> Signal:
 
 def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: Path,
                top_charts: int = 5, cfg: StrategyConfig | None = None,
-               today: date | None = None, max_tickers: int | None = None) -> RunResult:
+               today: date | None = None, max_tickers: int | None = None,
+               migrate_fn: Callable[[str], None] | None = None) -> RunResult:
     cfg = cfg or StrategyConfig()
     today = today or date.today()
+
+    # Azure SQL: Alembic owns the schema, so upgrade to head BEFORE any engine
+    # use (sqlite still goes through get_engine, which create_all's). Done up
+    # front so a misconfigured/asleep DB fails before we spend time fetching.
+    if db_url.startswith("mssql"):
+        (migrate_fn or _migrate_with_retry)(db_url)
+
     universe = load_universe(universe_path)
     if max_tickers is not None:
         universe = universe[:max_tickers]
@@ -109,9 +190,18 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         repo.save_signals(s, signals)
 
         for rank, r in enumerate(today_results[:top_charts], start=1):
-            path = Path(chart_dir) / f"{r.ticker}_{r.timeframe}_{today:%Y%m%d}.png"
+            basename = f"{r.ticker}_{r.timeframe}_{today:%Y%m%d}.png"
+            path = Path(chart_dir) / basename
             render_chart(r.frame, r.ctx, r.zone, path)
-            signals[rank - 1].chart_path = str(path)
+            if blob_enabled():
+                # In Azure the filesystem is not shared across executions, so the
+                # PNG lives in a private blob container. chart_path becomes the
+                # blob KEY (what pdf/dashboard download back by), not a local path.
+                key = f"{today:%Y%m%d}/{basename}"
+                upload_chart(path, key)
+                signals[rank - 1].chart_path = key
+            else:
+                signals[rank - 1].chart_path = str(path)
             n_charts += 1
         s.commit()
 
@@ -135,20 +225,41 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
                      n_charts=n_charts, n_failed=n_failed)
 
 
+def _resolve_db_url(cli_db: str | None) -> str:
+    """Resolve the DB URL (explicit ``--db`` wins over ``load_settings()``) and
+    fail fast on a dangerous local-sqlite-in-the-cloud misconfiguration.
+
+    In a cloud context -- ``KEY_VAULT_URL`` set, or an explicit ``SWING_REQUIRE_DB``
+    -- a sqlite URL almost certainly means SWING_DB_URL was never wired up, and
+    silently screening into a throwaway local file that vanishes with the
+    container is worse than crashing. So we refuse it.
+    """
+    db_url = cli_db if cli_db is not None else load_settings().db_url
+    in_cloud = bool(os.environ.get("KEY_VAULT_URL") or os.environ.get("SWING_REQUIRE_DB"))
+    if in_cloud and db_url.startswith("sqlite"):
+        raise RuntimeError(
+            "refusing to run against throwaway SQLite in a cloud context; "
+            "set SWING_DB_URL to the Azure SQL URL"
+        )
+    return db_url
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the swing screener nightly pipeline.")
-    # defaults match the dashboard + scripts/run_local.py so a bare pipeline run
-    # and a bare dashboard launch point at the same DB/cache.
-    parser.add_argument("--db", default="sqlite:///local.db")
+    # defaults come from load_settings() (absolute, env-first) so a container
+    # picks up SWING_DB_URL/dirs; a bare local run still points at local.db/.cache.
+    settings = load_settings()
+    parser.add_argument("--db", default=None)
     parser.add_argument("--universe", type=Path,
                         default=Path("src/swing_screener/data/universe_seed.csv"))
-    parser.add_argument("--cache-dir", type=Path, default=Path(".cache"))
-    parser.add_argument("--chart-dir", type=Path, default=Path(".charts"))
+    parser.add_argument("--cache-dir", type=Path, default=settings.cache_dir)
+    parser.add_argument("--chart-dir", type=Path, default=settings.chart_dir)
     parser.add_argument("--top-charts", type=int, default=5)
     parser.add_argument("--max-tickers", type=int, default=None)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
-    result = run_screen(universe_path=args.universe, db_url=args.db, cache_dir=args.cache_dir,
+    db_url = _resolve_db_url(args.db)
+    result = run_screen(universe_path=args.universe, db_url=db_url, cache_dir=args.cache_dir,
                         chart_dir=args.chart_dir, top_charts=args.top_charts,
                         max_tickers=args.max_tickers)
     log.info("signals=%d paper_opened=%d charts=%d failed=%d",

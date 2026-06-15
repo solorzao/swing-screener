@@ -1,0 +1,35 @@
+# Keep the build context small and never bake local state into the image.
+# The Dockerfile only COPYs pyproject.toml, src/, alembic/, alembic.ini, so
+# everything else is safe to drop. pyproject has no `readme=`, so README.md
+# (and all docs) are NOT needed by the build -- excluded below.
+
+# virtualenv / VCS / CI
+.venv
+.git
+.gitignore
+.github
+
+# tool + build caches
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.cache
+__pycache__
+**/__pycache__
+*.egg-info
+build
+dist
+
+# local runtime artifacts (charts, digests, sqlite DBs)
+.charts
+.digests
+*.db
+local.db
+
+# tests + scripts are never installed into the image
+tests
+scripts
+
+# docs / markdown (no readme= in pyproject, so README.md is not a build input)
+docs
+*.md

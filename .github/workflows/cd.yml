@@ -1,0 +1,80 @@
+name: CD
+
+# Build the job image and repoint the Container Apps Jobs to it on every push to
+# main, gated on the same lint/type/test suite as CI. Authentication to Azure is
+# via OIDC federated credentials -- there is NO stored client secret. One-time
+# setup (federated credential subject/issuer/audience + least-privilege role
+# assignments + the repo secrets/vars below) is documented in docs/azure-deploy.md.
+#
+# Required repo secrets (identifiers, not credentials -- OIDC mints short-lived
+# tokens at run time): AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID.
+# Required repo variables (set after the first deploy): AZURE_RESOURCE_GROUP, ACR_NAME.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write   # required for azure/login OIDC token exchange
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Lint (ruff)
+        run: ruff check src tests alembic
+      - name: Type check (mypy)
+        run: mypy
+      - name: Tests (pytest)
+        run: pytest -q
+
+  deploy:
+    needs: test          # CD is CI-gated: deploy never runs unless the suite is green
+    runs-on: ubuntu-latest
+    env:
+      RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      ACR_NAME: ${{ vars.ACR_NAME }}
+      IMAGE: swing-screener
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC, no stored secret)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build + push image (server-side via ACR)
+        # `az acr build` builds inside ACR rather than on the runner. It is more
+        # reliable for the msodbcsql18 layer (the packages.microsoft.com signing
+        # key/URL rotates and breaks a runner-local docker build) and needs no
+        # docker login. Tags the immutable git SHA (used by the jobs) and latest.
+        run: |
+          az acr build \
+            --registry "$ACR_NAME" \
+            --image "$IMAGE:${{ github.sha }}" \
+            --image "$IMAGE:latest" \
+            .
+
+      - name: Repoint the five Container Apps Jobs to the new image
+        # `job update --image` does NOT start a run; the new image is used on the
+        # next scheduled (or manual `job start`) execution. Rollback = re-run this
+        # update with an older :<sha> tag. Runtime secrets stay in Key Vault.
+        run: |
+          for job in evening-screen daily-digest intraday-exit weekly-digest monthly-digest; do
+            echo "Updating $job -> $IMAGE:${{ github.sha }}"
+            az containerapp job update \
+              --name "$job" \
+              --resource-group "$RESOURCE_GROUP" \
+              --image "$ACR_NAME.azurecr.io/$IMAGE:${{ github.sha }}"
+          done

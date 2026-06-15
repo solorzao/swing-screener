@@ -14,12 +14,17 @@ Claude-written rationale per pick, and fires urgent **exit alerts** for active t
 
 ## Configuration (environment variables)
 
+The email **transport is pluggable** (`notify/transport.py`): if `SWING_ACS_ENDPOINT` is set
+it sends via **Azure Communication Services** authenticated by the managed identity (no
+stored credential — this is what the Azure deploy uses); otherwise it falls back to Gmail
+SMTP for local use.
+
 | Var | Meaning |
 |---|---|
 | `ANTHROPIC_API_KEY` | Claude API key (model `claude-sonnet-4-6`; upgradeable to `claude-opus-4-8`) |
-| `GMAIL_ADDRESS` | the Gmail account that sends the digests |
-| `GMAIL_APP_PASSWORD` | a Gmail **app password** (not your login password — create one under Google Account → Security → 2-Step Verification → App passwords) |
 | `DIGEST_TO` | the recipient address (usually yourself) |
+| `SWING_ACS_ENDPOINT` / `SWING_ACS_SENDER` | *(cloud)* ACS endpoint + verified MailFrom address; when set, email sends via ACS + managed identity, no secret stored |
+| `GMAIL_ADDRESS` / `GMAIL_APP_PASSWORD` | *(local fallback only)* a Gmail account + **app password** (not your login password) — used only when ACS isn't configured |
 
 ## Run it
 
@@ -58,8 +63,10 @@ The digest never blocks on a failure:
 - The model **narrates the deterministic facts** the engine computed — the system prompt
   forbids inventing setups or levels. To switch to richer write-ups, change the model constant
   in `notify/analysis.py` to `claude-opus-4-8`.
-- Secrets are read from the environment now; Phase 5 moves them to Azure Key Vault. Never
-  commit a key.
-- Phase 4 adds an `email_log.run_date` column for idempotency. Fresh DBs get it automatically;
-  a `local.db` created before Phase 4 won't — drop the `email_log` table (it only holds send
-  audit rows) or recreate the DB before the first digest run. Phase 5 will add real migrations.
+- Secrets are resolved by `config_secrets.get_secret`: **environment variables locally**, and
+  in Azure from **Key Vault** (when `KEY_VAULT_URL` is set) via the job's managed identity — no
+  stored credentials, and secret **values are never logged**. Never commit a key. See the
+  [Azure deploy runbook](azure-deploy.md).
+- The schema is owned by **Alembic** (`alembic upgrade head`); the pipeline self-migrates on
+  mssql startup. A `local.db` created before Phase 4 predates the `email_log.run_date`/`alert_key`
+  columns — recreate it (or `alembic upgrade head` against it) before the first digest run.

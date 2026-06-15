@@ -6,7 +6,7 @@ dependencies = [
     "pandas>=2.2",
     "numpy>=1.26",
     "sqlalchemy>=2.0",
-    "mplfinance>=0.12",
+    "mplfinance>=0.12.10b0",  # mplfinance only ever ships pre-releases; pin one so pip accepts it
     "yfinance>=0.2",
     "pyarrow>=15",
     "streamlit>=1.38",
@@ -16,6 +16,14 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11", "pandas-stubs"]
+azure = [
+    "pyodbc>=5.1",
+    "azure-identity>=1.17",
+    "azure-keyvault-secrets>=4.8",
+    "azure-storage-blob>=12.20",
+    "azure-communication-email>=1.0",
+    "alembic>=1.13",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -26,6 +34,10 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 swing_screener = ["py.typed"]
+# The screening universe ships INSIDE the package: load_universe() resolves it
+# via Path(__file__).parent, so a non-editable `pip install` (the Docker image)
+# must bundle the CSV or DEFAULT_SEED won't exist at runtime.
+"swing_screener.data" = ["universe_seed.csv"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
@@ -38,4 +50,14 @@ target-version = "py312"
 [tool.mypy]
 python_version = "3.12"
 packages = ["swing_screener"]
+ignore_missing_imports = true
+
+# The repo's top-level alembic/ migrations dir shadows the `alembic` PyPI package
+# for mypy's import resolution (it is not installed in CI -- it's in the optional
+# `azure` extra). At runtime the installed package wins (it has __init__.py); for
+# mypy, skip-following the import so `from alembic import command` is treated as
+# Any rather than resolving to the local migrations dir (which lacks `command`).
+[[tool.mypy.overrides]]
+module = ["alembic.*", "alembic"]
+follow_imports = "skip"
 ignore_missing_imports = true

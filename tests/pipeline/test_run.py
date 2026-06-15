@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from swing_screener.db import repo
-from swing_screener.db.models import Signal
+from swing_screener.db.models import PaperTrade, Signal
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline import run
 
@@ -106,3 +106,47 @@ def test_run_is_idempotent_for_same_day(tmp_path, bars, monkeypatch):
     keys = Counter((x.ticker, x.timeframe) for x in sigs)
     assert all(count == 1 for count in keys.values())
     assert len(sigs) == res1.n_signals
+
+
+def test_run_double_fire_does_not_duplicate_or_double_advance(tmp_path, bars, monkeypatch):
+    # DST safety: on a spring-forward/fall-back day a UTC cron pair can fire the
+    # screen twice for the intended ET hour. The screen has no EmailLog-style guard
+    # -- its safety rests on delete+reinsert of signals (delete_signals_for) and of
+    # today's paper opens (delete_paper_trades_opened_on) plus advance_open's
+    # same-day guard. Pin that a second same-day run leaves BOTH the signals table
+    # and the shadow book in exactly the same state.
+    def fake_fetch(ticker, *, cache_dir, today, cfg):
+        return {"1d": _firing_then_fill_bar(bars)} if ticker == "AAPL" else {}
+    monkeypatch.setattr(run, "_fetch_all_timeframes", fake_fetch)
+
+    db = f"sqlite:///{tmp_path / 'db.sqlite'}"
+    today = date(2024, 4, 2)
+    kwargs = dict(
+        universe_path=_write_universe(tmp_path, ["AAPL"]), db_url=db,
+        cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts", today=today,
+    )
+
+    def _snapshot():
+        with Session(get_engine(db)) as s:
+            sigs = list(s.scalars(select(Signal).where(Signal.run_date == today)))
+            papers = list(s.scalars(select(PaperTrade)))
+        sig_keys = Counter((x.ticker, x.timeframe) for x in sigs)
+        # row identity (id) changes on delete+reinsert; the VALUES must not.
+        paper_state = sorted(
+            (p.ticker, p.timeframe, p.opened_date, p.entry_date, p.last_advanced,
+             p.status, p.fill_status, p.realized_r)
+            for p in papers
+        )
+        return len(sigs), sig_keys, paper_state
+
+    res1 = run.run_screen(**kwargs)
+    n1, keys1, papers1 = _snapshot()
+    assert res1.n_paper_opened >= 1  # the appended fill bar opens a paper trade
+
+    res2 = run.run_screen(**kwargs)  # second fire for the SAME ET day
+    n2, keys2, papers2 = _snapshot()
+
+    assert all(count == 1 for count in keys1.values())  # no duplicate signals
+    assert (n1, keys1) == (n2, keys2) == (res1.n_signals, keys2)
+    assert papers1 == papers2  # no duplicate opens, no double-advance
+    assert res1.n_paper_opened == res2.n_paper_opened
