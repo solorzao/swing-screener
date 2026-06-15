@@ -17,6 +17,7 @@ from swing_screener.db.models import Signal
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.analyze import SignalResult, analyze_frames, build_frames
 from swing_screener.pipeline.shadow import FillCandidate, advance_open, open_from_signals
+from swing_screener.storage.blob import blob_enabled, upload_chart
 
 log = logging.getLogger(__name__)
 
@@ -109,9 +110,18 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         repo.save_signals(s, signals)
 
         for rank, r in enumerate(today_results[:top_charts], start=1):
-            path = Path(chart_dir) / f"{r.ticker}_{r.timeframe}_{today:%Y%m%d}.png"
+            basename = f"{r.ticker}_{r.timeframe}_{today:%Y%m%d}.png"
+            path = Path(chart_dir) / basename
             render_chart(r.frame, r.ctx, r.zone, path)
-            signals[rank - 1].chart_path = str(path)
+            if blob_enabled():
+                # In Azure the filesystem is not shared across executions, so the
+                # PNG lives in a private blob container. chart_path becomes the
+                # blob KEY (what pdf/dashboard download back by), not a local path.
+                key = f"{today:%Y%m%d}/{basename}"
+                upload_chart(path, key)
+                signals[rank - 1].chart_path = key
+            else:
+                signals[rank - 1].chart_path = str(path)
             n_charts += 1
         s.commit()
 

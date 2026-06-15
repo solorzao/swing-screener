@@ -26,6 +26,7 @@ from swing_screener.db import repo
 from swing_screener.db.models import ExitEvent, PaperTrade, Trade
 from swing_screener.db.session import get_engine
 from swing_screener.settings import load_settings
+from swing_screener.storage.blob import blob_enabled, download_bytes
 
 TAB_LABELS = [
     "Today's Candidates",
@@ -39,6 +40,26 @@ TAB_LABELS = [
 
 def _cache_dir() -> Path:
     return load_settings().cache_dir
+
+
+def _resolve_chart_image(chart_path: str | None) -> bytes | str | None:
+    """Resolve a signal's ``chart_path`` to something ``st.image`` can render.
+
+    When blob storage is enabled, ``chart_path`` is a blob KEY (the filesystem is
+    not shared across Azure executions): download the bytes, returning ``None`` on
+    any failure so a missing/aged-out blob just skips the image. When disabled,
+    keep the existing local behavior: return the path iff it exists, else ``None``.
+    """
+    if not chart_path:
+        return None
+    if blob_enabled():
+        try:
+            return download_bytes(chart_path)
+        except Exception:
+            return None
+    if Path(chart_path).exists():
+        return chart_path
+    return None
 
 
 def _render_candidates(session: Session) -> None:
@@ -69,8 +90,9 @@ def _render_candidates(session: Session) -> None:
     st.dataframe(rows, width="stretch")
 
     for s in signals:
-        if s.chart_path and Path(s.chart_path).exists():
-            st.image(s.chart_path, caption=s.ticker)
+        image = _resolve_chart_image(s.chart_path)
+        if image is not None:
+            st.image(image, caption=s.ticker)
 
 
 def _render_active(session: Session) -> None:
