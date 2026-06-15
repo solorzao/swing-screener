@@ -36,6 +36,16 @@ def _mssql_odbc_url(url: str) -> URL:
     return URL.create("mssql+pyodbc", query={"odbc_connect": ";".join(parts)})
 
 
+def to_connect_url(url: str) -> str | URL:
+    """The URL to hand ``create_engine``: the ``odbc_connect`` form for mssql
+    (avoids the FA001 Trusted_Connection clash), the string unchanged otherwise.
+
+    Shared by ``get_engine`` AND Alembic's ``env.py`` so the startup migration
+    and the screen's writes connect to Azure SQL the same way.
+    """
+    return _mssql_odbc_url(url) if url.startswith("mssql") else url
+
+
 def get_engine(url: str = "sqlite:///swing_screener.db") -> Engine:
     """Create an engine and ensure all tables exist.
 
@@ -47,9 +57,9 @@ def get_engine(url: str = "sqlite:///swing_screener.db") -> Engine:
         # Azure SQL: Alembic owns the schema, so we never call create_all (it
         # cannot ALTER existing tables anyway). pool_pre_ping validates
         # connections and pool_recycle drops stale ones so the engine survives
-        # serverless auto-pause/resume. The odbc_connect rewrite avoids the
+        # serverless auto-pause/resume. to_connect_url avoids the
         # Trusted_Connection/Authentication conflict (see _mssql_odbc_url).
-        return create_engine(_mssql_odbc_url(url), pool_pre_ping=True, pool_recycle=3600)
+        return create_engine(to_connect_url(url), pool_pre_ping=True, pool_recycle=3600)
     if url.endswith(":memory:"):
         kwargs = {"connect_args": {"check_same_thread": False}, "poolclass": StaticPool}
     engine = create_engine(url, **kwargs)

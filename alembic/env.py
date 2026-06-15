@@ -10,10 +10,11 @@ same command can target the dev SQL Server / SQLite.
 
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import create_engine, pool
 
 from alembic import context
 from swing_screener.db.models import Base
+from swing_screener.db.session import to_connect_url
 from swing_screener.settings import load_settings
 
 config = context.config
@@ -42,11 +43,15 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    """Connect and run migrations against the configured database."""
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
+    """Connect and run migrations against the configured database.
+
+    Build the engine via ``to_connect_url`` (not ``engine_from_config`` off the
+    raw URL) so an Azure SQL managed-identity URL uses the ``odbc_connect`` form
+    -- otherwise SQLAlchemy auto-adds Trusted_Connection=Yes and the connection
+    dies with ODBC FA001 (the same fix ``get_engine`` applies for the screen).
+    """
+    connectable = create_engine(
+        to_connect_url(load_settings().db_url), poolclass=pool.NullPool
     )
     with connectable.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)
