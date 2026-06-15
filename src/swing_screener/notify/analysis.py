@@ -192,10 +192,13 @@ def analyze_signal(
 
 # --- Deep analysis: an Opus "analyst" with chart vision + web search ----------
 
-# Reasoning effort -> extended-thinking budget (tokens). 0 disables thinking.
-# Thinking tokens bill as OUTPUT, so this is the main reasoning<->cost lever.
-_REASONING_BUDGET = {"none": 0, "low": 2000, "medium": 6000, "high": 12000}
-_DEEP_ANSWER_TOKENS = 1500  # answer room on top of the thinking budget
+# Reasoning effort -> Anthropic output_config.effort (opus-4.8+ adaptive thinking).
+# "none"/unknown sends no thinking at all. Thinking bills as OUTPUT, so this is the
+# main reasoning<->cost lever. NOTE: opus-4.8 rejects the older
+# thinking={"type":"enabled","budget_tokens":N} shape -- it wants adaptive + effort.
+_REASONING_EFFORT = {"low": "low", "medium": "medium", "high": "high"}
+# Per-effort output cap (thinking + answer). Generous; effort, not this, sets depth.
+_REASONING_MAX_TOKENS = {"none": 2000, "low": 6000, "medium": 10000, "high": 16000}
 
 _DEEP_SYSTEM = (
     "You are an equity research assistant for a swing trader. You are given a "
@@ -274,6 +277,24 @@ def _format_sources(sources: list[tuple[str, str]]) -> str:
     return "\n\nSources:\n" + "\n".join(f"- {title}: {url}" for url, title in rows)
 
 
+def _create_message(client: anthropic.Anthropic, kwargs: dict) -> object:
+    """messages.create, retrying once WITHOUT the reasoning params if the model
+    rejects them. Models differ on the thinking API (opus-4.8 wants adaptive +
+    output_config.effort; older models want budget_tokens), so on a config mismatch
+    we retry plain -- still a real model analysis, not the deterministic narrator.
+    """
+    try:
+        return client.messages.create(**kwargs)
+    except anthropic.BadRequestError as exc:
+        msg = str(exc).lower()
+        if any(k in msg for k in ("thinking", "output_config", "effort")) and (
+            "thinking" in kwargs or "output_config" in kwargs
+        ):
+            plain = {k: v for k, v in kwargs.items() if k not in ("thinking", "output_config")}
+            return client.messages.create(**plain)
+        raise
+
+
 def analyze_signal_deep(
     facts: SignalFacts, *, chart_bytes: bytes | None = None, context_text: str = "",
     client: anthropic.Anthropic | None = None, model: str = "claude-opus-4-8",
@@ -285,22 +306,23 @@ def analyze_signal_deep(
     """
     try:
         client = client or anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
-        budget = _REASONING_BUDGET.get(reasoning, _REASONING_BUDGET["high"])
         kwargs: dict = {
             "model": model,
-            "max_tokens": budget + _DEEP_ANSWER_TOKENS,
+            "max_tokens": _REASONING_MAX_TOKENS.get(reasoning, 16000),
             "system": _DEEP_SYSTEM,
             "messages": [
                 {"role": "user", "content": _deep_user_content(facts, chart_bytes, context_text)}
             ],
         }
-        if budget > 0:
-            kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+        effort = _REASONING_EFFORT.get(reasoning)
+        if effort is not None:  # opus-4.8+ adaptive thinking; "none"/unknown omits it
+            kwargs["thinking"] = {"type": "adaptive"}
+            kwargs["output_config"] = {"effort": effort}
         if web_search:
             kwargs["tools"] = [
                 {"type": "web_search_20250305", "name": "web_search", "max_uses": max_searches}
             ]
-        resp = client.messages.create(**kwargs)  # type: ignore[arg-type]
+        resp = _create_message(client, kwargs)
         text, sources = _extract_text_and_citations(resp)
         if not text.strip():
             raise ValueError("empty model response")

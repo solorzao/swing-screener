@@ -5,6 +5,9 @@ can assert the request shape (image-first, web_search tool, thinking budget)
 without any network, and a boom client proves the deterministic fallback.
 """
 
+import anthropic
+import httpx
+
 from swing_screener.notify.analysis import SignalFacts, analyze_signal_deep
 
 
@@ -83,8 +86,10 @@ def test_deep_analysis_builds_image_tool_thinking_and_parses_citations():
 
     kw = client.kwargs
     assert kw["model"] == "claude-opus-4-8"
-    assert kw["thinking"] == {"type": "enabled", "budget_tokens": 12000}
-    assert kw["max_tokens"] > 12000  # answer room on top of the thinking budget
+    # opus-4.8 reasoning API: adaptive thinking + output_config.effort (NOT budget_tokens)
+    assert kw["thinking"] == {"type": "adaptive"}
+    assert kw["output_config"] == {"effort": "high"}
+    assert kw["max_tokens"] == 16000
     tool = kw["tools"][0]
     assert tool["type"] == "web_search_20250305"
     assert tool["name"] == "web_search" and tool["max_uses"] == 3
@@ -97,8 +102,8 @@ def test_deep_analysis_builds_image_tool_thinking_and_parses_citations():
 def test_deep_analysis_reasoning_none_omits_thinking():
     client = _RecordingClient(_Resp([_TextBlock("CORE: ok\n\nbody")]))
     analyze_signal_deep(_facts(), client=client, reasoning="none")
-    assert "thinking" not in client.kwargs
-    assert client.kwargs["max_tokens"] == 1500  # just the answer allowance
+    assert "thinking" not in client.kwargs and "output_config" not in client.kwargs
+    assert client.kwargs["max_tokens"] == 2000
 
 
 def test_deep_analysis_without_chart_sends_no_image_block():
@@ -123,3 +128,42 @@ def test_deep_analysis_falls_back_to_deterministic_on_error():
 def test_deep_analysis_falls_back_on_empty_reply():
     out = analyze_signal_deep(_facts(), client=_RecordingClient(_Resp([_TextBlock("")])))
     assert "ATR of 4.0% of price" in out.rationale  # empty model text -> fallback
+
+
+def _bad_request(message):
+    req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    return anthropic.BadRequestError(message, response=httpx.Response(400, request=req), body=None)
+
+
+class _RetryClient:
+    """Rejects the reasoning params on the first call, succeeds on the retry."""
+
+    def __init__(self, resp):
+        self._resp = resp
+        self.calls = []
+
+    @property
+    def messages(self):
+        outer = self
+
+        class _M:
+            def create(self, **kw):
+                outer.calls.append(kw)
+                if len(outer.calls) == 1:
+                    raise _bad_request('"thinking.type.enabled" is not supported for this model')
+                return outer._resp
+
+        return _M()
+
+
+def test_deep_analysis_retries_without_reasoning_on_model_rejection():
+    # A model that rejects adaptive thinking / output_config should NOT drop to the
+    # deterministic narrator -- we retry once WITHOUT those params and still get a
+    # real model analysis.
+    client = _RetryClient(_Resp([_TextBlock("CORE: ok\n\nreal model body")]))
+    out = analyze_signal_deep(_facts(), client=client, reasoning="high")
+
+    assert "real model body" in out.rationale  # succeeded on the retry, not a fallback
+    assert len(client.calls) == 2
+    assert "thinking" in client.calls[0] and "output_config" in client.calls[0]
+    assert "thinking" not in client.calls[1] and "output_config" not in client.calls[1]
