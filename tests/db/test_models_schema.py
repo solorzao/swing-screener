@@ -7,7 +7,7 @@ assert the EmailLog dedup uniqueness constraint. All checks are pure metadata
 inspection -- no engine, no network.
 """
 
-from sqlalchemy import UniqueConstraint
+from sqlalchemy import UniqueConstraint, select
 from sqlalchemy.dialects.mssql.base import MSDialect
 from sqlalchemy.schema import CreateTable
 
@@ -62,3 +62,16 @@ def test_mssql_ddl_is_bounded_and_uses_bit() -> None:
         assert "(max)" not in ddl, f"{table.name} renders an unbounded string on mssql"
     signals_ddl = str(CreateTable(Signal.__table__).compile(dialect=MSDialect()))
     assert "BIT" in signals_ddl  # Boolean -> BIT
+
+
+def test_boolean_filter_renders_mssql_safe() -> None:
+    # Boolean filters must use `== True/False` (renders `= 1/0`), NOT `.is_(...)`
+    # which renders `IS 0/1` -- valid on SQLite but a SQL Server syntax error
+    # ("Incorrect syntax near '0'"). Guards pending_exit_alerts / exit_events_for.
+    sql = str(
+        select(ExitEvent)
+        .where(ExitEvent.is_paper == False)  # noqa: E712
+        .compile(dialect=MSDialect())
+    )
+    assert "IS 0" not in sql and "IS 1" not in sql
+    assert "= 0" in sql

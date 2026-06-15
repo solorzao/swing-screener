@@ -61,8 +61,10 @@ def exit_events_for(session: Session, created_date: date, *, is_paper: bool) -> 
     Used by the intraday exit checker to dedupe by (trade_id, reason, created_date)
     so an hourly re-run never piles up duplicate alerts.
     """
+    # `==` (renders `is_paper = 0/1`) not `.is_()` (renders `IS 0`, a syntax
+    # error on SQL Server though valid on SQLite).
     stmt = select(ExitEvent).where(
-        ExitEvent.created_date == created_date, ExitEvent.is_paper.is_(is_paper)
+        ExitEvent.created_date == created_date, ExitEvent.is_paper == is_paper
     )
     return list(session.scalars(stmt))
 
