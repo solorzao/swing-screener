@@ -45,6 +45,7 @@ class PdfPick:
     volatility_tier: str
     oversold: bool
     mtf_aligned: bool
+    atr_pct: float  # ATR as a fraction of price (e.g. 0.023 == 2.3%), not dollars
     rationale: str
 
 
@@ -94,6 +95,7 @@ def build_story(picks: Sequence[PdfPick]) -> list:
             ["Stop", f"{p.stop:.2f}"],
             ["Target", f"{p.target:.2f}"],
             ["R:R", f"{p.risk_reward:.2f}"],
+            ["ATR (% of price)", f"{p.atr_pct:.1%}"],
             ["Quality / Volatility", f"{p.quality_tier} / {p.volatility_tier}"],
             ["MTF aligned / Oversold", f"{p.mtf_aligned} / {p.oversold}"],
         ]

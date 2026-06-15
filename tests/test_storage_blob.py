@@ -156,6 +156,7 @@ def _pick(ticker="AMD", chart=None):
         chart_path=chart,
         entry_floor=96.0, entry_ceiling=101.0, stop=95.0, target=110.0, risk_reward=1.5,
         quality_tier="reputable", volatility_tier="high", oversold=False, mtf_aligned=True,
+        atr_pct=0.04,
         rationale="AMD daily uptrend intact; shallow pullback held EMA50.",
     )
 

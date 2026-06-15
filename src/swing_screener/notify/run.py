@@ -157,7 +157,8 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                 entry_ceiling=sig.entry_ceiling, stop=sig.stop, target=sig.target,
                 risk_reward=facts.risk_reward, quality_tier=sig.quality_tier,
                 volatility_tier=sig.volatility_tier, oversold=sig.oversold,
-                mtf_aligned=sig.mtf_aligned, rationale=analysis.rationale,
+                mtf_aligned=sig.mtf_aligned, atr_pct=facts.atr_pct,
+                rationale=analysis.rationale,
             ))
 
         pdf_path: Path | None = None

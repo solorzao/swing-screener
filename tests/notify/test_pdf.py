@@ -8,13 +8,24 @@ _PNG = base64.b64decode(
 )
 
 
-def _pick(ticker="AMD", chart=None, name="Advanced Micro Devices"):
+def _pick(ticker="AMD", chart=None, name="Advanced Micro Devices", atr_pct=0.04):
     return PdfPick(
         ticker=ticker, name=name, trade_type="medium", score=0.92, chart_path=chart,
         entry_floor=96.0, entry_ceiling=101.0, stop=95.0, target=110.0, risk_reward=1.5,
         quality_tier="reputable", volatility_tier="high", oversold=False, mtf_aligned=True,
+        atr_pct=atr_pct,
         rationale="AMD daily uptrend intact; shallow pullback held EMA50; bullish trigger.",
     )
+
+
+def test_atr_percent_row_in_levels_table():
+    # ATR is surfaced as a percentage of price (not dollars) so it reads
+    # consistently across high- and low-priced names.
+    from swing_screener.notify.pdf import build_story
+
+    story = build_story([_pick("AMD", None, atr_pct=0.04)])
+    table_rows = [row for f in story if hasattr(f, "_cellvalues") for row in f._cellvalues]
+    assert ["ATR (% of price)", "4.0%"] in table_rows
 
 
 def test_builds_nonempty_pdf_with_and_without_chart(tmp_path):

@@ -57,6 +57,19 @@ class SignalFacts:
             return 0.0
         return (self.target - self.entry_ceiling) / denom
 
+    @property
+    def atr_pct(self) -> float:
+        """ATR as a fraction of the trigger price (e.g. 0.023 == 2.3%).
+
+        ``atr`` is stored in dollars; expressing it relative to price makes the
+        volatility signal comparable across high- and low-priced names (a $4 ATR
+        means very different things on a $40 vs a $400 stock). Guarded against a
+        non-positive price.
+        """
+        if self.trigger_close <= 0:
+            return 0.0
+        return self.atr / self.trigger_close
+
 
 @dataclass(frozen=True)
 class SignalAnalysis:
@@ -78,8 +91,8 @@ def _deterministic_rationale(facts: SignalFacts) -> str:
         f"({alignment}, {facts.quality_tier} quality, {facts.volatility_tier} "
         f"volatility). Entry zone is {facts.entry_floor:g}-{facts.entry_ceiling:g} "
         f"with a stop at {facts.stop:g} and a target at {facts.target:g}, a "
-        f"reward/risk of {facts.risk_reward:.1f}R. RSI is {facts.rsi:.0f} on an ATR "
-        f"of {facts.atr:g}."
+        f"reward/risk of {facts.risk_reward:.1f}R. RSI is {facts.rsi:.0f} with an ATR "
+        f"of {facts.atr_pct:.1%} of price."
     )
 
 
@@ -95,7 +108,7 @@ def _prompt(facts: SignalFacts) -> str:
         f"- Volatility tier: {facts.volatility_tier}\n"
         f"- Oversold: {facts.oversold}\n"
         f"- Trigger close: {facts.trigger_close:g}\n"
-        f"- ATR: {facts.atr:g}\n"
+        f"- ATR (% of price): {facts.atr_pct:.1%}\n"
         f"- RSI: {facts.rsi:.0f}\n"
         f"- Entry zone: {facts.entry_floor:g} to {facts.entry_ceiling:g}\n"
         f"- Stop: {facts.stop:g}\n"
