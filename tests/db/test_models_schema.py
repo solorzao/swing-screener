@@ -8,8 +8,11 @@ inspection -- no engine, no network.
 """
 
 from sqlalchemy import UniqueConstraint
+from sqlalchemy.dialects.mssql.base import MSDialect
+from sqlalchemy.schema import CreateTable
 
 from swing_screener.db.models import (
+    Base,
     EmailLog,
     ExitEvent,
     PaperTrade,
@@ -46,3 +49,16 @@ def test_email_log_dedup_unique_constraint() -> None:
     assert len(matches) == 1
     uc = matches[0]
     assert {c.name for c in uc.columns} == {"kind", "run_date", "alert_key"}
+
+
+def test_mssql_ddl_is_bounded_and_uses_bit() -> None:
+    # The reason the columns are bounded: on the mssql dialect every string column
+    # must render with an explicit length (VARCHAR(n), never (max)) so the indexed
+    # ticker columns stay indexable, and booleans render as BIT. Compiles DDL
+    # driverlessly (no pyodbc / no DB), so it runs in CI.
+    dialect = MSDialect()
+    for table in Base.metadata.sorted_tables:
+        ddl = str(CreateTable(table).compile(dialect=dialect)).lower()
+        assert "(max)" not in ddl, f"{table.name} renders an unbounded string on mssql"
+    signals_ddl = str(CreateTable(Signal.__table__).compile(dialect=MSDialect()))
+    assert "BIT" in signals_ddl  # Boolean -> BIT
