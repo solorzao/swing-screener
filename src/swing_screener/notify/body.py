@@ -20,6 +20,7 @@ _TITLE = {"daily": "Daily Top 5", "weekly": "Weekly", "monthly": "Monthly"}
 @dataclass(frozen=True)
 class DigestPick:
     ticker: str
+    name: str
     trade_type: str
     core_reason: str
 
@@ -59,7 +60,8 @@ def compose_digest_body(
     lines = [subject, ""]
     if picks:
         for i, p in enumerate(picks, start=1):
-            lines.append(f"{i}. {p.ticker} [{p.trade_type}] — {p.core_reason}")
+            label = f"{p.ticker} - {p.name}" if p.name else p.ticker
+            lines.append(f"{i}. {label} [{p.trade_type}] — {p.core_reason}")
     else:
         lines.append(f"No qualifying setups for {run_date}.")
 
@@ -80,8 +82,9 @@ def compose_digest_body(
     html_parts = [f"<h2>{escape(subject)}</h2>"]
     if picks:
         items = "".join(
-            f"<li>{escape(p.ticker)} [{escape(p.trade_type)}] — "
-            f"{escape(p.core_reason)}</li>"
+            f"<li>{escape(p.ticker)}"
+            f"{' - ' + escape(p.name) if p.name else ''} "
+            f"[{escape(p.trade_type)}] — {escape(p.core_reason)}</li>"
             for p in picks
         )
         html_parts.append(f"<ol>{items}</ol>")

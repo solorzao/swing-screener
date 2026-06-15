@@ -37,3 +37,12 @@ def load_universe(path: Path = DEFAULT_SEED) -> list[UniverseEntry]:
                 )
             )
     return entries
+
+
+def names_by_ticker(path: Path = DEFAULT_SEED) -> dict[str, str]:
+    """Map upper-cased ticker -> company name from the universe CSV.
+
+    Built from :func:`load_universe`, so the same upper-casing and first-wins
+    de-duplication apply.
+    """
+    return {e.ticker: e.name for e in load_universe(path)}

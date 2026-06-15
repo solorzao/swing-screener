@@ -32,6 +32,7 @@ from swing_screener.storage.blob import blob_enabled, download_bytes
 @dataclass(frozen=True)
 class PdfPick:
     ticker: str
+    name: str
     trade_type: str
     score: float
     chart_path: str | None
@@ -47,28 +48,26 @@ class PdfPick:
     rationale: str
 
 
-def build_digest_pdf(picks: Sequence[PdfPick], out_path: Path) -> Path:
-    """Render ``picks`` into a multi-section PDF at ``out_path`` and return it.
+def build_story(picks: Sequence[PdfPick]) -> list:
+    """Build the reportlab flowables (the "story") for ``picks``.
 
-    One section per pick, separated by page breaks. A pick whose ``chart_path``
-    is ``None`` or does not exist on disk is rendered without its image. An
-    empty ``picks`` sequence still produces a valid (placeholder) PDF.
+    Factored out of :func:`build_digest_pdf` so the section content (headings,
+    levels table) is testable without parsing the rendered PDF. An empty
+    sequence yields a single placeholder paragraph.
     """
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
     styles = getSampleStyleSheet()
-    doc = SimpleDocTemplate(str(out_path), pagesize=letter)
     story: list = []
 
     if not picks:
         story.append(Paragraph("No picks.", styles["BodyText"]))
-        doc.build(story)
-        return out_path
+        return story
 
     for i, p in enumerate(picks):
+        name_part = f" - {p.name}" if p.name else ""
         story.append(
             Paragraph(
-                f"{p.ticker} &nbsp; [{p.trade_type}] &nbsp; score {p.score:.2f}",
+                f"{p.ticker}{name_part} &nbsp; [{p.trade_type}] "
+                f"&nbsp; score {p.score:.2f}",
                 styles["Title"],
             )
         )
@@ -90,6 +89,7 @@ def build_digest_pdf(picks: Sequence[PdfPick], out_path: Path) -> Path:
             story.append(Image(p.chart_path, width=6.5 * inch, height=3.2 * inch))
             story.append(Spacer(1, 0.1 * inch))
         levels = [
+            ["Company", p.name],
             ["Entry zone", f"{p.entry_floor:.2f} - {p.entry_ceiling:.2f}"],
             ["Stop", f"{p.stop:.2f}"],
             ["Target", f"{p.target:.2f}"],
@@ -113,5 +113,18 @@ def build_digest_pdf(picks: Sequence[PdfPick], out_path: Path) -> Path:
         if i < len(picks) - 1:
             story.append(PageBreak())
 
-    doc.build(story)
+    return story
+
+
+def build_digest_pdf(picks: Sequence[PdfPick], out_path: Path) -> Path:
+    """Render ``picks`` into a multi-section PDF at ``out_path`` and return it.
+
+    One section per pick, separated by page breaks. A pick whose ``chart_path``
+    is ``None`` or does not exist on disk is rendered without its image. An
+    empty ``picks`` sequence still produces a valid (placeholder) PDF.
+    """
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    doc = SimpleDocTemplate(str(out_path), pagesize=letter)
+    doc.build(build_story(picks))
     return out_path
