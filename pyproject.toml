@@ -33,6 +33,10 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 swing_screener = ["py.typed"]
+# The screening universe ships INSIDE the package: load_universe() resolves it
+# via Path(__file__).parent, so a non-editable `pip install` (the Docker image)
+# must bundle the CSV or DEFAULT_SEED won't exist at runtime.
+"swing_screener.data" = ["universe_seed.csv"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
