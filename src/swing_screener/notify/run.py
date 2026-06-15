@@ -1,0 +1,144 @@
+"""Digest orchestrator: selection -> Claude analysis -> PDF -> email.
+
+Wires the Phase 4 pieces into one idempotent run. For a given ``(kind,
+run_date)`` it selects the picks, has Claude narrate each one (with a
+deterministic fallback baked into ``analyze_signal``), builds the attachment
+PDF, and sends the digest email plus a standalone exit-alert email when there
+are pending exit events.
+
+Idempotency is enforced via an ``EmailLog`` row per ``(kind, run_date)``: a
+second run for the same day is a no-op. PDF rendering is best-effort and must
+never block the email. The Anthropic client and the SMTP send function are
+injectable seams so tests never hit the network or send mail.
+"""
+
+import argparse
+import logging
+import os
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import date, datetime
+from pathlib import Path
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from swing_screener.db.models import EmailLog, Signal
+from swing_screener.db.session import get_engine
+from swing_screener.notify import select as sel
+from swing_screener.notify import smtp
+from swing_screener.notify.alerts import compose_exit_alert
+from swing_screener.notify.analysis import SignalFacts, analyze_signal
+from swing_screener.notify.body import AlertLine, DigestPick, compose_digest_body
+from swing_screener.notify.pdf import PdfPick, build_digest_pdf
+
+log = logging.getLogger(__name__)
+
+SmtpSend = Callable[..., None]
+
+_PICKERS = {"daily": sel.daily_picks, "weekly": sel.weekly_picks, "monthly": sel.monthly_picks}
+
+
+@dataclass(frozen=True)
+class DigestResult:
+    n_picks: int
+    pdf_attached: bool
+    sent: bool
+
+
+def _facts(sig: Signal) -> SignalFacts:
+    return SignalFacts(
+        ticker=sig.ticker, timeframe=sig.timeframe, trade_type=sig.horizon, score=sig.score,
+        mtf_aligned=sig.mtf_aligned, quality_tier=sig.quality_tier,
+        volatility_tier=sig.volatility_tier, oversold=sig.oversold,
+        trigger_close=sig.trigger_close, atr=sig.atr, rsi=sig.rsi, entry_floor=sig.entry_floor,
+        entry_ceiling=sig.entry_ceiling, stop=sig.stop, target=sig.target,
+    )
+
+
+def _already_sent(session: Session, kind: str, run_date: date) -> bool:
+    stmt = select(EmailLog).where(EmailLog.kind == kind, EmailLog.run_date == run_date)
+    return session.scalars(stmt).first() is not None
+
+
+def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str | None = None,
+                pdf_dir: Path = Path(".digests"), anthropic_client: object | None = None,
+                smtp_send: SmtpSend = smtp.send_email) -> DigestResult:
+    run_date = run_date or date.today()
+    recipient = to or os.environ.get("DIGEST_TO")
+    if not recipient:  # fail fast, before any billable Claude calls
+        raise RuntimeError("no recipient: set DIGEST_TO or pass to=")
+    engine = get_engine(db_url)
+    with Session(engine) as session:
+        alerts = sel.pending_exit_alerts(session, run_date)
+
+        # Exit alerts are urgent and tracked independently of the digest (their own
+        # "exit" idempotency key), so a re-run still delivers an alert that fired
+        # after the day's digest already went out.
+        if alerts and not _already_sent(session, "exit", run_date):
+            alert_email = compose_exit_alert(alerts, run_date)
+            smtp_send(to=recipient, subject=alert_email.subject, text=alert_email.text,
+                      html=alert_email.html, attachments=[])
+            session.add(EmailLog(sent_at=datetime.now(), kind="exit",
+                                 subject=alert_email.subject, run_date=run_date))
+            session.commit()
+
+        picks = _PICKERS[kind](session, run_date)
+        if _already_sent(session, kind, run_date):  # don't re-send the same digest
+            return DigestResult(n_picks=len(picks), pdf_attached=False, sent=False)
+
+        digest_picks: list[DigestPick] = []
+        pdf_picks: list[PdfPick] = []
+        for sig in picks:
+            facts = _facts(sig)
+            analysis = analyze_signal(facts, client=anthropic_client)  # type: ignore[arg-type]
+            digest_picks.append(DigestPick(sig.ticker, sig.horizon, analysis.core_reason))
+            pdf_picks.append(PdfPick(
+                ticker=sig.ticker, trade_type=sig.horizon, score=sig.score,
+                chart_path=sig.chart_path, entry_floor=sig.entry_floor,
+                entry_ceiling=sig.entry_ceiling, stop=sig.stop, target=sig.target,
+                risk_reward=facts.risk_reward, quality_tier=sig.quality_tier,
+                volatility_tier=sig.volatility_tier, oversold=sig.oversold,
+                mtf_aligned=sig.mtf_aligned, rationale=analysis.rationale,
+            ))
+
+        pdf_path: Path | None = None
+        if digest_picks:
+            try:
+                pdf_path = build_digest_pdf(
+                    pdf_picks, Path(pdf_dir) / f"{kind}_{run_date:%Y%m%d}.pdf"
+                )
+            except Exception:  # PDF must never block the email
+                log.warning("PDF build failed for %s %s", kind, run_date, exc_info=True)
+                pdf_path = None
+        pdf_attached = pdf_path is not None
+
+        alert_lines = [
+            AlertLine(ticker=(a.message.split(" ", 1)[0] if a.message else ""),
+                      tier=a.tier, reason=a.reason, message=a.message)
+            for a in alerts
+        ]
+        body = compose_digest_body(kind, run_date, digest_picks, alert_lines, has_pdf=pdf_attached)
+        smtp_send(to=recipient, subject=body.subject, text=body.text, html=body.html,
+                  attachments=([pdf_path] if pdf_path is not None else []))
+
+        session.add(EmailLog(sent_at=datetime.now(), kind=kind, subject=body.subject,
+                             run_date=run_date))
+        session.commit()
+        return DigestResult(n_picks=len(picks), pdf_attached=pdf_attached, sent=True)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Send a swing-screener email digest.")
+    parser.add_argument("--kind", choices=["daily", "weekly", "monthly"], default="daily")
+    parser.add_argument("--db", default="sqlite:///local.db")
+    parser.add_argument("--pdf-dir", type=Path, default=Path(".digests"))
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO)
+    result = send_digest(kind=args.kind, db_url=args.db, pdf_dir=args.pdf_dir)
+    log.info("digest %s: picks=%d pdf=%s sent=%s",
+             args.kind, result.n_picks, result.pdf_attached, result.sent)
+
+
+if __name__ == "__main__":
+    main()

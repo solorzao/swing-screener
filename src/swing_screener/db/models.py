@@ -124,3 +124,4 @@ class EmailLog(Base):
     sent_at: Mapped[datetime]
     kind: Mapped[str]  # daily / weekly / monthly / exit
     subject: Mapped[str] = mapped_column(default="")
+    run_date: Mapped[date | None] = mapped_column(default=None)

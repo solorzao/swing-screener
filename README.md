@@ -84,6 +84,14 @@ Full run instructions, flags, and how to inspect results:
 
 See [`docs/dashboard.md`](docs/dashboard.md).
 
+**Email digests** (summary email + detailed PDF, daily/weekly/monthly, + exit alerts):
+
+```powershell
+.\.venv\Scripts\python -m swing_screener.notify.run --kind daily --db sqlite:///local.db
+```
+
+See [`docs/email-digests.md`](docs/email-digests.md).
+
 ## Project layout
 
 ```
@@ -128,7 +136,7 @@ It is **idempotent per run-date** (safe to re-run a day) and isolates per-ticker
 | 2 | Data pipeline + SQLite persistence + shadow book + charts + orchestrator | ✅ done |
 | — | **Local dry-run** (run nightly ~1–2 weeks to accumulate the shadow book) | ◻ in progress |
 | 3 | Local Streamlit dashboard (candidates, active trades, P/L, screener performance) | ✅ done |
-| 4 | Email digests (daily top-5 / weekly / monthly) + Claude-written analysis + exit alerts | 📋 planned |
+| 4 | Email digests (summary + detailed PDF) + Claude-written analysis + exit alerts | ✅ done |
 | 5 | Deploy to Azure (Container Apps Jobs, Azure SQL, Blob, Key Vault) + CD on merge | 📋 planned |
 | 6 | Options module (needs a paid data feed) | 📋 later |
 
