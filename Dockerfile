@@ -37,6 +37,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+# Alembic migration files live here (copied below), NOT next to the installed
+# package in site-packages -- the pipeline reads this to find alembic.ini/alembic.
+ENV SWING_ALEMBIC_DIR=/app
 
 # COPY exactly what the build + runtime need. pyproject has no `readme=`, so
 # README.md is NOT required by the build (and is excluded via .dockerignore).

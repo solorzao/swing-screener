@@ -33,6 +33,18 @@ _BAR_KEYS = ("low", "high", "close", "shaved_head", "bearish")
 _SERVERLESS_RESUMING = "40613"
 
 
+def _alembic_dir() -> Path:
+    """Directory holding ``alembic.ini`` + ``alembic/``.
+
+    NOT relative to this file: in a non-editable install (the container) the
+    package lives in ``site-packages`` while the Dockerfile copies the migration
+    files to the WORKDIR (``/app``). So resolve from ``SWING_ALEMBIC_DIR`` (set to
+    ``/app`` in the image) or the current working directory (the repo root
+    locally, the WORKDIR in the container) -- never the package location.
+    """
+    return Path(os.environ.get("SWING_ALEMBIC_DIR", ".")).resolve()
+
+
 def _alembic_upgrade(db_url: str) -> None:
     """Run ``alembic upgrade head`` against ``db_url`` (the live path).
 
@@ -44,9 +56,9 @@ def _alembic_upgrade(db_url: str) -> None:
     from alembic import command
     from alembic.config import Config
 
-    repo_root = Path(__file__).resolve().parents[2]
-    cfg = Config(str(repo_root / "alembic.ini"))
-    cfg.set_main_option("script_location", str(repo_root / "alembic"))
+    base = _alembic_dir()
+    cfg = Config(str(base / "alembic.ini"))
+    cfg.set_main_option("script_location", str(base / "alembic"))
     cfg.set_main_option("sqlalchemy.url", db_url)
     command.upgrade(cfg, "head")
 

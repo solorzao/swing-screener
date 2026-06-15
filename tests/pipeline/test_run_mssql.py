@@ -186,3 +186,23 @@ def test_resolve_db_url_explicit_override_wins(monkeypatch):
 
     # an explicit --db wins over settings; mssql override is allowed in cloud
     assert run._resolve_db_url("mssql+pyodbc://server/db") == "mssql+pyodbc://server/db"
+
+
+# --- _alembic_dir: the migration config must resolve to REAL files -----------
+# Regression: it used to resolve relative to the package (parents[2]), which in a
+# non-editable/container install is site-packages -- so script_location pointed at
+# the installed alembic LIBRARY (no migration env.py) and the cloud migration died
+# with "Can't find .../site-packages/alembic/env.py".
+
+def test_alembic_dir_default_points_at_real_config():
+    # default resolves from CWD; pytest runs from the repo root, where the real
+    # alembic.ini + alembic/env.py live. (The old package-relative path pointed at
+    # src/alembic.ini, which does not exist.)
+    base = run._alembic_dir()
+    assert (base / "alembic.ini").exists(), f"alembic.ini not found at {base}"
+    assert (base / "alembic" / "env.py").exists()
+
+
+def test_alembic_dir_honors_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("SWING_ALEMBIC_DIR", str(tmp_path))
+    assert run._alembic_dir() == tmp_path.resolve()
