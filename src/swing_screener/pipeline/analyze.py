@@ -199,9 +199,10 @@ def analyze_reversals(
         avg_dollar_vol = _avg_dollar_volume(frame, cfg)
         atr_pct = ctx.atr / price if price else 0.0
         score = score_reversal(ReversalScoreInputs(
-            min_rsi=ctx.min_rsi, rsi_floor=cfg.reversal_oversold_rsi_max,
             body_frac=ctx.body_frac, shaved_bottom=ctx.shaved_bottom,
+            red_run=ctx.red_run, decline_bars=ctx.decline_bars,
             volume_ratio=ctx.volume_ratio, confirmed=(ctx.strength == "confirmed"),
+            min_rsi=ctx.min_rsi, rsi_floor=cfg.reversal_oversold_rsi_max,
         ))
         results.append(SignalResult(
             ticker=ticker, timeframe=tf, horizon=_HORIZON_BY_TF[tf], score=score,

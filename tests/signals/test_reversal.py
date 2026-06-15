@@ -80,6 +80,40 @@ def test_no_reversal_without_a_green_flip():
     assert detect_reversal(_frame(_reversal_rows(bounce=False)), CFG) is None
 
 
+def test_reversal_is_ha_gated_not_rsi_gated():
+    # Same HA structure (downtrend -> flip below the slow EMA), but force RSI well
+    # above any 'oversold' level. It must STILL detect -- proving the gate is HA
+    # structure, not RSI (the old hard RSI<25 gate would have rejected this).
+    f = _frame(_reversal_rows()).copy()
+    f["rsi"] = 60.0
+    ctx = detect_reversal(f, CFG)
+    assert ctx is not None
+    assert ctx.red_run >= CFG.reversal_min_bearish_bars
+    assert ctx.min_rsi >= CFG.reversal_oversold_rsi_max  # 60 -> not oversold, yet detected
+
+
+def _shallow_dip_rows():
+    """A rising base, then a sharp 2-bar dip below the EMA + a flip -- NOT a sustained
+    HA downtrend, so the red-run gate should reject it."""
+    rows, p = [], 100.0
+    for _ in range(50):
+        o = p
+        c = p + 0.8
+        rows.append(_bar(o, c + 0.2, o - 0.2, c))
+        p = c
+    for _ in range(2):  # a 2-bar dip, not a downtrend
+        o = p
+        c = p - 13.0
+        rows.append(_bar(o, o + 0.2, c - 0.3, c))
+        p = c
+    rows.append(_bar(p + 0.2, p + 14.0, p - 0.1, p + 13.5, v=3_000_000.0))
+    return rows
+
+
+def test_two_bar_dip_is_not_a_reversal():
+    assert detect_reversal(_frame(_shallow_dip_rows()), CFG) is None  # red-run gate rejects it
+
+
 def test_no_reversal_in_a_healthy_uptrend():
     # a steady grind up is never oversold -> no reversal candidate
     rows, p = [], 50.0
@@ -108,17 +142,28 @@ def test_reversal_target_is_overhead_resistance():
     assert zone.target in (ctx.ema_slow, ctx.swing_high)
 
 
-def test_score_rewards_depth_volume_and_confirmation():
-    base = ReversalScoreInputs(min_rsi=20.0, rsi_floor=25.0, body_frac=0.4,
-                               shaved_bottom=False, volume_ratio=1.0, confirmed=False)
-    deeper = ReversalScoreInputs(min_rsi=5.0, rsi_floor=25.0, body_frac=0.4,
-                                 shaved_bottom=False, volume_ratio=1.0, confirmed=False)
-    louder = ReversalScoreInputs(min_rsi=20.0, rsi_floor=25.0, body_frac=0.4,
-                                 shaved_bottom=False, volume_ratio=2.0, confirmed=False)
-    confirmed = ReversalScoreInputs(min_rsi=20.0, rsi_floor=25.0, body_frac=0.4,
-                                    shaved_bottom=False, volume_ratio=1.0, confirmed=True)
-    b = score_reversal(base)
+def _score_inputs(**over):
+    base = dict(body_frac=0.4, shaved_bottom=False, red_run=3, decline_bars=6,
+                volume_ratio=1.0, confirmed=False, min_rsi=20.0, rsi_floor=25.0)
+    base.update(over)
+    return ReversalScoreInputs(**base)
+
+
+def test_score_is_ha_centric():
+    b = score_reversal(_score_inputs())
     assert 0.0 <= b <= 1.0
-    assert score_reversal(deeper) > b      # deeper capitulation scores higher
-    assert score_reversal(louder) > b      # heavier volume scores higher
-    assert score_reversal(confirmed) > b   # confirmation scores higher
+    # HA factors dominate: a stronger flip body and a longer red run both raise it.
+    assert score_reversal(_score_inputs(body_frac=0.9)) > b      # stronger HA flip
+    assert score_reversal(_score_inputs(red_run=6)) > b          # deeper HA downtrend
+    assert score_reversal(_score_inputs(shaved_bottom=True)) > b  # clean HA flip
+    assert score_reversal(_score_inputs(volume_ratio=2.0)) > b   # heavier volume
+    assert score_reversal(_score_inputs(confirmed=True)) > b     # confirmation
+    assert score_reversal(_score_inputs(min_rsi=5.0)) > b        # deeper oversold (a confirm)
+
+
+def test_rsi_depth_is_a_minor_factor_vs_ha():
+    # The HA flip+downtrend swing must outweigh the RSI-depth swing, or the screener
+    # would be RSI-driven. Max-out HA factors vs max-out RSI depth from the same base.
+    ha_max = score_reversal(_score_inputs(body_frac=1.0, shaved_bottom=True, red_run=6))
+    rsi_max = score_reversal(_score_inputs(min_rsi=0.0))
+    assert ha_max > rsi_max

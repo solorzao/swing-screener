@@ -31,10 +31,12 @@ class StrategyConfig:
     oversold_rsi_max: float = 35.0          # rsi < this -> oversold
     avg_dollar_vol_window: int = 20         # bars used for avg dollar volume
 
-    # reversal screener (oversold bounce / relief rally -> the "Reversal Plays" list)
-    reversal_oversold_rsi_max: float = 25.0   # recent RSI must dip below this (capitulation)
-    reversal_oversold_lookback: int = 5       # bars to look back for the oversold dip
-    reversal_decline_bars: int = 6            # window for the capitulation low + swing-high resistance
+    # reversal screener (Heiken-Ashi reversal off a downtrend -> the "Reversal Plays" list).
+    # HA structure is the gate; RSI is only a scoring confirmation (NOT a hard filter).
+    reversal_min_bearish_bars: int = 3        # HA red bars required in the decline (downtrend gate)
+    reversal_oversold_rsi_max: float = 25.0   # RSI scoring floor: how deep is "deeply oversold"
+    reversal_oversold_lookback: int = 5       # bars to look back when measuring oversold depth
+    reversal_decline_bars: int = 6            # window for the decline low + swing-high resistance
     reversal_target_r_multiple: float = 2.0   # fallback target R when no clean resistance sits above
 
     # exits
