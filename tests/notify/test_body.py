@@ -19,6 +19,17 @@ def test_daily_body_lists_picks_and_pdf_pointer():
     assert "AMD" in c.html and "Advanced Micro Devices" in c.html
 
 
+def test_deep_picks_are_labelled_in_body():
+    picks = [
+        DigestPick("AMD", "Advanced Micro Devices", "medium", "Deep read.", is_deep=True),
+        DigestPick("AEP", "American Electric Power", "long", "Standard."),
+    ]
+    c = compose_digest_body("daily", date(2026, 6, 15), picks, [], has_pdf=True)
+    assert "[medium · Deep Analysis]" in c.text   # deep pick flagged
+    assert "[long] —" in c.text                   # standard pick unchanged
+    assert "Deep Analysis</b>" in c.html
+
+
 def test_empty_company_name_omits_dash():
     picks = [DigestPick("AMD", "", "medium", "Daily continuation.")]
     c = compose_digest_body("daily", date(2026, 6, 15), picks, [], has_pdf=False)

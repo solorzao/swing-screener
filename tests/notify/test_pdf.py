@@ -58,6 +58,33 @@ def test_empty_company_name_omits_dash_in_heading(tmp_path):
     assert any(h.startswith("AMD &nbsp; [") for h in headings)  # no "- " with empty name
 
 
+def test_deep_pick_renders_label_and_structured_rationale():
+    from swing_screener.notify.pdf import build_story
+
+    pick = PdfPick(
+        ticker="AMD", name="Advanced Micro Devices", trade_type="medium", score=0.9,
+        chart_path=None, entry_floor=96.0, entry_ceiling=101.0, stop=95.0, target=110.0,
+        risk_reward=1.5, quality_tier="reputable", volatility_tier="high", oversold=False,
+        mtf_aligned=True, atr_pct=0.04, is_deep=True,
+        rationale="Read: Clean continuation.\nTechnicals: Held EMA50 on the daily.\n"
+                  "Risk: Broad-market wobble.",
+    )
+    story = build_story([pick])
+    rendered = " ".join(getattr(f, "text", "") for f in story)
+    assert "DEEP ANALYSIS" in rendered                  # the label is present
+    assert "<b>Read:</b>" in rendered                   # labels bolded -> structured
+    assert "<b>Technicals:</b>" in rendered
+    assert "<b>Risk:</b>" in rendered
+
+
+def test_standard_pick_has_no_deep_label():
+    from swing_screener.notify.pdf import build_story
+
+    story = build_story([_pick("AMD", None)])  # is_deep defaults False
+    rendered = " ".join(getattr(f, "text", "") for f in story)
+    assert "DEEP ANALYSIS" not in rendered
+
+
 def test_empty_picks_still_builds(tmp_path):
     out = build_digest_pdf([], tmp_path / "empty.pdf")
     assert out.exists() and out.read_bytes()[:4] == b"%PDF"

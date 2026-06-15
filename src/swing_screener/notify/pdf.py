@@ -11,6 +11,7 @@ import io
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from xml.sax.saxutils import escape as _xml_escape
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
@@ -47,6 +48,29 @@ class PdfPick:
     mtf_aligned: bool
     atr_pct: float  # ATR as a fraction of price (e.g. 0.023 == 2.3%), not dollars
     rationale: str
+    is_deep: bool = False  # got the Opus deep analysis -> labelled + structured
+
+
+def _rationale_flowables(text: str, styles: dict) -> list:
+    """Render a rationale into one Paragraph per line, bolding ``Label:`` prefixes.
+
+    The deep analyst emits labelled lines (Read/Technicals/Fundamentals/Sentiment/
+    Risk/Sources); the standard narrator emits a single blob. Either way we split
+    on newlines, escape the text (model output is free-form -- raw ``<``/``&`` would
+    break reportlab), and bold a short leading ``Label:`` so the structure reads.
+    """
+    flows: list = []
+    for raw in text.split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        head, sep, rest = line.partition(":")
+        if sep and len(head) <= 24 and not head.startswith(("-", "http")):
+            flows.append(Paragraph(
+                f"<b>{_xml_escape(head)}:</b> {_xml_escape(rest.strip())}", styles["BodyText"]))
+        else:
+            flows.append(Paragraph(_xml_escape(line), styles["BodyText"]))
+    return flows
 
 
 def build_story(picks: Sequence[PdfPick]) -> list:
@@ -111,7 +135,12 @@ def build_story(picks: Sequence[PdfPick]) -> list:
         )
         story.append(table)
         story.append(Spacer(1, 0.15 * inch))
-        story.append(Paragraph(p.rationale, styles["BodyText"]))
+        if p.is_deep:  # flag the richer Opus output so it's distinguishable at a glance
+            story.append(Paragraph(
+                '<font color="#1a5fb4"><b>DEEP ANALYSIS</b></font>', styles["BodyText"]))
+            story.append(Spacer(1, 0.05 * inch))
+        for flow in _rationale_flowables(p.rationale, styles):
+            story.append(flow)
         if i < len(picks) - 1:
             story.append(PageBreak())
 

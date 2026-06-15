@@ -202,7 +202,8 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
             else:
                 analysis = analyze_signal(facts, client=anthropic_client)  # type: ignore[arg-type]
             name = names.get(sig.ticker, "")
-            digest_picks.append(DigestPick(sig.ticker, name, sig.horizon, analysis.core_reason))
+            digest_picks.append(DigestPick(sig.ticker, name, sig.horizon, analysis.core_reason,
+                                           is_deep=analysis.is_deep))
             pdf_picks.append(PdfPick(
                 ticker=sig.ticker, name=name, trade_type=sig.horizon, score=sig.score,
                 chart_path=sig.chart_path, entry_floor=sig.entry_floor,
@@ -210,7 +211,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                 risk_reward=facts.risk_reward, quality_tier=sig.quality_tier,
                 volatility_tier=sig.volatility_tier, oversold=sig.oversold,
                 mtf_aligned=sig.mtf_aligned, atr_pct=facts.atr_pct,
-                rationale=analysis.rationale,
+                rationale=analysis.rationale, is_deep=analysis.is_deep,
             ))
 
         pdf_path: Path | None = None
