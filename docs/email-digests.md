@@ -14,12 +14,17 @@ Claude-written rationale per pick, and fires urgent **exit alerts** for active t
 
 ## Configuration (environment variables)
 
+The email **transport is pluggable** (`notify/transport.py`): if `SWING_ACS_ENDPOINT` is set
+it sends via **Azure Communication Services** authenticated by the managed identity (no
+stored credential — this is what the Azure deploy uses); otherwise it falls back to Gmail
+SMTP for local use.
+
 | Var | Meaning |
 |---|---|
 | `ANTHROPIC_API_KEY` | Claude API key (model `claude-sonnet-4-6`; upgradeable to `claude-opus-4-8`) |
-| `GMAIL_ADDRESS` | the Gmail account that sends the digests |
-| `GMAIL_APP_PASSWORD` | a Gmail **app password** (not your login password — create one under Google Account → Security → 2-Step Verification → App passwords) |
 | `DIGEST_TO` | the recipient address (usually yourself) |
+| `SWING_ACS_ENDPOINT` / `SWING_ACS_SENDER` | *(cloud)* ACS endpoint + verified MailFrom address; when set, email sends via ACS + managed identity, no secret stored |
+| `GMAIL_ADDRESS` / `GMAIL_APP_PASSWORD` | *(local fallback only)* a Gmail account + **app password** (not your login password) — used only when ACS isn't configured |
 
 ## Run it
 

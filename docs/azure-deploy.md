@@ -26,9 +26,9 @@ repoints the jobs on merge to `main` via GitHub→Azure **OIDC**.
 - An Azure subscription and `az` CLI (`az login`).
 - Your own Entra (Azure AD) **user object id** (`az ad signed-in-user show --query id -o tsv`)
   — you become the SQL AAD admin and a Blob reader for the local dashboard.
-- The real secret values: `ANTHROPIC_API_KEY`, the Gmail address + app password, and the
-  digest recipient. These are passed to the deploy as `@secure()` params and stored only
-  in Key Vault — **never commit them**.
+- The real secret value: `ANTHROPIC_API_KEY` (and the digest recipient). Passed to the deploy
+  as `@secure()` params and stored only in Key Vault — **never commit them**. **Email needs no
+  secret**: it sends via Azure Communication Services authenticated by the managed identity.
 
 ## Step 1 — Provision (Bicep)
 
@@ -43,10 +43,12 @@ az deployment sub create \
   --location <region> \
   --template-file infra/main.bicep \
   --parameters infra/main.bicepparam \
-  --parameters anthropicApiKey=<...> gmailAddress=<...> gmailAppPassword=<...> digestTo=<...> \
+  --parameters anthropicApiKey=<...> digestTo=<you@example.com> \
                sqlAadAdminLogin=<your-upn> sqlAadAdminObjectId=<your-object-id> \
                sqlAllowedIps='["<your-home-ip>"]' \
   --what-if                                         # review first, then re-run without --what-if
+  # Email sends via Azure Communication Services + managed identity (no secret).
+  # On re-deploys add seedSecrets=false so an already-set ANTHROPIC_API_KEY isn't overwritten.
 ```
 
 - **Azure SQL defaults to the Basic DTU tier** (~$5/mo flat, no cold start). A
