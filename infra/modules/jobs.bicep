@@ -131,7 +131,9 @@ var commonEnv = [
   }
   {
     name: 'SWING_CHART_DIR'
-    value: '/data/charts'
+    // /tmp is world-writable; the non-root user can't create /data. Charts are
+    // uploaded to Blob immediately, so this local staging dir is throwaway.
+    value: '/tmp/charts'
   }
   {
     name: 'KEY_VAULT_URL'
