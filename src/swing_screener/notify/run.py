@@ -31,6 +31,7 @@ from swing_screener.notify.alerts import compose_exit_alert
 from swing_screener.notify.analysis import SignalFacts, analyze_signal
 from swing_screener.notify.body import AlertLine, DigestPick, compose_digest_body
 from swing_screener.notify.pdf import PdfPick, build_digest_pdf
+from swing_screener.pipeline.exitcheck import ExitCheckResult, LatestBarsFn, run_exit_check
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +45,27 @@ class DigestResult:
     n_picks: int
     pdf_attached: bool
     sent: bool
+
+
+def _emit_pending_exit_alert(session: Session, run_date: date, recipient: str,
+                             smtp_send: SmtpSend) -> bool:
+    """Send a standalone exit-alert email if real exit events are pending today.
+
+    Exit alerts are urgent and tracked independently of the digest (their own
+    per-day ``kind="exit"`` idempotency key), so a re-run still delivers an alert
+    that fired after the day's digest already went out. Returns True iff an email
+    was sent. Shared by ``send_digest`` and the ``exit`` run path.
+    """
+    alerts = sel.pending_exit_alerts(session, run_date)
+    if not alerts or _already_sent(session, "exit", run_date):
+        return False
+    alert_email = compose_exit_alert(alerts, run_date)
+    smtp_send(to=recipient, subject=alert_email.subject, text=alert_email.text,
+              html=alert_email.html, attachments=[])
+    session.add(EmailLog(sent_at=datetime.now(), kind="exit",
+                         subject=alert_email.subject, run_date=run_date))
+    session.commit()
+    return True
 
 
 def _facts(sig: Signal) -> SignalFacts:
@@ -71,17 +93,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
     engine = get_engine(db_url)
     with Session(engine) as session:
         alerts = sel.pending_exit_alerts(session, run_date)
-
-        # Exit alerts are urgent and tracked independently of the digest (their own
-        # "exit" idempotency key), so a re-run still delivers an alert that fired
-        # after the day's digest already went out.
-        if alerts and not _already_sent(session, "exit", run_date):
-            alert_email = compose_exit_alert(alerts, run_date)
-            smtp_send(to=recipient, subject=alert_email.subject, text=alert_email.text,
-                      html=alert_email.html, attachments=[])
-            session.add(EmailLog(sent_at=datetime.now(), kind="exit",
-                                 subject=alert_email.subject, run_date=run_date))
-            session.commit()
+        _emit_pending_exit_alert(session, run_date, recipient, smtp_send)
 
         picks = _PICKERS[kind](session, run_date)
         if _already_sent(session, kind, run_date):  # don't re-send the same digest
@@ -128,13 +140,43 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         return DigestResult(n_picks=len(picks), pdf_attached=pdf_attached, sent=True)
 
 
+def run_exit_check_and_alert(*, db_url: str, run_date: date | None = None, to: str | None = None,
+                             smtp_send: SmtpSend = smtp.send_email,
+                             latest_bars_fn: LatestBarsFn | None = None) -> ExitCheckResult:
+    """Intraday exit path: PRODUCE today's real exit events, then SEND the alert.
+
+    Unlike the digest kinds there is no ``_PICKERS["exit"]``; this is a thin
+    two-step path. (a) ``run_exit_check`` records ``is_paper=False`` ExitEvents
+    for any open real trade whose latest bar trips an exit, then (b) the shared
+    ``_emit_pending_exit_alert`` helper emails them (subject "Exit", no PDF),
+    reusing the existing per-day ``kind="exit"`` EmailLog idempotency.
+    """
+    run_date = run_date or date.today()
+    recipient = to or os.environ.get("DIGEST_TO")
+    if not recipient:
+        raise RuntimeError("no recipient: set DIGEST_TO or pass to=")
+
+    kwargs: dict[str, object] = {"db_url": db_url, "today": run_date}
+    if latest_bars_fn is not None:
+        kwargs["latest_bars_fn"] = latest_bars_fn
+    result = run_exit_check(**kwargs)  # type: ignore[arg-type]
+
+    with Session(get_engine(db_url)) as session:
+        _emit_pending_exit_alert(session, run_date, recipient, smtp_send)
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Send a swing-screener email digest.")
-    parser.add_argument("--kind", choices=["daily", "weekly", "monthly"], default="daily")
+    parser.add_argument("--kind", choices=["daily", "weekly", "monthly", "exit"], default="daily")
     parser.add_argument("--db", default="sqlite:///local.db")
     parser.add_argument("--pdf-dir", type=Path, default=Path(".digests"))
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
+    if args.kind == "exit":
+        exit_result = run_exit_check_and_alert(db_url=args.db)
+        log.info("exit check: open=%d exited=%d", exit_result.n_open, exit_result.n_exited)
+        return
     result = send_digest(kind=args.kind, db_url=args.db, pdf_dir=args.pdf_dir)
     log.info("digest %s: picks=%d pdf=%s sent=%s",
              args.kind, result.n_picks, result.pdf_attached, result.sent)
