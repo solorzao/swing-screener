@@ -1,7 +1,7 @@
 """Tests for ``get_engine`` branching across sqlite (memory/file) and mssql.
 
-No real DB driver or network is exercised: ``create_engine`` and
-``Base.metadata.create_all`` are monkeypatched with recorders.
+No real DB driver, azure token, or network is exercised: ``create_engine``,
+``Base.metadata.create_all`` and the AAD-token listener are monkeypatched.
 """
 
 from sqlalchemy.pool import StaticPool
@@ -11,7 +11,7 @@ from swing_screener.db import models, session
 
 class _CreateEngineRecorder:
     def __init__(self):
-        self.url: str | None = None
+        self.url = None
         self.kwargs: dict[str, object] = {}
         self.calls = 0
 
@@ -22,7 +22,7 @@ class _CreateEngineRecorder:
         return object()  # sentinel engine; never connected to
 
 
-class _CreateAllRecorder:
+class _CallRecorder:
     def __init__(self):
         self.calls = 0
 
@@ -32,14 +32,18 @@ class _CreateAllRecorder:
 
 def _patch(monkeypatch):
     rec_engine = _CreateEngineRecorder()
-    rec_create_all = _CreateAllRecorder()
+    rec_create_all = _CallRecorder()
+    rec_token = _CallRecorder()
     monkeypatch.setattr(session, "create_engine", rec_engine)
     monkeypatch.setattr(models.Base.metadata, "create_all", rec_create_all)
-    return rec_engine, rec_create_all
+    # don't attach a real do_connect listener to the sentinel engine, and never
+    # import azure / acquire a token in tests.
+    monkeypatch.setattr(session, "_attach_aad_token", rec_token)
+    return rec_engine, rec_create_all, rec_token
 
 
-def test_mssql_uses_health_pooling_and_skips_create_all(monkeypatch):
-    rec_engine, rec_create_all = _patch(monkeypatch)
+def test_mssql_token_auth_clean_odbc_and_skips_create_all(monkeypatch):
+    rec_engine, rec_create_all, rec_token = _patch(monkeypatch)
     url = ("mssql+pyodbc://@host.database.windows.net:1433/swing"
            "?driver=ODBC+Driver+18+for+SQL+Server&Authentication=ActiveDirectoryMSI&User+Id=CID")
 
@@ -47,28 +51,27 @@ def test_mssql_uses_health_pooling_and_skips_create_all(monkeypatch):
 
     assert rec_engine.kwargs.get("pool_pre_ping") is True
     assert rec_engine.kwargs.get("pool_recycle") == 3600
-    # Alembic owns the Azure SQL schema; create_all must not run.
-    assert rec_create_all.calls == 0
-    # The URL is rebuilt as odbc_connect so SQLAlchemy doesn't auto-add
-    # Trusted_Connection=Yes (which conflicts with Authentication -> ODBC FA001).
+    assert rec_create_all.calls == 0  # Alembic owns the Azure SQL schema
+    assert rec_token.calls == 1  # a managed-identity access token is injected on connect
+    # the ODBC string carries NO auth keywords -- the token authenticates, so
+    # neither Trusted_Connection (FA001) nor Authentication/MSI (HYT00) appear.
     odbc = rec_engine.url.query["odbc_connect"]
-    assert "Trusted_Connection" not in odbc
-    assert "Authentication=ActiveDirectoryMSI" in odbc
-    assert "DATABASE=swing" in odbc and "User Id=CID" in odbc
+    for banned in ("Trusted_Connection", "Authentication", "User Id", "UID="):
+        assert banned not in odbc, f"{banned} should be stripped: {odbc}"
+    assert "DATABASE=swing" in odbc and "Encrypt=yes" in odbc
 
 
 def test_mssql_passes_through_existing_odbc_connect(monkeypatch):
-    rec_engine, _ = _patch(monkeypatch)
-    url = "mssql+pyodbc:///?odbc_connect=DRIVER%3D%7BX%7D%3BSERVER%3Dh%3BAuthentication%3DActiveDirectoryMSI"
+    rec_engine, _, _ = _patch(monkeypatch)
+    url = "mssql+pyodbc:///?odbc_connect=DRIVER%3D%7BX%7D%3BSERVER%3Dh%3BDATABASE%3Dswing"
 
     session.get_engine(url)
 
-    # an already-odbc_connect URL is used as-is (not double-wrapped)
-    assert "Authentication=ActiveDirectoryMSI" in rec_engine.url.query["odbc_connect"]
+    assert "DATABASE=swing" in rec_engine.url.query["odbc_connect"]
 
 
 def test_memory_sqlite_uses_static_pool_and_creates_tables(monkeypatch):
-    rec_engine, rec_create_all = _patch(monkeypatch)
+    rec_engine, rec_create_all, _ = _patch(monkeypatch)
 
     session.get_engine("sqlite:///:memory:")
 
@@ -78,7 +81,7 @@ def test_memory_sqlite_uses_static_pool_and_creates_tables(monkeypatch):
 
 
 def test_file_sqlite_creates_tables_without_static_pool(monkeypatch):
-    rec_engine, rec_create_all = _patch(monkeypatch)
+    rec_engine, rec_create_all, _ = _patch(monkeypatch)
 
     session.get_engine("sqlite:///somefile.db")
 

@@ -14,7 +14,7 @@ from sqlalchemy import create_engine, pool
 
 from alembic import context
 from swing_screener.db.models import Base
-from swing_screener.db.session import to_connect_url
+from swing_screener.db.session import make_mssql_engine
 from swing_screener.settings import load_settings
 
 config = context.config
@@ -45,13 +45,15 @@ def run_migrations_offline() -> None:
 def run_migrations_online() -> None:
     """Connect and run migrations against the configured database.
 
-    Build the engine via ``to_connect_url`` (not ``engine_from_config`` off the
-    raw URL) so an Azure SQL managed-identity URL uses the ``odbc_connect`` form
-    -- otherwise SQLAlchemy auto-adds Trusted_Connection=Yes and the connection
-    dies with ODBC FA001 (the same fix ``get_engine`` applies for the screen).
+    Azure SQL connects via ``make_mssql_engine`` (managed-identity access token,
+    no Trusted_Connection/FA001 and no driver-side MSI/HYT00) -- the same path
+    ``get_engine`` uses for the screen; other URLs use a plain engine.
     """
-    connectable = create_engine(
-        to_connect_url(load_settings().db_url), poolclass=pool.NullPool
+    url = load_settings().db_url
+    connectable = (
+        make_mssql_engine(url, poolclass=pool.NullPool)
+        if url.startswith("mssql")
+        else create_engine(url, poolclass=pool.NullPool)
     )
     with connectable.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)
