@@ -40,15 +40,31 @@ def _patch(monkeypatch):
 
 def test_mssql_uses_health_pooling_and_skips_create_all(monkeypatch):
     rec_engine, rec_create_all = _patch(monkeypatch)
-    url = "mssql+pyodbc://user@host/db?driver=ODBC+Driver+18+for+SQL+Server"
+    url = ("mssql+pyodbc://@host.database.windows.net:1433/swing"
+           "?driver=ODBC+Driver+18+for+SQL+Server&Authentication=ActiveDirectoryMSI&User+Id=CID")
 
     session.get_engine(url)
 
-    assert rec_engine.url == url
     assert rec_engine.kwargs.get("pool_pre_ping") is True
     assert rec_engine.kwargs.get("pool_recycle") == 3600
     # Alembic owns the Azure SQL schema; create_all must not run.
     assert rec_create_all.calls == 0
+    # The URL is rebuilt as odbc_connect so SQLAlchemy doesn't auto-add
+    # Trusted_Connection=Yes (which conflicts with Authentication -> ODBC FA001).
+    odbc = rec_engine.url.query["odbc_connect"]
+    assert "Trusted_Connection" not in odbc
+    assert "Authentication=ActiveDirectoryMSI" in odbc
+    assert "DATABASE=swing" in odbc and "User Id=CID" in odbc
+
+
+def test_mssql_passes_through_existing_odbc_connect(monkeypatch):
+    rec_engine, _ = _patch(monkeypatch)
+    url = "mssql+pyodbc:///?odbc_connect=DRIVER%3D%7BX%7D%3BSERVER%3Dh%3BAuthentication%3DActiveDirectoryMSI"
+
+    session.get_engine(url)
+
+    # an already-odbc_connect URL is used as-is (not double-wrapped)
+    assert "Authentication=ActiveDirectoryMSI" in rec_engine.url.query["odbc_connect"]
 
 
 def test_memory_sqlite_uses_static_pool_and_creates_tables(monkeypatch):
