@@ -29,14 +29,21 @@ from swing_screener.config_secrets import get_secret
 from swing_screener.data.universe import names_by_ticker
 from swing_screener.db.models import EmailLog, ExitEvent, Signal
 from swing_screener.db.session import get_engine
+from swing_screener.notify import market_context
 from swing_screener.notify import select as sel
 from swing_screener.notify.alerts import compose_exit_alert
-from swing_screener.notify.analysis import SignalFacts, analyze_signal
+from swing_screener.notify.analysis import (
+    SignalAnalysis,
+    SignalFacts,
+    analyze_signal,
+    analyze_signal_deep,
+)
 from swing_screener.notify.body import AlertLine, DigestPick, compose_digest_body
 from swing_screener.notify.pdf import PdfPick, build_digest_pdf
 from swing_screener.notify.transport import resolve_sender
 from swing_screener.pipeline.exitcheck import ExitCheckResult, LatestBarsFn, run_exit_check
 from swing_screener.settings import load_settings
+from swing_screener.storage.blob import blob_enabled, download_bytes
 
 log = logging.getLogger(__name__)
 
@@ -112,6 +119,25 @@ def _emit_pending_exit_alert(session: Session, run_date: date, recipient: str,
     return True
 
 
+def _load_chart_bytes(chart_path: str | None) -> bytes | None:
+    """Read a chart PNG's bytes for the deep-analysis image input.
+
+    Mirrors pdf.py: in Azure chart_path is a blob KEY (fetch by key); locally it's
+    a filesystem path. Best-effort -- any failure (missing blob/file) yields None,
+    and the deep path runs chartless rather than crashing.
+    """
+    if not chart_path:
+        return None
+    try:
+        if blob_enabled():
+            return download_bytes(chart_path)
+        p = Path(chart_path)
+        return p.read_bytes() if p.exists() else None
+    except Exception:  # noqa: BLE001 -- never let a missing chart block the digest
+        log.warning("chart load failed for %s; deep analysis runs chartless", chart_path)
+        return None
+
+
 def _facts(sig: Signal) -> SignalFacts:
     return SignalFacts(
         ticker=sig.ticker, timeframe=sig.timeframe, trade_type=sig.horizon, score=sig.score,
@@ -129,12 +155,26 @@ def _already_sent(session: Session, kind: str, run_date: date) -> bool:
 
 def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str | None = None,
                 pdf_dir: Path = Path(".digests"), anthropic_client: object | None = None,
-                smtp_send: SmtpSend | None = None, force: bool = False) -> DigestResult:
+                smtp_send: SmtpSend | None = None, force: bool = False,
+                deep_analyze_fn: Callable[..., SignalAnalysis] | None = None,
+                chart_bytes_loader: Callable[[str | None], bytes | None] | None = None,
+                fundamentals_fn: Callable[[str], market_context.Fundamentals] | None = None,
+                news_fn: Callable[[str], list[market_context.NewsItem]] | None = None,
+                ) -> DigestResult:
     send = smtp_send or resolve_sender()  # env-driven transport (ACS or SMTP)
     run_date = run_date or date.today()
     recipient = to or get_secret("DIGEST_TO")
     if not recipient:  # fail fast, before any billable Claude calls
         raise RuntimeError("no recipient: set DIGEST_TO or pass to=")
+    # Deep-analysis seams (default to the real impls; tests inject fakes). Whether
+    # the deep path actually runs is gated by settings below, NOT by these.
+    cfg = load_settings()
+    deep_analyze = deep_analyze_fn or analyze_signal_deep
+    load_chart = chart_bytes_loader or _load_chart_bytes
+    get_fundamentals = fundamentals_fn or market_context.get_fundamentals
+    get_news = news_fn or market_context.get_recent_news
+    deep_on = cfg.deep_analysis_enabled and kind in cfg.deep_analysis_kinds
+
     engine = get_engine(db_url)
     with Session(engine) as session:
         alerts = sel.pending_exit_alerts(session, run_date)
@@ -148,9 +188,19 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         names = names_by_ticker()  # ticker -> company name, loaded once
         digest_picks: list[DigestPick] = []
         pdf_picks: list[PdfPick] = []
-        for sig in picks:
+        for i, sig in enumerate(picks):
             facts = _facts(sig)
-            analysis = analyze_signal(facts, client=anthropic_client)  # type: ignore[arg-type]
+            if deep_on and i < cfg.deep_analysis_top_n:
+                # Opus analyst: chart image + fundamentals/news + web-searched sentiment.
+                context_text = market_context.context_block(
+                    get_fundamentals(sig.ticker), get_news(sig.ticker))
+                analysis = deep_analyze(
+                    facts, chart_bytes=load_chart(sig.chart_path), context_text=context_text,
+                    client=anthropic_client,  # type: ignore[arg-type]  # test seam may be a fake
+                    model=cfg.analysis_model, reasoning=cfg.analysis_reasoning,
+                    max_searches=cfg.analysis_max_searches)
+            else:
+                analysis = analyze_signal(facts, client=anthropic_client)  # type: ignore[arg-type]
             name = names.get(sig.ticker, "")
             digest_picks.append(DigestPick(sig.ticker, name, sig.horizon, analysis.core_reason))
             pdf_picks.append(PdfPick(

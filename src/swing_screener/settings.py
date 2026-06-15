@@ -30,11 +30,30 @@ class Settings:
     azure_client_id: str | None
     acs_endpoint: str | None
     acs_sender: str | None
+    # Deep-analysis (Opus web-search analyst) -- all default to the cheap/off path.
+    deep_analysis_enabled: bool
+    analysis_model: str
+    analysis_reasoning: str  # one of none/low/medium/high (-> extended-thinking budget)
+    deep_analysis_top_n: int
+    deep_analysis_kinds: frozenset[str]
+    analysis_max_searches: int
+
+
+_TRUE = {"1", "true", "yes", "on"}
+_REASONING = {"none", "low", "medium", "high"}
 
 
 def _abs(value: str) -> Path:
     """Resolve a (possibly relative) path string to an absolute path."""
     return Path(value).resolve()
+
+
+def _int(value: str | None, default: int) -> int:
+    """Parse an int env var, falling back to ``default`` on missing/garbage."""
+    try:
+        return int(value) if value is not None else default
+    except ValueError:
+        return default
 
 
 def load_settings() -> Settings:
@@ -45,6 +64,11 @@ def load_settings() -> Settings:
     resolved absolute so a container with a different cwd still behaves.
     """
     env = os.environ
+    reasoning = env.get("SWING_ANALYSIS_REASONING", "high").strip().lower()
+    if reasoning not in _REASONING:  # invalid -> max reasoning rather than silently weaker
+        reasoning = "high"
+    kinds_raw = env.get("SWING_DEEP_ANALYSIS_KINDS", "daily,weekly,monthly")
+    kinds = frozenset(k.strip().lower() for k in kinds_raw.split(",") if k.strip())
     return Settings(
         db_url=env.get("SWING_DB_URL", "sqlite:///local.db"),
         chart_dir=_abs(env.get("SWING_CHART_DIR", ".charts")),
@@ -56,4 +80,10 @@ def load_settings() -> Settings:
         azure_client_id=env.get("AZURE_CLIENT_ID"),
         acs_endpoint=env.get("SWING_ACS_ENDPOINT"),
         acs_sender=env.get("SWING_ACS_SENDER"),
+        deep_analysis_enabled=(env.get("SWING_DEEP_ANALYSIS", "").strip().lower() in _TRUE),
+        analysis_model=env.get("SWING_ANALYSIS_MODEL", "claude-opus-4-8"),
+        analysis_reasoning=reasoning,
+        deep_analysis_top_n=_int(env.get("SWING_DEEP_ANALYSIS_TOP_N"), 5),
+        deep_analysis_kinds=kinds,
+        analysis_max_searches=_int(env.get("SWING_ANALYSIS_MAX_SEARCHES"), 4),
     )

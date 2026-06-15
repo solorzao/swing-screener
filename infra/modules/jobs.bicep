@@ -69,8 +69,31 @@ param secretNames object
 @description('Replica timeout (seconds) for the screen job.')
 param screenTimeoutSeconds int = 3600
 
+// 1800s (30 min) comfortably covers deep (Opus + web-search) analysis of the
+// top-N picks (~1 min/pick) plus the email build.
 @description('Replica timeout (seconds) for digest/alert jobs.')
 param digestTimeoutSeconds int = 1800
+
+// --- Deep-analysis (Opus web-search analyst) knobs. Default OFF / cheap; flip
+// SWING_DEEP_ANALYSIS to "1" (and ensure web search is enabled in the Claude
+// Console) to turn it on. All values are strings (Container Apps env vars).
+@description('Master switch for deep analysis: "1"/"true" on, anything else off.')
+param deepAnalysisEnabled string = '0'
+
+@description('Model id for the analysis call.')
+param analysisModel string = 'claude-opus-4-8'
+
+@description('Reasoning effort -> extended-thinking budget: none/low/medium/high.')
+param analysisReasoning string = 'high'
+
+@description('How many top picks per digest get the deep treatment.')
+param deepAnalysisTopN string = '5'
+
+@description('Which digest kinds get deep analysis (comma list).')
+param deepAnalysisKinds string = 'daily,weekly,monthly'
+
+@description('Max web searches per deep-analysis call (cost cap).')
+param analysisMaxSearches string = '4'
 
 @description('Tags applied to the jobs.')
 param tags object = {}
@@ -143,6 +166,32 @@ var commonEnv = [
     // So DefaultAzureCredential picks THIS user-assigned identity.
     name: 'AZURE_CLIENT_ID'
     value: uamiClientId
+  }
+  // Deep-analysis knobs (only the digest jobs act on them; default OFF). They are
+  // harmless on the screen/exit jobs, which never read them.
+  {
+    name: 'SWING_DEEP_ANALYSIS'
+    value: deepAnalysisEnabled
+  }
+  {
+    name: 'SWING_ANALYSIS_MODEL'
+    value: analysisModel
+  }
+  {
+    name: 'SWING_ANALYSIS_REASONING'
+    value: analysisReasoning
+  }
+  {
+    name: 'SWING_DEEP_ANALYSIS_TOP_N'
+    value: deepAnalysisTopN
+  }
+  {
+    name: 'SWING_DEEP_ANALYSIS_KINDS'
+    value: deepAnalysisKinds
+  }
+  {
+    name: 'SWING_ANALYSIS_MAX_SEARCHES'
+    value: analysisMaxSearches
   }
 ]
 
