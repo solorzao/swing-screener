@@ -15,6 +15,7 @@ injectable seams so tests never hit the network or send mail.
 import argparse
 import hashlib
 import logging
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -128,7 +129,7 @@ def _already_sent(session: Session, kind: str, run_date: date) -> bool:
 
 def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str | None = None,
                 pdf_dir: Path = Path(".digests"), anthropic_client: object | None = None,
-                smtp_send: SmtpSend | None = None) -> DigestResult:
+                smtp_send: SmtpSend | None = None, force: bool = False) -> DigestResult:
     send = smtp_send or resolve_sender()  # env-driven transport (ACS or SMTP)
     run_date = run_date or date.today()
     recipient = to or get_secret("DIGEST_TO")
@@ -140,7 +141,8 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         _emit_pending_exit_alert(session, run_date, recipient, send)
 
         picks = _PICKERS[kind](session, run_date)
-        if _already_sent(session, kind, run_date):  # don't re-send the same digest
+        already = _already_sent(session, kind, run_date)
+        if already and not force:  # don't re-send the same digest (force overrides for ad-hoc resends)
             return DigestResult(n_picks=len(picks), pdf_attached=False, sent=False)
 
         names = names_by_ticker()  # ticker -> company name, loaded once
@@ -181,9 +183,10 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         send(to=recipient, subject=body.subject, text=body.text, html=body.html,
              attachments=([pdf_path] if pdf_path is not None else []))
 
-        session.add(EmailLog(sent_at=datetime.now(UTC), kind=kind, subject=body.subject,
-                             run_date=run_date))
-        session.commit()
+        if not already:  # a forced resend reuses the existing day marker (no duplicate row)
+            session.add(EmailLog(sent_at=datetime.now(UTC), kind=kind, subject=body.subject,
+                                 run_date=run_date))
+            session.commit()
         return DigestResult(n_picks=len(picks), pdf_attached=pdf_attached, sent=True)
 
 
@@ -220,13 +223,18 @@ def main() -> None:
     parser.add_argument("--kind", choices=["daily", "weekly", "monthly", "exit"], default="daily")
     parser.add_argument("--db", default=settings.db_url)
     parser.add_argument("--pdf-dir", type=Path, default=settings.pdf_dir)
+    parser.add_argument("--force", action="store_true",
+                        help="resend even if a digest for this (kind, day) already went out")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     if args.kind == "exit":
         exit_result = run_exit_check_and_alert(db_url=args.db)
         log.info("exit check: open=%d exited=%d", exit_result.n_open, exit_result.n_exited)
         return
-    result = send_digest(kind=args.kind, db_url=args.db, pdf_dir=args.pdf_dir)
+    # SWING_FORCE_RESEND lets a scheduled container force a resend without changing
+    # its args -- toggle the env, run once, untoggle (used for ad-hoc verification).
+    force = args.force or os.environ.get("SWING_FORCE_RESEND", "").lower() in {"1", "true", "yes"}
+    result = send_digest(kind=args.kind, db_url=args.db, pdf_dir=args.pdf_dir, force=force)
     log.info("digest %s: picks=%d pdf=%s sent=%s",
              args.kind, result.n_picks, result.pdf_attached, result.sent)
 

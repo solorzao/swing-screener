@@ -76,6 +76,30 @@ def test_send_digest_emails_with_pdf_and_is_idempotent(tmp_path):
     assert len(sent) == 1  # recorder not called again
 
 
+def test_send_digest_force_resends_without_duplicate_log(tmp_path):
+    # force=True re-sends a digest that already went out today (a manual override
+    # for ad-hoc verification), but it must NOT add a second EmailLog marker -- on
+    # SQL Server a duplicate (kind, run_date, NULL alert_key) would violate the
+    # dedup unique constraint, so a forced resend reuses the existing day marker.
+    url = f"sqlite:///{tmp_path / 'f.sqlite'}"
+    _seed(url)
+    sent = []
+
+    def recorder(**kwargs):
+        sent.append(kwargs)
+
+    kw = dict(kind="daily", db_url=url, run_date=RUN, to="me@example.com",
+              pdf_dir=tmp_path / "digests", anthropic_client=_FakeClient(), smtp_send=recorder)
+
+    assert run.send_digest(**kw).sent is True and len(sent) == 1
+    assert run.send_digest(**kw).sent is False and len(sent) == 1  # normal re-run: no-op
+    assert run.send_digest(**kw, force=True).sent is True and len(sent) == 2  # forced resend
+
+    with Session(get_engine(url)) as s:
+        rows = list(s.scalars(select(EmailLog).where(EmailLog.kind == "daily")))
+    assert len(rows) == 1  # no duplicate marker from the forced resend
+
+
 def test_email_log_sent_at_is_stamped_in_utc(tmp_path):
     # sent_at must be the UTC wall-clock, not the host's local time, so container
     # timestamps are unambiguous. The stored value is naive but represents UTC;
