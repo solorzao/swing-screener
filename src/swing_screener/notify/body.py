@@ -14,7 +14,8 @@ from datetime import date
 from html import escape
 
 _BADGE = {"hard": "🔴", "strong": "🟠", "advisory": "🟡"}
-_TITLE = {"daily": "Daily Top 5", "weekly": "Weekly", "monthly": "Monthly"}
+_KIND_TITLE = {"daily": "Daily", "weekly": "Weekly", "monthly": "Monthly"}
+CONTINUATION_TITLE = "Top 5 - Continuation Plays"
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,7 @@ class DigestPick:
     name: str
     trade_type: str
     core_reason: str
+    score: float
     is_deep: bool = False  # got the Opus deep analysis (vs. the standard narration)
 
 
@@ -41,6 +43,33 @@ class EmailContent:
     html: str
 
 
+def _section_text(title: str, picks: Sequence[DigestPick], run_date: date) -> list[str]:
+    """A titled, numbered pick list for the plain-text body (score included)."""
+    rows: list[str] = [title, ""]
+    if not picks:
+        rows.append(f"No qualifying setups for {run_date}.")
+        return rows
+    for i, p in enumerate(picks, start=1):
+        label = f"{p.ticker} - {p.name}" if p.name else p.ticker
+        tag = f"{p.trade_type} · Deep Analysis" if p.is_deep else p.trade_type
+        rows.append(f"{i}. {label} [{tag}] · score {p.score:.2f} — {p.core_reason}")
+    return rows
+
+
+def _section_html(title: str, picks: Sequence[DigestPick], run_date: date) -> str:
+    """A titled, numbered pick list for the HTML body, with bold ticker + score."""
+    if not picks:
+        return f"<h3>{escape(title)}</h3><p>No qualifying setups for {escape(str(run_date))}.</p>"
+    items = "".join(
+        f"<li><b>{escape(p.ticker)}</b>"
+        f"{' — ' + escape(p.name) if p.name else ''} "
+        f"· [{escape(p.trade_type)}{' · <b>Deep Analysis</b>' if p.is_deep else ''}]"
+        f" · score <b>{p.score:.2f}</b><br>{escape(p.core_reason)}</li>"
+        for p in picks
+    )
+    return f"<h3>{escape(title)}</h3><ol>{items}</ol>"
+
+
 def compose_digest_body(
     kind: str,
     run_date: date,
@@ -51,61 +80,34 @@ def compose_digest_body(
 ) -> EmailContent:
     """Render a digest into subject, plain-text, and HTML bodies.
 
-    ``kind`` selects the title ("daily"/"weekly"/"monthly"). Picks are rendered
-    as a numbered list, or a "no setups" line when empty. Exit alerts, if any,
-    get their own badged section. A PDF pointer is appended when ``has_pdf``.
+    ``kind`` selects the subject ("daily"/"weekly"/"monthly"). ``picks`` are the
+    continuation plays, rendered under their section title (the subject is NOT
+    repeated in the body). Exit alerts, if any, get their own badged section, and
+    a PDF pointer is appended when ``has_pdf``.
     """
-    subject = f"Swing Screener — {_TITLE[kind]} ({run_date})"
+    subject = f"Swing Screener - {_KIND_TITLE[kind]} Picks ({run_date})"
 
     # --- plain text ---
-    lines = [subject, ""]
-    if picks:
-        for i, p in enumerate(picks, start=1):
-            label = f"{p.ticker} - {p.name}" if p.name else p.ticker
-            tag = f"{p.trade_type} · Deep Analysis" if p.is_deep else p.trade_type
-            lines.append(f"{i}. {label} [{tag}] — {p.core_reason}")
-    else:
-        lines.append(f"No qualifying setups for {run_date}.")
-
+    lines = _section_text(CONTINUATION_TITLE, picks, run_date)
     if exit_alerts:
-        lines.append("")
-        lines.append("Exit alerts:")
+        lines += ["", "Exit alerts:"]
         for a in exit_alerts:
-            badge = _BADGE.get(a.tier, "")
-            lines.append(f"{badge} {a.ticker} — {a.reason}: {a.message}")
-
+            lines.append(f"{_BADGE.get(a.tier, '')} {a.ticker} — {a.reason}: {a.message}")
     if has_pdf:
-        lines.append("")
-        lines.append("Full analysis attached (PDF).")
-
+        lines += ["", "Full analysis attached (PDF)."]
     text = "\n".join(lines)
 
     # --- html ---
-    html_parts = [f"<h2>{escape(subject)}</h2>"]
-    if picks:
-        items = "".join(
-            f"<li>{escape(p.ticker)}"
-            f"{' - ' + escape(p.name) if p.name else ''} "
-            f"[{escape(p.trade_type)}{' · <b>Deep Analysis</b>' if p.is_deep else ''}] "
-            f"— {escape(p.core_reason)}</li>"
-            for p in picks
-        )
-        html_parts.append(f"<ol>{items}</ol>")
-    else:
-        html_parts.append(f"<p>No qualifying setups for {escape(str(run_date))}.</p>")
-
+    html_parts = [_section_html(CONTINUATION_TITLE, picks, run_date)]
     if exit_alerts:
-        html_parts.append("<h3>Exit alerts</h3>")
         items = "".join(
             f"<li>{_BADGE.get(a.tier, '')} {escape(a.ticker)} — "
             f"{escape(a.reason)}: {escape(a.message)}</li>"
             for a in exit_alerts
         )
-        html_parts.append(f"<ul>{items}</ul>")
-
+        html_parts.append(f"<h3>Exit alerts</h3><ul>{items}</ul>")
     if has_pdf:
         html_parts.append("<p>Full analysis attached (PDF).</p>")
-
     html = "".join(html_parts)
 
     return EmailContent(subject=subject, text=text, html=html)
