@@ -62,16 +62,11 @@ param logRetentionInDays int = 30
 param anthropicApiKey string
 
 @secure()
-@description('Gmail sender address.')
-param gmailAddress string
-
-@secure()
-@description('Gmail app password.')
-param gmailAppPassword string
-
-@secure()
 @description('Digest recipient list.')
 param digestTo string
+
+@description('Seed Key Vault secret VALUES from the params above. Set false on re-deploys so an existing/rotated secret is never overwritten.')
+param seedSecrets bool = true
 
 // Deterministic, globally-unique-ish suffix bound to this subscription + RG.
 var resourceToken = uniqueString(subscription().id, resourceGroupName)
@@ -165,9 +160,20 @@ module keyvault 'modules/keyvault.bicep' = {
     name: keyVaultName
     uamiPrincipalId: identity.outputs.principalId
     anthropicApiKey: anthropicApiKey
-    gmailAddress: gmailAddress
-    gmailAppPassword: gmailAppPassword
     digestTo: digestTo
+    seedSecrets: seedSecrets
+    tags: commonTags
+  }
+}
+
+// --- Azure Communication Services Email (managed-identity send; NO secret) ---
+module acs 'modules/acs.bicep' = {
+  name: 'acs'
+  scope: rg
+  params: {
+    namePrefix: namePrefix
+    resourceToken: resourceToken
+    uamiPrincipalId: identity.outputs.principalId
     tags: commonTags
   }
 }
@@ -202,6 +208,8 @@ module jobs 'modules/jobs.bicep' = {
     swingDbUrl: swingDbUrl
     blobAccountUrl: storage.outputs.blobAccountUrl
     blobContainer: storage.outputs.containerName
+    acsEndpoint: acs.outputs.acsEndpoint
+    acsSender: acs.outputs.senderAddress
     keyVaultUrl: keyvault.outputs.vaultUri
     secretNames: keyvault.outputs.secretNames
     tags: commonTags
@@ -218,3 +226,5 @@ output sqlServerFqdn string = sql.outputs.sqlServerFqdn
 output uamiClientId string = identity.outputs.clientId
 output uamiPrincipalId string = identity.outputs.principalId
 output jobNames array = jobs.outputs.jobNames
+output acsEndpoint string = acs.outputs.acsEndpoint
+output acsSender string = acs.outputs.senderAddress

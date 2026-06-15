@@ -5,15 +5,14 @@
 // values are passed at deploy time and MUST NEVER be committed, e.g.:
 //
 //   az deployment sub create \
-//     --location eastus \
+//     --location westus2 \
 //     --template-file infra/main.bicep \
 //     --parameters infra/main.bicepparam \
-//     --parameters anthropicApiKey=$ANTHROPIC_API_KEY \
-//                  gmailAddress=$GMAIL_ADDRESS \
-//                  gmailAppPassword=$GMAIL_APP_PASSWORD \
-//                  digestTo=$DIGEST_TO
+//     --parameters anthropicApiKey=$ANTHROPIC_API_KEY digestTo=$DIGEST_TO
 //
-// (Or use a Key Vault reference / CI secret store. Do not paste secrets here.)
+// Email sends via Azure Communication Services using the managed identity, so
+// there is NO Gmail password to store. (Or use a Key Vault reference / CI secret
+// store. Do not paste secrets here.)
 // =============================================================================
 
 using './main.bicep'
@@ -43,6 +42,4 @@ param logRetentionInDays = 30
 
 // --- Secrets: leave empty here; pass real values at deploy time only ---
 param anthropicApiKey = ''
-param gmailAddress = ''
-param gmailAppPassword = ''
 param digestTo = ''

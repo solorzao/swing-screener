@@ -28,6 +28,8 @@ class Settings:
     blob_container: str
     key_vault_url: str | None
     azure_client_id: str | None
+    acs_endpoint: str | None
+    acs_sender: str | None
 
 
 def _abs(value: str) -> Path:
@@ -52,4 +54,6 @@ def load_settings() -> Settings:
         blob_container=env.get("SWING_BLOB_CONTAINER", "charts"),
         key_vault_url=env.get("KEY_VAULT_URL"),
         azure_client_id=env.get("AZURE_CLIENT_ID"),
+        acs_endpoint=env.get("SWING_ACS_ENDPOINT"),
+        acs_sender=env.get("SWING_ACS_SENDER"),
     )

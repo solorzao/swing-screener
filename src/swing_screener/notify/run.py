@@ -28,11 +28,11 @@ from swing_screener.config_secrets import get_secret
 from swing_screener.db.models import EmailLog, ExitEvent, Signal
 from swing_screener.db.session import get_engine
 from swing_screener.notify import select as sel
-from swing_screener.notify import smtp
 from swing_screener.notify.alerts import compose_exit_alert
 from swing_screener.notify.analysis import SignalFacts, analyze_signal
 from swing_screener.notify.body import AlertLine, DigestPick, compose_digest_body
 from swing_screener.notify.pdf import PdfPick, build_digest_pdf
+from swing_screener.notify.transport import resolve_sender
 from swing_screener.pipeline.exitcheck import ExitCheckResult, LatestBarsFn, run_exit_check
 from swing_screener.settings import load_settings
 
@@ -127,7 +127,8 @@ def _already_sent(session: Session, kind: str, run_date: date) -> bool:
 
 def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str | None = None,
                 pdf_dir: Path = Path(".digests"), anthropic_client: object | None = None,
-                smtp_send: SmtpSend = smtp.send_email) -> DigestResult:
+                smtp_send: SmtpSend | None = None) -> DigestResult:
+    send = smtp_send or resolve_sender()  # env-driven transport (ACS or SMTP)
     run_date = run_date or date.today()
     recipient = to or get_secret("DIGEST_TO")
     if not recipient:  # fail fast, before any billable Claude calls
@@ -135,7 +136,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
     engine = get_engine(db_url)
     with Session(engine) as session:
         alerts = sel.pending_exit_alerts(session, run_date)
-        _emit_pending_exit_alert(session, run_date, recipient, smtp_send)
+        _emit_pending_exit_alert(session, run_date, recipient, send)
 
         picks = _PICKERS[kind](session, run_date)
         if _already_sent(session, kind, run_date):  # don't re-send the same digest
@@ -173,8 +174,8 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
             for a in alerts
         ]
         body = compose_digest_body(kind, run_date, digest_picks, alert_lines, has_pdf=pdf_attached)
-        smtp_send(to=recipient, subject=body.subject, text=body.text, html=body.html,
-                  attachments=([pdf_path] if pdf_path is not None else []))
+        send(to=recipient, subject=body.subject, text=body.text, html=body.html,
+             attachments=([pdf_path] if pdf_path is not None else []))
 
         session.add(EmailLog(sent_at=datetime.now(UTC), kind=kind, subject=body.subject,
                              run_date=run_date))
@@ -183,7 +184,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
 
 
 def run_exit_check_and_alert(*, db_url: str, run_date: date | None = None, to: str | None = None,
-                             smtp_send: SmtpSend = smtp.send_email,
+                             smtp_send: SmtpSend | None = None,
                              latest_bars_fn: LatestBarsFn | None = None) -> ExitCheckResult:
     """Intraday exit path: PRODUCE today's real exit events, then SEND the alert.
 
@@ -193,6 +194,7 @@ def run_exit_check_and_alert(*, db_url: str, run_date: date | None = None, to: s
     ``_emit_pending_exit_alert`` helper emails them (subject "Exit", no PDF),
     deduped per exit-event-SET so a later hour with a NEW exit still alerts.
     """
+    send = smtp_send or resolve_sender()  # env-driven transport (ACS or SMTP)
     run_date = run_date or date.today()
     recipient = to or get_secret("DIGEST_TO")
     if not recipient:
@@ -204,7 +206,7 @@ def run_exit_check_and_alert(*, db_url: str, run_date: date | None = None, to: s
     result = run_exit_check(**kwargs)  # type: ignore[arg-type]
 
     with Session(get_engine(db_url)) as session:
-        _emit_pending_exit_alert(session, run_date, recipient, smtp_send)
+        _emit_pending_exit_alert(session, run_date, recipient, send)
     return result
 
 

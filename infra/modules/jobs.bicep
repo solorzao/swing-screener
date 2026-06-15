@@ -54,6 +54,12 @@ param blobAccountUrl string
 @description('Blob container -> SWING_BLOB_CONTAINER.')
 param blobContainer string = 'charts'
 
+@description('ACS endpoint -> SWING_ACS_ENDPOINT (managed-identity email send).')
+param acsEndpoint string
+
+@description('ACS verified MailFrom address -> SWING_ACS_SENDER.')
+param acsSender string
+
 @description('Key Vault URL (e.g. https://vault.vault.azure.net/) -> KEY_VAULT_URL and the base for secret reference URIs.')
 param keyVaultUrl string
 
@@ -74,8 +80,6 @@ var imageRef = '${acrLoginServer}/${imageRepository}:${imageTag}'
 // Unversioned KV reference URIs: ${vaultUri}secrets/<name>. keyVaultUrl already
 // ends in '/', so no extra separator. Unversioned = auto-rotate to latest.
 var anthropicKvUri = '${keyVaultUrl}secrets/${secretNames.anthropic}'
-var gmailAddressKvUri = '${keyVaultUrl}secrets/${secretNames.gmailAddress}'
-var gmailPasswordKvUri = '${keyVaultUrl}secrets/${secretNames.gmailPassword}'
 var digestToKvUri = '${keyVaultUrl}secrets/${secretNames.digestTo}'
 
 // Container App secret definitions. Each resolves its value from Key Vault at
@@ -84,16 +88,6 @@ var secretDefs = [
   {
     name: 'anthropic-api-key'
     keyVaultUrl: anthropicKvUri
-    identity: uamiId
-  }
-  {
-    name: 'gmail-address'
-    keyVaultUrl: gmailAddressKvUri
-    identity: uamiId
-  }
-  {
-    name: 'gmail-app-password'
-    keyVaultUrl: gmailPasswordKvUri
     identity: uamiId
   }
   {
@@ -110,16 +104,18 @@ var commonEnv = [
     secretRef: 'anthropic-api-key'
   }
   {
-    name: 'GMAIL_ADDRESS'
-    secretRef: 'gmail-address'
-  }
-  {
-    name: 'GMAIL_APP_PASSWORD'
-    secretRef: 'gmail-app-password'
-  }
-  {
     name: 'DIGEST_TO'
     secretRef: 'digest-to'
+  }
+  // Email is sent via Azure Communication Services using the managed identity --
+  // NO email password is stored anywhere.
+  {
+    name: 'SWING_ACS_ENDPOINT'
+    value: acsEndpoint
+  }
+  {
+    name: 'SWING_ACS_SENDER'
+    value: acsSender
   }
   {
     name: 'SWING_DB_URL'

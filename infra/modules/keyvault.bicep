@@ -35,16 +35,11 @@ param tags object = {}
 param anthropicApiKey string
 
 @secure()
-@description('Gmail address used to send digests -> GMAIL_ADDRESS.')
-param gmailAddress string
-
-@secure()
-@description('Gmail app password -> GMAIL_APP_PASSWORD.')
-param gmailAppPassword string
-
-@secure()
 @description('Digest recipient list -> DIGEST_TO.')
 param digestTo string
+
+@description('Seed the secret VALUES from the @secure() params. Set false on re-deploys so existing secret versions (e.g. a manually-set key) are never overwritten.')
+param seedSecrets bool = true
 
 // Built-in role: Key Vault Secrets User. RE-VERIFY before a real deploy:
 //   az role definition list --name "Key Vault Secrets User" --query "[0].name" -o tsv
@@ -66,8 +61,9 @@ resource vault 'Microsoft.KeyVault/vaults@2026-02-01' = {
   }
 }
 
-// Child secrets sourced strictly from @secure() params.
-resource secretAnthropic 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = {
+// Child secrets sourced strictly from @secure() params. Conditional on
+// seedSecrets so a re-deploy doesn't reset a manually-rotated value.
+resource secretAnthropic 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = if (seedSecrets) {
   parent: vault
   name: 'anthropic-api-key'
   properties: {
@@ -75,23 +71,7 @@ resource secretAnthropic 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = {
   }
 }
 
-resource secretGmailAddress 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = {
-  parent: vault
-  name: 'gmail-address'
-  properties: {
-    value: gmailAddress
-  }
-}
-
-resource secretGmailPassword 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = {
-  parent: vault
-  name: 'gmail-app-password'
-  properties: {
-    value: gmailAppPassword
-  }
-}
-
-resource secretDigestTo 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = {
+resource secretDigestTo 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = if (seedSecrets) {
   parent: vault
   name: 'digest-to'
   properties: {
@@ -123,9 +103,11 @@ output name string = vault.name
 // module dependency graph forcing the secrets to exist before the jobs reference
 // them. These are public secret NAMES carrying no secret material -- bundling
 // them avoids the per-output secret-name linter heuristic.
+// Literal secret NAMES (no values, no version-pinned URIs). Literals rather than
+// reading the (now-conditional) secret resources' .name, so the output is valid
+// whether or not seedSecrets created them this run. The jobs build unversioned
+// reference URIs `${vaultUri}secrets/<name>` that auto-rotate to the latest version.
 output secretNames object = {
-  anthropic: secretAnthropic.name
-  gmailAddress: secretGmailAddress.name
-  gmailPassword: secretGmailPassword.name
-  digestTo: secretDigestTo.name
+  anthropic: 'anthropic-api-key'
+  digestTo: 'digest-to'
 }
