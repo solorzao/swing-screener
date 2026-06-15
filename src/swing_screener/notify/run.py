@@ -203,7 +203,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                 analysis = analyze_signal(facts, client=anthropic_client)  # type: ignore[arg-type]
             name = names.get(sig.ticker, "")
             digest_picks.append(DigestPick(sig.ticker, name, sig.horizon, analysis.core_reason,
-                                           is_deep=analysis.is_deep))
+                                           score=sig.score, is_deep=analysis.is_deep))
             pdf_picks.append(PdfPick(
                 ticker=sig.ticker, name=name, trade_type=sig.horizon, score=sig.score,
                 chart_path=sig.chart_path, entry_floor=sig.entry_floor,
