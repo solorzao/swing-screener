@@ -17,7 +17,7 @@ import hashlib
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from sqlalchemy import select
@@ -101,7 +101,7 @@ def _emit_pending_exit_alert(session: Session, run_date: date, recipient: str,
     alert_email = compose_exit_alert(alerts, run_date)
     smtp_send(to=recipient, subject=alert_email.subject, text=alert_email.text,
               html=alert_email.html, attachments=[])  # SEND FIRST (see docstring)
-    session.add(EmailLog(sent_at=datetime.now(), kind="exit",
+    session.add(EmailLog(sent_at=datetime.now(UTC), kind="exit",
                          subject=alert_email.subject, run_date=run_date, alert_key=key))
     try:
         session.commit()
@@ -176,7 +176,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         smtp_send(to=recipient, subject=body.subject, text=body.text, html=body.html,
                   attachments=([pdf_path] if pdf_path is not None else []))
 
-        session.add(EmailLog(sent_at=datetime.now(), kind=kind, subject=body.subject,
+        session.add(EmailLog(sent_at=datetime.now(UTC), kind=kind, subject=body.subject,
                              run_date=run_date))
         session.commit()
         return DigestResult(n_picks=len(picks), pdf_attached=pdf_attached, sent=True)

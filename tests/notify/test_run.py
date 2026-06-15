@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -70,6 +70,25 @@ def test_send_digest_emails_with_pdf_and_is_idempotent(tmp_path):
                            smtp_send=recorder)
     assert res2.sent is False
     assert len(sent) == 1  # recorder not called again
+
+
+def test_email_log_sent_at_is_stamped_in_utc(tmp_path):
+    # sent_at must be the UTC wall-clock, not the host's local time, so container
+    # timestamps are unambiguous. The stored value is naive but represents UTC;
+    # comparing against now-in-UTC catches a regression to naive local
+    # datetime.now() on any host whose local tz != UTC.
+    url = f"sqlite:///{tmp_path / 'utc.sqlite'}"
+    _seed(url)
+    run.send_digest(kind="daily", db_url=url, run_date=RUN, to="me@example.com",
+                    pdf_dir=tmp_path / "digests", anthropic_client=_FakeClient(),
+                    smtp_send=lambda **kw: None)
+
+    with Session(get_engine(url)) as s:
+        row = s.scalars(select(EmailLog).where(EmailLog.kind == "daily")).first()
+    assert row is not None
+    stored = row.sent_at.replace(tzinfo=None) if row.sent_at.tzinfo else row.sent_at
+    now_utc = datetime.now(UTC).replace(tzinfo=None)
+    assert abs((now_utc - stored).total_seconds()) < 300
 
 
 def test_exit_alert_delivered_on_rerun_after_event(tmp_path):
