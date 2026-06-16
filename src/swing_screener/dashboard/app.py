@@ -334,10 +334,10 @@ def _render_closed(session: Session) -> None:
 
 
 def _render_performance(session: Session) -> None:
-    st.subheader("Screener Performance")
+    ui.page_header("Screener Performance")
     paper_trades = list(session.scalars(select(PaperTrade)))
     if not paper_trades:
-        st.write("No shadow-book data yet.")
+        ui.empty_state("No shadow-book data yet.")
         return
 
     summary = performance.summarize(paper_trades)
@@ -349,20 +349,29 @@ def _render_performance(session: Session) -> None:
     c4.metric("Profit factor", "∞" if pf == float("inf") else f"{pf:.2f}")
     c5.metric("Closed", str(summary.n_closed))
 
-    st.markdown("**Win rate by timeframe**")
     by_tf = performance.breakdown(paper_trades, "timeframe")
     if by_tf:
-        st.bar_chart({k: v.win_rate for k, v in by_tf.items()})
+        st.markdown("**Win rate by timeframe**")
+        st.altair_chart(
+            ui.bar({k: v.win_rate for k, v in by_tf.items()}, "Timeframe", "Win rate"),
+            width="stretch",
+        )
 
-    st.markdown("**Win rate by rank bucket**")
     by_rank = performance.rank_bucket(paper_trades, [5, 10])
     if by_rank:
-        st.bar_chart({k: v.win_rate for k, v in by_rank.items()})
+        st.markdown("**Win rate by rank bucket**")
+        st.altair_chart(
+            ui.bar({k: v.win_rate for k, v in by_rank.items()}, "Rank bucket", "Win rate"),
+            width="stretch",
+        )
 
-    st.markdown("**Equity curve (cumulative R)**")
     curve = performance.equity_curve(paper_trades)
     if curve:
-        st.line_chart({str(d): r for d, r in curve})
+        st.markdown("**Equity curve (cumulative R)**")
+        # ui.line wants list[tuple[object, float]]; list is invariant, so widen the
+        # date-keyed curve to the expected element type for the type checker.
+        points: list[tuple[object, float]] = [(d, r) for d, r in curve]
+        st.altair_chart(ui.line(points, "Exit date", "Cumulative R"), width="stretch")
 
 
 def _render_exits(session: Session) -> None:
