@@ -105,6 +105,27 @@ def _reversal(bars):
     return bars(rows)
 
 
+def test_run_persists_and_enriches_universe(tmp_path, bars, monkeypatch):
+    def fake_fetch(ticker, *, cache_dir, today, cfg):
+        return {"1d": _firing(bars)} if ticker == "AAPL" else {}
+    monkeypatch.setattr(run, "_fetch_all_timeframes", fake_fetch)
+    monkeypatch.setattr(run, "fetch_market_cap",
+                        lambda t, **kw: 2_000_000.0 if t == "AAPL" else None)
+    db = f"sqlite:///{tmp_path / 'db.sqlite'}"
+    run.run_screen(universe_path=_write_universe(tmp_path, ["AAPL", "ZZZ"]), db_url=db,
+                   cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts",
+                   today=date(2024, 4, 1))
+    from swing_screener.db import repo
+    from swing_screener.db.session import get_engine
+    from sqlalchemy.orm import Session
+    with Session(get_engine(db)) as s:
+        rows = {u.ticker: u for u in repo.list_universe(s)}
+    assert set(rows) == {"AAPL", "ZZZ"}            # full seed persisted
+    assert rows["AAPL"].market_cap == 2_000_000.0   # enriched (fetched ticker)
+    assert rows["AAPL"].avg_dollar_volume is not None
+    assert rows["ZZZ"].market_cap is None           # ZZZ never fetched -> no metrics
+
+
 def test_run_screens_and_charts_a_reversal_play(tmp_path, bars, monkeypatch):
     def fake_fetch(ticker, *, cache_dir, today, cfg):
         return {"1d": _reversal(bars)} if ticker == "GME" else {}

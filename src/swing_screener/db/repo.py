@@ -1,12 +1,16 @@
 """Thin CRUD layer over the SQLAlchemy models for signals and trades."""
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import date
+from typing import TYPE_CHECKING
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from swing_screener.db.models import EmailLog, ExitEvent, PaperTrade, Signal, Trade, Universe
+
+if TYPE_CHECKING:
+    from swing_screener.data.universe import UniverseEntry
 
 
 def save_signals(session: Session, signals: Sequence[Signal]) -> None:
@@ -116,6 +120,44 @@ def list_universe(session: Session, search: str | None = None) -> list[Universe]
         term = search.upper().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         stmt = stmt.where(Universe.ticker.like(f"%{term}%", escape="\\"))
     return list(session.scalars(stmt))
+
+
+def sync_universe(session: Session, entries: "Sequence[UniverseEntry]") -> None:
+    """Mirror the screening universe: upsert ticker->name/exchange and delete tickers no
+    longer in the seed. Existing market_cap/avg_dollar_volume are preserved."""
+    incoming = {e.ticker: e for e in entries}
+    existing = {u.ticker: u for u in session.scalars(select(Universe))}
+    for ticker, e in incoming.items():
+        row = existing.get(ticker)
+        if row is None:
+            session.add(Universe(ticker=ticker, name=e.name, exchange=e.exchange))
+        else:
+            row.name = e.name
+            row.exchange = e.exchange
+    for ticker, row in existing.items():
+        if ticker not in incoming:
+            session.delete(row)
+    session.commit()
+
+
+def apply_universe_metrics(
+    session: Session, metrics: "Mapping[str, Mapping[str, float | None]]"
+) -> None:
+    """Update market_cap / avg_dollar_volume for known tickers; skip None values and
+    unknown tickers. Single commit."""
+    if not metrics:
+        return
+    rows = {u.ticker: u for u in session.scalars(
+        select(Universe).where(Universe.ticker.in_(list(metrics))))}
+    for ticker, vals in metrics.items():
+        row = rows.get(ticker)
+        if row is None:
+            continue
+        if vals.get("market_cap") is not None:
+            row.market_cap = vals["market_cap"]
+        if vals.get("avg_dollar_volume") is not None:
+            row.avg_dollar_volume = vals["avg_dollar_volume"]
+    session.commit()
 
 
 def list_email_log(session: Session) -> list[EmailLog]:

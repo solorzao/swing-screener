@@ -69,7 +69,9 @@ events. The one-glance "where do I stand" page.
 **Reference**
 
 - **Universe** — a **searchable** list of the screening universe (ticker, name, exchange,
-  market cap, average dollar volume).
+  market cap, average dollar volume). Populated by the pipeline: each screen run syncs the
+  seed and records best-effort market cap + average dollar volume per ticker (a metric may
+  be blank if its fetch failed that run).
 - **Digest Log** — the history of digest emails the screener has sent (sent time, kind,
   subject, run date).
 

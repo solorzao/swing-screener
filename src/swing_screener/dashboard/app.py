@@ -33,6 +33,13 @@ from swing_screener.settings import load_settings
 from swing_screener.storage.blob import blob_enabled, download_bytes
 
 
+@st.cache_resource
+def _cached_engine(db_url: str) -> Engine:
+    """Build the engine once per session (keyed by db_url). Exceptions are NOT cached,
+    so a transient DB-down still re-attempts and the connection guard can report it."""
+    return get_engine(db_url)
+
+
 def _cache_dir() -> Path:
     return load_settings().cache_dir
 
@@ -593,7 +600,7 @@ def render() -> None:
     engine: Engine | None = None
     conn_error: Exception | None = None
     try:
-        engine = get_engine(db_url)  # ensure tables exist; empty DB is fine
+        engine = _cached_engine(db_url)  # ensure tables exist; empty DB is fine
         with engine.connect():
             pass
         connected = True

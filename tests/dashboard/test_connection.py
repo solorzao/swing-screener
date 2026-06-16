@@ -2,9 +2,21 @@
 
 from pathlib import Path
 
+import pytest
 from streamlit.testing.v1 import AppTest
 
 APP = str(Path(__file__).parents[2] / "src" / "swing_screener" / "dashboard" / "app.py")
+
+
+@pytest.fixture(autouse=True)
+def _clear_engine_cache():
+    # @st.cache_resource persists across reruns within the AppTest process, which
+    # could leak a cached engine between tests (or mask the monkeypatched DB-down).
+    import streamlit as st
+
+    st.cache_resource.clear()
+    yield
+    st.cache_resource.clear()
 
 
 def _raise(_url: str):
