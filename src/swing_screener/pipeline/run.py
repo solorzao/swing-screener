@@ -317,8 +317,9 @@ def main() -> None:
     result = run_screen(universe_path=args.universe, db_url=db_url, cache_dir=args.cache_dir,
                         chart_dir=args.chart_dir, top_charts=args.top_charts,
                         max_tickers=args.max_tickers)
-    log.info("signals=%d paper_opened=%d charts=%d failed=%d",
-             result.n_signals, result.n_paper_opened, result.n_charts, result.n_failed)
+    log.info("signals=%d reversals=%d paper_opened=%d charts=%d failed=%d",
+             result.n_signals, result.n_reversals, result.n_paper_opened,
+             result.n_charts, result.n_failed)
 
 
 if __name__ == "__main__":
