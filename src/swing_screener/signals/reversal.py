@@ -31,9 +31,8 @@ class ReversalContext:
     trigger_ts: pd.Timestamp
     trigger_close: float
     atr: float
-    reversal_low: float    # capitulation low over the decline window (retracement BASE)
-    recent_low: float      # low of the last few bars (the bounce's base -> the STOP)
-    bounce_high: float     # high of the sign-of-life bar (entry reference)
+    reversal_low: float    # the low the bounce came from (decline window) -> stop + retracement base
+    bounce_high: float     # high of the sign-of-life bar (top of the bounce)
     rsi: float             # current RSI
     min_rsi: float         # lowest RSI in the lookback window (oversold depth, scoring only)
     strength: str          # EARLY | CONFIRMED
@@ -90,10 +89,8 @@ def detect_reversal(f: pd.DataFrame, cfg: StrategyConfig) -> ReversalContext | N
     min_rsi = float(f.iloc[-(cfg.reversal_oversold_lookback + 1):]["rsi"].min())
     avg_vol = float(f["volume"].tail(cfg.avg_dollar_vol_window).mean())
     vol_ratio = float(bounce["volume"]) / avg_vol if avg_vol > 0 else 1.0
-    # The STOP rides the recent swing low (the bounce's base) -- a failed reversal
-    # rolls back through here -- NOT the months-deep capitulation low. The TARGET
-    # references the prior decline's high over a longer lookback (for a retracement).
-    recent_low = float(f.iloc[-cfg.reversal_stop_lookback:]["low"].min())
+    # The prior decline's high over a longer lookback -- the breakdown level the relief
+    # rally targets (and the base for the target retracement).
     decline_high = float(f.iloc[-(cfg.reversal_target_lookback + 1):]["high"].max())
 
     return ReversalContext(
@@ -101,7 +98,6 @@ def detect_reversal(f: pd.DataFrame, cfg: StrategyConfig) -> ReversalContext | N
         trigger_close=float(last["close"]),
         atr=float(last["atr"]),
         reversal_low=reversal_low,
-        recent_low=recent_low,
         bounce_high=float(bounce["high"]),
         rsi=float(last["rsi"]),
         min_rsi=min_rsi,
@@ -117,30 +113,29 @@ def detect_reversal(f: pd.DataFrame, cfg: StrategyConfig) -> ReversalContext | N
 
 
 def compute_reversal_zone(ctx: ReversalContext, cfg: StrategyConfig) -> EntryZone | None:
-    """Entry zone for a reversal, tuned for a sane reward:risk.
+    """Entry zone for a reversal -- a PULLBACK buy, not a chase.
 
-    Enter on/just above the turn bar. STOP below the recent swing low (the bounce's
-    base), capped at ``reversal_max_stop_atr`` ATRs below entry -- not the deep
-    capitulation low, which made stops absurdly wide on bounces that had already run
-    up. TARGET is a retracement of the prior decline (``reversal_retrace_frac`` of
-    ``decline_high - reversal_low``) or the EMA reclaim, whichever is further; a
-    modest measured move backstops the rare case where both sit below entry.
+    A confirmed bounce has already run up, so chasing it (entering at the top) leaves
+    no room: the stop is far at support and the target is just overhead. Instead the
+    entry is a limit into a PULLBACK of the bounce (the ``reversal_pullback_*`` band of
+    ``reversal_low -> bounce_high``); the STOP sits below the bounce's origin
+    (``reversal_low`` -- a break back through there fails the reversal); the TARGET is a
+    deep retracement of the prior decline toward the breakdown level. That geometry
+    gives a sane reward:risk. A modest measured move backstops a degenerate target.
     """
-    entry_high = max(ctx.bounce_high, ctx.trigger_close)
-    floor = ctx.trigger_close
-    ceiling = entry_high + cfg.floor_buffer_atr * ctx.atr
-    # Stop: the higher (tighter) of the recent swing low and an ATR-capped floor.
-    stop_ref = max(ctx.recent_low, ctx.trigger_close - cfg.reversal_max_stop_atr * ctx.atr)
-    stop = stop_ref - cfg.stop_buffer_atr * ctx.atr
+    bounce_range = ctx.bounce_high - ctx.reversal_low
+    if bounce_range <= 0:
+        return None
+    ceiling = ctx.bounce_high - cfg.reversal_pullback_shallow * bounce_range
+    floor = ctx.bounce_high - cfg.reversal_pullback_deep * bounce_range
+    stop = ctx.reversal_low - cfg.stop_buffer_atr * ctx.atr
     reference = (floor + ceiling) / 2.0
     risk = reference - stop
     if floor >= ceiling or risk <= 0:
         return None
 
-    # Target: a retracement of the decline, or the EMA reclaim -- the further one.
-    retrace = ctx.reversal_low + cfg.reversal_retrace_frac * (ctx.decline_high - ctx.reversal_low)
-    target = max(retrace, ctx.ema_slow)
-    if target <= ceiling:  # both already below entry -> a modest measured move
+    target = ctx.reversal_low + cfg.reversal_retrace_frac * (ctx.decline_high - ctx.reversal_low)
+    if target <= ceiling:  # retrace already below the entry -> a modest measured move
         target = ceiling + cfg.reversal_target_r_multiple * risk
     return EntryZone(floor=floor, ceiling=ceiling, stop=stop, target=target,
                      risk=risk, reference=reference)

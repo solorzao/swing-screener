@@ -134,32 +134,32 @@ def test_reversal_zone_levels_are_ordered():
     assert zone.risk > 0
 
 
-def test_reversal_target_is_retracement_or_ema_reclaim():
-    # target = the further of a decline retracement and the EMA reclaim, above entry.
+def test_reversal_target_is_a_decline_retracement():
+    # target = a deep retracement of the prior decline toward the breakdown level.
     ctx = detect_reversal(_frame(_reversal_rows()), CFG)
     zone = compute_reversal_zone(ctx, CFG)
     retrace = ctx.reversal_low + CFG.reversal_retrace_frac * (ctx.decline_high - ctx.reversal_low)
     assert zone.target > zone.ceiling
-    assert zone.target == max(retrace, ctx.ema_slow)
+    assert abs(zone.target - retrace) < 1e-6
 
 
-def test_reversal_stop_rides_recent_low_for_sane_rr():
-    # The fix: stop rides the RECENT swing low (capped at reversal_max_stop_atr),
-    # NOT the deep capitulation low -> reward:risk is sane, not ~0.14.
+def test_reversal_pullback_entry_gives_sane_rr():
+    # A confirmed bounce from 100 -> 110 (prior breakdown high 118). The entry is a
+    # PULLBACK into the bounce (below 110), the stop is below the bounce origin (100),
+    # and the target retraces toward 118 -> reward:risk is sane, not the old ~0.14.
     ctx = ReversalContext(
-        trigger_ts=pd.Timestamp("2026-06-15"), trigger_close=100.0, atr=2.0,
-        reversal_low=70.0, recent_low=96.0, bounce_high=100.5, rsi=42.0, min_rsi=22.0,
+        trigger_ts=pd.Timestamp("2026-06-15"), trigger_close=110.0, atr=2.0,
+        reversal_low=100.0, bounce_high=110.0, rsi=42.0, min_rsi=22.0,
         strength=CONFIRMED, body_frac=0.5, shaved_bottom=True, red_run=4, decline_bars=6,
-        volume_ratio=1.5, ema_slow=103.0, decline_high=130.0,
+        volume_ratio=1.5, ema_slow=108.0, decline_high=118.0,
     )
     zone = compute_reversal_zone(ctx, CFG)
-    # stop is just below the recent low (96), NOT down at the capitulation (70)
-    assert zone.stop > ctx.reversal_low + 20
-    assert zone.stop < ctx.recent_low
-    # target retraces the decline (70->130 at 61.8% = 107.08), above the EMA reclaim (103)
-    assert abs(zone.target - (70.0 + CFG.reversal_retrace_frac * 60.0)) < 1e-6
+    assert zone.ceiling < ctx.bounce_high      # entry is a pullback, NOT the chase price
+    assert zone.floor < zone.ceiling
+    assert zone.stop < ctx.reversal_low        # stop below the bounce origin
+    assert zone.target > zone.ceiling
     reward_to_risk = (zone.target - zone.ceiling) / (zone.ceiling - zone.stop)
-    assert reward_to_risk > 1.0  # sane geometry, not the old wide-stop 0.14
+    assert reward_to_risk > 1.0                # sane geometry, not the old wide-stop 0.14
 
 
 def _score_inputs(**over):
