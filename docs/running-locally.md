@@ -46,9 +46,12 @@ Sanity-check on a small slice first:
 
 ## What a run does
 
-1. Loads the universe.
+1. Loads the universe and syncs it into the `universe` table (mirrors the seed —
+   upserts ticker/name/exchange, drops removed tickers, preserves prior metrics).
 2. Per ticker (isolated — one bad ticker never aborts the run): fetches 1h→4h, 1d,
-   1wk, 1mo bars (cached as parquet) and builds the enriched frames.
+   1wk, 1mo bars (cached as parquet) and builds the enriched frames. Also records
+   that ticker's average dollar volume and a best-effort market cap (cached per day)
+   onto its `universe` row — so the dashboard's Universe view is populated.
 3. Detects the pullback-continuation signal on each timeframe, scores + ranks them,
    and writes `signals` rows (rank 1 = highest score) for the run date.
 4. Renders annotated Heiken Ashi charts for the top N into `--chart-dir`.
