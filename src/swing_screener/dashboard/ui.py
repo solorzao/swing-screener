@@ -1,5 +1,6 @@
 """Shared presentation helpers for the dashboard (theme, layout, formatting, charts)."""
 
+import math
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -60,6 +61,17 @@ def pl_color(value: float) -> str:
     Break-even (0.0) and non-positive/NaN values map to red (NEG).
     """
     return POS if value > 0 else NEG
+
+
+def fmt_compact_usd(value: float | None) -> str:
+    """Human-readable dollar magnitude: 36_247_314_659 -> '$36.2B', None/NaN -> '—'."""
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return "—"
+    n = float(value)
+    for threshold, suffix in ((1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "K")):
+        if abs(n) >= threshold:
+            return f"${n / threshold:,.1f}{suffix}"
+    return f"${n:,.0f}"
 
 
 def connection_label(db_url: str) -> str:
