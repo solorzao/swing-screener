@@ -71,6 +71,33 @@ def test_list_universe_escapes_like_wildcards():
         assert repo.list_universe(s, search="%") == []
 
 
+def test_sync_universe_mirrors_seed_and_preserves_metrics():
+    from sqlalchemy.orm import Session
+    from swing_screener.data.universe import UniverseEntry
+    from swing_screener.db.models import Universe
+    from swing_screener.db.session import get_engine
+    from swing_screener.db import repo
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add_all([
+            Universe(ticker="OLD", name="Old Co", exchange="NYSE", market_cap=9.0),
+            Universe(ticker="KEEP", name="Old Name", exchange="NYSE", market_cap=5.0,
+                     avg_dollar_volume=7.0),
+        ])
+        s.commit()
+        repo.sync_universe(s, [
+            UniverseEntry(ticker="KEEP", name="New Name", exchange="NASDAQ"),
+            UniverseEntry(ticker="NEW", name="New Co", exchange="NYSE"),
+        ])
+        rows = {u.ticker: u for u in repo.list_universe(s)}
+    assert set(rows) == {"KEEP", "NEW"}            # OLD deleted, NEW added
+    assert rows["KEEP"].name == "New Name"         # name upserted
+    assert rows["KEEP"].exchange == "NASDAQ"
+    assert rows["KEEP"].market_cap == 5.0          # metrics preserved
+    assert rows["KEEP"].avg_dollar_volume == 7.0
+    assert rows["NEW"].market_cap is None
+
+
 def test_list_email_log_newest_first():
     from datetime import datetime
     from sqlalchemy.orm import Session
