@@ -375,28 +375,51 @@ def _render_performance(session: Session) -> None:
 
 
 def _render_exits(session: Session) -> None:
-    st.subheader("Exit Log")
+    ui.page_header("Exit Log")
     events = list(
         session.scalars(
             select(ExitEvent).order_by(ExitEvent.created_date.desc())
         )
     )
     if not events:
-        st.write("No exit events.")
+        ui.empty_state("No exit events.")
         return
 
-    rows = [
-        {
-            "date": e.created_date,
-            "trade_id": e.trade_id,
-            "is_paper": e.is_paper,
-            "tier": e.tier,
-            "reason": e.reason,
-            "message": e.message,
-        }
-        for e in events
-    ]
-    st.dataframe(rows, width="stretch")
+    # Filter controls (main area). Default = every reason selected + "All" book, so
+    # the unfiltered view is unchanged.
+    reasons = sorted({e.reason for e in events})
+    selected = st.multiselect("Reason", reasons, default=reasons)
+    book = st.radio("Book", ["All", "Paper", "Real"], horizontal=True, index=0)
+
+    events = [e for e in events if e.reason in selected]
+    if book == "Paper":
+        events = [e for e in events if e.is_paper is True]
+    elif book == "Real":
+        events = [e for e in events if e.is_paper is False]
+
+    if not events:
+        ui.empty_state("No exit events match the filters.")
+        return
+
+    df = pd.DataFrame(
+        [
+            {
+                "date": e.created_date,
+                "trade_id": e.trade_id,
+                "is_paper": e.is_paper,
+                "tier": e.tier,
+                "reason": e.reason,
+                "message": e.message,
+            }
+            for e in events
+        ]
+    )
+    st.dataframe(
+        df,
+        width="stretch",
+        hide_index=True,
+        column_config={"date": st.column_config.DateColumn("Date")},
+    )
 
 
 def _render_overview(session: Session) -> None:
