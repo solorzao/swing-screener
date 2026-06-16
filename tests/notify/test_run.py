@@ -100,6 +100,22 @@ def test_send_digest_force_resends_without_duplicate_log(tmp_path):
     assert len(rows) == 1  # no duplicate marker from the forced resend
 
 
+def test_send_digest_defaults_to_latest_screen_run_date(tmp_path):
+    # No explicit run_date: the morning digest must summarize the LATEST screen run
+    # (seeded under RUN, not today's date). With the old date.today() default it would
+    # query a run_date with no signals and send an empty digest.
+    url = f"sqlite:///{tmp_path / 'latest.sqlite'}"
+    _seed(url)  # AMD, AEP under run_date=RUN (2026-06-15), not the real "today"
+    sent = []
+
+    res = run.send_digest(kind="daily", db_url=url, to="me@example.com",  # run_date omitted
+                          pdf_dir=tmp_path / "d", anthropic_client=_FakeClient(),
+                          smtp_send=lambda **kw: sent.append(kw))
+
+    assert res.sent is True and res.n_picks == 2  # found the latest screen's signals
+    assert len(sent) == 1 and "AMD" in sent[0]["text"]
+
+
 def test_email_log_sent_at_is_stamped_in_utc(tmp_path):
     # sent_at must be the UTC wall-clock, not the host's local time, so container
     # timestamps are unambiguous. The stored value is naive but represents UTC;

@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from swing_screener.config_secrets import get_secret
 from swing_screener.data.universe import names_by_ticker
+from swing_screener.db import repo
 from swing_screener.db.models import EmailLog, ExitEvent, Signal
 from swing_screener.db.session import get_engine
 from swing_screener.notify import market_context
@@ -163,7 +164,6 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                 news_fn: Callable[[str], list[market_context.NewsItem]] | None = None,
                 ) -> DigestResult:
     send = smtp_send or resolve_sender()  # env-driven transport (ACS or SMTP)
-    run_date = run_date or date.today()
     recipient = to or get_secret("DIGEST_TO")
     if not recipient:  # fail fast, before any billable Claude calls
         raise RuntimeError("no recipient: set DIGEST_TO or pass to=")
@@ -178,6 +178,12 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
 
     engine = get_engine(db_url)
     with Session(engine) as session:
+        # The digest summarizes the LATEST screen run -- the morning digest reflects
+        # the prior evening's screen (they run on different days), so defaulting to
+        # date.today() would query a run_date with no signals. An explicit run_date
+        # (tests / backfill) overrides.
+        if run_date is None:
+            run_date = repo.latest_run_date(session) or date.today()
         alerts = sel.pending_exit_alerts(session, run_date)
         _emit_pending_exit_alert(session, run_date, recipient, send)
 
