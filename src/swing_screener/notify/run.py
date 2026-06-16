@@ -57,6 +57,7 @@ class DigestResult:
     n_picks: int
     pdf_attached: bool
     sent: bool
+    n_reversals: int = 0  # reversal-play picks included (daily digest)
 
 
 def _exit_alert_key(alerts: list[ExitEvent]) -> str:
@@ -252,7 +253,8 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
             session.add(EmailLog(sent_at=datetime.now(UTC), kind=kind, subject=body.subject,
                                  run_date=run_date))
             session.commit()
-        return DigestResult(n_picks=len(picks), pdf_attached=pdf_attached, sent=True)
+        return DigestResult(n_picks=len(picks), pdf_attached=pdf_attached, sent=True,
+                            n_reversals=len(reversal_digest or []))
 
 
 def run_exit_check_and_alert(*, db_url: str, run_date: date | None = None, to: str | None = None,
@@ -300,8 +302,8 @@ def main() -> None:
     # its args -- toggle the env, run once, untoggle (used for ad-hoc verification).
     force = args.force or os.environ.get("SWING_FORCE_RESEND", "").lower() in {"1", "true", "yes"}
     result = send_digest(kind=args.kind, db_url=args.db, pdf_dir=args.pdf_dir, force=force)
-    log.info("digest %s: picks=%d pdf=%s sent=%s",
-             args.kind, result.n_picks, result.pdf_attached, result.sent)
+    log.info("digest %s: picks=%d reversals=%d pdf=%s sent=%s",
+             args.kind, result.n_picks, result.n_reversals, result.pdf_attached, result.sent)
 
 
 if __name__ == "__main__":
