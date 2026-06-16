@@ -127,10 +127,10 @@ def _render_candidates(session: Session) -> None:
 
 
 def _render_active(session: Session) -> None:
-    st.subheader("Active Trades")
+    ui.page_header("Active Trades")
     trades = repo.get_open_trades(session)
     if not trades:
-        st.write("No open trades.")
+        ui.empty_state("No open trades.")
         return
 
     prices = quotes.latest_closes(
@@ -197,6 +197,32 @@ def _render_active(session: Session) -> None:
             }
         )
     st.dataframe(rows, width="stretch")
+
+    st.subheader("Close a trade")
+    # `trades` are the same open trades shown above; map the friendly label back to id.
+    options = {f"#{t.id} · {t.ticker}": t.id for t in trades}
+    selected_label = st.selectbox("Trade", list(options))
+    with st.form("close_trade"):
+        exit_date = st.date_input("Exit date", value=date.today())
+        exit_price = st.number_input("Exit price", min_value=0.0, value=0.0)
+        exit_reason = st.text_input("Exit reason", value="manual")
+        submitted = st.form_submit_button("Close trade")
+
+    if submitted:
+        if exit_price <= 0:
+            st.warning("Exit price must be positive.")
+        else:
+            trade_id = options[selected_label]
+            ticker = selected_label.split("·", 1)[1].strip()
+            repo.close_trade(
+                session,
+                trade_id,
+                exit_date=exit_date,
+                exit_price=exit_price,
+                exit_reason=exit_reason.strip() or "manual",
+            )
+            st.success(f"Closed #{trade_id} {ticker}.")
+            st.rerun()
 
 
 def _render_entry(session: Session) -> None:
