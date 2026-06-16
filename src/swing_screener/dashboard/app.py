@@ -286,8 +286,62 @@ def _render_exits(session: Session) -> None:
 
 
 def _render_overview(session: Session) -> None:
-    ui.page_header("Overview")
-    ui.empty_state("Overview coming soon.")
+    run_date = repo.latest_run_date(session)
+    caption = f"Latest run: {run_date}" if run_date else "No screener run yet"
+    ui.page_header("Overview", caption=caption)
+
+    open_trades = repo.get_open_trades(session)
+
+    # Unrealized P/L across open positions, guarded so a missing quote or one
+    # malformed trade (non-positive risk) never crashes the landing page.
+    prices = (
+        quotes.latest_closes([t.ticker for t in open_trades], cache_dir=_cache_dir())
+        if open_trades
+        else {}
+    )
+    total_unrealized = 0.0
+    for t in open_trades:
+        price = prices.get(t.ticker)
+        if price is None:
+            continue
+        try:
+            pl = position_pl(
+                entry=t.entry_price,
+                stop=t.stop,
+                target=t.target,
+                size=t.size,
+                current_price=price,
+            )
+        except ValueError:
+            continue
+        total_unrealized += pl.unrealized_pl
+
+    candidates = len(repo.latest_signals(session, run_date)) if run_date else 0
+    win_rate = performance.summarize(list(session.scalars(select(PaperTrade)))).win_rate
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Open positions", len(open_trades))
+    c2.metric("Unrealized P/L", ui.fmt_money(total_unrealized))
+    c3.metric("Today's candidates", candidates)
+    c4.metric("Screener win rate", f"{win_rate * 100:.0f}%")
+
+    st.subheader("Recent activity")
+    events = list(
+        session.scalars(select(ExitEvent).order_by(ExitEvent.created_date.desc()))
+    )[:5]
+    if not events:
+        ui.empty_state("No recent activity yet.")
+        return
+    rows = [
+        {
+            "date": e.created_date,
+            "tier": e.tier,
+            "reason": e.reason,
+            "message": e.message,
+        }
+        for e in events
+    ]
+    st.dataframe(rows, width="stretch")
 
 
 def _render_universe(session: Session) -> None:

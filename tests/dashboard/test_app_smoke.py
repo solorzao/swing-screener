@@ -58,6 +58,23 @@ def test_seeded_ticker_surfaces_on_candidates(tmp_path, monkeypatch):
     assert "AMD" in rendered or any("AMD" in str(df.value.to_string()) for df in at.dataframe)
 
 
+def test_overview_reflects_open_position_count(tmp_path, monkeypatch):
+    # Seed one open Trade + a live quote; the Overview "Open positions" KPI
+    # must report 1.
+    url = f"sqlite:///{tmp_path / 'overview.sqlite'}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    monkeypatch.setattr(quotes, "latest_closes", lambda tickers, **kw: {"AMD": 104.0})
+    engine = get_engine(url)
+    with Session(engine) as s:
+        s.add(Trade(ticker="AMD", timeframe="1d", horizon="medium", entry_date=date.today(),
+                    entry_price=100.0, size=10.0, stop=95.0, target=110.0))
+        s.commit()
+    at = AppTest.from_file(APP).run()
+    at.sidebar.radio[0].set_value("Overview").run()
+    assert not at.exception
+    assert any(m.label == "Open positions" and m.value == "1" for m in at.metric)
+
+
 def test_active_trades_survives_malformed_trade(tmp_path, monkeypatch):
     # a zero-risk trade (stop == entry) makes position_pl raise; with a live quote
     # available the Active Trades view must not crash (the render guard catches it).
