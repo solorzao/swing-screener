@@ -467,8 +467,35 @@ def _render_overview(session: Session) -> None:
 
 
 def _render_universe(session: Session) -> None:
-    ui.page_header("Universe")
-    ui.empty_state("Universe view coming soon.")
+    ui.page_header("Universe", caption="The screening universe.")
+    search = st.text_input("Search ticker", value="")
+    rows = repo.list_universe(session, search or None)
+    if not rows:
+        ui.empty_state("No tickers match." if search else "Universe is empty.")
+        return
+
+    df = pd.DataFrame(
+        [
+            {
+                "ticker": u.ticker,
+                "name": u.name,
+                "exchange": u.exchange,
+                "market_cap": u.market_cap,
+                "avg_dollar_volume": u.avg_dollar_volume,
+            }
+            for u in rows
+        ]
+    )
+    st.dataframe(
+        df,
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "market_cap": st.column_config.NumberColumn("Market cap", format="$%.0f"),
+            "avg_dollar_volume": st.column_config.NumberColumn("Avg $ vol", format="$%.0f"),
+        },
+    )
+    st.caption(f"{len(rows)} tickers")
 
 
 def _render_digests(session: Session) -> None:

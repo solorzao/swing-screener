@@ -113,7 +113,8 @@ def update_trade(session: Session, trade_id: int, **fields: object) -> Trade:
 def list_universe(session: Session, search: str | None = None) -> list[Universe]:
     stmt = select(Universe).order_by(Universe.ticker)
     if search:
-        stmt = stmt.where(Universe.ticker.like(f"%{search.upper()}%"))
+        term = search.upper().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        stmt = stmt.where(Universe.ticker.like(f"%{term}%", escape="\\"))
     return list(session.scalars(stmt))
 
 

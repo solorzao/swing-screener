@@ -53,6 +53,24 @@ def test_list_universe_orders_and_filters_by_ticker():
         assert [u.ticker for u in repo.list_universe(s, search="nv")] == ["NVDA"]  # case-insensitive
 
 
+def test_list_universe_escapes_like_wildcards():
+    # `_` is a LIKE wildcard; the search must treat it as a LITERAL underscore so
+    # search="_" matches only tickers that literally contain "_", not every row.
+    from sqlalchemy.orm import Session
+
+    from swing_screener.db import repo
+    from swing_screener.db.models import Universe
+    from swing_screener.db.session import get_engine
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add_all([Universe(ticker="ABC", name="No underscore"),
+                   Universe(ticker="BRK_B", name="Has underscore")])
+        s.commit()
+        assert [u.ticker for u in repo.list_universe(s, search="_")] == ["BRK_B"]
+        # `%` must also be literal: it matches nothing here, not everything.
+        assert repo.list_universe(s, search="%") == []
+
+
 def test_list_email_log_newest_first():
     from datetime import datetime
     from sqlalchemy.orm import Session
