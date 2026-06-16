@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from swing_screener.analytics import performance
 from swing_screener.dashboard import quotes, ui
-from swing_screener.dashboard.pl import position_pl
+from swing_screener.dashboard.pl import position_pl, total_unrealized_pl
 from swing_screener.db import repo
 from swing_screener.db.models import ExitEvent, PaperTrade, Trade
 from swing_screener.db.session import get_engine
@@ -200,8 +200,8 @@ def _render_active(session: Session) -> None:
     st.dataframe(rows, width="stretch")
 
     st.subheader("Close a trade")
-    # `trades` are the same open trades shown above; map the friendly label back to id.
-    options = {f"#{t.id} · {t.ticker}": t.id for t in trades}
+    # `trades` are the same open trades shown above; carry id + ticker on the label.
+    options = {f"#{t.id} · {t.ticker}": (t.id, t.ticker) for t in trades}
     selected_label = st.selectbox("Trade", list(options))
     with st.form("close_trade"):
         exit_date = st.date_input("Exit date", value=date.today())
@@ -213,8 +213,7 @@ def _render_active(session: Session) -> None:
         if exit_price <= 0:
             st.warning("Exit price must be positive.")
         else:
-            trade_id = options[selected_label]
-            ticker = selected_label.split("·", 1)[1].strip()
+            trade_id, ticker = options[selected_label]
             repo.close_trade(
                 session,
                 trade_id,
@@ -277,11 +276,14 @@ def _render_closed(session: Session) -> None:
         ui.empty_state("No closed trades.")
         return
 
+    def _realized(t: Trade) -> float:
+        exit_price = t.exit_price if t.exit_price is not None else t.entry_price
+        return (exit_price - t.entry_price) * t.size
+
     rows = []
     cumulative = 0.0
     for t in trades:
-        exit_price = t.exit_price if t.exit_price is not None else t.entry_price
-        realized = (exit_price - t.entry_price) * t.size
+        realized = _realized(t)
         cumulative += realized
         rows.append(
             {
@@ -324,8 +326,7 @@ def _render_closed(session: Session) -> None:
     points: list[tuple[object, float]] = []
     running = 0.0
     for t in dated:
-        exit_price = t.exit_price if t.exit_price is not None else t.entry_price
-        running += (exit_price - t.entry_price) * t.size
+        running += _realized(t)
         points.append((t.exit_date, round(running, 2)))
     if points:
         st.markdown("**Realized equity curve**")
@@ -403,22 +404,7 @@ def _render_overview(session: Session) -> None:
         if open_trades
         else {}
     )
-    total_unrealized = 0.0
-    for t in open_trades:
-        price = prices.get(t.ticker)
-        if price is None:
-            continue
-        try:
-            pl = position_pl(
-                entry=t.entry_price,
-                stop=t.stop,
-                target=t.target,
-                size=t.size,
-                current_price=price,
-            )
-        except ValueError:
-            continue
-        total_unrealized += pl.unrealized_pl
+    total_unrealized = total_unrealized_pl(open_trades, prices)
 
     candidates = len(repo.latest_signals(session, run_date)) if run_date else 0
     win_rate = performance.summarize(list(session.scalars(select(PaperTrade)))).win_rate
@@ -458,18 +444,18 @@ def _render_digests(session: Session) -> None:
     ui.empty_state("Digest log coming soon.")
 
 
-# label -> (sidebar group, renderer). Order defines sidebar order; first entry is the
-# default landing page. Radio nav (not st.navigation) so AppTest can drive page switches.
-PAGES: dict[str, tuple[str, Callable[[Session], None]]] = {
-    "Overview": ("Main", _render_overview),
-    "Today's Candidates": ("Signals", _render_candidates),
-    "Active Trades": ("Trades", _render_active),
-    "Trade Entry": ("Trades", _render_entry),
-    "Closed Trades": ("Trades", _render_closed),
-    "Screener Performance": ("Analytics", _render_performance),
-    "Exit Log": ("Analytics", _render_exits),
-    "Universe": ("Reference", _render_universe),
-    "Digest Log": ("Reference", _render_digests),
+# label -> renderer. Order defines sidebar order; first entry is the default
+# landing page. Radio nav (not st.navigation) so AppTest can drive page switches.
+PAGES: dict[str, Callable[[Session], None]] = {
+    "Overview": _render_overview,
+    "Today's Candidates": _render_candidates,
+    "Active Trades": _render_active,
+    "Trade Entry": _render_entry,
+    "Closed Trades": _render_closed,
+    "Screener Performance": _render_performance,
+    "Exit Log": _render_exits,
+    "Universe": _render_universe,
+    "Digest Log": _render_digests,
 }
 
 
@@ -479,7 +465,7 @@ def render() -> None:
     engine = get_engine(db_url)  # ensure tables exist; empty DB is fine
     st.sidebar.title("📈 Swing Screener")
     choice = st.sidebar.radio("Navigate", list(PAGES), label_visibility="collapsed")
-    renderer = PAGES[choice][1]
+    renderer = PAGES[choice]
     with Session(engine) as session:
         with ui.error_boundary(choice):
             renderer(session)
