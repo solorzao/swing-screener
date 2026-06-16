@@ -1,5 +1,8 @@
 """Shared presentation helpers for the dashboard (theme, layout, formatting, charts)."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+
 import streamlit as st
 
 ACCENT = "#4F46E5"
@@ -24,3 +27,42 @@ section[data-testid="stSidebar"] [role="radiogroup"] label:hover {background:#EE
 def inject_css() -> None:
     """Inject the dashboard's global CSS (chrome hiding + card styling)."""
     st.markdown(_CSS, unsafe_allow_html=True)
+
+
+def fmt_pct(frac: float) -> str:
+    """Format a fraction as a signed percentage, e.g. 0.1234 -> '+12.34%'."""
+    return f"{frac * 100:+.2f}%"
+
+
+def fmt_money(amount: float) -> str:
+    """Format a dollar amount, e.g. 1234.5 -> '$1,234.50', -12.0 -> '-$12.00'."""
+    sign = "-" if amount < 0 else ""
+    return f"{sign}${abs(amount):,.2f}"
+
+
+def pl_color(value: float) -> str:
+    """Semantic color for a P/L value: green when > 0, red otherwise (break-even = red)."""
+    return POS if value > 0 else NEG
+
+
+def page_header(title: str, caption: str | None = None) -> None:
+    """Standard page heading with optional caption."""
+    st.header(title)
+    if caption:
+        st.caption(caption)
+
+
+def empty_state(message: str) -> None:
+    """Friendly empty-state message used when a view has no data."""
+    st.info(message, icon="📭")
+
+
+@contextmanager
+def error_boundary(view_name: str) -> Iterator[None]:
+    """Render any exception as a calm card with collapsible details, never a stack trace."""
+    try:
+        yield
+    except Exception as exc:  # noqa: BLE001 - top of a view; intentionally catch all
+        st.error(f"Couldn't load **{view_name}**.", icon="⚠️")
+        with st.expander("Technical details"):
+            st.code(f"{type(exc).__name__}: {exc}")
