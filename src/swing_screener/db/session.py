@@ -14,6 +14,34 @@ _DB_TOKEN_SCOPE = "https://database.windows.net/.default"
 _AUTH_KEYS = {"driver", "authentication", "uid", "user id", "pwd", "password", "trusted_connection"}
 
 
+def _available_odbc_drivers() -> list[str]:
+    """Installed ODBC drivers, or [] if pyodbc is unavailable (optional azure extra)."""
+    try:
+        import pyodbc
+    except Exception:
+        return []
+    return list(pyodbc.drivers())
+
+
+def _best_sql_server_driver(available: list[str]) -> str | None:
+    """Highest-numbered 'ODBC Driver NN for SQL Server' among `available`, else None."""
+    def version(name: str) -> int:
+        for tok in name.split():
+            if tok.isdigit():
+                return int(tok)
+        return -1
+    cands = [d for d in available
+             if d.lower().startswith("odbc driver") and d.lower().endswith("for sql server")]
+    return max(cands, key=version) if cands else None
+
+
+def _resolve_driver(requested: str, available: list[str]) -> str:
+    """Use `requested` if installed; else the best installed SQL Server driver; else `requested`."""
+    if requested in available:
+        return requested
+    return _best_sql_server_driver(available) or requested
+
+
 def _mssql_odbc_url(url: str) -> URL:
     """Rebuild an mssql URL into the explicit ``odbc_connect`` form, WITHOUT any
     auth keywords -- a managed-identity access token authenticates instead.
@@ -32,7 +60,8 @@ def _mssql_odbc_url(url: str) -> URL:
     def first(v: str | tuple[str, ...]) -> str:
         return v if isinstance(v, str) else v[0]
 
-    driver = first(u.query.get("driver", "ODBC Driver 18 for SQL Server"))
+    requested = first(u.query.get("driver", "ODBC Driver 18 for SQL Server"))
+    driver = _resolve_driver(requested, _available_odbc_drivers())
     server = u.host or ""
     if u.port:
         server = f"{server},{u.port}"
