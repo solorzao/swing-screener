@@ -85,6 +85,18 @@ def test_standard_pick_has_no_deep_label():
     assert "DEEP ANALYSIS" not in rendered
 
 
+def test_chart_image_preserves_aspect_and_header_builds(tmp_path):
+    from swing_screener.notify.pdf import _CHART_WIDTH, _chart_image
+
+    img = _chart_image(_PNG)  # 1x1 PNG -> square: height tracks width, not a forced 3.2in
+    assert abs(img.drawWidth - _CHART_WIDTH) < 1e-6
+    assert abs(img.drawHeight - _CHART_WIDTH) < 1e-6
+
+    out = build_digest_pdf([_pick("AMD", None)], tmp_path / "h.pdf",
+                           header="Swing Screener - Daily Picks (Jun 15, 2026)")
+    assert out.exists() and out.read_bytes()[:4] == b"%PDF"
+
+
 def test_empty_picks_still_builds(tmp_path):
     out = build_digest_pdf([], tmp_path / "empty.pdf")
     assert out.exists() and out.read_bytes()[:4] == b"%PDF"

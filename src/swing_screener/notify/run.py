@@ -239,6 +239,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                 pdf_path = build_digest_pdf(
                     pdf_picks, Path(pdf_dir) / f"{kind}_{run_date:%Y%m%d}.pdf",
                     reversal_picks=reversal_pdf or None,
+                    header=f"Swing Screener - {kind.capitalize()} Picks ({run_date:%b %d, %Y})",
                 )
             except Exception:  # PDF must never block the email
                 log.warning("PDF build failed for %s %s", kind, run_date, exc_info=True)
