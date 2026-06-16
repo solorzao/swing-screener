@@ -131,7 +131,7 @@ def build_story(picks: Sequence[PdfPick]) -> list:
             ["Entry zone", f"{p.entry_floor:.2f} - {p.entry_ceiling:.2f}"],
             ["Stop", f"{p.stop:.2f}"],
             ["Target", f"{p.target:.2f}"],
-            ["R:R", f"{p.risk_reward:.2f}"],
+            ["Reward : Risk", f"{p.risk_reward:.2f} : 1"],
             ["ATR (% of price)", f"{p.atr_pct:.1%}"],
             ["Quality / Volatility", f"{p.quality_tier} / {p.volatility_tier}"],
             ["MTF aligned / Oversold", f"{p.mtf_aligned} / {p.oversold}"],

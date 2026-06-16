@@ -12,6 +12,7 @@ from swing_screener.signals.frame import build_frame
 from swing_screener.signals.reversal import (
     CONFIRMED,
     EARLY,
+    ReversalContext,
     ReversalScoreInputs,
     compute_reversal_zone,
     detect_reversal,
@@ -133,13 +134,32 @@ def test_reversal_zone_levels_are_ordered():
     assert zone.risk > 0
 
 
-def test_reversal_target_is_overhead_resistance():
-    # target should be a real overhead level (EMA reclaim / swing high) above the
-    # ceiling -- a mean-reversion level, not an arbitrary multiple.
+def test_reversal_target_is_retracement_or_ema_reclaim():
+    # target = the further of a decline retracement and the EMA reclaim, above entry.
     ctx = detect_reversal(_frame(_reversal_rows()), CFG)
     zone = compute_reversal_zone(ctx, CFG)
+    retrace = ctx.reversal_low + CFG.reversal_retrace_frac * (ctx.decline_high - ctx.reversal_low)
     assert zone.target > zone.ceiling
-    assert zone.target in (ctx.ema_slow, ctx.swing_high)
+    assert zone.target == max(retrace, ctx.ema_slow)
+
+
+def test_reversal_stop_rides_recent_low_for_sane_rr():
+    # The fix: stop rides the RECENT swing low (capped at reversal_max_stop_atr),
+    # NOT the deep capitulation low -> reward:risk is sane, not ~0.14.
+    ctx = ReversalContext(
+        trigger_ts=pd.Timestamp("2026-06-15"), trigger_close=100.0, atr=2.0,
+        reversal_low=70.0, recent_low=96.0, bounce_high=100.5, rsi=42.0, min_rsi=22.0,
+        strength=CONFIRMED, body_frac=0.5, shaved_bottom=True, red_run=4, decline_bars=6,
+        volume_ratio=1.5, ema_slow=103.0, decline_high=130.0,
+    )
+    zone = compute_reversal_zone(ctx, CFG)
+    # stop is just below the recent low (96), NOT down at the capitulation (70)
+    assert zone.stop > ctx.reversal_low + 20
+    assert zone.stop < ctx.recent_low
+    # target retraces the decline (70->130 at 61.8% = 107.08), above the EMA reclaim (103)
+    assert abs(zone.target - (70.0 + CFG.reversal_retrace_frac * 60.0)) < 1e-6
+    reward_to_risk = (zone.target - zone.ceiling) / (zone.ceiling - zone.stop)
+    assert reward_to_risk > 1.0  # sane geometry, not the old wide-stop 0.14
 
 
 def _score_inputs(**over):
