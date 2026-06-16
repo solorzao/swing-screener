@@ -226,15 +226,21 @@ def _render_active(session: Session) -> None:
 
 
 def _render_entry(session: Session) -> None:
-    st.subheader("Trade Entry")
+    ui.page_header(
+        "Trade Entry",
+        caption="Log a trade you actually took. This records it — it does not place an order.",
+    )
     with st.form("trade_entry"):
-        ticker = st.text_input("Ticker")
-        timeframe = st.text_input("Timeframe", value="1d")
-        horizon = st.text_input("Horizon", value="medium")
-        entry_price = st.number_input("Entry price", min_value=0.0, value=0.0)
-        size = st.number_input("Size", min_value=0.0, value=0.0)
-        stop = st.number_input("Stop", min_value=0.0, value=0.0)
-        target = st.number_input("Target", min_value=0.0, value=0.0)
+        c1, c2 = st.columns(2)
+        with c1:
+            ticker = st.text_input("Ticker")
+            timeframe = st.text_input("Timeframe", value="1d")
+            horizon = st.text_input("Horizon", value="medium")
+        with c2:
+            entry_price = st.number_input("Entry price", min_value=0.0, value=0.0)
+            size = st.number_input("Size", min_value=0.0, value=0.0)
+            stop = st.number_input("Stop", min_value=0.0, value=0.0)
+            target = st.number_input("Target", min_value=0.0, value=0.0)
         notes = st.text_area("Notes", value="")
         submitted = st.form_submit_button("Add trade")
 
