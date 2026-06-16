@@ -14,8 +14,15 @@ from swing_screener.signals.reversal import ReversalContext  # noqa: E402
 
 def render_chart(frame: pd.DataFrame, ctx: PullbackContext | ReversalContext,
                  zone: EntryZone, out_path: Path, *, lookback: int = 80) -> Path:
-    """Render an annotated Heiken Ashi chart (HA candles + EMA20/50 + entry zone /
-    stop / target lines) to a PNG. Returns the path written."""
+    """Render a Heiken Ashi chart (HA candles + EMA20/50 + entry zone / stop /
+    target lines) to a PNG. Returns the path written.
+
+    Deliberately unannotated: no per-chart "Price" label or trigger-date overlay --
+    the price ticks are self-evident and the run date lives once in the PDF header.
+    A consistent wide aspect ratio (``figratio``) keeps the candles from stretching
+    when placed in the PDF. ``ctx`` is accepted for signature stability (callers
+    pass it) but not drawn.
+    """
     view = frame.tail(lookback)
     plot_df = pd.DataFrame(
         {
@@ -35,18 +42,13 @@ def render_chart(frame: pd.DataFrame, ctx: PullbackContext | ReversalContext,
     }
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig, axlist = mpf.plot(
+    fig, _ = mpf.plot(
         plot_df, type="candle", style="charles", volume=False,
         addplot=addplots, hlines=hlines, returnfig=True,
+        ylabel="", figratio=(16, 7), figscale=1.1,
+        datetime_format="%b '%y", xrotation=0,
     )
-    # Trigger date as a small gray label in the top-left corner (a friendly
-    # format, e.g. "trigger Jun 15, 2026") rather than a centered title.
-    axlist[0].text(
-        0.01, 0.98, f"trigger {ctx.trigger_ts:%b %d, %Y}",
-        transform=axlist[0].transAxes, ha="left", va="top",
-        fontsize=8, color="#666666",
-    )
-    fig.savefig(str(out_path), dpi=100, bbox_inches="tight")
+    fig.savefig(str(out_path), dpi=110, bbox_inches="tight")
     import matplotlib.pyplot as plt  # already safe under Agg
 
     plt.close(fig)

@@ -17,6 +17,7 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
+from reportlab.lib.utils import ImageReader
 from reportlab.platypus import (
     Image,
     PageBreak,
@@ -50,6 +51,19 @@ class PdfPick:
     rationale: str
     is_deep: bool = False  # got the Opus deep analysis -> labelled + structured
     strength: str | None = None  # reversal only: "early" / "confirmed"
+
+
+_CHART_WIDTH = 6.5 * inch
+
+
+def _chart_image(source: bytes | str) -> Image:
+    """A chart Image at a fixed width with its NATIVE aspect ratio preserved, so the
+    candles never stretch. ``source`` is PNG bytes (blob) or a file path (local)."""
+    reader = ImageReader(io.BytesIO(source) if isinstance(source, bytes) else source)
+    iw, ih = reader.getSize()
+    height = _CHART_WIDTH * ih / iw if iw else 3.2 * inch
+    img = io.BytesIO(source) if isinstance(source, bytes) else source
+    return Image(img, width=_CHART_WIDTH, height=height)
 
 
 def _rationale_flowables(text: str, styles: dict) -> list:
@@ -105,15 +119,12 @@ def build_story(picks: Sequence[PdfPick]) -> list:
             # exception) degrades to the same chartless section as the local path.
             if p.chart_path:
                 try:
-                    data = download_bytes(p.chart_path)
-                    story.append(
-                        Image(io.BytesIO(data), width=6.5 * inch, height=3.2 * inch)
-                    )
+                    story.append(_chart_image(download_bytes(p.chart_path)))
                     story.append(Spacer(1, 0.1 * inch))
                 except Exception:
                     pass
         elif p.chart_path and Path(p.chart_path).exists():
-            story.append(Image(p.chart_path, width=6.5 * inch, height=3.2 * inch))
+            story.append(_chart_image(p.chart_path))
             story.append(Spacer(1, 0.1 * inch))
         levels = [
             ["Company", p.name],
@@ -150,19 +161,26 @@ def build_story(picks: Sequence[PdfPick]) -> list:
 
 
 def build_digest_pdf(picks: Sequence[PdfPick], out_path: Path, *,
-                     reversal_picks: Sequence[PdfPick] | None = None) -> Path:
+                     reversal_picks: Sequence[PdfPick] | None = None,
+                     header: str | None = None) -> Path:
     """Render ``picks`` (continuation) into a multi-section PDF and return it.
 
-    One section per pick, separated by page breaks. ``reversal_picks``, when
+    ``header`` (e.g. "Swing Screener - Daily Picks (Jun 15, 2026)") is drawn ONCE
+    at the top -- so the run/as-of date lives in one place rather than on every
+    chart. One section per pick, separated by page breaks. ``reversal_picks``, when
     non-empty, are appended after a "REVERSAL PLAYS" divider. A pick whose
     ``chart_path`` is ``None``/missing renders without its image; an empty
     ``picks`` sequence still produces a valid (placeholder) PDF.
     """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    story = build_story(picks)
+    styles = getSampleStyleSheet()
+    story: list = []
+    if header:
+        story.append(Paragraph(_xml_escape(header), styles["Heading2"]))
+        story.append(Spacer(1, 0.2 * inch))
+    story.extend(build_story(picks))
     if reversal_picks:
-        styles = getSampleStyleSheet()
         story.append(PageBreak())
         story.append(Paragraph(
             '<font color="#b4561a"><b>REVERSAL PLAYS</b></font>', styles["Title"]))
