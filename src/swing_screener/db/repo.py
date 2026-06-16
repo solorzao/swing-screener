@@ -6,7 +6,7 @@ from datetime import date
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from swing_screener.db.models import ExitEvent, PaperTrade, Signal, Trade
+from swing_screener.db.models import EmailLog, ExitEvent, PaperTrade, Signal, Trade, Universe
 
 
 def save_signals(session: Session, signals: Sequence[Signal]) -> None:
@@ -108,3 +108,15 @@ def update_trade(session: Session, trade_id: int, **fields: object) -> Trade:
     session.commit()
     session.refresh(trade)
     return trade
+
+
+def list_universe(session: Session, search: str | None = None) -> list[Universe]:
+    stmt = select(Universe).order_by(Universe.ticker)
+    if search:
+        term = search.upper().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        stmt = stmt.where(Universe.ticker.like(f"%{term}%", escape="\\"))
+    return list(session.scalars(stmt))
+
+
+def list_email_log(session: Session) -> list[EmailLog]:
+    return list(session.scalars(select(EmailLog).order_by(EmailLog.sent_at.desc())))

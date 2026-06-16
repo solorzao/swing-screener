@@ -87,3 +87,29 @@ def test_file_sqlite_creates_tables_without_static_pool(monkeypatch):
 
     assert "poolclass" not in rec_engine.kwargs
     assert rec_create_all.calls == 1
+
+
+from swing_screener.db.session import _best_sql_server_driver, _resolve_driver  # noqa: E402
+
+
+def test_best_driver_picks_highest_numbered():
+    avail = ["SQL Server", "ODBC Driver 17 for SQL Server", "ODBC Driver 18 for SQL Server"]
+    assert _best_sql_server_driver(avail) == "ODBC Driver 18 for SQL Server"
+
+
+def test_best_driver_none_when_absent():
+    assert _best_sql_server_driver(["Microsoft Access Driver (*.mdb)"]) is None
+
+
+def test_resolve_driver_keeps_requested_when_installed():
+    avail = ["ODBC Driver 18 for SQL Server"]
+    assert _resolve_driver("ODBC Driver 18 for SQL Server", avail) == "ODBC Driver 18 for SQL Server"
+
+
+def test_resolve_driver_falls_back_to_installed_when_requested_missing():
+    avail = ["ODBC Driver 17 for SQL Server"]
+    assert _resolve_driver("ODBC Driver 18 for SQL Server", avail) == "ODBC Driver 17 for SQL Server"
+
+
+def test_resolve_driver_keeps_requested_when_nothing_installed():
+    assert _resolve_driver("ODBC Driver 18 for SQL Server", []) == "ODBC Driver 18 for SQL Server"

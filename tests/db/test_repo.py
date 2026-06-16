@@ -37,3 +37,49 @@ def test_open_paper_trades_and_record_exit():
                                     tier="hard", reason="stop", message="stopped out",
                                     created_date=date(2024, 1, 5))
         assert ev.id is not None and ev.reason == "stop"
+
+
+def test_list_universe_orders_and_filters_by_ticker():
+    from sqlalchemy.orm import Session
+    from swing_screener.db.models import Universe
+    from swing_screener.db.session import get_engine
+    from swing_screener.db import repo
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add_all([Universe(ticker="NVDA", name="Nvidia"),
+                   Universe(ticker="AMD", name="Advanced Micro")])
+        s.commit()
+        assert [u.ticker for u in repo.list_universe(s)] == ["AMD", "NVDA"]   # ordered by ticker
+        assert [u.ticker for u in repo.list_universe(s, search="nv")] == ["NVDA"]  # case-insensitive
+
+
+def test_list_universe_escapes_like_wildcards():
+    # `_` is a LIKE wildcard; the search must treat it as a LITERAL underscore so
+    # search="_" matches only tickers that literally contain "_", not every row.
+    from sqlalchemy.orm import Session
+
+    from swing_screener.db import repo
+    from swing_screener.db.models import Universe
+    from swing_screener.db.session import get_engine
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add_all([Universe(ticker="ABC", name="No underscore"),
+                   Universe(ticker="BRK_B", name="Has underscore")])
+        s.commit()
+        assert [u.ticker for u in repo.list_universe(s, search="_")] == ["BRK_B"]
+        # `%` must also be literal: it matches nothing here, not everything.
+        assert repo.list_universe(s, search="%") == []
+
+
+def test_list_email_log_newest_first():
+    from datetime import datetime
+    from sqlalchemy.orm import Session
+    from swing_screener.db.models import EmailLog
+    from swing_screener.db.session import get_engine
+    from swing_screener.db import repo
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add_all([EmailLog(sent_at=datetime(2026, 1, 1), kind="daily", subject="old"),
+                   EmailLog(sent_at=datetime(2026, 1, 2), kind="weekly", subject="new")])
+        s.commit()
+        assert [e.subject for e in repo.list_email_log(s)] == ["new", "old"]
