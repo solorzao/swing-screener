@@ -16,6 +16,7 @@ test can monkeypatch that seam and avoid the network.
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 import streamlit as st
@@ -270,10 +271,10 @@ def _render_entry(session: Session) -> None:
 
 
 def _render_closed(session: Session) -> None:
-    st.subheader("Closed Trades")
+    ui.page_header("Closed Trades")
     trades = repo.get_closed_trades(session)
     if not trades:
-        st.write("No closed trades.")
+        ui.empty_state("No closed trades.")
         return
 
     rows = []
@@ -294,8 +295,41 @@ def _render_closed(session: Session) -> None:
                 "exit_reason": t.exit_reason or "",
             }
         )
-    st.dataframe(rows, width="stretch")
-    st.metric("Cumulative realized P/L", f"${cumulative:,.2f}")
+    df = pd.DataFrame(rows)
+    st.dataframe(
+        df,
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "ticker": st.column_config.TextColumn("Ticker"),
+            "entry_date": st.column_config.DateColumn("Entry date"),
+            "exit_date": st.column_config.DateColumn("Exit date"),
+            "entry": st.column_config.NumberColumn("Entry", format="$%.2f"),
+            "exit": st.column_config.NumberColumn("Exit", format="$%.2f"),
+            "size": st.column_config.NumberColumn("Size", format="%.0f"),
+            "realized_$": st.column_config.NumberColumn("Realized $", format="$%.2f"),
+            "exit_reason": st.column_config.TextColumn("Exit reason"),
+        },
+    )
+    st.metric("Cumulative realized P/L", ui.fmt_money(cumulative))
+
+    # Realized equity curve: cumulative realized $ over time. Sort dated closes
+    # ascending by exit_date and running-sum; skip undated closes. The generator
+    # guarantees exit_date is not None, so the key can assert it for the type
+    # checker (None is not sortable).
+    dated = sorted(
+        (t for t in trades if t.exit_date is not None),
+        key=lambda t: cast(date, t.exit_date),
+    )
+    points: list[tuple[object, float]] = []
+    running = 0.0
+    for t in dated:
+        exit_price = t.exit_price if t.exit_price is not None else t.entry_price
+        running += (exit_price - t.entry_price) * t.size
+        points.append((t.exit_date, round(running, 2)))
+    if points:
+        st.markdown("**Realized equity curve**")
+        st.altair_chart(ui.line(points, "Exit date", "Cumulative $"), width="stretch")
 
 
 def _render_performance(session: Session) -> None:

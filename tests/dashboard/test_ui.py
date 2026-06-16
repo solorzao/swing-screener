@@ -21,3 +21,14 @@ def test_pl_color_picks_semantic_color():
     assert ui.pl_color(3.0) == ui.POS
     assert ui.pl_color(-1.0) == ui.NEG
     assert ui.pl_color(0.0) == ui.NEG  # break-even is not a win
+
+
+def test_bar_and_line_build_charts():
+    import altair as alt
+    from datetime import date
+    c = ui.bar({"1d": 0.5, "1wk": 0.7}, "Timeframe", "Win rate")
+    assert isinstance(c, alt.Chart)
+    assert len(c.data) == 2
+    lc = ui.line([(date(2026, 1, 1), 1.0), (date(2026, 1, 2), 2.0)], "Date", "Cum R")
+    assert isinstance(lc, alt.Chart)
+    assert len(lc.data) == 2

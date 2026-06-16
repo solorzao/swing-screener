@@ -3,6 +3,8 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+import altair as alt
+import pandas as pd
 import streamlit as st
 
 ACCENT = "#4F46E5"
@@ -70,6 +72,36 @@ def page_header(title: str, caption: str | None = None) -> None:
 def empty_state(message: str) -> None:
     """Friendly empty-state message used when a view has no data."""
     st.info(message, icon="📭")
+
+
+def bar(data: dict[str, float], x_title: str, y_title: str) -> alt.Chart:
+    """Vertical bar chart from a {label: value} mapping, in the accent color."""
+    df = pd.DataFrame({"k": list(data), "v": list(data.values())})
+    return (
+        alt.Chart(df)
+        .mark_bar(color=ACCENT)
+        .encode(
+            x=alt.X("k:N", title=x_title, sort=None),
+            y=alt.Y("v:Q", title=y_title),
+            tooltip=["k", "v"],
+        )
+        .properties(height=240)
+    )
+
+
+def line(points: list[tuple[object, float]], x_title: str, y_title: str) -> alt.Chart:
+    """Line chart with points from a list of (x, y) tuples, in the accent color."""
+    df = pd.DataFrame(points, columns=["x", "y"])
+    return (
+        alt.Chart(df)
+        .mark_line(point=True, color=ACCENT)
+        .encode(
+            x=alt.X("x:T", title=x_title),
+            y=alt.Y("y:Q", title=y_title),
+            tooltip=["x", "y"],
+        )
+        .properties(height=260)
+    )
 
 
 @contextmanager
