@@ -116,3 +116,19 @@ def test_fetch_market_cap_missing_value_returns_none_no_cache(tmp_path, monkeypa
     monkeypatch.setattr(fetch, "_fast_info_market_cap", lambda t: None)
     assert fetch.fetch_market_cap("ETF", cache_dir=tmp_path) is None
     assert not (tmp_path / "marketcap").exists()  # a clean None is not cached
+
+
+def test_fast_info_market_cap_rejects_nan_zero_and_negative(monkeypatch):
+    # yfinance fast_info can surface NaN/0 for a missing cap; those must read as None
+    # (NaN is truthy, so it would otherwise be cached/persisted). Mapping-style access.
+    from swing_screener.data import fetch
+
+    class _FakeTicker:
+        def __init__(self, info):
+            self.fast_info = info
+
+    for bad in (float("nan"), float("inf"), 0.0, -5.0):
+        monkeypatch.setattr(fetch.yf, "Ticker", lambda t, v=bad: _FakeTicker({"market_cap": v}))
+        assert fetch._fast_info_market_cap("X") is None
+    monkeypatch.setattr(fetch.yf, "Ticker", lambda t: _FakeTicker({"market_cap": 1000.0}))
+    assert fetch._fast_info_market_cap("X") == 1000.0

@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import random
 import time
 from datetime import date
@@ -79,7 +80,12 @@ def _fast_info_market_cap(ticker: str) -> float | None:
         mc = info["market_cap"]  # FastInfo is mapping-like in modern yfinance
     except (KeyError, TypeError):
         mc = getattr(info, "market_cap", None)
-    return float(mc) if mc else None
+    if mc is None:
+        return None
+    value = float(mc)
+    # yfinance occasionally surfaces NaN/inf or a placeholder 0 for a missing cap;
+    # treat any non-finite or non-positive value as "no market cap".
+    return value if math.isfinite(value) and value > 0 else None
 
 
 def fetch_market_cap(ticker: str, *, cache_dir: Path, today: date | None = None,
