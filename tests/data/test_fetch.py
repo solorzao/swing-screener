@@ -81,3 +81,11 @@ def test_corrupt_cache_falls_through_to_download(tmp_path, monkeypatch):
     assert out is not None and len(out) == 3  # recovered via re-download
     # and the cache was overwritten with a valid parquet (next read succeeds)
     assert pd.read_parquet(cache_file).shape[0] == 3
+
+
+def test_avg_dollar_volume_means_close_times_volume():
+    from swing_screener.data.fetch import avg_dollar_volume
+    df = pd.DataFrame({"close": [10.0, 20.0], "volume": [100.0, 100.0]})
+    assert avg_dollar_volume(df) == 1500.0           # (10*100 + 20*100)/2
+    assert avg_dollar_volume(df, window=1) == 2000.0  # last bar only
+    assert avg_dollar_volume(pd.DataFrame({"close": [], "volume": []})) is None

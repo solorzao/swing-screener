@@ -62,6 +62,14 @@ def fetch_bars(ticker: str, interval: str, *, cache_dir: Path, period: str = "2y
     return None
 
 
+def avg_dollar_volume(frame: pd.DataFrame, window: int = 20) -> float | None:
+    """Mean of close*volume over the last `window` bars; None if the frame is empty."""
+    if frame is None or frame.empty:
+        return None
+    tail = frame.tail(window)
+    return float((tail["close"] * tail["volume"]).mean())
+
+
 def fetch_universe(tickers: list[str], interval: str, *, cache_dir: Path,
                    **kwargs: object) -> dict[str, pd.DataFrame]:
     """Fetch many tickers; silently skip those that fail (isolation).
