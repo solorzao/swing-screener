@@ -32,3 +32,15 @@ def test_bar_and_line_build_charts():
     lc = ui.line([(date(2026, 1, 1), 1.0), (date(2026, 1, 2), 2.0)], "Date", "Cum R")
     assert isinstance(lc, alt.Chart)
     assert len(lc.data) == 2
+
+
+def test_connection_label_hides_credentials():
+    assert ui.connection_label("sqlite:///local.db") == "Local SQLite"
+    azure = "mssql+pyodbc://user:secret@srv.database.windows.net/swing?driver=ODBC+Driver+18"
+    label = ui.connection_label(azure)
+    assert label == "Azure SQL · swing"
+    assert "secret" not in label and "srv.database.windows.net" not in label
+
+
+def test_connection_label_falls_back_on_garbage():
+    assert ui.connection_label("not a url at all ::: ???") == "Database"

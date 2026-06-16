@@ -20,7 +20,7 @@ from typing import cast
 
 import pandas as pd
 import streamlit as st
-from sqlalchemy import select
+from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from swing_screener.analytics import performance
@@ -545,9 +545,34 @@ PAGES: dict[str, Callable[[Session], None]] = {
 def render() -> None:
     ui.inject_css()
     db_url = load_settings().db_url  # read fresh each rerun (env-resolved)
-    engine = get_engine(db_url)  # ensure tables exist; empty DB is fine
     st.sidebar.title("📈 Swing Screener")
     choice = st.sidebar.radio("Navigate", list(PAGES), label_visibility="collapsed")
+
+    # Acquire the engine and verify connectivity ONCE, guarded, so a DB-down
+    # condition becomes a single clear full-page card + a red chip — instead of
+    # every view tripping the generic error boundary. The chip never prints
+    # credentials/host (see ui.connection_label).
+    label = ui.connection_label(db_url)
+    engine: Engine | None = None
+    conn_error: Exception | None = None
+    try:
+        engine = get_engine(db_url)  # ensure tables exist; empty DB is fine
+        with engine.connect():
+            pass
+        connected = True
+    except Exception as exc:  # noqa: BLE001 - surfaced as a friendly card below
+        connected = False
+        conn_error = exc
+    st.sidebar.caption(f"{'🟢' if connected else '🔴'} {label}")
+
+    if not connected:
+        st.error("Can't reach the database.", icon="🔌")
+        st.caption(f"Target: {label}. Check your connection / `az login` and reload.")
+        with st.expander("Technical details"):
+            st.code(f"{type(conn_error).__name__}: {conn_error}")
+        return
+
+    assert engine is not None  # connected implies engine was assigned
     renderer = PAGES[choice]
     with Session(engine) as session:
         with ui.error_boundary(choice):

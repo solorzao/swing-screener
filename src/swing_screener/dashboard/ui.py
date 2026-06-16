@@ -62,6 +62,27 @@ def pl_color(value: float) -> str:
     return POS if value > 0 else NEG
 
 
+def connection_label(db_url: str) -> str:
+    """Human-readable DB target for the sidebar chip, WITHOUT host/credentials.
+
+    'mssql+pyodbc://...@srv.database.windows.net/swing?...' -> 'Azure SQL · swing'
+    'sqlite:///local.db' -> 'Local SQLite'
+    """
+    from sqlalchemy import make_url
+
+    try:
+        u = make_url(db_url)
+    except Exception:
+        return "Database"
+    driver = u.drivername.split("+", 1)[0]
+    if driver == "sqlite":
+        return "Local SQLite"
+    if driver == "mssql":
+        db = u.database or "?"
+        return f"Azure SQL · {db}"
+    return driver
+
+
 def page_header(title: str, caption: str | None = None) -> None:
     """Standard page heading with optional caption."""
     st.header(title)
