@@ -25,31 +25,42 @@ def _seed(url):
         s.commit()
 
 
+ALL_PAGES = ["Overview", "Today's Candidates", "Active Trades", "Trade Entry",
+             "Closed Trades", "Screener Performance", "Exit Log", "Universe", "Digest Log"]
+
+
 def test_app_renders_on_empty_db(tmp_path, monkeypatch):
     monkeypatch.setenv("SWING_DB_URL", f"sqlite:///{tmp_path / 'dash.sqlite'}")
     at = AppTest.from_file(APP).run()
     assert not at.exception
-    assert any("Swing Screener" in t.value for t in at.title)
-    # six tabs render
-    assert len(at.tabs) == 6
+    assert at.sidebar.radio[0].value == "Overview"  # default landing page
 
 
-def test_app_renders_with_seeded_data(tmp_path, monkeypatch):
+def test_every_page_renders_with_seeded_data(tmp_path, monkeypatch):
     url = f"sqlite:///{tmp_path / 'dash.sqlite'}"
     monkeypatch.setenv("SWING_DB_URL", url)
     monkeypatch.setattr(quotes, "latest_closes", lambda tickers, **kw: {"AMD": 104.0})
     _seed(url)
     at = AppTest.from_file(APP).run()
-    assert not at.exception
-    assert len(at.tabs) == 6
-    # the seeded ticker surfaces somewhere across the rendered tabs
+    for page in ALL_PAGES:
+        at.sidebar.radio[0].set_value(page).run()
+        assert not at.exception, f"{page} raised"
+
+
+def test_seeded_ticker_surfaces_on_candidates(tmp_path, monkeypatch):
+    url = f"sqlite:///{tmp_path / 'dash.sqlite'}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    monkeypatch.setattr(quotes, "latest_closes", lambda tickers, **kw: {"AMD": 104.0})
+    _seed(url)
+    at = AppTest.from_file(APP).run()
+    at.sidebar.radio[0].set_value("Today's Candidates").run()
     rendered = " ".join(str(getattr(el, "value", "")) for el in at.markdown)
     assert "AMD" in rendered or any("AMD" in str(df.value.to_string()) for df in at.dataframe)
 
 
 def test_active_trades_survives_malformed_trade(tmp_path, monkeypatch):
     # a zero-risk trade (stop == entry) makes position_pl raise; with a live quote
-    # available the Active Trades tab must not crash (the render guard catches it).
+    # available the Active Trades view must not crash (the render guard catches it).
     url = f"sqlite:///{tmp_path / 'bad.sqlite'}"
     monkeypatch.setenv("SWING_DB_URL", url)
     monkeypatch.setattr(quotes, "latest_closes", lambda tickers, **kw: {"BAD": 50.0})
@@ -59,4 +70,5 @@ def test_active_trades_survives_malformed_trade(tmp_path, monkeypatch):
                     entry_price=100.0, size=10.0, stop=100.0, target=110.0))
         s.commit()
     at = AppTest.from_file(APP).run()
+    at.sidebar.radio[0].set_value("Active Trades").run()
     assert not at.exception

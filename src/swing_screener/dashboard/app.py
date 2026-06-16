@@ -7,11 +7,13 @@ different cwd still works) so tests can point them at temp locations. Streamlit
 runs this file top-to-bottom on every rerun, so :func:`render` is called
 unconditionally at the bottom and reads settings fresh each run.
 
-Each tab is a small ``_render_*`` function taking an open :class:`Session`.
+Each page is a small ``_render_*`` function taking an open :class:`Session`,
+dispatched from the ``PAGES`` registry via the sidebar radio navigation.
 Quotes are fetched through ``quotes.latest_closes`` (a module attribute) so a
 test can monkeypatch that seam and avoid the network.
 """
 
+from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 
@@ -20,22 +22,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from swing_screener.analytics import performance
-from swing_screener.dashboard import quotes
+from swing_screener.dashboard import quotes, ui
 from swing_screener.dashboard.pl import position_pl
 from swing_screener.db import repo
 from swing_screener.db.models import ExitEvent, PaperTrade, Trade
 from swing_screener.db.session import get_engine
 from swing_screener.settings import load_settings
 from swing_screener.storage.blob import blob_enabled, download_bytes
-
-TAB_LABELS = [
-    "Today's Candidates",
-    "Active Trades",
-    "Trade Entry",
-    "Closed Trades",
-    "Screener Performance",
-    "Exit Log",
-]
 
 
 def _cache_dir() -> Path:
@@ -292,25 +285,46 @@ def _render_exits(session: Session) -> None:
     st.dataframe(rows, width="stretch")
 
 
+def _render_overview(session: Session) -> None:
+    ui.page_header("Overview")
+    ui.empty_state("Overview coming soon.")
+
+
+def _render_universe(session: Session) -> None:
+    ui.page_header("Universe")
+    ui.empty_state("Universe view coming soon.")
+
+
+def _render_digests(session: Session) -> None:
+    ui.page_header("Digest Log")
+    ui.empty_state("Digest log coming soon.")
+
+
+# label -> (sidebar group, renderer). Order defines sidebar order; first entry is the
+# default landing page. Radio nav (not st.navigation) so AppTest can drive page switches.
+PAGES: dict[str, tuple[str, Callable[[Session], None]]] = {
+    "Overview": ("Main", _render_overview),
+    "Today's Candidates": ("Signals", _render_candidates),
+    "Active Trades": ("Trades", _render_active),
+    "Trade Entry": ("Trades", _render_entry),
+    "Closed Trades": ("Trades", _render_closed),
+    "Screener Performance": ("Analytics", _render_performance),
+    "Exit Log": ("Analytics", _render_exits),
+    "Universe": ("Reference", _render_universe),
+    "Digest Log": ("Reference", _render_digests),
+}
+
+
 def render() -> None:
-    st.title("Swing Screener")
+    ui.inject_css()
     db_url = load_settings().db_url  # read fresh each rerun (env-resolved)
     engine = get_engine(db_url)  # ensure tables exist; empty DB is fine
-    st.sidebar.caption(f"DB: {db_url}")
-
-    renderers = [
-        _render_candidates,
-        _render_active,
-        _render_entry,
-        _render_closed,
-        _render_performance,
-        _render_exits,
-    ]
+    st.sidebar.title("📈 Swing Screener")
+    choice = st.sidebar.radio("Navigate", list(PAGES), label_visibility="collapsed")
+    renderer = PAGES[choice][1]
     with Session(engine) as session:
-        tabs = st.tabs(TAB_LABELS)
-        for tab, renderer in zip(tabs, renderers, strict=True):
-            with tab:
-                renderer(session)
+        with ui.error_boundary(choice):
+            renderer(session)
 
 
 render()
