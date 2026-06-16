@@ -40,13 +40,25 @@ def render_chart(frame: pd.DataFrame, ctx: PullbackContext | ReversalContext,
         "linestyle": "--",
         "linewidths": 0.8,
     }
+    # Date format scales with the visible span so labels never repeat: a daily
+    # chart (~months) needs the day ("Mar 16"), a weekly (~year+) the month+year
+    # ("Mar '26"), a monthly (multi-year) just the year. A single global format
+    # produced duplicate "Mar '26 / Mar '26" ticks on the lower timeframes.
+    span_days = (view.index[-1] - view.index[0]).days if len(view) > 1 else 0
+    if span_days <= 200:
+        datefmt = "%b %d"
+    elif span_days <= 365 * 3:
+        datefmt = "%b '%y"
+    else:
+        datefmt = "%Y"
+
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig, _ = mpf.plot(
         plot_df, type="candle", style="charles", volume=False,
         addplot=addplots, hlines=hlines, returnfig=True,
         ylabel="", figratio=(16, 7), figscale=1.1,
-        datetime_format="%b '%y", xrotation=0,
+        datetime_format=datefmt, xrotation=0,
     )
     fig.savefig(str(out_path), dpi=110, bbox_inches="tight")
     import matplotlib.pyplot as plt  # already safe under Agg
