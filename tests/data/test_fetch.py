@@ -89,3 +89,30 @@ def test_avg_dollar_volume_means_close_times_volume():
     assert avg_dollar_volume(df) == 1500.0           # (10*100 + 20*100)/2
     assert avg_dollar_volume(df, window=1) == 2000.0  # last bar only
     assert avg_dollar_volume(pd.DataFrame({"close": [], "volume": []})) is None
+
+
+def test_fetch_market_cap_caches(tmp_path, monkeypatch):
+    from swing_screener.data import fetch
+    calls = {"n": 0}
+    def fake(ticker):
+        calls["n"] += 1
+        return 1234.0
+    monkeypatch.setattr(fetch, "_fast_info_market_cap", fake)
+    a = fetch.fetch_market_cap("AAPL", cache_dir=tmp_path)
+    b = fetch.fetch_market_cap("AAPL", cache_dir=tmp_path)
+    assert a == 1234.0 and b == 1234.0
+    assert calls["n"] == 1  # second served from cache
+
+
+def test_fetch_market_cap_none_on_failure(tmp_path, monkeypatch):
+    from swing_screener.data import fetch
+    monkeypatch.setattr(fetch, "_fast_info_market_cap",
+                        lambda t: (_ for _ in ()).throw(RuntimeError("down")))
+    assert fetch.fetch_market_cap("AAPL", cache_dir=tmp_path, retries=2) is None
+
+
+def test_fetch_market_cap_missing_value_returns_none_no_cache(tmp_path, monkeypatch):
+    from swing_screener.data import fetch
+    monkeypatch.setattr(fetch, "_fast_info_market_cap", lambda t: None)
+    assert fetch.fetch_market_cap("ETF", cache_dir=tmp_path) is None
+    assert not (tmp_path / "marketcap").exists()  # a clean None is not cached
