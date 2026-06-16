@@ -30,18 +30,33 @@ def inject_css() -> None:
 
 
 def fmt_pct(frac: float) -> str:
-    """Format a fraction as a signed percentage, e.g. 0.1234 -> '+12.34%'."""
-    return f"{frac * 100:+.2f}%"
+    """Format a fraction as a signed percentage, e.g. 0.1234 -> '+12.34%'.
+
+    The sign is taken from the rounded value, so a tiny negative like -0.00001
+    renders as '+0.00%' rather than a confusing '-0.00%'. Callers must pre-guard
+    missing values (None/NaN) -- the contract is a finite float.
+    """
+    pct = round(frac * 100, 2) + 0.0  # + 0.0 normalizes a rounded -0.0 to 0.0
+    return f"{pct:+.2f}%"
 
 
 def fmt_money(amount: float) -> str:
-    """Format a dollar amount, e.g. 1234.5 -> '$1,234.50', -12.0 -> '-$12.00'."""
-    sign = "-" if amount < 0 else ""
-    return f"{sign}${abs(amount):,.2f}"
+    """Format a dollar amount, e.g. 1234.5 -> '$1,234.50', -12.0 -> '-$12.00'.
+
+    The sign is taken from the rounded cents, so a tiny negative like -0.001
+    renders as '$0.00' rather than '-$0.00'. Callers must pre-guard missing
+    values (None/NaN) -- the contract is a finite float.
+    """
+    cents = round(amount, 2)
+    sign = "-" if cents < 0 else ""
+    return f"{sign}${abs(cents):,.2f}"
 
 
 def pl_color(value: float) -> str:
-    """Semantic color for a P/L value: green when > 0, red otherwise (break-even = red)."""
+    """Semantic color for a P/L value: green when > 0, red otherwise.
+
+    Break-even (0.0) and non-positive/NaN values map to red (NEG).
+    """
     return POS if value > 0 else NEG
 
 
