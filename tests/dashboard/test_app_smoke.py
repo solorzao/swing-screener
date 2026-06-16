@@ -109,6 +109,32 @@ def test_overview_reflects_open_position_count(tmp_path, monkeypatch):
     assert any(m.label == "Open positions" and m.value == "1" for m in at.metric)
 
 
+def test_active_trades_formats_and_colors_positive_pl(tmp_path, monkeypatch):
+    # Seed an open trade with a live quote ABOVE entry -> positive unrealized P/L.
+    # This drives the Styler format/color path (ui.fmt_money/fmt_pct/pl_color), so
+    # rendering must not raise and the underlying DataFrame must carry the numeric,
+    # positive unrealized_$ (the format/color is applied on top via the Styler).
+    url = f"sqlite:///{tmp_path / 'pl.sqlite'}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    monkeypatch.setattr(quotes, "latest_closes", lambda tickers, **kw: {"AMD": 110.0})
+    engine = get_engine(url)
+    with Session(engine) as s:
+        s.add(Trade(ticker="AMD", timeframe="1d", horizon="medium", entry_date=date.today(),
+                    entry_price=100.0, size=10.0, stop=95.0, target=120.0))
+        s.commit()
+    at = AppTest.from_file(APP).run()
+    at.sidebar.radio[0].set_value("Active Trades").run()
+    assert not at.exception
+
+    # The first dataframe on the page is the P/L table. AppTest exposes the
+    # underlying (pre-Styler) DataFrame as .value; assert the numeric P/L is present
+    # and positive ((110 - 100) * 10 = 100.0).
+    df = at.dataframe[0].value
+    assert "unrealized_$" in df.columns
+    pl_values = [v for v in df["unrealized_$"].tolist() if v is not None]
+    assert pl_values and pl_values[0] > 0
+
+
 def test_active_trades_survives_malformed_trade(tmp_path, monkeypatch):
     # a zero-risk trade (stop == entry) makes position_pl raise; with a live quote
     # available the Active Trades view must not crash (the render guard catches it).

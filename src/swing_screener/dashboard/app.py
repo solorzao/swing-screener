@@ -142,15 +142,17 @@ def _render_active(session: Session) -> None:
     for t in trades:
         price = prices.get(t.ticker)
         if price is None:
+            # Missing quote — keep numeric P/L fields as None (blanks via the
+            # Styler) rather than a "—" string, so the column stays numeric.
             rows.append(
                 {
                     "ticker": t.ticker,
                     "entry": t.entry_price,
                     "size": t.size,
-                    "price": "—",
-                    "unrealized_$": "—",
-                    "unrealized_%": "—",
-                    "R": "—",
+                    "price": None,
+                    "unrealized_$": None,
+                    "unrealized_%": None,
+                    "R": None,
                     "stop": t.stop,
                     "target": t.target,
                     "status": "—",
@@ -172,8 +174,8 @@ def _render_active(session: Session) -> None:
             rows.append(
                 {
                     "ticker": t.ticker, "entry": t.entry_price, "size": t.size,
-                    "price": price, "unrealized_$": "—", "unrealized_%": "—",
-                    "R": "—", "stop": t.stop, "target": t.target, "status": "⚠️",
+                    "price": price, "unrealized_$": None, "unrealized_%": None,
+                    "R": None, "stop": t.stop, "target": t.target, "status": "⚠️",
                 }
             )
             continue
@@ -189,15 +191,50 @@ def _render_active(session: Session) -> None:
                 "entry": t.entry_price,
                 "size": t.size,
                 "price": price,
-                "unrealized_$": round(pl.unrealized_pl, 2),
-                "unrealized_%": round(pl.unrealized_pct * 100, 2),
-                "R": round(pl.r_multiple, 2),
+                "unrealized_$": pl.unrealized_pl,
+                # store the FRACTION; ui.fmt_pct multiplies by 100 when formatting.
+                "unrealized_%": pl.unrealized_pct,
+                "R": pl.r_multiple,
                 "stop": t.stop,
                 "target": t.target,
                 "status": badge,
             }
         )
-    st.dataframe(rows, width="stretch")
+    df = pd.DataFrame(
+        rows,
+        columns=["ticker", "entry", "size", "price", "unrealized_$",
+                 "unrealized_%", "R", "stop", "target", "status"],
+    )
+
+    def _money(v: object) -> str:
+        return ui.fmt_money(v) if isinstance(v, (int, float)) and pd.notna(v) else "—"
+
+    def _pct(v: object) -> str:
+        return ui.fmt_pct(v) if isinstance(v, (int, float)) and pd.notna(v) else "—"
+
+    def _r(v: object) -> str:
+        return f"{v:+.2f}R" if isinstance(v, (int, float)) and pd.notna(v) else "—"
+
+    def _color_pl(v: object) -> str:
+        if isinstance(v, (int, float)) and pd.notna(v):
+            return f"color: {ui.pl_color(v)}"
+        return ""
+
+    styler = (
+        df.style.format(
+            {
+                "entry": _money,
+                "price": _money,
+                "stop": _money,
+                "target": _money,
+                "unrealized_$": _money,
+                "unrealized_%": _pct,
+                "R": _r,
+                "size": "{:.0f}",
+            }
+        ).map(_color_pl, subset=["unrealized_$", "unrealized_%", "R"])
+    )
+    st.dataframe(styler, width="stretch", hide_index=True)
 
     st.subheader("Close a trade")
     # `trades` are the same open trades shown above; carry id + ticker on the label.
