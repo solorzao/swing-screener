@@ -37,3 +37,17 @@ def test_open_paper_trades_and_record_exit():
                                     tier="hard", reason="stop", message="stopped out",
                                     created_date=date(2024, 1, 5))
         assert ev.id is not None and ev.reason == "stop"
+
+
+def test_list_universe_orders_and_filters_by_ticker():
+    from sqlalchemy.orm import Session
+    from swing_screener.db.models import Universe
+    from swing_screener.db.session import get_engine
+    from swing_screener.db import repo
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add_all([Universe(ticker="NVDA", name="Nvidia"),
+                   Universe(ticker="AMD", name="Advanced Micro")])
+        s.commit()
+        assert [u.ticker for u in repo.list_universe(s)] == ["AMD", "NVDA"]   # ordered by ticker
+        assert [u.ticker for u in repo.list_universe(s, search="nv")] == ["NVDA"]  # case-insensitive
