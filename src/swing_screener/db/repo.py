@@ -1,6 +1,6 @@
 """Thin CRUD layer over the SQLAlchemy models for signals and trades."""
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import date
 from typing import TYPE_CHECKING
 
@@ -137,6 +137,26 @@ def sync_universe(session: Session, entries: "Sequence[UniverseEntry]") -> None:
     for ticker, row in existing.items():
         if ticker not in incoming:
             session.delete(row)
+    session.commit()
+
+
+def apply_universe_metrics(
+    session: Session, metrics: "Mapping[str, Mapping[str, float | None]]"
+) -> None:
+    """Update market_cap / avg_dollar_volume for known tickers; skip None values and
+    unknown tickers. Single commit."""
+    if not metrics:
+        return
+    rows = {u.ticker: u for u in session.scalars(
+        select(Universe).where(Universe.ticker.in_(list(metrics))))}
+    for ticker, vals in metrics.items():
+        row = rows.get(ticker)
+        if row is None:
+            continue
+        if vals.get("market_cap") is not None:
+            row.market_cap = vals["market_cap"]
+        if vals.get("avg_dollar_volume") is not None:
+            row.avg_dollar_volume = vals["avg_dollar_volume"]
     session.commit()
 
 
