@@ -36,8 +36,12 @@ class StrategyConfig:
     reversal_min_bearish_bars: int = 3        # HA red bars required in the decline (downtrend gate)
     reversal_oversold_rsi_max: float = 25.0   # RSI scoring floor: how deep is "deeply oversold"
     reversal_oversold_lookback: int = 5       # bars to look back when measuring oversold depth
-    reversal_decline_bars: int = 6            # window for the decline low + swing-high resistance
-    reversal_target_r_multiple: float = 2.0   # fallback target R when no clean resistance sits above
+    reversal_decline_bars: int = 6            # window for the decline low (retracement base)
+    reversal_stop_lookback: int = 3           # bars for the RECENT swing low (the stop, not the deep low)
+    reversal_max_stop_atr: float = 2.5        # cap the stop at this many ATRs below entry
+    reversal_target_lookback: int = 30        # bars for the prior decline high (retracement target)
+    reversal_retrace_frac: float = 0.618      # target = this retracement of the decline (Fib 61.8%)
+    reversal_target_r_multiple: float = 1.0   # min reward (R) fallback if no level sits above entry
 
     # exits
     time_stop_factor: float = 1.0    # time stop = factor * max_hold_bars[tf]
