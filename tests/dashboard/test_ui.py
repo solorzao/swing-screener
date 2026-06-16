@@ -23,6 +23,17 @@ def test_pl_color_picks_semantic_color():
     assert ui.pl_color(0.0) == ui.NEG  # break-even is not a win
 
 
+def test_fmt_compact_usd_abbreviates_magnitude():
+    assert ui.fmt_compact_usd(36_247_314_659) == "$36.2B"
+    assert ui.fmt_compact_usd(393_058_401_045) == "$393.1B"
+    assert ui.fmt_compact_usd(349_451_363) == "$349.5M"
+    assert ui.fmt_compact_usd(2_500) == "$2.5K"
+    assert ui.fmt_compact_usd(900) == "$900"
+    assert ui.fmt_compact_usd(1_500_000_000_000) == "$1.5T"
+    assert ui.fmt_compact_usd(None) == "—"
+    assert ui.fmt_compact_usd(float("nan")) == "—"
+
+
 def test_bar_and_line_build_charts():
     import altair as alt
     from datetime import date

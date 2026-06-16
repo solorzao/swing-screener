@@ -524,8 +524,10 @@ def _render_universe(session: Session) -> None:
                 "ticker": u.ticker,
                 "name": u.name,
                 "exchange": u.exchange,
-                "market_cap": u.market_cap,
-                "avg_dollar_volume": u.avg_dollar_volume,
+                # pre-formatted to human-readable magnitudes ($36.2B); the raw ints
+                # are unreadable as a NumberColumn (no thousands grouping / suffix).
+                "market_cap": ui.fmt_compact_usd(u.market_cap),
+                "avg_dollar_volume": ui.fmt_compact_usd(u.avg_dollar_volume),
             }
             for u in rows
         ]
@@ -535,8 +537,8 @@ def _render_universe(session: Session) -> None:
         width="stretch",
         hide_index=True,
         column_config={
-            "market_cap": st.column_config.NumberColumn("Market cap", format="$%.0f"),
-            "avg_dollar_volume": st.column_config.NumberColumn("Avg $ vol", format="$%.0f"),
+            "market_cap": st.column_config.TextColumn("Market cap"),
+            "avg_dollar_volume": st.column_config.TextColumn("Avg $ vol"),
         },
     )
     st.caption(f"{len(rows)} tickers")
