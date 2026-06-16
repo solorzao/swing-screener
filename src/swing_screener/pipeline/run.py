@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from swing_screener.charts.render import render_chart
 from swing_screener.config import StrategyConfig
-from swing_screener.data.fetch import fetch_bars
+from swing_screener.data.fetch import avg_dollar_volume, fetch_bars, fetch_market_cap
 from swing_screener.data.resample import resample_ohlcv
 from swing_screener.data.universe import load_universe
 from swing_screener.db import repo
@@ -194,11 +194,16 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
     if db_url.startswith("mssql"):
         (migrate_fn or _migrate_with_retry)(db_url)
 
-    universe = load_universe(universe_path)
-    if max_tickers is not None:
-        universe = universe[:max_tickers]
+    # Persist the FULL seed up front (independent of max_tickers) so the universe
+    # table mirrors the whole watchlist; metrics are filled in by the per-ticker
+    # loop below and applied in one batch before the run ends.
+    full_universe = load_universe(universe_path)
     engine = get_engine(db_url)
+    with Session(engine) as s:
+        repo.sync_universe(s, full_universe)
+    universe = full_universe[:max_tickers] if max_tickers is not None else full_universe
 
+    universe_metrics: dict[str, dict[str, float | None]] = {}
     today_results: list[SignalResult] = []      # continuation
     today_reversals: list[SignalResult] = []     # reversal
     prior: list[tuple[SignalResult, float, float]] = []  # (prior signal, next_high, next_low)
@@ -211,6 +216,11 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
                                                today=today, cfg=cfg)
             if not bars_by_tf:
                 continue
+            daily = bars_by_tf.get("1d")
+            universe_metrics[entry.ticker] = {
+                "avg_dollar_volume": avg_dollar_volume(daily) if daily is not None else None,
+                "market_cap": fetch_market_cap(entry.ticker, cache_dir=cache_dir, today=today),
+            }
             frames = build_frames(bars_by_tf, cfg)
             for tf, f in frames.items():
                 if len(f):
@@ -274,6 +284,10 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         opened = open_from_signals(s, candidates, next_bars, fill_date=today)
         n_paper_opened = sum(1 for t in opened if t.status == "open")
         advance_open(s, latest_bars, cfg, today=today)
+
+        # Enrich the universe rows with the metrics gathered during the loop
+        # (one batch UPDATE; None-skips, self-commits).
+        repo.apply_universe_metrics(s, universe_metrics)
 
     return RunResult(n_signals=len(today_results) + len(today_reversals),
                      n_paper_opened=n_paper_opened, n_charts=n_charts, n_failed=n_failed,
