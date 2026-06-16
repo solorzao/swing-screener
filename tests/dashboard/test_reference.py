@@ -1,11 +1,12 @@
 """AppTest coverage for the Universe and Digest Log reference views."""
 
+from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy.orm import Session
 from streamlit.testing.v1 import AppTest
 
-from swing_screener.db.models import Universe
+from swing_screener.db.models import EmailLog, Universe
 from swing_screener.db.session import get_engine
 
 APP = str(Path(__file__).parents[2] / "src" / "swing_screener" / "dashboard" / "app.py")
@@ -58,3 +59,38 @@ def test_universe_empty_db(tmp_path, monkeypatch):
     assert len(at.dataframe) == 0
     infos = " ".join(str(getattr(el, "value", "")) for el in at.info)
     assert "Universe is empty" in infos
+
+
+def _seed_email_log(url):
+    engine = get_engine(url)
+    with Session(engine) as s:
+        s.add_all([
+            EmailLog(sent_at=datetime(2026, 1, 1, 9, 0), kind="daily",
+                     subject="Daily digest old"),
+            EmailLog(sent_at=datetime(2026, 1, 2, 9, 0), kind="weekly",
+                     subject="Weekly digest new"),
+        ])
+        s.commit()
+
+
+def test_digest_log_lists_emails(tmp_path, monkeypatch):
+    url = f"sqlite:///{tmp_path / 'digests.sqlite'}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    _seed_email_log(url)
+    at = AppTest.from_file(APP).run()
+    at.sidebar.radio[0].set_value("Digest Log").run()
+    assert not at.exception
+
+    table = at.dataframe[0].value
+    assert "Weekly digest new" in set(table["subject"])
+
+
+def test_digest_log_empty_db(tmp_path, monkeypatch):
+    url = f"sqlite:///{tmp_path / 'digests.sqlite'}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    at = AppTest.from_file(APP).run()
+    at.sidebar.radio[0].set_value("Digest Log").run()
+    assert not at.exception
+    assert len(at.dataframe) == 0
+    infos = " ".join(str(getattr(el, "value", "")) for el in at.info)
+    assert "No digests sent yet" in infos

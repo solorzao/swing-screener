@@ -499,8 +499,32 @@ def _render_universe(session: Session) -> None:
 
 
 def _render_digests(session: Session) -> None:
-    ui.page_header("Digest Log")
-    ui.empty_state("Digest log coming soon.")
+    ui.page_header("Digest Log", caption="Emails the screener has sent.")
+    rows = repo.list_email_log(session)
+    if not rows:
+        ui.empty_state("No digests sent yet.")
+        return
+
+    df = pd.DataFrame(
+        [
+            {
+                "sent_at": e.sent_at,
+                "kind": e.kind,
+                "subject": e.subject,
+                "run_date": e.run_date,
+            }
+            for e in rows
+        ]
+    )
+    st.dataframe(
+        df,
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "sent_at": st.column_config.DatetimeColumn("Sent"),
+            "run_date": st.column_config.DateColumn("Run date"),
+        },
+    )
 
 
 # label -> renderer. Order defines sidebar order; first entry is the default
