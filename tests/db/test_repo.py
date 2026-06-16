@@ -51,3 +51,17 @@ def test_list_universe_orders_and_filters_by_ticker():
         s.commit()
         assert [u.ticker for u in repo.list_universe(s)] == ["AMD", "NVDA"]   # ordered by ticker
         assert [u.ticker for u in repo.list_universe(s, search="nv")] == ["NVDA"]  # case-insensitive
+
+
+def test_list_email_log_newest_first():
+    from datetime import datetime
+    from sqlalchemy.orm import Session
+    from swing_screener.db.models import EmailLog
+    from swing_screener.db.session import get_engine
+    from swing_screener.db import repo
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add_all([EmailLog(sent_at=datetime(2026, 1, 1), kind="daily", subject="old"),
+                   EmailLog(sent_at=datetime(2026, 1, 2), kind="weekly", subject="new")])
+        s.commit()
+        assert [e.subject for e in repo.list_email_log(s)] == ["new", "old"]
