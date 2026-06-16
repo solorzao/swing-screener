@@ -17,6 +17,7 @@ from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -56,36 +57,73 @@ def _resolve_chart_image(chart_path: str | None) -> bytes | str | None:
 
 
 def _render_candidates(session: Session) -> None:
-    st.subheader("Today's Candidates")
+    ui.page_header("Today's Candidates")
     run_date = repo.latest_run_date(session)
     signals = repo.latest_signals(session, run_date) if run_date else []
     if not signals:
-        st.write("No candidates yet — run the screener.")
+        ui.empty_state("No candidates yet — run the screener.")
         return
     st.caption(f"Latest run: {run_date}")
 
-    rows = [
-        {
-            "ticker": s.ticker,
-            "timeframe": s.timeframe,
-            "horizon": s.horizon,
-            "score": s.score,
-            "mtf_aligned": s.mtf_aligned,
-            "quality_tier": s.quality_tier,
-            "volatility_tier": s.volatility_tier,
-            "entry_floor": s.entry_floor,
-            "entry_ceiling": s.entry_ceiling,
-            "stop": s.stop,
-            "target": s.target,
-        }
-        for s in signals
-    ]
-    st.dataframe(rows, width="stretch")
+    # Play-type filter in the main area (the sidebar radio is the page nav).
+    options = ["All", "Continuation", "Reversal"]
+    choice = st.segmented_control("Play type", options, default="All")
+    if choice == "Continuation":
+        signals = [s for s in signals if s.play_type == "continuation"]
+    elif choice == "Reversal":
+        signals = [s for s in signals if s.play_type == "reversal"]
+    if not signals:
+        ui.empty_state(f"No {choice} plays in this run.")
+        return
+
+    df = pd.DataFrame(
+        [
+            {
+                "rank": s.rank,
+                "ticker": s.ticker,
+                "play_type": s.play_type,
+                "strength": s.strength,
+                "timeframe": s.timeframe,
+                "horizon": s.horizon,
+                "score": s.score,
+                "rsi": s.rsi,
+                "atr": s.atr,
+                "mtf_aligned": s.mtf_aligned,
+                "oversold": s.oversold,
+                "quality_tier": s.quality_tier,
+                "volatility_tier": s.volatility_tier,
+                "entry_floor": s.entry_floor,
+                "entry_ceiling": s.entry_ceiling,
+                "stop": s.stop,
+                "target": s.target,
+            }
+            for s in signals
+        ]
+    )
+    st.dataframe(
+        df,
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "rank": st.column_config.NumberColumn("Rank", format="%d"),
+            "play_type": st.column_config.TextColumn("Play"),
+            "score": st.column_config.ProgressColumn(
+                "Score", min_value=0.0, max_value=1.0, format="%.2f"
+            ),
+            "rsi": st.column_config.NumberColumn("RSI", format="%.0f"),
+            "atr": st.column_config.NumberColumn("ATR", format="%.2f"),
+            "entry_floor": st.column_config.NumberColumn("Entry ▼", format="$%.2f"),
+            "entry_ceiling": st.column_config.NumberColumn("Entry ▲", format="$%.2f"),
+            "stop": st.column_config.NumberColumn("Stop", format="$%.2f"),
+            "target": st.column_config.NumberColumn("Target", format="$%.2f"),
+        },
+    )
 
     for s in signals:
         image = _resolve_chart_image(s.chart_path)
         if image is not None:
-            st.image(image, caption=s.ticker)
+            with st.expander(f"{s.ticker} chart"):
+                st.image(image, width="stretch")
 
 
 def _render_active(session: Session) -> None:

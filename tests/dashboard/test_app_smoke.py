@@ -58,6 +58,40 @@ def test_seeded_ticker_surfaces_on_candidates(tmp_path, monkeypatch):
     assert "AMD" in rendered or any("AMD" in str(df.value.to_string()) for df in at.dataframe)
 
 
+def test_play_type_filter_keeps_only_reversal(tmp_path, monkeypatch):
+    # Seed two signals on the same run_date — one continuation, one reversal — then
+    # set the main-area play-type filter to "Reversal" and assert only the reversal
+    # ticker surfaces in the dataframe (continuation is filtered out).
+    url = f"sqlite:///{tmp_path / 'filter.sqlite'}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    monkeypatch.setattr(quotes, "latest_closes", lambda tickers, **kw: {})
+    engine = get_engine(url)
+    with Session(engine) as s:
+        s.add(Signal(run_date=date.today(), ticker="AMD", timeframe="1d", horizon="medium",
+                     play_type="continuation", score=0.9, rank=1, trigger_close=100.0,
+                     atr=4.0, rsi=55.0, entry_floor=96.0, entry_ceiling=101.0,
+                     stop=95.0, target=110.0))
+        s.add(Signal(run_date=date.today(), ticker="NVDA", timeframe="1d", horizon="medium",
+                     play_type="reversal", strength="confirmed", oversold=True, score=0.8,
+                     rank=2, trigger_close=200.0, atr=8.0, rsi=28.0, entry_floor=190.0,
+                     entry_ceiling=202.0, stop=188.0, target=220.0))
+        s.commit()
+    at = AppTest.from_file(APP).run()
+    at.sidebar.radio[0].set_value("Today's Candidates").run()
+
+    # Sanity: under "All" both tickers are in the table and the new columns exist.
+    all_table = " ".join(df.value.to_string() for df in at.dataframe)
+    assert "AMD" in all_table and "NVDA" in all_table
+    cols = list(at.dataframe[0].value.columns)
+    assert {"rank", "play_type", "rsi"}.issubset(set(cols))
+
+    # The play-type control lives in the MAIN area (sidebar nav is at.sidebar.radio).
+    at.segmented_control[0].set_value("Reversal").run()
+    reversal_table = " ".join(df.value.to_string() for df in at.dataframe)
+    assert "NVDA" in reversal_table
+    assert "AMD" not in reversal_table
+
+
 def test_overview_reflects_open_position_count(tmp_path, monkeypatch):
     # Seed one open Trade + a live quote; the Overview "Open positions" KPI
     # must report 1.
