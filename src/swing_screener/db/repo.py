@@ -1,13 +1,21 @@
 """Thin CRUD layer over the SQLAlchemy models for signals and trades."""
 
 from collections.abc import Mapping, Sequence
-from datetime import date
-from typing import TYPE_CHECKING
+from datetime import date, datetime
+from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import delete, select
+from sqlalchemy import CursorResult, delete, select, update
 from sqlalchemy.orm import Session
 
-from swing_screener.db.models import EmailLog, ExitEvent, PaperTrade, Signal, Trade, Universe
+from swing_screener.db.models import (
+    AnalysisRequest,
+    EmailLog,
+    ExitEvent,
+    PaperTrade,
+    Signal,
+    Trade,
+    Universe,
+)
 
 if TYPE_CHECKING:
     from swing_screener.data.universe import UniverseEntry
@@ -162,3 +170,81 @@ def apply_universe_metrics(
 
 def list_email_log(session: Session) -> list[EmailLog]:
     return list(session.scalars(select(EmailLog).order_by(EmailLog.sent_at.desc())))
+
+
+def create_analysis_request(session: Session, *, ticker: str, requested_at: datetime,
+                            recipient: str = "") -> AnalysisRequest:
+    req = AnalysisRequest(ticker=ticker, requested_at=requested_at, recipient=recipient)
+    session.add(req)
+    session.commit()
+    session.refresh(req)
+    return req
+
+
+def list_analysis_requests(session: Session, limit: int = 50) -> list[AnalysisRequest]:
+    stmt = select(AnalysisRequest).order_by(AnalysisRequest.requested_at.desc()).limit(limit)
+    return list(session.scalars(stmt))
+
+
+def get_analysis_request(session: Session, request_id: int) -> AnalysisRequest | None:
+    return session.get(AnalysisRequest, request_id)
+
+
+def claim_queued_requests(session: Session, *, now: datetime,
+                          limit: int = 10) -> list[AnalysisRequest]:
+    """Atomically flip queued->running and return the claimed rows."""
+    ids = list(session.scalars(
+        select(AnalysisRequest.id).where(AnalysisRequest.status == "queued")
+        .order_by(AnalysisRequest.requested_at).limit(limit)))
+    if not ids:
+        return []
+    session.execute(update(AnalysisRequest)
+        .where(AnalysisRequest.id.in_(ids), AnalysisRequest.status == "queued")
+        .values(status="running", started_at=now))
+    session.commit()
+    # Self-identifying read-back: only return rows THIS call stamped with `now`.
+    # Safe under concurrent replicas -- each stamps its own `now`, so the loser of a
+    # race re-reads zero of the winner's rows instead of double-processing them.
+    return list(session.scalars(
+        select(AnalysisRequest).where(AnalysisRequest.id.in_(ids),
+                                      AnalysisRequest.status == "running",
+                                      AnalysisRequest.started_at == now)
+        .order_by(AnalysisRequest.requested_at)))
+
+
+def requeue_stale_running(session: Session, *, cutoff: datetime) -> int:
+    """Reset rows stuck 'running' since before `cutoff` back to 'queued' so a crashed/
+    retried worker re-processes them. Returns the count requeued."""
+    result = session.execute(
+        update(AnalysisRequest)
+        .where(AnalysisRequest.status == "running", AnalysisRequest.started_at < cutoff)
+        .values(status="queued", started_at=None))
+    session.commit()
+    # `Session.execute` is typed `Result`; an UPDATE actually yields a `CursorResult`,
+    # which is what carries `rowcount`.
+    return cast("CursorResult[Any]", result).rowcount
+
+
+def complete_analysis_request(session: Session, request_id: int, *, summary: str,
+                              pdf_blob_key: str | None, chart_blob_keys: str,
+                              finished_at: datetime) -> None:
+    req = session.get(AnalysisRequest, request_id)
+    if req is None:
+        return
+    req.status = "done"
+    req.summary = summary
+    req.pdf_blob_key = pdf_blob_key
+    req.chart_blob_keys = chart_blob_keys
+    req.finished_at = finished_at
+    session.commit()
+
+
+def fail_analysis_request(session: Session, request_id: int, *, error: str,
+                          finished_at: datetime) -> None:
+    req = session.get(AnalysisRequest, request_id)
+    if req is None:
+        return
+    req.status = "failed"
+    req.error = error
+    req.finished_at = finished_at
+    session.commit()

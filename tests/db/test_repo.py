@@ -130,3 +130,96 @@ def test_list_email_log_newest_first():
                    EmailLog(sent_at=datetime(2026, 1, 2), kind="weekly", subject="new")])
         s.commit()
         assert [e.subject for e in repo.list_email_log(s)] == ["new", "old"]
+
+
+def test_create_and_list_analysis_requests():
+    from datetime import datetime
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        repo.create_analysis_request(s, ticker="AMD",
+                                     requested_at=datetime(2026, 6, 16, 9, 0))
+        repo.create_analysis_request(s, ticker="NVDA",
+                                     requested_at=datetime(2026, 6, 16, 10, 0),
+                                     recipient="me@example.com")
+        rows = repo.list_analysis_requests(s)
+        assert [r.ticker for r in rows] == ["NVDA", "AMD"]  # newest requested_at first
+        assert rows[0].recipient == "me@example.com"
+        assert rows[0].status == "queued"
+        # round-trip fetch by id
+        assert repo.get_analysis_request(s, rows[0].id).ticker == "NVDA"
+        assert repo.get_analysis_request(s, 99999) is None
+
+
+def test_claim_queued_is_atomic_and_idempotent():
+    from datetime import datetime
+    engine = get_engine("sqlite:///:memory:")
+    now = datetime(2026, 6, 16, 12, 0)
+    with Session(engine) as s:
+        repo.create_analysis_request(s, ticker="AMD",
+                                     requested_at=datetime(2026, 6, 16, 9, 0))
+        repo.create_analysis_request(s, ticker="NVDA",
+                                     requested_at=datetime(2026, 6, 16, 10, 0))
+        claimed = repo.claim_queued_requests(s, now=now)
+        assert len(claimed) == 2
+        # Read-back is self-identifying: every returned row is running AND stamped
+        # with THIS call's `now`, so a concurrent replica's claim can't leak in.
+        assert all(r.status == "running" for r in claimed)
+        assert all(r.started_at == now for r in claimed)
+        # oldest requested_at is claimed first
+        assert [r.ticker for r in claimed] == ["AMD", "NVDA"]
+        # a second claim finds nothing left queued
+        assert repo.claim_queued_requests(s, now=now) == []
+
+
+def test_requeue_stale_running():
+    from datetime import datetime
+    engine = get_engine("sqlite:///:memory:")
+    cutoff = datetime(2026, 6, 16, 12, 0)
+    with Session(engine) as s:
+        stale = repo.create_analysis_request(s, ticker="AMD",
+                                             requested_at=datetime(2026, 6, 16, 8, 0))
+        fresh = repo.create_analysis_request(s, ticker="NVDA",
+                                             requested_at=datetime(2026, 6, 16, 8, 5))
+        # Both are mid-flight ('running'); the stale one started long before the cutoff,
+        # the fresh one just after it.
+        stale.status = "running"
+        stale.started_at = datetime(2026, 6, 16, 11, 0)   # before cutoff -> stale
+        fresh.status = "running"
+        fresh.started_at = datetime(2026, 6, 16, 12, 30)  # after cutoff -> untouched
+        s.commit()
+
+        n = repo.requeue_stale_running(s, cutoff=cutoff)
+        assert n == 1
+        # the stale row is back in the queue with its start cleared
+        stale_row = repo.get_analysis_request(s, stale.id)
+        assert stale_row.status == "queued"
+        assert stale_row.started_at is None
+        # the recent row is left running, untouched
+        fresh_row = repo.get_analysis_request(s, fresh.id)
+        assert fresh_row.status == "running"
+        assert fresh_row.started_at == datetime(2026, 6, 16, 12, 30)
+
+
+def test_complete_and_fail():
+    from datetime import datetime
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        ok = repo.create_analysis_request(s, ticker="AMD",
+                                          requested_at=datetime(2026, 6, 16, 9, 0))
+        bad = repo.create_analysis_request(s, ticker="NVDA",
+                                           requested_at=datetime(2026, 6, 16, 10, 0))
+        repo.complete_analysis_request(
+            s, ok.id, summary="looks bullish", pdf_blob_key="reports/amd.pdf",
+            chart_blob_keys="c1,c2", finished_at=datetime(2026, 6, 16, 12, 5))
+        repo.fail_analysis_request(
+            s, bad.id, error="no data", finished_at=datetime(2026, 6, 16, 12, 6))
+        done = repo.get_analysis_request(s, ok.id)
+        assert done.status == "done"
+        assert done.summary == "looks bullish"
+        assert done.pdf_blob_key == "reports/amd.pdf"
+        assert done.chart_blob_keys == "c1,c2"
+        assert done.finished_at == datetime(2026, 6, 16, 12, 5)
+        failed = repo.get_analysis_request(s, bad.id)
+        assert failed.status == "failed"
+        assert failed.error == "no data"
+        assert failed.finished_at == datetime(2026, 6, 16, 12, 6)

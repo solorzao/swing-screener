@@ -25,8 +25,9 @@ def _seed(url):
         s.commit()
 
 
-ALL_PAGES = ["Overview", "Today's Candidates", "Active Trades", "Trade Entry",
-             "Closed Trades", "Screener Performance", "Exit Log", "Universe", "Digest Log"]
+ALL_PAGES = ["Overview", "Today's Candidates", "Deep Analysis", "Active Trades",
+             "Trade Entry", "Closed Trades", "Screener Performance", "Exit Log",
+             "Universe", "Digest Log"]
 
 
 def test_app_renders_on_empty_db(tmp_path, monkeypatch):

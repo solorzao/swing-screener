@@ -1,6 +1,6 @@
 // =============================================================================
 // jobs.bicep
-// FIVE scheduled Container Apps Jobs, all sharing ONE image and ONE UAMI.
+// SIX scheduled Container Apps Jobs, all sharing ONE image and ONE UAMI.
 //
 // Each job keeps the image ENTRYPOINT (the US-Eastern gate,
 // `python -m swing_screener.ops.eastern_gate`) and sets container `args` to the
@@ -195,8 +195,8 @@ var commonEnv = [
   }
 ]
 
-// Per-job spec: cron + container args + gate env + timeout. The five jobs
-// differ ONLY in these. UTC crons fire on both EST and EDT; the gate selects ET.
+// Per-job spec: cron + container args + gate env + timeout. The jobs differ
+// ONLY in these. UTC crons fire on both EST and EDT; the gate selects ET.
 var jobSpecs = [
   {
     name: 'evening-screen'
@@ -228,6 +228,23 @@ var jobSpecs = [
         value: '8'
       }
     ]
+    timeout: digestTimeoutSeconds
+  }
+  {
+    // On-demand single-ticker deep-analysis worker. Drains the analysis_requests
+    // queue every 15 minutes, so -- unlike the digest/screen jobs -- it is NOT
+    // gated on an Eastern hour: an empty gateEnv leaves RUN_IF_ET_HOUR unset, and
+    // the eastern_gate passes straight through to exec the worker on every firing.
+    // Same image/UAMI/secrets/env as daily-digest (it emails + calls Anthropic +
+    // reads/writes Azure SQL + uploads to Blob); only the cron + entrypoint args
+    // differ.
+    name: 'on-demand-analysis'
+    cron: '*/15 * * * *'
+    args: [
+      '-m'
+      'swing_screener.notify.ondemand'
+    ]
+    gateEnv: []
     timeout: digestTimeoutSeconds
   }
   {
@@ -337,5 +354,5 @@ resource jobs 'Microsoft.App/jobs@2026-01-01' = [
   }
 ]
 
-@description('Names of the five scheduled jobs.')
+@description('Names of the scheduled jobs.')
 output jobNames array = [for (spec, i) in jobSpecs: jobs[i].name]

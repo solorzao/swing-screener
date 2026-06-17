@@ -12,6 +12,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from html import escape
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from swing_screener.notify.ticker_report import TickerReport
 
 _BADGE = {"hard": "🔴", "strong": "🟠", "advisory": "🟡"}
 _KIND_TITLE = {"daily": "Daily", "weekly": "Weekly", "monthly": "Monthly"}
@@ -125,5 +129,39 @@ def compose_digest_body(
     if has_pdf:
         html_parts.append("<p>Full analysis attached (PDF).</p>")
     html = "".join(html_parts)
+
+    return EmailContent(subject=subject, text=text, html=html)
+
+
+def compose_ticker_report_body(report: "TickerReport") -> EmailContent:
+    """Render an on-demand single-ticker report into subject, plain-text, and HTML.
+
+    The email is a scannable cover for the attached multi-timeframe PDF: the overall
+    summary, then one line per timeframe (HA trend + RSI), then a pointer to the PDF.
+    """
+    subject = (
+        f"Swing Screener — Deep Read: {report.ticker} "
+        f"({report.run_at.strftime('%b %d')})"
+    )
+
+    # --- plain text ---
+    lines: list[str] = [report.summary, ""]
+    for r in report.reads:
+        lines.append(f"{r.timeframe}: {r.ha_trend}, RSI {r.rsi:.0f}")
+    lines += ["", "Full report attached (PDF)."]
+    text = "\n".join(lines)
+
+    # --- html ---
+    items = "".join(
+        f"<li>{escape(r.timeframe)}: {escape(r.ha_trend)}, RSI {r.rsi:.0f}</li>"
+        for r in report.reads
+    )
+    label = f"{report.ticker} - {report.name}" if report.name else report.ticker
+    html = (
+        f"<h2>{escape(label)}</h2>"
+        f"<p>{escape(report.summary)}</p>"
+        f"<ul>{items}</ul>"
+        "<p>Full report attached (PDF).</p>"
+    )
 
     return EmailContent(subject=subject, text=text, html=html)

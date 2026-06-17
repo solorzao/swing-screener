@@ -14,6 +14,7 @@ from dataclasses import dataclass
 import anthropic
 
 from swing_screener.config_secrets import get_secret
+from swing_screener.notify.ticker_report import TickerReport, TimeframeRead
 
 log = logging.getLogger(__name__)
 
@@ -342,3 +343,144 @@ def analyze_signal_deep(
             core_reason=_deterministic_core(facts),
             rationale=_deterministic_rationale(facts),
         )
+
+
+# --- On-demand: one Opus call over a whole multi-timeframe ticker picture ------
+
+_TICKER_SYSTEM = (
+    "You are an equity research assistant for a swing trader. You receive ONE "
+    "ticker's per-timeframe Heiken-Ashi facts already computed by a rules engine "
+    "(HA trend, EMA alignment, RSI, ATR%, and -- when a setup is firing -- its entry "
+    "zone, stop, and target) plus annotated chart images for those timeframes. Treat "
+    "any firing setup's entry/stop/target as ground truth: NEVER invent or alter "
+    "price levels. Use the web_search tool to check current market sentiment and "
+    "industry/sector trends.\n\n"
+    "Output ONLY the finished analysis. Do NOT narrate your process, mention "
+    "searching or 'looking', or include any preamble, filler, or meta-commentary. "
+    "Cite sources for external claims. Be concise and balanced. This is "
+    "informational analysis, NOT financial advice.\n\n"
+    "Format your reply EXACTLY as these labelled lines (one per line, each 1-2 "
+    "sentences, no bullet characters, no extra sections):\n"
+    "CORE: <one-sentence overall stance across the timeframes>\n"
+    "4h: <note>\n"
+    "1d: <note>\n"
+    "1wk: <note>\n"
+    "1mo: <note>\n"
+    "Setups: <which timeframes are firing + their levels, or 'none'>\n"
+    "Risk: <the single most important risk>\n"
+    "Watch: <key levels to watch>"
+)
+
+
+def _read_line(read: TimeframeRead) -> str:
+    """One deterministic fact line per timeframe read (entry/stop/target if firing)."""
+    line = (
+        f"- {read.timeframe}: HA {read.ha_trend}, EMA "
+        f"{'aligned' if read.ema_aligned else 'not aligned'}, "
+        f"RSI {read.rsi:.0f}, ATR {read.atr_pct:.1%}"
+    )
+    if read.setup is not None:
+        s = read.setup
+        line += (
+            f" -- firing {s.play_type} (entry {s.entry_floor:g}-{s.entry_ceiling:g}, "
+            f"stop {s.stop:g}, target {s.target:g})"
+        )
+    return line
+
+
+def _ticker_prompt(report: TickerReport) -> str:
+    """The per-timeframe deterministic facts block (ground truth) for the user turn."""
+    body = "\n".join(_read_line(r) for r in report.reads) or "- (no timeframes available)"
+    return (
+        f"Ticker: {report.ticker} ({report.name}). The images above are its annotated "
+        "charts, one per timeframe in low->high order.\n\n"
+        "Per-timeframe Heiken-Ashi facts (ground truth -- do not change any levels):\n"
+        f"{body}\n\n"
+        "Use web_search for current sentiment + industry/sector trends, then write "
+        "the multi-timeframe analysis."
+    )
+
+
+def _ticker_user_content(report: TickerReport, charts: list[bytes]) -> list[dict]:
+    """User content array: every chart image FIRST (best practice), then the text."""
+    content: list[dict] = []
+    for chart_bytes in charts:
+        if not chart_bytes:
+            continue
+        content.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": base64.standard_b64encode(chart_bytes).decode("ascii"),
+            },
+        })
+    content.append({"type": "text", "text": _ticker_prompt(report)})
+    return content
+
+
+def _ticker_fallback(report: TickerReport) -> tuple[str, str, bool]:
+    """Deterministic multi-timeframe summary built purely from the reads."""
+    summary = f"{report.ticker}: multi-timeframe read"
+    lines: list[str] = []
+    for r in report.reads:
+        line = f"{r.timeframe}: {r.ha_trend}, RSI {r.rsi:.0f}, ATR {r.atr_pct:.1%}"
+        if r.setup is not None:
+            s = r.setup
+            line += (
+                f", firing (entry {s.entry_floor:g}-{s.entry_ceiling:g}, "
+                f"stop {s.stop:g}, target {s.target:g})"
+            )
+        lines.append(line)
+    return summary, "\n".join(lines), False
+
+
+def analyze_ticker_deep(
+    report: TickerReport, *, charts: list[bytes] | None = None, context_text: str = "",
+    client: anthropic.Anthropic | None = None, model: str = "claude-opus-4-8",
+    reasoning: str = "high", max_searches: int = 4, web_search: bool = True,
+) -> tuple[str, str, bool]:
+    """Return (summary, analysis_text, is_deep). ONE Opus call over the whole
+    multi-timeframe picture: the per-TF deterministic facts + chart images. Falls
+    back to a deterministic multi-TF summary on ANY failure so the worker still
+    produces a report.
+    """
+    try:
+        client = client or anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
+        content = _ticker_user_content(report, charts or [])
+        if context_text:
+            content.append({"type": "text", "text": context_text})
+        kwargs: dict = {
+            "model": model,
+            "max_tokens": _REASONING_MAX_TOKENS.get(reasoning, 16000),
+            "system": _TICKER_SYSTEM,
+            "messages": [{"role": "user", "content": content}],
+        }
+        effort = _REASONING_EFFORT.get(reasoning)
+        if effort is not None:  # opus-4.8+ adaptive thinking; "none"/unknown omits it
+            kwargs["thinking"] = {"type": "adaptive"}
+            kwargs["output_config"] = {"effort": effort}
+        if web_search:
+            kwargs["tools"] = [
+                {"type": "web_search_20250305", "name": "web_search", "max_uses": max_searches}
+            ]
+        resp = _create_message(client, kwargs)
+        text, sources = _extract_text_and_citations(resp)
+        if not text.strip():
+            raise ValueError("empty model response")
+        summary = next(
+            (
+                line.split("CORE:", 1)[1].strip()
+                for line in text.splitlines()
+                if line.strip().startswith("CORE:")
+            ),
+            f"{report.ticker}: multi-timeframe read",
+        )
+        analysis_text = text.strip() + (_format_sources(sources) if sources else "")
+        return summary, analysis_text, True
+    except Exception:
+        log.warning(
+            "ticker deep analysis failed for %s; using deterministic fallback",
+            report.ticker, exc_info=True,
+        )
+        return _ticker_fallback(report)
