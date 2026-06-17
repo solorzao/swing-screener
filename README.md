@@ -1,32 +1,60 @@
 # Swing Screener
 
-Automated screener for a **Heiken Ashi pullback-continuation** swing-trading strategy.
-It scans a universe of stocks after the close, finds setups across multiple timeframes,
-ranks and categorizes them, renders annotated charts, and forward-tests every signal in a
-self-grading **shadow book** so the strategy can be measured and improved with real data.
+Automated screener for **Heiken Ashi swing-trading** strategies. It scans a universe of
+stocks after the close, finds setups across multiple timeframes, ranks and categorizes them,
+renders annotated charts, emails digests, and forward-tests every signal in a self-grading
+**shadow book** so the strategies can be measured and improved with real data. It screens two
+complementary **long** plays — trend-**continuation** pullbacks and oversold-bounce
+**reversals** — and runs locally or as scheduled Azure Container Apps Jobs.
 
-> Status: **Phases 1–2 complete** (the engine + a runnable local pipeline). Phases 3–5
-> (dashboard, email/LLM digests, Azure) are designed and planned — see [Roadmap](#roadmap).
+> Status: **Phases 1–4 complete** (engine, pipeline + shadow book, Streamlit dashboard,
+> email/LLM digests). **Phase 5 (Azure) is deployed** — six scheduled Container Apps Jobs run
+> the screener, digests, exit alerts, and on-demand analysis. See [Roadmap](#roadmap).
 
 ---
 
-## The strategy
+## The strategies
 
-A trend-continuation **long** entry, evaluated independently on **4h / Daily / Weekly /
-Monthly** bars (the timeframe sets the expected hold length):
+Two independent **long** screeners run per ticker on **4h / Daily / Weekly / Monthly** bars
+(the timeframe sets the expected hold length). Every signal carries a `play_type`, an
+ATR-scaled **entry zone** `[floor, ceiling]`, a **stop**, a **target**, categorization tags
+(horizon, quality, volatility, oversold), and a composite **score** used for ranking.
+
+### Continuation pullback (the primary play)
 
 1. **Uptrend context** — `EMA20 > EMA50` and price above `EMA50`.
 2. **Shallow pullback** — a bearish Heiken Ashi "shaved head" then a few red / small-body
    "zone" candles that hold above `EMA50` (a continuation, not a reversal).
-3. **Trigger** — the most recent *closed* bar flips bullish (the first strong green HA
-   candle out of the pullback).
+3. **Trigger** — the most recent *closed* bar flips bullish (the first strong green HA candle
+   out of the pullback).
 
-Each signal carries an ATR-scaled **entry zone** `[floor, ceiling]`, a **stop**, and a
-**target**, plus categorization tags (timeframe→horizon, quality, volatility, oversold) and
-a composite **score** used for ranking. Exits are tiered: 🔴 hard stop (overrides), 🟠 HA
-momentum flip, 🟡 target / time-stop.
+The continuation **target** is structure-aware: the nearest standard-candle swing-high
+resistance above the entry ceiling, else an ATR measured-move (`reference + 2·ATR`), floored
+at **1.5R** so reward:risk stays sane (this replaced a blind fixed-2R projection that capped
+runners).
 
-Full design: [`docs/plans/2026-06-14-swing-screener-design.md`](docs/plans/2026-06-14-swing-screener-design.md).
+### Reversal plays (oversold bounce)
+
+A counter-trend complement: a run of **≥3 red HA candles below `EMA50`** that flips green —
+tagged `early` (fresh flip) or `confirmed` (flip + follow-through). Entry is a **0.382–0.618
+pullback** into the bounce, stop below the bounce origin, target at the **0.786 retrace**
+toward the prior breakdown. Surfaced as a "Reversal Plays" list in the daily digest and a
+Continuation/Reversal filter throughout the dashboard.
+
+### Scoring & exits
+
+The composite **score** blends HA trigger strength (0.35), multi-timeframe alignment (0.20),
+trend slope (0.15), volatility fit (0.10), **RSI** bull-range pullback quality (0.15), and
+**MACD-histogram** momentum (0.05).
+
+Baseline exits are tiered: 🔴 hard stop (overrides), 🟠 HA momentum flip, 🟡 target /
+time-stop. On top of that baseline, the shadow book forward-tests **partial scale-outs** (a
+conditional 33% booked at the target) and a **Chandelier runner-trail** as parallel
+experiment arms (see [How it works](#how-it-works)).
+
+Full design: [`docs/plans/2026-06-14-swing-screener-design.md`](docs/plans/2026-06-14-swing-screener-design.md)
+and the target/exit overhaul
+[`docs/plans/2026-06-16-target-exit-overhaul-design.md`](docs/plans/2026-06-16-target-exit-overhaul-design.md).
 
 ## How it works
 
@@ -34,28 +62,37 @@ Full design: [`docs/plans/2026-06-14-swing-screener-design.md`](docs/plans/2026-
  universe.csv ─▶ fetch (yfinance, cached) ─▶ resample (1h→4h, 1d→1wk/1mo)
                                                       │
                                                       ▼
-                              build_frame (Heiken Ashi + EMA/ATR/RSI + classification)
+                  build_frame (Heiken Ashi + EMA/ATR/RSI/MACD + classification)
                                                       │
-                  ┌───────────────────────────────────┼───────────────────────────────┐
-                  ▼                                   ▼                                 ▼
-          detect_last_bar                       compute_zone                       score_signal
-       (pullback trigger)                 (entry zone/stop/target)            (+ MTF alignment, tags)
-                  │                                                                     │
-                  ▼                                                                     ▼
-        ranked signals ─▶ persist (SQLite) ─▶ annotated HA charts (top N)        shadow book
-                                                                              (paper-trade every
-                                                                               signal, tiered exits,
-                                                                               realized R for QC)
+        ┌──────────────────────┬──────────────────────┴────────────────┐
+        ▼                      ▼                                        ▼
+  analyze_frames         analyze_reversals                         score_signal
+ (continuation pullback) (oversold bounce)                  (+ MTF alignment, tags)
+        │                      │                                        │
+        └──────────┬───────────┘                                        ▼
+                   ▼                                               shadow book
+      ranked signals ─▶ persist (SQL) ─▶ annotated HA charts    (paper-trade every signal
+                        ─▶ email digests + on-demand reports      across exit-strategy ARMS,
+                                                                   realized R for QC)
 ```
 
-- The **engine** (`indicators/`, `signals/`, `config.py`) is pure functions over pandas —
-  no I/O — so it's fast, deterministic, and trivially testable. A golden test reproduces a
-  known AMD 2018 setup.
+- The **engine** (`indicators/`, `signals/`, `config.py`) is pure functions over pandas — no
+  I/O — so it's fast, deterministic, and trivially testable. A golden test reproduces a known
+  AMD 2018 setup.
 - The **pipeline** (`data/`, `db/`, `charts/`, `pipeline/`) wraps the engine with data fetch,
-  SQLite persistence, chart rendering, and a nightly orchestrator CLI.
+  SQL persistence (SQLite locally / Azure SQL in the cloud), chart rendering, universe
+  persistence + enrichment, and a nightly orchestrator CLI.
 - The **shadow book** fills the *prior* bar's signals against the latest bar (worst-case
   in-zone, no lookahead) and advances open trades through the exit logic, recording outcomes
-  in R-multiples — the data you use to judge and tune the screener.
+  in R-multiples. It opens every fill once per **experiment arm** — `baseline`
+  (all-or-nothing), `partial33_cond` (conditional partial + breakeven runner), and
+  `partial33_chand` (partial + Chandelier trail) — so the dashboard can run a **same-sample
+  A/B** of exit policies (`analytics/performance.py`).
+- **Notifications** (`notify/`) send daily/weekly/monthly digest emails (summary + PDF),
+  intraday exit alerts, and **on-demand single-ticker deep analysis** (request a ticker in the
+  dashboard → a queued worker runs a multi-timeframe Opus read → emails a PDF → surfaces it
+  back in the dashboard). An optional, default-off Opus web-search analyst can enrich digest
+  picks.
 
 ## Quick start
 
@@ -76,7 +113,10 @@ py -3.12 -m venv .venv
 Full run instructions, flags, and how to inspect results:
 [`docs/running-locally.md`](docs/running-locally.md).
 
-**Dashboard** (browse candidates, track trades + live P/L, review screener performance):
+**Dashboard** — a 10-view sidebar app: Overview, Today's Candidates (continuation/reversal
+filter), Deep Analysis (request on-demand reports), Active Trades (inline close + live P/L),
+Trade Entry, Closed Trades (equity curve), Screener Performance (per-arm A/B + play-type
+filter), Exit Log, Universe, Digest Log.
 
 ```powershell
 .\.venv\Scripts\python -m streamlit run src\swing_screener\dashboard\app.py --server.address 127.0.0.1
@@ -97,18 +137,29 @@ See [`docs/email-digests.md`](docs/email-digests.md).
 ```
 src/swing_screener/
   config.py            StrategyConfig — every tunable in one frozen dataclass
-  indicators/          heiken_ashi, trend (EMA/ATR/RSI)              [pure]
-  signals/             classify, frame, detect, entry_zone, fill,    [pure]
-                       exits, score, build_score
-  data/                universe (+ S&P 500 seed), resample, fetch    [I/O]
-  db/                  models, session, repo (SQLAlchemy + SQLite)   [I/O]
-  charts/              render (annotated Heiken Ashi via mplfinance)  [I/O]
-  pipeline/            analyze (per-ticker MTF + score + tags),
-                       shadow (the shadow book),
+  settings.py          env/secrets surface (DB URL, blob, Key Vault, ACS, LLM knobs)
+  indicators/          heiken_ashi, trend (EMA/ATR/RSI/MACD)              [pure]
+  signals/             classify, frame, detect, entry_zone, fill, exits,  [pure]
+                       score, build_score, reversal
+  data/                universe (+ S&P 500 seed), resample, fetch         [I/O]
+  db/                  models, session, repo (SQLAlchemy + SQLite/mssql)  [I/O]
+  charts/              render (annotated Heiken Ashi via mplfinance)      [I/O]
+  analytics/           performance (shadow-book QC: expectancy, win %)    [pure]
+  pipeline/            analyze (MTF continuation + reversal + score),
+                       shadow (multi-arm shadow book), arms (experiment
+                       arms), exitcheck (intraday exit alerts),
                        run (nightly orchestrator CLI)
-tests/                 mirrors src/ — engine + pipeline + db + data + charts
+  notify/              run, select, analysis (Opus analyst), ondemand
+                       (queued deep analysis), ticker_report, pdf, body,
+                       acs / smtp / transport (email), alerts
+  storage/             blob (Azure Blob for charts/PDFs)                  [I/O]
+  dashboard/           app (Streamlit), ui, pl, quotes
+tests/                 mirrors src/ — engine + pipeline + db + data + dashboard
 scripts/               make_amd_fixture, make_universe_seed, run_local
-docs/plans/            design doc + per-phase implementation plans
+alembic/               schema migrations (applied on job startup)
+infra/                 Bicep IaC (Container Apps Jobs, Azure SQL, Blob, Key Vault)
+docs/                  running-locally, dashboard, email-digests, azure-deploy
+docs/plans/            design docs + per-phase implementation plans
 ```
 
 Run the nightly pipeline directly:
@@ -122,33 +173,40 @@ It is **idempotent per run-date** (safe to re-run a day) and isolates per-ticker
 
 ## Development
 
-- **Quality gate (also CI):** `ruff check src tests`, `mypy`, `pytest -q` — all must pass.
+- **Quality gate (also CI):** `ruff check src tests alembic`, `mypy`, `pytest -q` — all must
+  pass.
 - Built test-first (TDD). The engine stays pure; all I/O lives in `data/`, `db/`, `charts/`,
-  `pipeline/`. Tests never hit the network (the fetch seam is mocked) and use temp SQLite +
-  the matplotlib Agg backend.
-- **CI:** GitHub Actions runs the gate on every push and PR (`.github/workflows/ci.yml`).
+  `pipeline/`, `notify/`, `storage/`. Tests never hit the network (the fetch + LLM seams are
+  mocked) and use temp SQLite + the matplotlib Agg backend.
+- **CI/CD:** GitHub Actions runs the gate on every push and PR
+  ([`ci.yml`](.github/workflows/ci.yml)); on merge to `main`, CD
+  ([`cd.yml`](.github/workflows/cd.yml)) builds the image in ACR and repoints the Azure jobs
+  (OIDC federated auth, no stored secret).
 
 ## Roadmap
 
 | Phase | Scope | Status |
 |---|---|---|
 | 1 | Engine core (HA, signals, entry zones, exits, scoring; AMD golden test) | ✅ done |
-| 2 | Data pipeline + SQLite persistence + shadow book + charts + orchestrator | ✅ done |
-| — | **Local dry-run** (run nightly ~1–2 weeks to accumulate the shadow book) | ◻ in progress |
-| 3 | Local Streamlit dashboard (candidates, active trades, P/L, screener performance) | ✅ done |
-| 4 | Email digests (summary + detailed PDF) + Claude-written analysis + exit alerts | ✅ done |
-| 5 | Deploy to Azure (Container Apps Jobs, Azure SQL, Blob, Key Vault) + CD on merge | 🚧 code done · deploy pending |
+| 2 | Data pipeline + SQL persistence + shadow book + charts + orchestrator | ✅ done |
+| 3 | Streamlit dashboard (10 views: candidates, trades, P/L, performance A/B, deep analysis, …) | ✅ done |
+| 4 | Email digests (summary + PDF) + Claude-written analysis + intraday exit alerts | ✅ done |
+| 5 | Azure deploy — Container Apps Jobs, Azure SQL, Blob, Key Vault + CD on merge | ✅ deployed |
+| — | **Dry-run** — forward-test the shadow-book exit arms to pick a winner | ◻ in progress |
 | 6 | Options module (needs a paid data feed) | 📋 later |
 
-Plans live in [`docs/plans/`](docs/plans/). Phase 5's code is implemented and tested
-(mssql-aware engine, Alembic migrations, Key-Vault secrets, blob-backed charts, the
-container ENTRYPOINT gate, the Bicep IaC under [`infra/`](infra/), and the OIDC CD
-workflow); the one-time Azure provisioning + cutover is run from the
-[deploy runbook](docs/azure-deploy.md).
+Six scheduled jobs run in Azure behind an eastern-time gate: `evening-screen`,
+`daily-digest`, `weekly-digest`, `monthly-digest`, `intraday-exit`, and `on-demand-analysis`
+— all on one image + one managed identity. The one-time provisioning + cutover is the
+[deploy runbook](docs/azure-deploy.md); the exit-arm experiment is tracked in
+[`docs/plans/2026-06-16-target-exit-overhaul-design.md`](docs/plans/2026-06-16-target-exit-overhaul-design.md).
 
 ## Notes
 
-- Market data is **free yfinance** (with a parquet cache); fine for after-close screening.
-  It is unofficial and can be flaky — the fetch layer retries and isolates failures.
-- This is a personal research/decision-support tool. It **does not place trades**; it
-  surfaces setups and forward-tests the strategy. Nothing here is financial advice.
+- Market data is **free yfinance** (with a parquet cache); fine for after-close screening. It
+  is unofficial and can be flaky — the fetch layer retries and isolates failures.
+- **LLM analysis fails safe:** the digest analyst and on-demand reports degrade to
+  deterministic text when the model or web search is unavailable, and the digest analyst is
+  **off by default** (`SWING_DEEP_ANALYSIS`).
+- This is a personal research/decision-support tool. It **does not place trades**; it surfaces
+  setups and forward-tests the strategies. Nothing here is financial advice.
