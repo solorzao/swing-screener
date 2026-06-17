@@ -137,3 +137,21 @@ class EmailLog(Base):
     subject: Mapped[str] = mapped_column(String(256), default="")
     run_date: Mapped[date | None] = mapped_column(default=None)
     alert_key: Mapped[str] = mapped_column(String(64), default="")
+
+
+class AnalysisRequest(Base):
+    """Queue row for an on-demand single-ticker deep-analysis report."""
+
+    __tablename__ = "analysis_requests"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ticker: Mapped[str] = mapped_column(String(16), index=True)
+    requested_at: Mapped[datetime]
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+    recipient: Mapped[str] = mapped_column(String(256), default="")
+    started_at: Mapped[datetime | None] = mapped_column(default=None)
+    finished_at: Mapped[datetime | None] = mapped_column(default=None)
+    summary: Mapped[str] = mapped_column(String(512), default="")
+    pdf_blob_key: Mapped[str | None] = mapped_column(String(512), default=None)
+    chart_blob_keys: Mapped[str] = mapped_column(String(2048), default="")
+    error: Mapped[str | None] = mapped_column(String(1024), default=None)
