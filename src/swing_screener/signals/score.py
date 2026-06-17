@@ -11,8 +11,11 @@ class ScoreInputs:
     trend_slope: float     # normalized (ema_fast - ema_slow) / price, clipped
     atr_pct: float         # ATR / price
     mtf_aligned: bool
-    rsi: float = 50.0              # trigger-bar RSI (bull-range pullback quality)
-    macd_hist: float = 0.0         # trigger-bar MACD histogram
+    # Defaults are conservative/neutral so a caller that omits them never FLATTERS a
+    # signal (production always sets all three from the trigger bar via build_score).
+    # rsi 45.0 -> _rsi_quality 0.5 (no opinion), not 50.0 which would grant full credit.
+    rsi: float = 45.0              # trigger-bar RSI (bull-range pullback quality)
+    macd_hist: float = 0.0         # trigger-bar MACD histogram (0 -> _hist_accel 0)
     macd_hist_rising: bool = False  # histogram > prior bar's histogram
 
 
