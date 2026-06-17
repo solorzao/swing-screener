@@ -85,6 +85,42 @@ def test_performance_shows_per_arm_ab_when_multiple_arms(tmp_path, monkeypatch):
     assert _expectancy() == "1.60"
 
 
+def _seed_mixed_play_types(url):
+    engine = get_engine(url)
+    with Session(engine) as s:
+        rows = [
+            ("continuation", "baseline", 1.0),
+            ("continuation", "partial33_cond", 1.5),
+            ("reversal", "baseline", -0.5),
+            ("reversal", "partial33_cond", 0.5),
+        ]
+        for play, arm, r in rows:
+            s.add(PaperTrade(ticker="AMD", timeframe="1d", horizon="medium", signal_score=0.9,
+                             rank=1, play_type=play, arm=arm, fill_status="filled", stop=95.0,
+                             target=110.0, risk=5.0, status="closed", realized_r=r, hold_bars=4,
+                             exit_date=date(2026, 1, 5)))
+        s.commit()
+
+
+def test_performance_play_type_filter_scopes_the_arm_ab(tmp_path, monkeypatch):
+    url = f"sqlite:///{tmp_path / 'perf_mixed.sqlite'}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    _seed_mixed_play_types(url)
+    at = AppTest.from_file(APP).run()
+    at.sidebar.radio[0].set_value("Screener Performance").run()
+    assert not at.exception
+
+    def _expectancy():
+        return next(m.value for m in at.metric if m.label == "Expectancy R")
+
+    # Default "All" baseline arm: mean(1.0, -0.5) = 0.25.
+    assert _expectancy() == "0.25"
+    # Scope to reversal -> baseline arm sees only the -0.5 reversal trade.
+    at.segmented_control[0].set_value("Reversal").run()
+    assert not at.exception
+    assert _expectancy() == "-0.50"
+
+
 def test_performance_empty_state_has_no_chart(tmp_path, monkeypatch):
     url = f"sqlite:///{tmp_path / 'perf_empty.sqlite'}"
     monkeypatch.setenv("SWING_DB_URL", url)

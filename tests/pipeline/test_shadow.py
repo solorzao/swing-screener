@@ -604,3 +604,72 @@ def test_high_water_tracks_highest_high_since_fill():
         advance_open(s, {("AAPL", "1d"): bar3}, cfg, today=date(2024, 1, 6))
         pt = s.get(PaperTrade, pt.id)
         assert pt.high_water == 106.0
+
+
+# --- reversal engine shares the partial/trail machinery (Step E) -------------
+#
+# The shadow book is play-type-agnostic: reversal fills flow through the same
+# open_from_signals + advance_open as continuation, so the conditional partial and
+# the Chandelier trail apply to them automatically. These lock that in and prove the
+# play_type tag survives, so the arm A/B can be sliced by engine.
+
+
+def _rev_cand(ticker="AAPL"):
+    return FillCandidate(ticker=ticker, timeframe="1d", horizon="medium", signal_score=0.8,
+                         rank=1, mtf_aligned=False, signal_id=None, zone=ZONE,
+                         play_type="reversal")
+
+
+def test_reversal_trade_scales_out_at_its_target():
+    # A reversal-tagged fill scales out at its (Fib) target via the shared machinery,
+    # and the play_type tag is preserved through the scale-out.
+    cfg = StrategyConfig(partial_frac=0.33, partial_require_softening=True)
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        open_from_signals(s, [_rev_cand()], {("AAPL", "1d"): (105.0, 97.0)},
+                          fill_date=date(2024, 1, 3))
+        pt = repo.load_open_paper_trades(s)[0]
+        assert pt.play_type == "reversal" and pt.entry_price == 101.0 and pt.target == 110.0
+
+        bar = {"low": 100.0, "high": 111.0, "close": 109.0, "shaved_head": False,
+               "shaved_bottom": False, "atr": 2.0}
+        advance_open(s, {("AAPL", "1d"): bar}, cfg, today=date(2024, 1, 4))
+        held = s.get(PaperTrade, pt.id)
+        assert held.partial_done is True and held.partial_price == 110.0
+        assert held.stop == 101.0            # breakeven, same as continuation
+        assert held.play_type == "reversal"  # tag preserved for slicing
+
+
+def test_reversal_trade_trails_under_chandelier_arm():
+    # The Chandelier runner trail applies to a reversal trade too.
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        open_from_signals(s, [_rev_cand()], {("AAPL", "1d"): (105.0, 97.0)},
+                          fill_date=date(2024, 1, 3))
+        pt = repo.load_open_paper_trades(s)[0]
+        # bar 1: softening target touch -> partial (stop -> breakeven 101)
+        bar1 = {"low": 100.0, "high": 111.0, "close": 109.0, "shaved_head": False,
+                "shaved_bottom": False, "atr": 2.0}
+        advance_open(s, {("AAPL", "1d"): bar1}, CHAND, today=date(2024, 1, 4))
+        # bar 2: prior high_water 111 -> trail 111 - 6 = 105
+        bar2 = {"low": 112.0, "high": 120.0, "close": 118.0, "shaved_head": False,
+                "shaved_bottom": True, "atr": 2.0}
+        advance_open(s, {("AAPL", "1d"): bar2}, CHAND, today=date(2024, 1, 5))
+        held = s.get(PaperTrade, pt.id)
+        assert held.play_type == "reversal" and held.stop == 105.0
+
+
+def test_arm_ab_is_sliceable_by_play_type():
+    # Every arm holds a reversal book, so filtering by play_type then breakdown(.,"arm")
+    # gives a reversal-only A/B (the Step E measurement slice).
+    arms = build_arms(StrategyConfig())
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        open_from_signals(s, [_rev_cand()], {("AAPL", "1d"): (105.0, 97.0)},
+                          fill_date=date(2024, 1, 3), arms=tuple(arms))
+        bar = {"low": 100.0, "high": 111.0, "close": 108.0, "shaved_head": False,
+               "shaved_bottom": False, "atr": 2.0}
+        advance_open(s, {("AAPL", "1d"): bar}, arms, today=date(2024, 1, 4))
+        rev_trades = [t for t in _all_paper_trades(s) if t.play_type == "reversal"]
+        groups = breakdown(rev_trades, "arm")
+        assert set(groups) == set(arms)
