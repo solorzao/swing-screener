@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from swing_screener.indicators.trend import ema, atr, rsi
+from swing_screener.indicators.trend import ema, atr, rsi, macd_histogram
 
 
 def test_ema_matches_pandas_ewm(bars):
@@ -22,3 +22,17 @@ def test_rsi_bounds_0_100(bars):
     df = bars([{"open": 10, "high": 11, "low": 9, "close": 10 + np.sin(i)} for i in range(40)])
     r = rsi(df["close"], period=14).dropna()
     assert ((r >= 0) & (r <= 100)).all()
+
+
+def test_macd_histogram_positive_on_rising_series():
+    rising = pd.Series([float(i) for i in range(80)])
+    h = macd_histogram(rising)
+    assert np.isfinite(h.iloc[-1])
+    assert h.iloc[-1] > 0
+
+
+def test_macd_histogram_negative_on_falling_series():
+    falling = pd.Series([float(i) for i in range(80, 0, -1)])
+    h = macd_histogram(falling)
+    assert np.isfinite(h.iloc[-1])
+    assert h.iloc[-1] < 0

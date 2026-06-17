@@ -14,7 +14,8 @@ def _ctx(trigger_close=100.0, atr=4.0):
 
 def test_maps_fields_from_ctx_and_row():
     ctx = _ctx()
-    row = {"ema_fast": 105.0, "ema_slow": 100.0, "body_frac": 0.8}
+    row = {"ema_fast": 105.0, "ema_slow": 100.0, "body_frac": 0.8,
+           "macd_hist": 0.5, "macd_hist_rising": True}
     si = build_score_inputs(ctx, row, mtf_aligned=True)
     assert si.shaved_bottom is True
     assert si.body_frac == 0.8
@@ -24,6 +25,7 @@ def test_maps_fields_from_ctx_and_row():
 
 
 def test_result_scores_in_range():
-    si = build_score_inputs(_ctx(), {"ema_fast": 105.0, "ema_slow": 100.0, "body_frac": 0.9},
+    si = build_score_inputs(_ctx(), {"ema_fast": 105.0, "ema_slow": 100.0, "body_frac": 0.9,
+                                     "macd_hist": 0.5, "macd_hist_rising": True},
                             mtf_aligned=False)
     assert 0.0 <= score_signal(si) <= 1.0
