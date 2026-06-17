@@ -187,11 +187,17 @@ both EST and EDT) and the Python gate picks the right Eastern hour. "Last busine
 | intraday-exit | `0 13-21 * * 1-5` | `notify.run --kind exit` (hourly) | `RUN_IF_ET_HOUR=9..16` |
 | weekly-digest | `30 20,21 * * 5` | `notify.run --kind weekly` (Fri after close) | `RUN_IF_ET_HOUR=16` |
 | monthly-digest | `30 20,21 * * 1-5` | `notify.run --kind monthly` (last session) | `RUN_IF_ET_HOUR=16` + `RUN_IF_LAST_BUSINESS_DAY=1` |
+| on-demand-analysis | `*/15 * * * *` | `notify.ondemand` (drains the request queue) | none — runs every firing |
 
 On a DST-transition day a UTC cron pair can fire **twice** (or zero times) for the intended
 ET hour. This is safe because the workloads are **idempotent**: the screen delete+reinserts
 per `run_date` and `advance_open` guards on `last_advanced == today`; digests/exit alerts
-dedupe via the `EmailLog` unique constraint. (Pinned by `test_run_double_fire_*`.)
+dedupe via the `EmailLog` unique constraint. (Pinned by `test_run_double_fire_*`.) The
+**on-demand-analysis** worker is ungated (it polls the `analysis_requests` queue every 15 min);
+it dedupes emails via `EmailLog` (`kind="ondemand"`), claims rows atomically, and requeues
+stale `running` rows so a crashed retry recovers. Like the others, the **new job is created by
+re-running the provisioning** (`az deployment sub create`, Step 1) — CD only updates images;
+the `analysis_requests` table is created by `alembic upgrade head` on the job's first run.
 
 ## Operational notes
 

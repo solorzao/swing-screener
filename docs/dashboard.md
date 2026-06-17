@@ -32,7 +32,7 @@ trace, in keeping with the read-mostly, never-crashes design.
 
 ## Navigation
 
-A **left sidebar radio** switches between nine pages (grouped here for orientation; the
+A **left sidebar radio** switches between ten pages (grouped here for orientation; the
 sidebar lists them in this order). **Overview** is the default landing page.
 
 **Overview** — a KPI dashboard: open positions, total unrealized P/L, today's candidate
@@ -45,6 +45,11 @@ events. The one-glance "where do I stand" page.
   (All / Continuation / Reversal). The table surfaces rank, play type, strength, timeframe,
   horizon, score, RSI, ATR, MTF alignment, oversold flag, quality/volatility tiers, entry
   zone, stop, and target; the annotated chart for each row lives in a **per-row expander**.
+- **Deep Analysis** — request an on-demand, in-depth **multi-timeframe** read of any ticker.
+  The dashboard queues the request (to Azure SQL); a scheduled cloud worker runs the full deep
+  analysis (Opus across 4h/1d/1wk/1mo, web-searched), **emails a PDF** report, and the result
+  shows here — status badges (🕓 queued · ⏳ running · ✅ done · ⚠️ failed), the summary, the
+  per-timeframe charts, and a PDF download.
 
 **Trades**
 
