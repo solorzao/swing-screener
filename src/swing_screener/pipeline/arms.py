@@ -25,9 +25,14 @@ def build_arms(base: StrategyConfig) -> dict[str, StrategyConfig]:
 
     ``baseline`` is pinned all-or-nothing via ``partial_frac=0.0`` so it stays the
     honest control even if ``base``'s default ever changes; ``partial33_cond`` is
-    the Step C conditional 33% scale-out (only when HA momentum is softening).
+    the Step C conditional 33% scale-out (only when HA momentum is softening), and
+    ``partial33_chand`` is the same partial but runs the post-partial remainder under
+    a Chandelier trail instead of a static breakeven stop -- the Step D bake-off pits
+    these two against each other (same partial, different runner management).
     """
     return {
         BASELINE: replace(base, partial_frac=0.0),
         "partial33_cond": replace(base, partial_frac=0.33, partial_require_softening=True),
+        "partial33_chand": replace(base, partial_frac=0.33, partial_require_softening=True,
+                                   trail_mode="chandelier", chandelier_atr_mult=3.0),
     }

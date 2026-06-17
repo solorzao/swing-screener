@@ -31,7 +31,7 @@ from swing_screener.storage.blob import blob_enabled, upload_chart
 
 log = logging.getLogger(__name__)
 
-_BAR_KEYS = ("low", "high", "close", "shaved_head", "bearish", "shaved_bottom")
+_BAR_KEYS = ("low", "high", "close", "shaved_head", "bearish", "shaved_bottom", "atr")
 
 # Azure SQL serverless error raised while the database is auto-resuming from a
 # paused state: the first connection of the day fails with this until the DB

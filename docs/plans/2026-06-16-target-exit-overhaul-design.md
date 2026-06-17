@@ -94,6 +94,23 @@ the runner, and measure the arms: **(0) momentum_flip + breakeven only**, **(1) 
 at most one winner; if (0) wins, no Chandelier. (Vol-widening `m` is a later experiment that must
 beat flat-m head-to-head.)
 
+#### Step D implementation addendum (Chandelier runner trail) — 2026-06-16
+
+Implemented as a **third arm** (`partial33_chand`) on the dual-book, identical to
+`partial33_cond` except the post-partial runner trails instead of sitting at breakeven —
+so the bake-off is `partial33_cond` (runner = breakeven + flip + time) vs `partial33_chand`
+(runner = Chandelier). One arm, flat `m=3.0` (the common default; `3.5` is a trivial extra
+arm later). No new schema — the trail reuses the existing `high_water`/`stop` and reads
+`atr` off the bar (`atr` added to `run._BAR_KEYS`).
+
+- Config: `trail_mode` (`"breakeven"` default / `"chandelier"`), `chandelier_atr_mult=3.0`.
+- `advance_open`: each bar, ratchet `stop = max(stop, prior_high_water - m*ATR)` — **only
+  after a partial** (`partial_done`), monotonic up, never below breakeven (the stop starts
+  there). It reads the **prior** bar's `high_water` (folded forward to include this bar's
+  high *after* the trail/exit check) so this bar's own high never decides this bar's stop —
+  no intra-bar lookahead, and deliberately *less* optimistic than a same-bar trail given the
+  shadow book's already-optimistic level fills. A non-positive/NaN ATR skips the trail that bar.
+
 ### Step E — Reversal engine (needs B)
 Mirror the conditional partial + the winning trail on the reversal runner; keep the 0.786-Fib target.
 

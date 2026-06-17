@@ -60,6 +60,11 @@ class StrategyConfig:
     # (not shaved_bottom, or a shrinking HA body); a strong target-touch holds the
     # full position and lets the winner run. False = unconditional partial (Step B).
     partial_require_softening: bool = False
+    # Post-partial runner trail (Step D bake-off). "breakeven" leaves the stop at the
+    # fill (the incumbent); "chandelier" ratchets it up to high_water - m*ATR (never
+    # down, never below breakeven). Only active once a partial has been booked.
+    trail_mode: str = "breakeven"
+    chandelier_atr_mult: float = 3.0   # m in the Chandelier trail (flat)
     time_stop_factor: float = 1.0    # time stop = factor * max_hold_bars[tf]
     max_hold_bars: dict[str, int] = field(default_factory=lambda: {
         "4h": 18,   # ~3 trading days of 4h bars
