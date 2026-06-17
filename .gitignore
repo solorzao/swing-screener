@@ -21,6 +21,7 @@ secrets.toml
 *.db
 /data/
 cache/
+.cache/
 *.parquet
 /charts/
 *.png

@@ -34,6 +34,8 @@ def test_representative_string_lengths() -> None:
     assert Signal.__table__.c.chart_path.type.length == 512
     assert ExitEvent.__table__.c.message.type.length == 256
     assert EmailLog.__table__.c.kind.type.length == 32
+    # arm is indexed, so it must stay bounded (Azure SQL can't index NVARCHAR(max))
+    assert PaperTrade.__table__.c.arm.type.length == 32
 
 
 def test_email_log_has_alert_key_length_64() -> None:

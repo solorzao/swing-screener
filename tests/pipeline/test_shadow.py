@@ -4,11 +4,18 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from swing_screener.analytics.performance import breakdown
 from swing_screener.config import StrategyConfig
 from swing_screener.db import repo
 from swing_screener.db.models import PaperTrade
 from swing_screener.db.session import get_engine
-from swing_screener.pipeline.shadow import FillCandidate, advance_open, open_from_signals
+from swing_screener.pipeline.arms import build_arms
+from swing_screener.pipeline.shadow import (
+    FillCandidate,
+    _is_softening,
+    advance_open,
+    open_from_signals,
+)
 from swing_screener.signals.entry_zone import EntryZone
 
 CFG = StrategyConfig()
@@ -282,6 +289,185 @@ def test_collision_flip_and_target_same_bar_flips_no_partial():
         assert closed.partial_done is False
         assert closed.remaining_frac == 1.0
         assert closed.realized_r == (106.0 - 101.0) / 7.0   # full runner R, no partial leg
+
+
+# --- parallel-arm dual-book + conditional partial (Step C) ------------------
+
+ARMS = ("baseline", "partial33_cond")
+
+
+def _open_dual(s):
+    """Open the default candidate under both arms (baseline + conditional partial)."""
+    open_from_signals(s, [_cand()], {("AAPL", "1d"): (105.0, 97.0)},
+                      fill_date=date(2024, 1, 3), arms=ARMS)
+    return repo.load_open_paper_trades(s)
+
+
+def test_open_defaults_to_baseline_arm():
+    # the arms kwarg defaults to ("baseline",), so existing single-book callers are
+    # unchanged and every trade is tagged.
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        _open_default(s)
+        opened = repo.load_open_paper_trades(s)
+        assert len(opened) == 1 and opened[0].arm == "baseline"
+
+
+def test_dual_book_opens_one_trade_per_arm():
+    # every fill is duplicated once per arm with identical entry economics.
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        opened = _open_dual(s)
+        assert len(opened) == 2
+        assert {t.arm for t in opened} == set(ARMS)
+        for t in opened:
+            assert t.entry_price == 101.0 and t.risk == 7.0 and t.target == 110.0
+
+
+def test_dual_book_arms_diverge_on_same_bar():
+    # Same fill, same bar: the baseline arm books the full all-or-nothing target exit
+    # while the conditional-partial arm scales out and keeps the runner. That clean
+    # divergence on identical inputs is the whole point of the dual-book.
+    arms = build_arms(StrategyConfig())
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        _open_dual(s)
+        # target touched; softening (no shaved_bottom) so the partial arm scales
+        bar = {"low": 100.0, "high": 111.0, "close": 108.0,
+               "shaved_head": False, "shaved_bottom": False}
+        advance_open(s, {("AAPL", "1d"): bar}, arms, today=date(2024, 1, 4))
+        by_arm = {t.arm: t for t in _all_paper_trades(s)}
+
+        base_t = by_arm["baseline"]
+        assert base_t.status == "closed" and base_t.exit_reason == "target"
+        assert base_t.realized_r == (110.0 - 101.0) / 7.0
+
+        part_t = by_arm["partial33_cond"]
+        assert part_t.status == "open" and part_t.partial_done is True
+        assert part_t.remaining_frac == pytest.approx(0.67)
+        assert part_t.stop == 101.0   # breakeven after the partial
+
+
+def test_breakdown_by_arm_gives_per_arm_books():
+    # breakdown(trades, "arm") reads the books back as a same-sample A/B.
+    arms = build_arms(StrategyConfig())
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        _open_dual(s)
+        bar1 = {"low": 100.0, "high": 111.0, "close": 108.0,
+                "shaved_head": False, "shaved_bottom": False}
+        advance_open(s, {("AAPL", "1d"): bar1}, arms, today=date(2024, 1, 4))
+        # next bar dips to the partial arm's breakeven stop -> its runner closes too
+        bar2 = {"low": 100.0, "high": 103.0, "close": 102.0,
+                "shaved_head": False, "shaved_bottom": False}
+        advance_open(s, {("AAPL", "1d"): bar2}, arms, today=date(2024, 1, 5))
+
+        groups = breakdown(_all_paper_trades(s), "arm")
+        assert set(groups) == {"baseline", "partial33_cond"}
+        assert groups["baseline"].n_closed == 1
+        assert groups["partial33_cond"].n_closed == 1
+
+
+def test_advance_skips_trade_with_unknown_arm():
+    # a trade whose arm is no longer in the roster is left open, not advanced under a
+    # guessed config.
+    cfg = StrategyConfig()
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        pt = _open_default(s)
+        pt.arm = "ghost"
+        s.commit()
+        bar = {"low": 93.0, "high": 100.0, "close": 95.0, "shaved_head": False}
+        advance_open(s, {("AAPL", "1d"): bar}, {"baseline": cfg}, today=date(2024, 1, 4))
+        held = s.get(PaperTrade, pt.id)
+        assert held.status == "open" and held.hold_bars == 0
+
+
+def test_conditional_partial_holds_full_on_strong_momentum():
+    # require_softening + a STRONG bar at the target (shaved_bottom, body not
+    # shrinking): suppress the target exit, HOLD the full position, leave the stop at
+    # the ORIGINAL level (not breakeven), and re-evaluate next bar.
+    cfg = StrategyConfig(partial_frac=0.33, partial_require_softening=True)
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        pt = _open_default(s)
+        bar = {"low": 100.0, "high": 111.0, "close": 109.0, "shaved_head": False,
+               "shaved_bottom": True, "body_shrinking": False}
+        advance_open(s, {("AAPL", "1d"): bar}, cfg, today=date(2024, 1, 4))
+        held = s.get(PaperTrade, pt.id)
+        assert held.status == "open"
+        assert held.partial_done is False
+        assert held.stop == 94.0          # original stop, NOT breakeven
+        assert held.hold_bars == 1
+        assert held.exit_reason is None
+        assert held.high_water == 111.0
+
+
+def test_conditional_partial_scales_when_no_shaved_bottom():
+    # softening via a lower wick (no shaved_bottom) -> scale out + breakeven.
+    cfg = StrategyConfig(partial_frac=0.33, partial_require_softening=True)
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        pt = _open_default(s)
+        bar = {"low": 100.0, "high": 111.0, "close": 109.0, "shaved_head": False,
+               "shaved_bottom": False, "body_shrinking": False}
+        advance_open(s, {("AAPL", "1d"): bar}, cfg, today=date(2024, 1, 4))
+        held = s.get(PaperTrade, pt.id)
+        assert held.partial_done is True
+        assert held.remaining_frac == pytest.approx(0.67)
+        assert held.stop == 101.0   # breakeven
+
+
+def test_conditional_partial_scales_when_body_shrinking():
+    # softening via a shrinking HA body even though there's no lower wick -> scale.
+    cfg = StrategyConfig(partial_frac=0.33, partial_require_softening=True)
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        pt = _open_default(s)
+        bar = {"low": 100.0, "high": 111.0, "close": 109.0, "shaved_head": False,
+               "shaved_bottom": True, "body_shrinking": True}
+        advance_open(s, {("AAPL", "1d"): bar}, cfg, today=date(2024, 1, 4))
+        held = s.get(PaperTrade, pt.id)
+        assert held.partial_done is True
+        assert held.remaining_frac == pytest.approx(0.67)
+
+
+def test_conditional_partial_scales_after_strength_fades():
+    # strong at the target -> ride the full position; the NEXT bar is still above the
+    # target but now softening -> scale out then.
+    cfg = StrategyConfig(partial_frac=0.33, partial_require_softening=True)
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        pt = _open_default(s)
+        strong = {"low": 100.0, "high": 111.0, "close": 110.5, "shaved_head": False,
+                  "shaved_bottom": True, "body_shrinking": False}
+        advance_open(s, {("AAPL", "1d"): strong}, cfg, today=date(2024, 1, 4))
+        held = s.get(PaperTrade, pt.id)
+        assert held.partial_done is False and held.hold_bars == 1 and held.stop == 94.0
+
+        soft = {"low": 105.0, "high": 112.0, "close": 110.0, "shaved_head": False,
+                "shaved_bottom": False, "body_shrinking": False}
+        advance_open(s, {("AAPL", "1d"): soft}, cfg, today=date(2024, 1, 5))
+        held = s.get(PaperTrade, pt.id)
+        assert held.partial_done is True
+        assert held.partial_price == 110.0
+        assert held.remaining_frac == pytest.approx(0.67)
+        assert held.stop == 101.0
+
+
+def test_is_softening_predicate():
+    assert _is_softening({"shaved_bottom": False, "body_shrinking": False}) is True
+    assert _is_softening({"shaved_bottom": True, "body_shrinking": True}) is True
+    assert _is_softening({"shaved_bottom": True, "body_shrinking": False}) is False
+    assert _is_softening({}) is True   # missing fields default permissive
+
+
+def test_build_arms_baseline_pinned_all_or_nothing():
+    # baseline stays all-or-nothing even if the base config carries a stray partial.
+    arms = build_arms(StrategyConfig(partial_frac=0.5))
+    assert arms["baseline"].partial_frac == 0.0
+    assert arms["partial33_cond"].partial_frac == 0.33
+    assert arms["partial33_cond"].partial_require_softening is True
 
 
 def test_high_water_tracks_highest_high_since_fill():

@@ -29,6 +29,7 @@ from swing_screener.dashboard.pl import position_pl, total_unrealized_pl
 from swing_screener.db import repo
 from swing_screener.db.models import ExitEvent, PaperTrade, Trade
 from swing_screener.db.session import get_engine
+from swing_screener.pipeline.arms import BASELINE
 from swing_screener.settings import load_settings
 from swing_screener.storage.blob import blob_enabled, download_bytes
 
@@ -420,7 +421,42 @@ def _render_performance(session: Session) -> None:
         ui.empty_state("No shadow-book data yet.")
         return
 
-    summary = performance.summarize(paper_trades)
+    # Parallel-arm shadow book: when more than one experiment arm is present, lead
+    # with the same-sample A/B (every arm saw the identical fills) and let the user
+    # drill into one arm's detail below. With a single arm the view is unchanged.
+    by_arm = performance.breakdown(paper_trades, "arm")
+    arms = sorted(by_arm)
+    if len(arms) > 1:
+        st.markdown("**Experiment arms** — same fills, different exit management")
+        arm_df = pd.DataFrame(
+            [
+                {
+                    "arm": a,
+                    "expectancy_r": by_arm[a].expectancy_r,
+                    "win_rate": by_arm[a].win_rate,
+                    "closed": by_arm[a].n_closed,
+                }
+                for a in arms
+            ]
+        )
+        st.dataframe(
+            arm_df,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "arm": st.column_config.TextColumn("Arm"),
+                "expectancy_r": st.column_config.NumberColumn("Expectancy R", format="%.2f"),
+                "win_rate": st.column_config.NumberColumn("Win rate", format="percent"),
+                "closed": st.column_config.NumberColumn("Closed", format="%d"),
+            },
+        )
+        default_idx = arms.index(BASELINE) if BASELINE in arms else 0
+        arm = st.radio("Arm detail", arms, index=default_idx, horizontal=True)
+        trades = [t for t in paper_trades if t.arm == arm]
+    else:
+        trades = paper_trades
+
+    summary = performance.summarize(trades)
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Fill rate", f"{summary.fill_rate * 100:.0f}%")
     c2.metric("Win rate", f"{summary.win_rate * 100:.0f}%")
@@ -429,7 +465,7 @@ def _render_performance(session: Session) -> None:
     c4.metric("Profit factor", "∞" if pf == float("inf") else f"{pf:.2f}")
     c5.metric("Closed", str(summary.n_closed))
 
-    by_tf = performance.breakdown(paper_trades, "timeframe")
+    by_tf = performance.breakdown(trades, "timeframe")
     if by_tf:
         st.markdown("**Win rate by timeframe**")
         st.altair_chart(
@@ -437,7 +473,7 @@ def _render_performance(session: Session) -> None:
             width="stretch",
         )
 
-    by_rank = performance.rank_bucket(paper_trades, [5, 10])
+    by_rank = performance.rank_bucket(trades, [5, 10])
     if by_rank:
         st.markdown("**Win rate by rank bucket**")
         st.altair_chart(
@@ -445,7 +481,7 @@ def _render_performance(session: Session) -> None:
             width="stretch",
         )
 
-    curve = performance.equity_curve(paper_trades)
+    curve = performance.equity_curve(trades)
     if curve:
         st.markdown("**Equity curve (cumulative R)**")
         # ui.line wants list[tuple[object, float]]; list is invariant, so widen the
@@ -519,7 +555,10 @@ def _render_overview(session: Session) -> None:
     total_unrealized = total_unrealized_pl(open_trades, prices)
 
     candidates = len(repo.latest_signals(session, run_date)) if run_date else 0
-    win_rate = performance.summarize(list(session.scalars(select(PaperTrade)))).win_rate
+    # headline win rate is the baseline arm only, so the dual-book's extra arms don't
+    # blend into (or move) the landing-page number.
+    baseline_trades = list(session.scalars(select(PaperTrade).where(PaperTrade.arm == BASELINE)))
+    win_rate = performance.summarize(baseline_trades).win_rate
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Open positions", len(open_trades))

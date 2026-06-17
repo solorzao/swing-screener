@@ -24,13 +24,14 @@ from swing_screener.pipeline.analyze import (
     analyze_reversals,
     build_frames,
 )
+from swing_screener.pipeline.arms import BASELINE, build_arms
 from swing_screener.pipeline.shadow import FillCandidate, advance_open, open_from_signals
 from swing_screener.settings import load_settings
 from swing_screener.storage.blob import blob_enabled, upload_chart
 
 log = logging.getLogger(__name__)
 
-_BAR_KEYS = ("low", "high", "close", "shaved_head", "bearish")
+_BAR_KEYS = ("low", "high", "close", "shaved_head", "bearish", "shaved_bottom")
 
 # Azure SQL serverless error raised while the database is auto-resuming from a
 # paused state: the first connection of the day fails with this until the DB
@@ -152,7 +153,15 @@ def _fetch_all_timeframes(ticker: str, *, cache_dir: Path, today: date,
 
 def _bar_row(frame: pd.DataFrame) -> dict[str, float | bool]:
     last = frame.iloc[-1]
-    return {k: last[k] for k in _BAR_KEYS}
+    row: dict[str, float | bool] = {k: last[k] for k in _BAR_KEYS}
+    # body_shrinking: the HA body is smaller than the prior bar's (momentum
+    # decelerating) -- an input to the conditional-partial softening gate. The
+    # exit machinery reads it off the bar, so it's computed here where the full
+    # frame is in hand. False when there's no prior bar to compare against.
+    row["body_shrinking"] = bool(
+        len(frame) >= 2 and frame["body_frac"].iloc[-1] < frame["body_frac"].iloc[-2]
+    )
+    return row
 
 
 def _to_signal(r: SignalResult, rank: int, run_date: date) -> Signal:
@@ -281,9 +290,14 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
             for rank, (pr, _h, _l) in enumerate(group, start=1)
         ]
         next_bars = {(pr.ticker, pr.timeframe): (h, low) for (pr, h, low) in prior}
-        opened = open_from_signals(s, candidates, next_bars, fill_date=today)
-        n_paper_opened = sum(1 for t in opened if t.status == "open")
-        advance_open(s, latest_bars, cfg, today=today)
+        # Parallel-arm shadow book: every fill is opened once per arm and advanced
+        # under its own arm config, so breakdown(trades, "arm") is a same-sample A/B.
+        arms = build_arms(cfg)
+        opened = open_from_signals(s, candidates, next_bars, fill_date=today,
+                                   arms=tuple(arms))
+        # count distinct fills (one arm), not the per-arm duplicates
+        n_paper_opened = sum(1 for t in opened if t.status == "open" and t.arm == BASELINE)
+        advance_open(s, latest_bars, arms, today=today)
 
         # Enrich the universe rows with the metrics gathered during the loop
         # (one batch UPDATE; None-skips, self-commits).

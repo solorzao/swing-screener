@@ -19,9 +19,20 @@ from sqlalchemy.orm import Session
 from swing_screener.config import StrategyConfig
 from swing_screener.db import repo
 from swing_screener.db.models import PaperTrade
+from swing_screener.pipeline.arms import BASELINE
 from swing_screener.signals.entry_zone import EntryZone
 from swing_screener.signals.exits import OpenTrade, evaluate_exit
 from swing_screener.signals.fill import resolve_fill
+
+
+def _is_softening(bar: Mapping[str, float | bool]) -> bool:
+    """HA momentum is fading on this bar: a lower wick formed (no ``shaved_bottom``)
+    OR the HA body shrank vs the prior bar (``body_shrinking``). The complement --
+    ``shaved_bottom`` and not shrinking -- is a strong continuation that should hold
+    the full position. Missing fields default to "softening" (permissive)."""
+    shaved_bottom = bool(bar.get("shaved_bottom", False))
+    body_shrinking = bool(bar.get("body_shrinking", False))
+    return (not shaved_bottom) or body_shrinking
 
 
 @dataclass(frozen=True)
@@ -47,12 +58,18 @@ def open_from_signals(
     next_bars: Mapping[tuple[str, str], tuple[float, float]],
     *,
     fill_date: date,
+    arms: Sequence[str] = (BASELINE,),
 ) -> list[PaperTrade]:
-    """Resolve each candidate against its next bar and persist a paper trade.
+    """Resolve each candidate against its next bar and persist a paper trade per arm.
 
     Candidates without a next bar yet are skipped (resolved on a later run).
     Filled trades open at the worst-case in-zone price; missed/invalidated
     trades are recorded as terminal (``status="closed"``) and never advanced.
+
+    The fill economics are arm-independent (same entry/stop/target/risk), so each
+    candidate is duplicated once per arm and tagged with ``arm``; the arms then
+    diverge only in ``advance_open``. Both filled and terminal rows are duplicated
+    so every arm is a complete book (per-arm ``fill_rate``/``n_total`` stay correct).
     """
     trades: list[PaperTrade] = []
     for cand in candidates:
@@ -61,50 +78,54 @@ def open_from_signals(
             continue
         bar_high, bar_low = bar
         fill = resolve_fill(cand.zone, bar_high, bar_low)
-
-        common = {
-            "ticker": cand.ticker,
-            "timeframe": cand.timeframe,
-            "horizon": cand.horizon,
-            "play_type": cand.play_type,
-            "strength": cand.strength,
-            "signal_id": cand.signal_id,
-            "signal_score": cand.signal_score,
-            "rank": cand.rank,
-            "mtf_aligned": cand.mtf_aligned,
-            "quality_tier": cand.quality_tier,
-            "volatility_tier": cand.volatility_tier,
-            "oversold": cand.oversold,
-            "fill_status": fill.status,
-            "stop": cand.zone.stop,
-            "target": cand.zone.target,
-            "opened_date": fill_date,
-        }
-
         risk = fill.price - cand.zone.stop if fill.price is not None else None
-        if fill.status == "filled" and risk is not None and risk > 0:
-            trade = PaperTrade(
-                **common,
-                entry_price=fill.price,
-                entry_date=fill_date,
-                risk=risk,
-                status="open",
-                hold_bars=0,
-            )
-        else:
-            # missed/invalidated, OR a degenerate fill with non-positive risk that
-            # we cannot honestly trade -> downgrade to invalidated, terminal, never
-            # opened. This keeps every open trade's risk strictly positive so
-            # advance_open's realized_r division can never divide by zero.
-            common["fill_status"] = "invalidated" if fill.status == "filled" else fill.status
-            trade = PaperTrade(
-                **common,
-                entry_price=None,
-                entry_date=None,
-                risk=cand.zone.risk,
-                status="closed",
-            )
-        trades.append(trade)
+
+        for arm in arms:
+            common = {
+                "ticker": cand.ticker,
+                "timeframe": cand.timeframe,
+                "horizon": cand.horizon,
+                "play_type": cand.play_type,
+                "strength": cand.strength,
+                "signal_id": cand.signal_id,
+                "signal_score": cand.signal_score,
+                "rank": cand.rank,
+                "mtf_aligned": cand.mtf_aligned,
+                "quality_tier": cand.quality_tier,
+                "volatility_tier": cand.volatility_tier,
+                "oversold": cand.oversold,
+                "arm": arm,
+                "fill_status": fill.status,
+                "stop": cand.zone.stop,
+                "target": cand.zone.target,
+                "opened_date": fill_date,
+            }
+
+            if fill.status == "filled" and risk is not None and risk > 0:
+                trade = PaperTrade(
+                    **common,
+                    entry_price=fill.price,
+                    entry_date=fill_date,
+                    risk=risk,
+                    status="open",
+                    hold_bars=0,
+                )
+            else:
+                # missed/invalidated, OR a degenerate fill with non-positive risk that
+                # we cannot honestly trade -> downgrade to invalidated, terminal, never
+                # opened. This keeps every open trade's risk strictly positive so
+                # advance_open's realized_r division can never divide by zero.
+                common["fill_status"] = (
+                    "invalidated" if fill.status == "filled" else fill.status
+                )
+                trade = PaperTrade(
+                    **common,
+                    entry_price=None,
+                    entry_date=None,
+                    risk=cand.zone.risk,
+                    status="closed",
+                )
+            trades.append(trade)
 
     repo.save_paper_trades(session, trades)
     return trades
@@ -113,17 +134,26 @@ def open_from_signals(
 def advance_open(
     session: Session,
     latest_bars: Mapping[tuple[str, str], Mapping[str, float | bool]],
-    cfg: StrategyConfig,
+    arms: StrategyConfig | Mapping[str, StrategyConfig],
     *,
     today: date,
 ) -> None:
-    """Advance every open paper trade by one bar, exiting or holding."""
+    """Advance every open paper trade by one bar, exiting or holding.
+
+    ``arms`` is either a single config (back-compat: treated as the ``baseline``
+    arm) or a ``{arm_name: config}`` mapping; each open trade is advanced under its
+    own arm's config so the parallel arms diverge only in exit management.
+    """
+    arm_cfgs = {BASELINE: arms} if isinstance(arms, StrategyConfig) else dict(arms)
     for pt in repo.load_open_paper_trades(session):
         if pt.entry_date == today or pt.last_advanced == today:
             continue
         bar = latest_bars.get((pt.ticker, pt.timeframe))
         if bar is None:
             continue
+        cfg = arm_cfgs.get(pt.arm)
+        if cfg is None:
+            continue  # arm dropped from the roster -> leave the trade open, don't guess
 
         # Open (filled) trades always carry a concrete entry and risk.
         assert pt.entry_price is not None and pt.risk is not None
@@ -159,6 +189,16 @@ def advance_open(
             and decision.action == "EXIT"
             and decision.reason == "target"
         ):
+            # Conditional gate: when the arm requires softening, a STRONG target-touch
+            # is not scaled -- suppress the target exit and HOLD the full position so the
+            # winner can run. It's re-evaluated every bar, so it partials the moment
+            # momentum softens while still at/above the target. (A strong touch that is
+            # also past the time stop keeps riding -- you don't time-stop a breakout to
+            # new ground; rare, deliberate.)
+            if cfg.partial_require_softening and not _is_softening(bar):
+                pt.hold_bars = held
+                pt.last_advanced = today
+                continue
             pt.partial_done = True
             pt.partial_price = pt.target
             pt.partial_r = (pt.target - pt.entry_price) / pt.risk
@@ -176,7 +216,7 @@ def advance_open(
             # exits use the bar close, which is realistic.
             if decision.reason == "stop":
                 exit_price = pt.stop
-            elif decision.reason == "target":      # only reachable when the feature is OFF
+            elif decision.reason == "target":      # only an all-or-nothing arm (partial_frac == 0)
                 exit_price = pt.target
             else:
                 exit_price = float(bar["close"])
