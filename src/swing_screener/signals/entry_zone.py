@@ -17,7 +17,12 @@ class EntryZone:
 def nearest_resistance(highs: Sequence[float], above: float, width: int) -> float | None:
     """Lowest swing-high pivot strictly above ``above``. A pivot at i tops ``width`` bars on
     each side. Returns None if no qualifying pivot. ``highs`` are STANDARD candle highs,
-    oldest->newest."""
+    oldest->newest.
+
+    The strict ``>`` on both sides means a FLAT top (a double-top with equal adjacent highs)
+    is deliberately NOT counted as a pivot -- such a level falls through to the ATR-measured
+    fallback rather than being treated as confirmed resistance. Conservative by design.
+    """
     candidates: list[float] = []
     for i in range(width, len(highs) - width):
         h = highs[i]
