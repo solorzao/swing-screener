@@ -133,7 +133,13 @@ def analyze_frames(
         if ctx is None:
             continue
 
-        zone = compute_zone(ctx.trigger_close, ctx.atr, ctx.swing_low, cfg)
+        # Standard (real) highs for overhead-resistance lookup; HA smears real highs.
+        recent_highs = frame["high"].tail(
+            cfg.target_lookback + 2 * cfg.target_pivot_width
+        ).tolist()
+        zone = compute_zone(
+            ctx.trigger_close, ctx.atr, ctx.swing_low, cfg, recent_highs=recent_highs
+        )
         if zone is None:
             continue
 

@@ -23,7 +23,12 @@ class StrategyConfig:
     ceiling_atr_mult: float = 0.35   # ceiling = trigger_close + mult * ATR
     floor_buffer_atr: float = 0.10   # floor = swing_low + buffer * ATR
     stop_buffer_atr: float = 0.25    # stop  = swing_low - buffer * ATR
-    target_r_multiple: float = 2.0   # target = entry + R * risk
+
+    # structure-aware continuation target (Step A)
+    target_lookback: int = 30        # bars to search for overhead resistance
+    target_pivot_width: int = 2      # a swing high tops this many bars on each side
+    target_atr_mult: float = 2.0     # measured-move fallback when no resistance overhead
+    min_target_r: float = 1.5        # floor: target is at least this many R above the reference
 
     # categorization tag thresholds (tunable for the dry-run)
     penny_price_max: float = 5.0            # price < this -> "penny"
