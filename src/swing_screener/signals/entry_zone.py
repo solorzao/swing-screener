@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from swing_screener.config import StrategyConfig
@@ -13,8 +14,24 @@ class EntryZone:
     reference: float  # midpoint used for R math
 
 
+def nearest_resistance(highs: Sequence[float], above: float, width: int) -> float | None:
+    """Lowest swing-high pivot strictly above ``above``. A pivot at i tops ``width`` bars on
+    each side. Returns None if no qualifying pivot. ``highs`` are STANDARD candle highs,
+    oldest->newest."""
+    candidates: list[float] = []
+    for i in range(width, len(highs) - width):
+        h = highs[i]
+        if all(h > highs[i - k] and h > highs[i + k] for k in range(1, width + 1)):
+            if h > above:
+                candidates.append(h)
+    if not candidates:
+        return None
+    return min(candidates)
+
+
 def compute_zone(trigger_close: float, atr: float, swing_low: float,
-                 cfg: StrategyConfig) -> EntryZone | None:
+                 cfg: StrategyConfig,
+                 recent_highs: Sequence[float] | None = None) -> EntryZone | None:
     """Compute the entry zone, or None when the zone is degenerate.
 
     A shallow pullback (swing_low at or above trigger_close) combined with a
@@ -23,6 +40,15 @@ def compute_zone(trigger_close: float, atr: float, swing_low: float,
     mis-classify in-zone bars, and a non-positive ``risk`` (reference <= stop)
     corrupts the target math and any downstream 1R risk normalisation. In
     either degenerate case there is no tradable zone, so return None.
+
+    The continuation target is structure-aware (Step A), a cascade anchored on
+    ``reference``:
+      1. the nearest standard-candle swing-high resistance strictly above the
+         zone ceiling, within ``recent_highs`` (when provided);
+      2. else a measured-move fallback ``reference + target_atr_mult * atr``;
+      3. floored at ``reference + min_target_r * risk`` so the R:R is never thin.
+    ``recent_highs`` are the STANDARD candle highs (oldest->newest); when omitted
+    the structure step is skipped and the cascade starts at the ATR fallback.
     """
     floor = swing_low + cfg.floor_buffer_atr * atr
     ceiling = trigger_close + cfg.ceiling_atr_mult * atr
@@ -31,6 +57,20 @@ def compute_zone(trigger_close: float, atr: float, swing_low: float,
     risk = reference - stop
     if floor >= ceiling or risk <= 0:
         return None
-    target = reference + cfg.target_r_multiple * risk
+
+    resistance = (
+        nearest_resistance(recent_highs, ceiling, cfg.target_pivot_width)
+        if recent_highs is not None
+        else None
+    )
+    if resistance is not None:
+        target = resistance
+    else:
+        target = reference + cfg.target_atr_mult * atr
+
+    min_target = reference + cfg.min_target_r * risk
+    if (target - reference) / risk < cfg.min_target_r:
+        target = min_target
+
     return EntryZone(floor=floor, ceiling=ceiling, stop=stop,
                      target=target, risk=risk, reference=reference)
