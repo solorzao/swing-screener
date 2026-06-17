@@ -194,7 +194,7 @@ module sql 'modules/sql.bicep' = {
   }
 }
 
-// --- The five scheduled jobs ---
+// --- The scheduled jobs ---
 module jobs 'modules/jobs.bicep' = {
   name: 'jobs'
   scope: rg

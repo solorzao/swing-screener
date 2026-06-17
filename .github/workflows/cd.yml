@@ -66,12 +66,12 @@ jobs:
             --image "$IMAGE:latest" \
             .
 
-      - name: Repoint the five Container Apps Jobs to the new image
+      - name: Repoint the Container Apps Jobs to the new image
         # `job update --image` does NOT start a run; the new image is used on the
         # next scheduled (or manual `job start`) execution. Rollback = re-run this
         # update with an older :<sha> tag. Runtime secrets stay in Key Vault.
         run: |
-          for job in evening-screen daily-digest intraday-exit weekly-digest monthly-digest; do
+          for job in evening-screen daily-digest on-demand-analysis intraday-exit weekly-digest monthly-digest; do
             echo "Updating $job -> $IMAGE:${{ github.sha }}"
             az containerapp job update \
               --name "$job" \
