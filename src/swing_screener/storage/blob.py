@@ -67,6 +67,18 @@ def upload_chart(local_path: Path, key: str) -> str:
     return key
 
 
+def upload_bytes(key: str, data: bytes) -> str:
+    """Upload raw ``data`` to the private container under ``key``.
+
+    Generic counterpart to :func:`upload_chart` for in-memory payloads that have
+    no local file -- e.g. the on-demand PDF, which lives only as bytes. Returns
+    ``key`` so the caller stores it verbatim; overwrites any existing blob.
+    """
+    client = _get_container_client()
+    client.upload_blob(name=key, data=data, overwrite=True)
+    return key
+
+
 def download_bytes(key: str) -> bytes:
     """Download the blob at ``key`` from the private container as raw bytes."""
     client = _get_container_client()
