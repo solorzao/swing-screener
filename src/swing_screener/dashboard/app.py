@@ -40,6 +40,22 @@ def _cached_engine(db_url: str) -> Engine:
     return get_engine(db_url)
 
 
+# Verifying connectivity costs a round-trip (on Azure SQL, validating a pooled connection)
+# on EVERY rerun. Cache the SUCCESS briefly so a burst of interactions doesn't reconnect each
+# time. st.cache_data caches returns but NOT exceptions, so a DB that goes down is still
+# detected on the next rerun (and recovery shows within the TTL); the per-view error_boundary
+# stays the immediate safety net if the DB drops mid-window.
+_CONN_CHECK_TTL_SECONDS = 30
+
+
+@st.cache_data(ttl=_CONN_CHECK_TTL_SECONDS, show_spinner=False)
+def _connection_ok(db_url: str) -> bool:
+    """True if the cached engine can open a connection; raises (uncached) if it cannot."""
+    with _cached_engine(db_url).connect():
+        pass
+    return True
+
+
 def _cache_dir() -> Path:
     return load_settings().cache_dir
 
@@ -599,12 +615,9 @@ def render() -> None:
     # every view tripping the generic error boundary. The chip never prints
     # credentials/host (see ui.connection_label).
     label = ui.connection_label(db_url)
-    engine: Engine | None = None
     conn_error: Exception | None = None
     try:
-        engine = _cached_engine(db_url)  # ensure tables exist; empty DB is fine
-        with engine.connect():
-            pass
+        _connection_ok(db_url)  # cached briefly; raises (uncached) if the DB is unreachable
         connected = True
     except Exception as exc:  # noqa: BLE001 - surfaced as a friendly card below
         connected = False
@@ -618,7 +631,7 @@ def render() -> None:
             st.code(f"{type(conn_error).__name__}: {conn_error}")
         return
 
-    assert engine is not None  # connected implies engine was assigned
+    engine = _cached_engine(db_url)  # cached; _connection_ok already proved it connects
     renderer = PAGES[choice]
     with Session(engine) as session:
         with ui.error_boundary(choice):
