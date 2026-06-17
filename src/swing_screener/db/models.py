@@ -111,6 +111,14 @@ class PaperTrade(Base):
     exit_reason: Mapped[str | None] = mapped_column(String(32), default=None)
     realized_r: Mapped[float | None] = mapped_column(default=None)
     hold_bars: Mapped[int | None] = mapped_column(default=None)
+    # fractional-close support: the first leg is scaled out at the target, the
+    # runner then trails to stop/flip/time. realized_r becomes a size-weighted
+    # blend of the booked partial and the runner's final R.
+    partial_done: Mapped[bool] = mapped_column(default=False)
+    partial_price: Mapped[float | None] = mapped_column(default=None)
+    partial_r: Mapped[float | None] = mapped_column(default=None)
+    remaining_frac: Mapped[float] = mapped_column(default=1.0)
+    high_water: Mapped[float | None] = mapped_column(default=None)
 
 
 class ExitEvent(Base):
