@@ -421,6 +421,19 @@ def _render_performance(session: Session) -> None:
         ui.empty_state("No shadow-book data yet.")
         return
 
+    # Play-type filter (continuation vs reversal). The partial/trail arms span both
+    # engines, so scope the arm A/B to one play type to judge it there in isolation.
+    if len({t.play_type for t in paper_trades}) > 1:
+        choice = st.segmented_control("Play type", ["All", "Continuation", "Reversal"],
+                                      default="All")
+        if choice == "Continuation":
+            paper_trades = [t for t in paper_trades if t.play_type == "continuation"]
+        elif choice == "Reversal":
+            paper_trades = [t for t in paper_trades if t.play_type == "reversal"]
+        if not paper_trades:
+            ui.empty_state(f"No {choice} shadow-book trades.")
+            return
+
     # Parallel-arm shadow book: when more than one experiment arm is present, lead
     # with the same-sample A/B (every arm saw the identical fills) and let the user
     # drill into one arm's detail below. With a single arm the view is unchanged.

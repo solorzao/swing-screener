@@ -114,6 +114,21 @@ arm later). No new schema — the trail reuses the existing `high_water`/`stop` 
 ### Step E — Reversal engine (needs B)
 Mirror the conditional partial + the winning trail on the reversal runner; keep the 0.786-Fib target.
 
+#### Step E resolution — already delivered by the dual-book (2026-06-16)
+This step was written before the Step C dual-book and is **largely superseded**: the shadow
+book is play-type-agnostic (`shadow.advance_open` / `exits.evaluate_exit` have NO play_type
+branching), and `run.py` opens both continuation AND reversal candidates through the same
+per-arm `open_from_signals`. So reversal fills **already** receive the conditional partial and
+the Chandelier trail — they scale out at their `zone.target` (the 0.786-Fib level) and trail on
+`high_water`/`ATR` exactly like continuation. There is no reversal-runner code to add.
+
+What was actually missing was **measurement**: `breakdown(trades,"arm")` blended both engines
+within an arm. Step E therefore shipped (a) a play-type filter on the dashboard Performance
+view so the arm A/B can be scoped to continuation-only or reversal-only, and (b) reversal-tagged
+tests locking in the scale-out/trail + tag preservation. Per-engine partial/trail *tuning*
+(separate reversal arms with their own fraction/`m`) is deferred until the dual-book has accrued
+enough reversal trades to show whether reversal economics differ from continuation.
+
 ## Key decisions (flag if you'd change these)
 - **Structure target lookback** starts as a sweep (20-40 bars), justified on continuation
   pullback geometry — NOT borrowed from the reversal engine's 31-bar constant.
