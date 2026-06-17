@@ -55,6 +55,7 @@ class StrategyConfig:
     reversal_target_r_multiple: float = 1.0   # measured-move fallback if the target sits below entry
 
     # exits
+    partial_frac: float = 0.0   # fraction scaled out at the first target (0.0 = feature OFF; Step C turns it on)
     time_stop_factor: float = 1.0    # time stop = factor * max_hold_bars[tf]
     max_hold_bars: dict[str, int] = field(default_factory=lambda: {
         "4h": 18,   # ~3 trading days of 4h bars

@@ -129,14 +129,44 @@ def advance_open(
         assert pt.entry_price is not None and pt.risk is not None
 
         held = (pt.hold_bars or 0) + 1
+        bar_high = float(bar["high"])
+        # track highest high since fill (the trail reference used in Step D; harmless now)
+        pt.high_water = max(
+            pt.high_water if pt.high_water is not None else pt.entry_price, bar_high
+        )
+
+        partial_on = cfg.partial_frac > 0.0
+        # Once partialed, the runner has NO fixed target (runs to stop/flip/time): suppress
+        # the target branch by handing evaluate_exit an unreachable target.
+        effective_target = float("inf") if pt.partial_done else pt.target
         trade = OpenTrade(
             entry=pt.entry_price,
             stop=pt.stop,
-            target=pt.target,
+            target=effective_target,
             timeframe=pt.timeframe,
             bars_held=held,
         )
         decision = evaluate_exit(trade, bar, cfg)
+
+        # PARTIAL scale-out: evaluate_exit ranks stop > momentum_flip > target, so a
+        # "target" decision means the bar did NOT stop/flip this bar and the target was
+        # hit. When the feature is on and we haven't partialed yet, convert that into a
+        # scale-out (not a terminal exit): book the first leg, drop the stop to
+        # breakeven, and let the runner run.
+        if (
+            partial_on
+            and not pt.partial_done
+            and decision.action == "EXIT"
+            and decision.reason == "target"
+        ):
+            pt.partial_done = True
+            pt.partial_price = pt.target
+            pt.partial_r = (pt.target - pt.entry_price) / pt.risk
+            pt.remaining_frac = 1.0 - cfg.partial_frac
+            pt.stop = pt.entry_price            # breakeven after the partial
+            pt.hold_bars = held
+            pt.last_advanced = today
+            continue
 
         if decision.action == "EXIT":
             # Exit-price modelling is deliberately asymmetric with entries: entries
@@ -146,18 +176,24 @@ def advance_open(
             # exits use the bar close, which is realistic.
             if decision.reason == "stop":
                 exit_price = pt.stop
-            elif decision.reason == "target":
+            elif decision.reason == "target":      # only reachable when the feature is OFF
                 exit_price = pt.target
             else:
                 exit_price = float(bar["close"])
 
+            final_r = (exit_price - pt.entry_price) / pt.risk
+            # partial_r is always set alongside partial_done (the is-not-None check
+            # both reflects that invariant and narrows the type for the multiply).
+            partial_contrib = (
+                cfg.partial_frac * pt.partial_r if pt.partial_r is not None else 0.0
+            )
             pt.status = "closed"
             pt.exit_price = exit_price
             pt.exit_reason = decision.reason
             pt.exit_date = today
             pt.hold_bars = held
             pt.last_advanced = today
-            pt.realized_r = (exit_price - pt.entry_price) / pt.risk
+            pt.realized_r = partial_contrib + pt.remaining_frac * final_r
 
             repo.record_exit_event(
                 session,
