@@ -182,11 +182,18 @@ def advance_open(
                 exit_price = float(bar["close"])
 
             final_r = (exit_price - pt.entry_price) / pt.risk
-            # partial_r is always set alongside partial_done (the is-not-None check
-            # both reflects that invariant and narrows the type for the multiply).
-            partial_contrib = (
-                cfg.partial_frac * pt.partial_r if pt.partial_r is not None else 0.0
-            )
+            # Size-weight realized R off PERSISTED state, never the live config. The
+            # booked partial leg carried (1 - remaining_frac) of the size at the moment
+            # it filled; the runner carries the rest. Deriving the partial weight from
+            # remaining_frac (not cfg.partial_frac) keeps the two legs summing to 1.0
+            # even if partial_frac is retuned mid-flight. partial_done is the single
+            # source of truth -- partial_r is set in lockstep with it, so the assert
+            # both documents that invariant and narrows the type for the multiply.
+            if pt.partial_done:
+                assert pt.partial_r is not None
+                partial_contrib = (1.0 - pt.remaining_frac) * pt.partial_r
+            else:
+                partial_contrib = 0.0
             pt.status = "closed"
             pt.exit_price = exit_price
             pt.exit_reason = decision.reason

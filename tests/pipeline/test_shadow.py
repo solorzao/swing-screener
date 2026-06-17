@@ -247,6 +247,43 @@ def test_partial_then_runner_flips_above_entry():
         assert closed.realized_r == pytest.approx(0.33 * partial_r + 0.67 * final_r)
 
 
+def test_collision_stop_and_target_same_bar_stops_out_no_partial():
+    # Feature ON, but a single bar breaches BOTH the stop (low 93 <= 94) and the
+    # target (high 111 >= 110). evaluate_exit ranks stop highest, so the reason is
+    # "stop" -- the partial interception (which only fires on a "target" reason)
+    # must NOT trigger: the trade goes terminal at -1R with partial_done False.
+    cfg = StrategyConfig(partial_frac=0.33)
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        pt = _open_default(s)
+        bar = {"low": 93.0, "high": 111.0, "close": 95.0, "shaved_head": False}
+        advance_open(s, {("AAPL", "1d"): bar}, cfg, today=date(2024, 1, 4))
+        closed = s.get(PaperTrade, pt.id)
+        assert closed.status == "closed" and closed.exit_reason == "stop"
+        assert closed.exit_price == 94.0
+        assert closed.partial_done is False
+        assert closed.remaining_frac == 1.0
+        assert closed.realized_r == (94.0 - 101.0) / 7.0   # full -1R, no partial leg
+
+
+def test_collision_flip_and_target_same_bar_flips_no_partial():
+    # Feature ON, but a single bar both flips (shaved_head) and pierces the target
+    # (high 111 >= 110). momentum_flip outranks target, so the reason is
+    # "momentum_flip" and no partial is booked: the trade exits whole at the close.
+    cfg = StrategyConfig(partial_frac=0.33)
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        pt = _open_default(s)
+        bar = {"low": 100.0, "high": 111.0, "close": 106.0, "shaved_head": True}
+        advance_open(s, {("AAPL", "1d"): bar}, cfg, today=date(2024, 1, 4))
+        closed = s.get(PaperTrade, pt.id)
+        assert closed.status == "closed" and closed.exit_reason == "momentum_flip"
+        assert closed.exit_price == 106.0
+        assert closed.partial_done is False
+        assert closed.remaining_frac == 1.0
+        assert closed.realized_r == (106.0 - 101.0) / 7.0   # full runner R, no partial leg
+
+
 def test_high_water_tracks_highest_high_since_fill():
     # high_water starts >= entry and ratchets up with bar highs (never down).
     cfg = StrategyConfig()  # feature off; high_water tracking is unconditional
