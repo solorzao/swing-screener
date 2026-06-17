@@ -11,6 +11,7 @@ import io
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 from xml.sax.saxutils import escape as _xml_escape
 
 from reportlab.lib import colors
@@ -29,6 +30,9 @@ from reportlab.platypus import (
 )
 
 from swing_screener.storage.blob import blob_enabled, download_bytes
+
+if TYPE_CHECKING:
+    from swing_screener.notify.ticker_report import TickerReport
 
 
 @dataclass(frozen=True)
@@ -188,4 +192,82 @@ def build_digest_pdf(picks: Sequence[PdfPick], out_path: Path, *,
         story.extend(build_story(reversal_picks))
     doc = SimpleDocTemplate(str(out_path), pagesize=letter)
     doc.build(story)
+    return out_path
+
+
+def build_ticker_story(report: "TickerReport") -> list:
+    """Flowables for a single-ticker multi-timeframe report -- testable without rendering.
+
+    Title + run-time caption (with a DEEP ANALYSIS marker when ``report.is_deep``),
+    the overall stance, then one block per :class:`TimeframeRead` (heading, chart when
+    resolvable, levels table or a "no setup" note), and finally the full narrative.
+    Chart resolution mirrors :func:`build_story`: blob KEY vs. local filesystem path.
+    """
+    styles = getSampleStyleSheet()
+    story: list = []
+
+    name_part = f" - {report.name}" if report.name else ""
+    story.append(Paragraph(f"{report.ticker}{name_part}", styles["Title"]))
+    caption = report.run_at.strftime("%Y-%m-%d %H:%M")
+    if report.is_deep:
+        caption += ' &nbsp; <font color="#1a5fb4"><b>DEEP ANALYSIS</b></font>'
+    story.append(Paragraph(caption, styles["BodyText"]))
+    story.append(Spacer(1, 0.1 * inch))
+
+    if report.summary:
+        story.append(Paragraph(f"<b>{_xml_escape(report.summary)}</b>", styles["BodyText"]))
+        story.append(Spacer(1, 0.15 * inch))
+
+    for r in report.reads:
+        heading = (
+            f"{r.timeframe} — {r.ha_trend}, "
+            f"EMA {'aligned' if r.ema_aligned else 'crossed'}, "
+            f"RSI {r.rsi:.0f}, ATR {r.atr_pct:.1%}"
+        )
+        story.append(Paragraph(_xml_escape(heading), styles["Heading3"]))
+        if blob_enabled():
+            # chart_path is a blob KEY here -- fetch by key; a missing/aged-out blob
+            # (any exception) degrades to a chartless block, same as the local path.
+            if r.chart_path:
+                try:
+                    story.append(_chart_image(download_bytes(r.chart_path)))
+                    story.append(Spacer(1, 0.1 * inch))
+                except Exception:
+                    pass
+        elif r.chart_path and Path(r.chart_path).exists():
+            story.append(_chart_image(r.chart_path))
+            story.append(Spacer(1, 0.1 * inch))
+        if r.setup is not None:
+            levels = [
+                ["Entry", f"{r.setup.entry_floor:.2f} - {r.setup.entry_ceiling:.2f}"],
+                ["Stop", f"{r.setup.stop:.2f}"],
+                ["Target", f"{r.setup.target:.2f}"],
+            ]
+            table = Table(levels, colWidths=[2.2 * inch, 3.5 * inch])
+            table.setStyle(
+                TableStyle(
+                    [
+                        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                        ("BACKGROUND", (0, 0), (0, -1), colors.whitesmoke),
+                        ("FONTSIZE", (0, 0), (-1, -1), 9),
+                    ]
+                )
+            )
+            story.append(table)
+        else:
+            story.append(Paragraph("No setup firing on this timeframe.", styles["BodyText"]))
+        story.append(Spacer(1, 0.15 * inch))
+
+    for flow in _rationale_flowables(report.analysis_text, styles):
+        story.append(flow)
+
+    return story
+
+
+def build_ticker_report_pdf(report: "TickerReport", out_path: Path) -> Path:
+    """Render the report to a letter-size PDF and return ``out_path``."""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    doc = SimpleDocTemplate(str(out_path), pagesize=letter)
+    doc.build(build_ticker_story(report))
     return out_path

@@ -1,6 +1,9 @@
 import base64
+import types
+from datetime import datetime
 
 from swing_screener.notify.pdf import PdfPick, build_digest_pdf
+from swing_screener.notify.ticker_report import TickerReport, TimeframeRead
 
 # 1x1 transparent PNG
 _PNG = base64.b64decode(
@@ -100,3 +103,43 @@ def test_chart_image_preserves_aspect_and_header_builds(tmp_path):
 def test_empty_picks_still_builds(tmp_path):
     out = build_digest_pdf([], tmp_path / "empty.pdf")
     assert out.exists() and out.read_bytes()[:4] == b"%PDF"
+
+
+def _ticker_report():
+    # one timeframe with a firing setup (a tiny stub with the 4 level attrs the
+    # code reads), one without -- exercises both branches of the levels block.
+    setup = types.SimpleNamespace(
+        entry_floor=96.0, entry_ceiling=101.0, stop=95.0, target=110.0)
+    reads = [
+        TimeframeRead(timeframe="1d", ha_trend="bullish", ema_aligned=True,
+                      rsi=58.0, atr_pct=0.04, setup=setup, chart_path=None),
+        TimeframeRead(timeframe="1wk", ha_trend="bearish", ema_aligned=False,
+                      rsi=44.0, atr_pct=0.06, setup=None, chart_path=None),
+    ]
+    return TickerReport(
+        ticker="AMD", name="Advanced Micro Devices",
+        run_at=datetime(2026, 6, 16, 9, 30), reads=reads,
+        summary="Daily continuation intact; weekly still basing.",
+        analysis_text="CORE: Clean continuation.\n4h: Momentum building.",
+        is_deep=True,
+    )
+
+
+def test_build_ticker_story_has_sections():
+    from swing_screener.notify.pdf import build_ticker_story
+
+    story = build_ticker_story(_ticker_report())
+    assert story  # non-empty flowable list
+    rendered = " ".join(getattr(f, "text", "") for f in story)
+    assert "AMD" in rendered
+    assert rendered.count("No setup firing on this timeframe.") == 1
+
+
+def test_build_ticker_report_pdf_writes_file(tmp_path):
+    from swing_screener.notify.pdf import build_ticker_report_pdf
+
+    out = build_ticker_report_pdf(_ticker_report(), tmp_path / "AMD.pdf")
+    assert out.exists()
+    data = out.read_bytes()
+    assert len(data) > 0
+    assert data[:4] == b"%PDF"
