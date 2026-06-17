@@ -70,8 +70,17 @@ jobs:
         # `job update --image` does NOT start a run; the new image is used on the
         # next scheduled (or manual `job start`) execution. Rollback = re-run this
         # update with an older :<sha> tag. Runtime secrets stay in Key Vault.
+        #
+        # A job listed here may not exist yet (its bicep shipped, but the one-time
+        # `az deployment sub create` provisioning hasn't run). SKIP it instead of
+        # aborting -- otherwise one un-provisioned job (`bash -e`) leaves every job
+        # after it on the old image. Once provisioned, the next run picks it up.
         run: |
           for job in evening-screen daily-digest on-demand-analysis intraday-exit weekly-digest monthly-digest; do
+            if ! az containerapp job show --name "$job" --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
+              echo "Skipping $job -- not provisioned yet (run the bicep deploy to create it)"
+              continue
+            fi
             echo "Updating $job -> $IMAGE:${{ github.sha }}"
             az containerapp job update \
               --name "$job" \
