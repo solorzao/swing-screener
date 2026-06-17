@@ -160,10 +160,22 @@ def advance_open(
 
         held = (pt.hold_bars or 0) + 1
         bar_high = float(bar["high"])
-        # track highest high since fill (the trail reference used in Step D; harmless now)
-        pt.high_water = max(
-            pt.high_water if pt.high_water is not None else pt.entry_price, bar_high
-        )
+        # high_water is the highest high since the fill. Read the PRIOR bar's value
+        # first: the Chandelier trail places this bar's stop off it, so we never use
+        # this bar's own high to decide whether this bar stops out (no intra-bar
+        # lookahead). It's folded forward to include this bar's high afterwards.
+        prior_high_water = pt.high_water if pt.high_water is not None else pt.entry_price
+
+        # Post-partial runner trail (Step D). Ratchet the stop up to high_water - m*ATR,
+        # never down (max with the current stop) and never below breakeven (the stop
+        # starts there at the partial, so the ratchet preserves it). Pre-partial trades
+        # keep their hard stop; a non-positive/NaN ATR (undefined early bars) skips the
+        # trail this bar rather than poisoning the stop.
+        atr_val = float(bar.get("atr", 0.0))
+        if pt.partial_done and cfg.trail_mode == "chandelier" and atr_val > 0.0:
+            pt.stop = max(pt.stop, prior_high_water - cfg.chandelier_atr_mult * atr_val)
+
+        pt.high_water = max(prior_high_water, bar_high)
 
         partial_on = cfg.partial_frac > 0.0
         # Once partialed, the runner has NO fixed target (runs to stop/flip/time): suppress

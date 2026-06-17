@@ -470,6 +470,113 @@ def test_build_arms_baseline_pinned_all_or_nothing():
     assert arms["partial33_cond"].partial_require_softening is True
 
 
+# --- Chandelier runner trail (Step D) ---------------------------------------
+
+CHAND = StrategyConfig(partial_frac=0.33, partial_require_softening=True,
+                       trail_mode="chandelier", chandelier_atr_mult=3.0)
+
+
+def _partial_then(s, cfg, *, atr=2.0):
+    """Open the default trade and book the partial on bar 1 (softening target touch),
+    returning the trade with partial_done=True, stop=breakeven 101, high_water=111."""
+    pt = _open_default(s)
+    bar1 = {"low": 100.0, "high": 111.0, "close": 109.0, "shaved_head": False,
+            "shaved_bottom": False, "atr": atr}
+    advance_open(s, {("AAPL", "1d"): bar1}, cfg, today=date(2024, 1, 4))
+    pt = s.get(PaperTrade, pt.id)
+    assert pt.partial_done is True and pt.stop == 101.0 and pt.high_water == 111.0
+    return pt
+
+
+def test_chandelier_trail_ratchets_up_and_exits_on_the_trail():
+    # After the partial, the stop ratchets up to prior high_water - 3*ATR each bar
+    # (never down), and the runner exits when a pullback finally tags the trailed stop.
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        pt = _partial_then(s, CHAND)   # stop 101, high_water 111
+
+        # bar 2: high_water (prior) 111 -> trail 111 - 6 = 105; new high 120
+        bar2 = {"low": 112.0, "high": 120.0, "close": 118.0, "shaved_head": False,
+                "shaved_bottom": True, "atr": 2.0}
+        advance_open(s, {("AAPL", "1d"): bar2}, CHAND, today=date(2024, 1, 5))
+        pt = s.get(PaperTrade, pt.id)
+        assert pt.status == "open" and pt.stop == 105.0 and pt.high_water == 120.0
+
+        # bar 3: prior high_water 120 -> trail 120 - 6 = 114 (ratchets up from 105)
+        bar3 = {"low": 119.0, "high": 121.0, "close": 120.0, "shaved_head": False,
+                "shaved_bottom": True, "atr": 2.0}
+        advance_open(s, {("AAPL", "1d"): bar3}, CHAND, today=date(2024, 1, 6))
+        pt = s.get(PaperTrade, pt.id)
+        assert pt.status == "open" and pt.stop == 114.0
+
+        # bar 4: prior high_water 121 -> trail 115; the low tags it -> runner stops out
+        bar4 = {"low": 113.0, "high": 121.0, "close": 114.0, "shaved_head": False,
+                "shaved_bottom": True, "atr": 2.0}
+        advance_open(s, {("AAPL", "1d"): bar4}, CHAND, today=date(2024, 1, 7))
+        closed = s.get(PaperTrade, pt.id)
+        assert closed.status == "closed" and closed.exit_reason == "stop"
+        assert closed.exit_price == 115.0
+        partial_r = (110.0 - 101.0) / 7.0
+        final_r = (115.0 - 101.0) / 7.0
+        assert closed.realized_r == pytest.approx(0.33 * partial_r + 0.67 * final_r)
+
+
+def test_chandelier_trail_never_lowers_the_stop():
+    # A widening ATR pushes the raw trail level below the current stop; the ratchet
+    # (max with the existing stop) must hold the stop where it is.
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        pt = _partial_then(s, CHAND)
+
+        bar2 = {"low": 112.0, "high": 120.0, "close": 118.0, "shaved_head": False,
+                "shaved_bottom": True, "atr": 2.0}
+        advance_open(s, {("AAPL", "1d"): bar2}, CHAND, today=date(2024, 1, 5))
+        assert s.get(PaperTrade, pt.id).stop == 105.0
+
+        # ATR jumps to 10 -> raw trail = 120 - 30 = 90 < 105; stop must stay at 105
+        bar3 = {"low": 112.0, "high": 121.0, "close": 119.0, "shaved_head": False,
+                "shaved_bottom": True, "atr": 10.0}
+        advance_open(s, {("AAPL", "1d"): bar3}, CHAND, today=date(2024, 1, 6))
+        held = s.get(PaperTrade, pt.id)
+        assert held.status == "open" and held.stop == 105.0
+
+
+def test_chandelier_does_not_trail_before_a_partial():
+    # Pre-partial the position keeps its hard stop -- the trail is a runner-only feature.
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        pt = _open_default(s)
+        # high 105 never reaches the target 110 -> no partial booked
+        bar = {"low": 100.0, "high": 105.0, "close": 104.0, "shaved_head": False,
+               "shaved_bottom": True, "atr": 2.0}
+        advance_open(s, {("AAPL", "1d"): bar}, CHAND, today=date(2024, 1, 4))
+        held = s.get(PaperTrade, pt.id)
+        assert held.partial_done is False
+        assert held.status == "open" and held.stop == 94.0   # original hard stop, untrailed
+
+
+def test_breakeven_arm_keeps_static_stop_after_partial():
+    # The incumbent runner (trail_mode="breakeven") ignores high_water/ATR: the stop
+    # stays at breakeven no matter how far the runner extends.
+    cfg = StrategyConfig(partial_frac=0.33, partial_require_softening=True)  # breakeven default
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        pt = _partial_then(s, cfg)
+        bar2 = {"low": 112.0, "high": 120.0, "close": 118.0, "shaved_head": False,
+                "shaved_bottom": True, "atr": 2.0}
+        advance_open(s, {("AAPL", "1d"): bar2}, cfg, today=date(2024, 1, 5))
+        held = s.get(PaperTrade, pt.id)
+        assert held.status == "open" and held.stop == 101.0   # unchanged breakeven
+
+
+def test_build_arms_has_chandelier_arm():
+    arms = build_arms(StrategyConfig())
+    chand = arms["partial33_chand"]
+    assert chand.partial_frac == 0.33 and chand.partial_require_softening is True
+    assert chand.trail_mode == "chandelier" and chand.chandelier_atr_mult == 3.0
+    assert arms["partial33_cond"].trail_mode == "breakeven"   # incumbent is untrailed
+
+
 def test_high_water_tracks_highest_high_since_fill():
     # high_water starts >= entry and ratchets up with bar highs (never down).
     cfg = StrategyConfig()  # feature off; high_water tracking is unconditional
