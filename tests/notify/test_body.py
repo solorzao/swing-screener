@@ -1,6 +1,7 @@
-from datetime import date
+from datetime import date, datetime
 
 from swing_screener.notify.body import AlertLine, DigestPick, compose_digest_body
+from swing_screener.notify.ticker_report import TickerReport, TimeframeRead
 
 
 def test_daily_body_lists_picks_and_pdf_pointer():
@@ -72,3 +73,41 @@ def test_reversal_section_omitted_when_none():
     cont = [DigestPick("AMD", "Advanced Micro Devices", "medium", "Continuation.", score=0.9)]
     c = compose_digest_body("weekly", date(2026, 6, 15), cont, [], has_pdf=False)  # no reversals
     assert "Reversal Plays" not in c.text and "Reversal Plays" not in c.html
+
+
+def _report():
+    reads = [
+        TimeframeRead(timeframe="1d", ha_trend="bullish", ema_aligned=True,
+                      rsi=58.0, atr_pct=0.04, setup=None, chart_path=None),
+        TimeframeRead(timeframe="1wk", ha_trend="bearish", ema_aligned=False,
+                      rsi=44.0, atr_pct=0.06, setup=None, chart_path=None),
+    ]
+    return TickerReport(
+        ticker="AMD", name="Advanced Micro Devices",
+        run_at=datetime(2026, 6, 16, 9, 30), reads=reads,
+        summary="Daily continuation intact; weekly still basing.",
+        analysis_text="CORE: Clean continuation.", is_deep=True,
+    )
+
+
+def test_ticker_report_body_subject_and_text():
+    from swing_screener.notify.body import compose_ticker_report_body
+
+    c = compose_ticker_report_body(_report())
+    assert "AMD" in c.subject
+    assert "Jun" in c.subject  # month abbreviation
+    assert "Daily continuation intact; weekly still basing." in c.text
+    assert "Full report attached" in c.text
+    # one line per timeframe, with HA trend + RSI
+    assert "1d: bullish, RSI 58" in c.text
+    assert "1wk: bearish, RSI 44" in c.text
+
+
+def test_ticker_report_body_html_lists_timeframes():
+    from swing_screener.notify.body import compose_ticker_report_body
+
+    c = compose_ticker_report_body(_report())
+    assert "<h2>" in c.html
+    assert "AMD" in c.html
+    assert "1d" in c.html and "1wk" in c.html
+    assert "Full report attached" in c.html
