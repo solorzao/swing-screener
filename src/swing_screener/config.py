@@ -7,6 +7,9 @@ class StrategyConfig:
     ema_slow: int = 50
     atr_period: int = 14
     rsi_period: int = 14
+    macd_fast: int = 12
+    macd_slow: int = 26
+    macd_signal: int = 9
 
     # HA classification
     wick_frac: float = 0.05        # "no wick" tolerance as fraction of range

@@ -7,6 +7,7 @@ def test_build_frame_has_all_columns(bars):
                for i in range(60)])
     f = build_frame(df, StrategyConfig())
     for col in ["ha_open", "ha_close", "ema_fast", "ema_slow", "atr", "rsi",
+                "macd_hist", "macd_hist_rising",
                 "bullish", "shaved_bottom", "shaved_head", "zone"]:
         assert col in f.columns
     assert len(f) == len(df)

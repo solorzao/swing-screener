@@ -16,4 +16,7 @@ def build_score_inputs(ctx: PullbackContext, last_row: Mapping[str, float | bool
         trend_slope=(ema_fast - ema_slow) / price,
         atr_pct=ctx.atr / price,
         mtf_aligned=mtf_aligned,
+        rsi=ctx.rsi,
+        macd_hist=float(last_row["macd_hist"]),
+        macd_hist_rising=bool(last_row["macd_hist_rising"]),
     )
