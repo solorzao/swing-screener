@@ -92,6 +92,10 @@ class PaperTrade(Base):
     signal_score: Mapped[float]
     rank: Mapped[int]
     mtf_aligned: Mapped[bool] = mapped_column(default=False)
+    # experiment arm: every fill is duplicated once per arm (same entry economics,
+    # different exit management) so breakdown(trades, "arm") gives a same-sample A/B
+    # of e.g. all-or-nothing ("baseline") vs a conditional partial ("partial33_cond").
+    arm: Mapped[str] = mapped_column(String(32), default="baseline", index=True)
     # categorization tags denormalized from the signal so the shadow book can be
     # sliced by them in QC without a join back to the (run-date-scoped) signal row.
     quality_tier: Mapped[str] = mapped_column(String(32), default="")

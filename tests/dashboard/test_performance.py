@@ -51,6 +51,40 @@ def test_performance_renders_kpis_and_altair_charts(tmp_path, monkeypatch):
     assert any(ACCENT in str(c.spec) for c in charts)
 
 
+def _seed_two_arms(url):
+    engine = get_engine(url)
+    with Session(engine) as s:
+        # same fill under two arms, different realized R (the dual-book A/B)
+        for arm, r in (("baseline", 1.0), ("partial33_cond", 1.6)):
+            s.add(PaperTrade(ticker="AMD", timeframe="1d", horizon="medium", signal_score=0.9,
+                             rank=1, arm=arm, fill_status="filled", stop=95.0, target=110.0,
+                             risk=5.0, status="closed", realized_r=r, hold_bars=4,
+                             exit_date=date(2026, 1, 5)))
+        s.commit()
+
+
+def test_performance_shows_per_arm_ab_when_multiple_arms(tmp_path, monkeypatch):
+    url = f"sqlite:///{tmp_path / 'perf_arms.sqlite'}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    _seed_two_arms(url)
+    at = AppTest.from_file(APP).run()
+    at.sidebar.radio[0].set_value("Screener Performance").run()
+    assert not at.exception
+
+    # The arm-detail selector appears in the main area (the only non-sidebar radio),
+    # defaulting to the baseline arm.
+    main_radios = [r for r in at.radio if r.value in ("baseline", "partial33_cond")]
+    assert main_radios and main_radios[0].value == "baseline"
+
+    # Baseline arm: expectancy R = 1.0. Switch to the partial arm -> 1.6.
+    def _expectancy():
+        return next(m.value for m in at.metric if m.label == "Expectancy R")
+
+    assert _expectancy() == "1.00"
+    main_radios[0].set_value("partial33_cond").run()
+    assert _expectancy() == "1.60"
+
+
 def test_performance_empty_state_has_no_chart(tmp_path, monkeypatch):
     url = f"sqlite:///{tmp_path / 'perf_empty.sqlite'}"
     monkeypatch.setenv("SWING_DB_URL", url)

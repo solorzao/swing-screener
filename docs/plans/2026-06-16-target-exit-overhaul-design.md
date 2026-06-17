@@ -54,6 +54,40 @@ At the first target, scale out a small fraction and protect the rest:
 - After the partial, **move the stop to breakeven** (the fill) so the runner can't give the leg
   back. The runner then exits on momentum_flip / breakeven-stop / time_stop.
 
+#### Step C implementation addendum (parallel-arm dual-book) — 2026-06-16
+
+A live single-config shadow book can only compare a partial arm *temporally* (future
+partial trades vs the historical all-or-nothing record) — confounded by regime, and short
+of the design's "same universe/date range" bar. So Step C also lays the **measurement rail**:
+a **parallel-arm dual-book**. Every fill opens one `PaperTrade` **per arm**, identical fill
+economics, tagged with `arm`; each open trade is advanced under *its* arm's config. The
+existing `breakdown(trades, "arm")` then gives apples-to-apples per-arm `expectancy_r` on the
+exact same tickers and dates. (Forward-only — it accrues over weeks; no instant holdout yet.
+A replay backtester for the out-of-time holdout is a later, optional build.)
+
+- **`PaperTrade.arm`** (`String(32)`, default `"baseline"`, indexed) + reversible migration.
+  Both filled AND missed/invalidated rows are duplicated per arm so each arm is a *complete*
+  book (`fill_rate`/`n_total` correct per arm; storage cost is trivial).
+- **Arm roster** (`pipeline/arms.py::build_arms(base)`): `baseline` (`partial_frac=0.0`) and
+  `partial33_cond` (`partial_frac=0.33`, `partial_require_softening=True`). `baseline` is built
+  with `replace(base, partial_frac=0.0)` so it stays all-or-nothing even if the base default
+  later changes. Adding the Step D Chandelier arm = one more entry.
+- **`open_from_signals(..., arms=("baseline",))`** opens one tagged trade per arm name.
+  **`advance_open(session, latest_bars, arms, today)`** takes either a single `StrategyConfig`
+  (normalized to `{"baseline": cfg}` — back-compat for existing callers/tests) or a
+  `{arm: cfg}` mapping, and advances each trade under `arms[pt.arm]`.
+
+**Conditional gate (`partial_require_softening`, default `False`):** at a target touch, scale
+out only when HA momentum is **softening**:
+`softening = (not shaved_bottom) or body_shrinking`, where `body_shrinking` = the HA
+`body_frac` is below the prior bar's (computed in `run._bar_row`, which sees the full frame;
+`shaved_bottom` is added to `_BAR_KEYS`). When **strong** (`shaved_bottom and not
+body_shrinking`) at the target, **suppress the target exit and HOLD the full position** (let
+the winner ride on its original stop) — re-evaluated each bar, so it partials the moment it
+softens while still at/above target. (Edge: a strong target-touch that is *also* a time_stop
+keeps riding — you don't time-stop a winner breaking to new ground; documented, rare.)
+The unconditional path (`partial_require_softening=False`) is exactly the Step B behavior.
+
 ### Step D — Trailing-stop bake-off (needs B/C)
 Add a Chandelier trail (`high_water - m*ATR`, flat `m=3.0/3.5`) as a config-selectable option for
 the runner, and measure the arms: **(0) momentum_flip + breakeven only**, **(1) Chandelier**. Ship

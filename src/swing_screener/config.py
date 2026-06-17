@@ -56,6 +56,10 @@ class StrategyConfig:
 
     # exits
     partial_frac: float = 0.0   # fraction scaled out at the first target (0.0 = feature OFF; Step C turns it on)
+    # When True, scale out at the target ONLY if HA momentum is softening
+    # (not shaved_bottom, or a shrinking HA body); a strong target-touch holds the
+    # full position and lets the winner run. False = unconditional partial (Step B).
+    partial_require_softening: bool = False
     time_stop_factor: float = 1.0    # time stop = factor * max_hold_bars[tf]
     max_hold_bars: dict[str, int] = field(default_factory=lambda: {
         "4h": 18,   # ~3 trading days of 4h bars
