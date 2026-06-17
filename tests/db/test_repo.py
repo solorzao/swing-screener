@@ -161,12 +161,43 @@ def test_claim_queued_is_atomic_and_idempotent():
                                      requested_at=datetime(2026, 6, 16, 10, 0))
         claimed = repo.claim_queued_requests(s, now=now)
         assert len(claimed) == 2
+        # Read-back is self-identifying: every returned row is running AND stamped
+        # with THIS call's `now`, so a concurrent replica's claim can't leak in.
         assert all(r.status == "running" for r in claimed)
         assert all(r.started_at == now for r in claimed)
         # oldest requested_at is claimed first
         assert [r.ticker for r in claimed] == ["AMD", "NVDA"]
         # a second claim finds nothing left queued
         assert repo.claim_queued_requests(s, now=now) == []
+
+
+def test_requeue_stale_running():
+    from datetime import datetime
+    engine = get_engine("sqlite:///:memory:")
+    cutoff = datetime(2026, 6, 16, 12, 0)
+    with Session(engine) as s:
+        stale = repo.create_analysis_request(s, ticker="AMD",
+                                             requested_at=datetime(2026, 6, 16, 8, 0))
+        fresh = repo.create_analysis_request(s, ticker="NVDA",
+                                             requested_at=datetime(2026, 6, 16, 8, 5))
+        # Both are mid-flight ('running'); the stale one started long before the cutoff,
+        # the fresh one just after it.
+        stale.status = "running"
+        stale.started_at = datetime(2026, 6, 16, 11, 0)   # before cutoff -> stale
+        fresh.status = "running"
+        fresh.started_at = datetime(2026, 6, 16, 12, 30)  # after cutoff -> untouched
+        s.commit()
+
+        n = repo.requeue_stale_running(s, cutoff=cutoff)
+        assert n == 1
+        # the stale row is back in the queue with its start cleared
+        stale_row = repo.get_analysis_request(s, stale.id)
+        assert stale_row.status == "queued"
+        assert stale_row.started_at is None
+        # the recent row is left running, untouched
+        fresh_row = repo.get_analysis_request(s, fresh.id)
+        assert fresh_row.status == "running"
+        assert fresh_row.started_at == datetime(2026, 6, 16, 12, 30)
 
 
 def test_complete_and_fail():

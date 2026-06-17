@@ -2,9 +2,9 @@
 
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import CursorResult, delete, select, update
 from sqlalchemy.orm import Session
 
 from swing_screener.db.models import (
@@ -202,10 +202,27 @@ def claim_queued_requests(session: Session, *, now: datetime,
         .where(AnalysisRequest.id.in_(ids), AnalysisRequest.status == "queued")
         .values(status="running", started_at=now))
     session.commit()
+    # Self-identifying read-back: only return rows THIS call stamped with `now`.
+    # Safe under concurrent replicas -- each stamps its own `now`, so the loser of a
+    # race re-reads zero of the winner's rows instead of double-processing them.
     return list(session.scalars(
         select(AnalysisRequest).where(AnalysisRequest.id.in_(ids),
-                                      AnalysisRequest.status == "running")
+                                      AnalysisRequest.status == "running",
+                                      AnalysisRequest.started_at == now)
         .order_by(AnalysisRequest.requested_at)))
+
+
+def requeue_stale_running(session: Session, *, cutoff: datetime) -> int:
+    """Reset rows stuck 'running' since before `cutoff` back to 'queued' so a crashed/
+    retried worker re-processes them. Returns the count requeued."""
+    result = session.execute(
+        update(AnalysisRequest)
+        .where(AnalysisRequest.status == "running", AnalysisRequest.started_at < cutoff)
+        .values(status="queued", started_at=None))
+    session.commit()
+    # `Session.execute` is typed `Result`; an UPDATE actually yields a `CursorResult`,
+    # which is what carries `rowcount`.
+    return cast("CursorResult[Any]", result).rowcount
 
 
 def complete_analysis_request(session: Session, request_id: int, *, summary: str,

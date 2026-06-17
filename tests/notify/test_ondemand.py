@@ -152,6 +152,28 @@ def test_process_one_no_data_fails_cleanly(settings, monkeypatch):
     assert sender.calls == []
 
 
+def test_process_pending_requeues_stale_running(settings, _patch_fetch, _patch_analyze):
+    """A request stuck 'running' from a dead worker is requeued and re-processed."""
+    engine = get_engine(settings.db_url)
+    sender = _FakeSender()
+    with Session(engine) as s:
+        req = repo.create_analysis_request(
+            s, ticker="AAPL", requested_at=datetime(2026, 6, 16, 9, 0))
+        # Simulate a crashed worker: row left 'running', started_at well over the
+        # 30-min stale window before `now`.
+        req.status = "running"
+        req.started_at = datetime(2026, 6, 16, 10, 0)
+        s.commit()
+
+        n = ondemand.process_pending(
+            s, settings=settings, now=datetime(2026, 6, 16, 12, 0),
+            today=date(2026, 6, 16), sender=sender)
+        assert n == 1  # requeued, then claimed and processed
+        done = repo.get_analysis_request(s, req.id)
+        assert done.status == "done"
+    assert len(sender.calls) == 1
+
+
 def test_email_logged_for_dedup(settings, _patch_fetch, _patch_analyze):
     """A done request leaves exactly one ondemand EmailLog row keyed on its id."""
     engine = get_engine(settings.db_url)
