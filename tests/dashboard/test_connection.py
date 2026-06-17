@@ -9,14 +9,17 @@ APP = str(Path(__file__).parents[2] / "src" / "swing_screener" / "dashboard" / "
 
 
 @pytest.fixture(autouse=True)
-def _clear_engine_cache():
-    # @st.cache_resource persists across reruns within the AppTest process, which
-    # could leak a cached engine between tests (or mask the monkeypatched DB-down).
+def _clear_caches():
+    # @st.cache_resource (engine) and @st.cache_data (the connectivity check) persist
+    # across reruns within the AppTest process, which could leak between tests or mask
+    # the monkeypatched DB-down. Clear BOTH around every test.
     import streamlit as st
 
     st.cache_resource.clear()
+    st.cache_data.clear()
     yield
     st.cache_resource.clear()
+    st.cache_data.clear()
 
 
 def _raise(_url: str):
@@ -53,3 +56,14 @@ def test_healthy_db_shows_green_chip(tmp_path, monkeypatch):
     assert "🟢" in chip_text
     # No DB-down error card on the healthy path.
     assert not any("Can't reach the database" in str(e.value) for e in at.error)
+
+
+def test_healthy_db_stays_green_across_reruns(tmp_path, monkeypatch):
+    # The connectivity check is cached (short TTL) so a burst of reruns doesn't reconnect.
+    # A second rerun must reuse the cached result and still render green without crashing.
+    monkeypatch.setenv("SWING_DB_URL", f"sqlite:///{tmp_path / 'dash.sqlite'}")
+    at = AppTest.from_file(APP).run()
+    at.run()  # second rerun -> the cached connectivity result is reused
+    assert not at.exception
+    chip_text = " ".join(str(c.value) for c in at.sidebar.caption)
+    assert "🔴" not in chip_text and "🟢" in chip_text
