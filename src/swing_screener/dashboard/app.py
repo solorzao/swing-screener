@@ -14,7 +14,7 @@ test can monkeypatch that seam and avoid the network.
 """
 
 from collections.abc import Callable
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import cast
 
@@ -61,6 +61,26 @@ def _resolve_chart_image(chart_path: str | None) -> bytes | str | None:
             return None
     if Path(chart_path).exists():
         return chart_path
+    return None
+
+
+def _resolve_pdf_bytes(key: str | None) -> bytes | None:
+    """Resolve a report's ``pdf_blob_key`` to raw bytes for ``st.download_button``.
+
+    Mirrors :func:`_resolve_chart_image`'s blob-vs-local logic but always returns
+    bytes (the download button needs bytes, not a path). Returns ``None`` on any
+    failure so a missing/aged-out PDF just hides the button.
+    """
+    if not key:
+        return None
+    if blob_enabled():
+        try:
+            return download_bytes(key)
+        except Exception:
+            return None
+    path = Path(key)
+    if path.exists():
+        return path.read_bytes()
     return None
 
 
@@ -573,11 +593,88 @@ def _render_digests(session: Session) -> None:
     )
 
 
+def _render_analysis(session: Session) -> None:
+    ui.page_header(
+        "Deep Analysis",
+        caption="Request an in-depth multi-timeframe read of a ticker. "
+                "You'll get an email when it's ready; it also shows here.",
+    )
+    with st.form("request_analysis"):
+        ticker = st.text_input("Ticker")
+        submitted = st.form_submit_button("Request report")
+    if submitted:
+        if not ticker.strip():
+            st.warning("Ticker is required.")
+        else:
+            repo.create_analysis_request(
+                session, ticker=ticker.strip().upper(), requested_at=datetime.now()
+            )
+            st.success(f"Queued a report for {ticker.strip().upper()}.")
+            st.rerun()
+
+    if st.button("Refresh"):
+        st.rerun()
+
+    requests = repo.list_analysis_requests(session)
+    if not requests:
+        ui.empty_state("No analysis requests yet.")
+        return
+
+    badge = {"queued": "🕓 queued", "running": "⏳ running",
+             "done": "✅ done", "failed": "⚠️ failed"}
+    rows = [
+        {
+            "id": r.id,
+            "ticker": r.ticker,
+            "status": badge.get(r.status, r.status),
+            "requested_at": r.requested_at,
+            "summary": r.summary,
+        }
+        for r in requests
+    ]
+    st.dataframe(
+        pd.DataFrame(rows),
+        width="stretch",
+        hide_index=True,
+        column_config={"requested_at": st.column_config.DatetimeColumn("Requested")},
+    )
+
+    done = [r for r in requests if r.status == "done"]
+    failed = [r for r in requests if r.status == "failed"]
+    if done:
+        labels = {f"#{r.id} · {r.ticker}": r.id for r in done}
+        sel = st.selectbox("View a completed report", list(labels))
+        req = repo.get_analysis_request(session, labels[sel])
+        if req is not None:
+            st.markdown(f"**{req.ticker}** — {req.summary}")
+            for key in (req.chart_blob_keys or "").split(","):
+                key = key.strip()
+                if not key:
+                    continue
+                image = _resolve_chart_image(key)
+                if image is not None:
+                    st.image(image, width="stretch")
+            pdf_bytes = _resolve_pdf_bytes(req.pdf_blob_key)
+            if pdf_bytes is not None:
+                st.download_button(
+                    "Download PDF",
+                    data=pdf_bytes,
+                    file_name=f"{req.ticker}_report.pdf",
+                    mime="application/pdf",
+                )
+            elif req.pdf_blob_key:
+                st.caption("PDF unavailable.")
+    for r in failed:
+        with st.expander(f"⚠️ {r.ticker} (#{r.id}) failed"):
+            st.code(r.error or "unknown error")
+
+
 # label -> renderer. Order defines sidebar order; first entry is the default
 # landing page. Radio nav (not st.navigation) so AppTest can drive page switches.
 PAGES: dict[str, Callable[[Session], None]] = {
     "Overview": _render_overview,
     "Today's Candidates": _render_candidates,
+    "Deep Analysis": _render_analysis,
     "Active Trades": _render_active,
     "Trade Entry": _render_entry,
     "Closed Trades": _render_closed,
