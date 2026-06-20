@@ -7,6 +7,9 @@ renders annotated charts, emails digests, and forward-tests every signal in a se
 complementary **long** plays — trend-**continuation** pullbacks and oversold-bounce
 **reversals** — and runs locally or as scheduled Azure Container Apps Jobs.
 
+**▶ [North Star](docs/NORTH_STAR.md) — the project's purpose and goal. Every design and
+implementation decision is checked against it.**
+
 > Status: **Phases 1–4 complete** (engine, pipeline + shadow book, Streamlit dashboard,
 > email/LLM digests). **Phase 5 (Azure) is deployed** — six scheduled Container Apps Jobs run
 > the screener, digests, exit alerts, and on-demand analysis. See [Roadmap](#roadmap).
