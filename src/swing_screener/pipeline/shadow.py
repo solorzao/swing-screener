@@ -173,7 +173,11 @@ def advance_open(
         # trail this bar rather than poisoning the stop.
         atr_val = float(bar.get("atr", 0.0))
         # Fill-pessimism haircut on LEVEL fills (stop/target). 0 when off or atr undefined.
-        slip = cfg.exit_slippage_atr * atr_val if (cfg.exit_slippage_atr > 0.0 and atr_val > 0.0) else 0.0
+        slip = (
+            cfg.exit_slippage_atr * atr_val
+            if (cfg.exit_slippage_atr > 0.0 and atr_val > 0.0)
+            else 0.0
+        )
         if pt.partial_done and cfg.trail_mode == "chandelier" and atr_val > 0.0:
             pt.stop = max(pt.stop, prior_high_water - cfg.chandelier_atr_mult * atr_val)
 
@@ -233,7 +237,8 @@ def advance_open(
             elif decision.reason == "target":      # only an all-or-nothing arm (partial_frac == 0)
                 exit_price = pt.target - slip
             else:
-                exit_price = float(bar["close"])   # momentum_flip / time_stop: already realistic, no haircut
+                # momentum_flip / time_stop use the bar close (already realistic): no haircut.
+                exit_price = float(bar["close"])
 
             final_r = (exit_price - pt.entry_price) / pt.risk
             # Size-weight realized R off PERSISTED state, never the live config. The
