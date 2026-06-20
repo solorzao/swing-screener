@@ -16,6 +16,7 @@ import argparse
 import logging
 import statistics
 from dataclasses import dataclass, replace
+from datetime import date
 from pathlib import Path
 from typing import NamedTuple
 
@@ -687,7 +688,7 @@ def main() -> None:
     with Session(engine) as session:
         reflected = run_reflection(
             session, replay_frames=replay_frames, spy_daily=spy_daily,
-            edge_dir=args.edge_dir,
+            edge_dir=args.edge_dir, today=date.today().isoformat(),
         )
     if reflected:
         log.info("reflected play types: %s", ", ".join(reflected))
