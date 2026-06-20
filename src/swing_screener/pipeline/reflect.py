@@ -12,9 +12,12 @@ the replay corpus via ``pipeline.replay``) and returns ``Verdict`` rows. Falsifi
 prior claims against the previous edge file lives in a later task, not here.
 """
 
+import logging
 import statistics
 from dataclasses import dataclass
 from typing import NamedTuple
+
+import anthropic
 
 from swing_screener.analytics.performance import (
     _CLUSTER_FLOOR,
@@ -24,7 +27,10 @@ from swing_screener.analytics.performance import (
     _score_labels,
     summarize,
 )
+from swing_screener.config_secrets import get_secret
 from swing_screener.db.models import PaperTrade
+
+log = logging.getLogger(__name__)
 
 # PRE-REGISTERED univariate family (frozen; adding a dimension is a deliberate git-visible
 # change that resets K). Categorical dims enumerate buckets; "score" lists its band labels.
@@ -237,6 +243,60 @@ def parse_state(text: str) -> ReflectState:
     )
 
 
+def _frontmatter_block(state: ReflectState) -> str:
+    """The authoritative ``---`` frontmatter block for an edge file.
+
+    The SINGLE writer of the event-trigger state, so the deterministic render and the Opus
+    authoring seam stamp byte-identical headers. ``last_reflected`` serializes to the literal
+    ``null`` when unset (which ``parse_state`` maps back to ``None``)."""
+    last = state.last_reflected if state.last_reflected else "null"
+    return (
+        "---\n"
+        f"forward_closed_at_last_reflection: {state.forward_closed_at_last_reflection}\n"
+        f"last_reflected: {last}\n"
+        "---"
+    )
+
+
+def _strip_frontmatter(text: str) -> str:
+    """Drop a leading ``---`` frontmatter block from ``text``, returning just the body.
+
+    Used to take the Opus-authored markdown and discard any header the model emitted, so the
+    code (not the model) can prepend the authoritative frontmatter. Text without a leading
+    frontmatter block is returned unchanged (minus a single leading blank line)."""
+    lines = text.splitlines()
+    if lines and lines[0].strip() == "---":
+        for i, line in enumerate(lines[1:], start=1):
+            if line.strip() == "---":
+                body = "\n".join(lines[i + 1:])
+                return body.lstrip("\n")
+    return text.lstrip("\n")
+
+
+def _with_frontmatter(body: str, state: ReflectState) -> str:
+    """Prepend the authoritative frontmatter to a markdown ``body`` (stripping any header the
+    body already carried). Code -- never the model -- owns the event-trigger state."""
+    return f"{_frontmatter_block(state)}\n\n{_strip_frontmatter(body).rstrip()}\n"
+
+
+def _section_body(text: str, header: str) -> str:
+    """Extract a section's body (the lines after ``## header`` up to the next ``## `` header),
+    with the italic intro line and the ``_none yet_`` placeholder dropped. Used to carry the
+    prior file's Falsified / retired items forward into the deterministic fallback."""
+    marker = f"## {header}"
+    start = text.find(marker)
+    if start == -1:
+        return ""
+    rest = text[start + len(marker):]
+    nxt = rest.find("\n## ")
+    block = rest if nxt == -1 else rest[:nxt]
+    kept = [
+        ln for ln in block.splitlines()
+        if ln.strip() and not (ln.startswith("_") and ln.rstrip().endswith("_"))
+    ]
+    return "\n".join(kept).strip()
+
+
 def _condition(v: Verdict) -> str:
     """The human-readable condition for a verdict line, e.g. ``market_trend=bull``."""
     return f"{v.dimension}={v.bucket}"
@@ -304,10 +364,9 @@ def render_edge_file(
     hunches = "\n".join(_hunch_line(v) for v in ordered if v.tier == "hunch")
 
     parts = [
-        "---",
-        f"forward_closed_at_last_reflection: {n_closed_now}",
-        "last_reflected: null",
-        "---",
+        _frontmatter_block(ReflectState(
+            forward_closed_at_last_reflection=n_closed_now, last_reflected=None,
+        )),
         "",
         "> This playbook is maintained by the **reflection** pass (`pipeline/reflect.py`):"
         " code deterministically grades each pre-registered condition into a tiered verdict"
@@ -341,3 +400,126 @@ def render_edge_file(
         _section("Open questions", "Things to investigate next.", ""),
     ]
     return "\n".join(parts)
+
+
+# ===========================================================================
+# AUTHOR -- the OPTIONAL Opus authoring seam.
+#
+# North Star: the LLM is the AUTHOR, NEVER the grader. Given the deterministic,
+# ground-truth verdicts (rendered as the scaffold below) + the prior edge file, Opus writes
+# clearer prose and drafts "needs a test" hypotheses -- but it can NEVER change a tier, a
+# number, or which bucket is confirmed/screened/hunch. Two guardrails enforce this:
+#   1. CODE owns the event-trigger state: the model's body supplies PROSE only; the
+#      frontmatter counter is always stamped by ``_with_frontmatter`` (the model is never
+#      trusted to set it).
+#   2. On ANY failure (missing key, API error, empty/blank reply) we degrade to the pure
+#      ``render_edge_file`` template -- so the nightly pipeline never blocks on the LLM.
+# The client is an injectable seam (tests pass a fake; prod constructs via get_secret),
+# mirroring ``notify/analysis.py`` exactly.
+# ===========================================================================
+
+_AUTHOR_SYSTEM = (
+    "You are the AUTHOR of a swing-trading edge playbook, NOT its grader.\n\n"
+    "You are given deterministic, ground-truth verdicts (each with a tier, n, expectancy, "
+    "and clustered CI lower bound) already computed by a rules engine, rendered below as a "
+    "ground-truth scaffold. HARD RULE: You MUST NOT change any tier, any number, or which "
+    "bucket is confirmed / screened / hunch. Never invent or alter a statistic. Treat every "
+    "tier and figure in the scaffold as immutable ground truth.\n\n"
+    "You ONLY: write clear, readable prose for each edge; explain the qualitative WHY behind "
+    "it; draft 'needs a test' hypotheses for ideas the verdicts don't yet cover; retire stale "
+    "items; and keep (curate) the Falsified / retired section. Carry forward the prior file's "
+    "Falsified / retired and Open questions.\n\n"
+    "Output the FULL markdown playbook with exactly these sections, in this order: "
+    "'## Thesis', '## Confirmed edges' (forward-confirmed gold -- live-confirmed only), "
+    "'## Screened candidates' (replay-screened -- a backtest screen, NOT live-confirmed), "
+    "'## Hunches / needs a test', '## Falsified / retired', and '## Open questions'. Every "
+    "quantitative line must carry n + the clustered 95% CI lower bound + a net-of-cost "
+    "caveat -- never a bare base rate. Do NOT emit a frontmatter header; the surrounding "
+    "code owns that."
+)
+
+
+def _author_user_content(
+    play_type: str, thesis: str, verdicts: list[Verdict], prior_text: str, n_closed_now: int
+) -> str:
+    """The user turn: the thesis, the ground-truth scaffold (the deterministic render handed
+    over verbatim so the model SEES the exact tiers/numbers it must preserve), and the prior
+    edge file text (so it can carry/curate the Falsified + Open-questions sections)."""
+    scaffold = render_edge_file(play_type, thesis, verdicts, n_closed_now=n_closed_now)
+    return (
+        f"Play type: {play_type}\n\n"
+        f"Thesis:\n{thesis}\n\n"
+        "GROUND-TRUTH verdicts, rendered as the deterministic scaffold you must preserve "
+        "exactly (do not change any tier or number):\n"
+        "<<<GROUND_TRUTH_SCAFFOLD\n"
+        f"{scaffold}\n"
+        "GROUND_TRUTH_SCAFFOLD\n\n"
+        "Prior edge file (carry forward + curate its Falsified / retired and Open "
+        "questions; do not resurrect retired items as edges):\n"
+        "<<<PRIOR_EDGE_FILE\n"
+        f"{prior_text}\n"
+        "PRIOR_EDGE_FILE\n\n"
+        "Now write the full markdown playbook (no frontmatter)."
+    )
+
+
+def author_edge_file(
+    play_type: str,
+    thesis: str,
+    verdicts: list[Verdict],
+    prior_text: str,
+    *,
+    n_closed_now: int,
+    last_reflected: str | None = None,
+    client: anthropic.Anthropic | None = None,
+    model: str = "claude-opus-4-8",
+) -> str:
+    """Author the edge-file markdown via Opus, given the GROUND-TRUTH ``verdicts`` + the
+    ``prior_text``. The model writes prose + drafts hypotheses but can NEVER change a tier or
+    number; the deterministic scaffold it is handed is the immutable ground truth.
+
+    ``client`` is an injectable seam: tests pass a fake so no network call is made; prod
+    constructs ``anthropic.Anthropic`` via ``get_secret``. CODE -- not the model -- owns the
+    event-trigger frontmatter: whatever body the model returns, ``_with_frontmatter`` strips
+    any header it emitted and stamps the authoritative ``forward_closed_at_last_reflection``
+    / ``last_reflected``. On ANY failure (missing key, API error, empty/blank reply) we fall
+    back to the pure ``render_edge_file`` template (carrying the prior Falsified items) so the
+    pipeline never blocks on the LLM.
+    """
+    state = ReflectState(
+        forward_closed_at_last_reflection=n_closed_now, last_reflected=last_reflected,
+    )
+    try:
+        client = client or anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
+        resp = client.messages.create(
+            model=model,
+            max_tokens=8000,
+            system=_AUTHOR_SYSTEM,
+            messages=[{
+                "role": "user",
+                "content": _author_user_content(
+                    play_type, thesis, verdicts, prior_text, n_closed_now
+                ),
+            }],
+        )
+        text: str = next(
+            (
+                getattr(b, "text", "")
+                for b in resp.content
+                if getattr(b, "type", None) == "text"
+            ),
+            "",
+        )
+        if not text.strip():
+            raise ValueError("empty model response")
+        # CODE owns the state: strip any header the model emitted, stamp the real one.
+        return _with_frontmatter(text, state)
+    except Exception:
+        log.warning(
+            "edge-file authoring failed for %s; using deterministic template",
+            play_type, exc_info=True,
+        )
+        return render_edge_file(
+            play_type, thesis, verdicts, n_closed_now=n_closed_now,
+            prior_falsified=_section_body(prior_text, "Falsified / retired"),
+        )
