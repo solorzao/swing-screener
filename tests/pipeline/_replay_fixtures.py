@@ -4,7 +4,7 @@ import pandas as pd
 
 def synthetic_daily(n: int = 400) -> pd.DataFrame:
     """Deterministic daily OHLCV: a long uptrend with periodic shallow pullbacks
-    (continuation triggers) and one deep decline+bounce (reversal trigger).
+    (continuation triggers) plus one deep decline+bounce section.
 
     The constants are tuned so the HA pullback engine actually fires on this
     synthetic series (see _replay_fixtures tuning notes in the replay PR):
@@ -16,8 +16,10 @@ def synthetic_daily(n: int = 400) -> pd.DataFrame:
       * a thin 0.05 wick means the down bars have ~no upper wick, so they classify
         as shaved_head (bearish & upper_wick <= wick_frac*range) -- the trigger
         quality the detector looks for inside the pullback.
-    Together these yield ~15 continuation triggers and a couple of reversal
-    triggers across 400 bars; enough overlapping fills for the no-lookahead test.
+    Replayed with warmup_bars=250, this fires 7 CONTINUATION fills across 400 bars
+    -- enough overlapping fills for the no-lookahead test. The deep dip is too
+    shallow/brief to satisfy the reversal gate, so it produces NO reversal triggers;
+    the no-lookahead invariant holds every step regardless of which plays fire.
     """
     idx = pd.bdate_range("2024-01-01", periods=n)
     t = np.arange(n)
