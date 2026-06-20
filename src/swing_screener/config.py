@@ -24,6 +24,12 @@ class StrategyConfig:
     floor_buffer_atr: float = 0.10   # floor = swing_low + buffer * ATR
     stop_buffer_atr: float = 0.25    # stop  = swing_low - buffer * ATR
 
+    # freshness / anti-chase (continuation): reject a trigger whose close already sits
+    # more than this many ATR above the fast EMA -- the move has "already run", so the
+    # entry zone would be a chase. Empirically, fresh AMD pullback triggers fire at
+    # < 1 ATR of extension while a late chase fires at ~2.7 ATR. 0 disables the gate.
+    max_extension_atr: float = 2.0
+
     # structure-aware continuation target (Step A)
     target_lookback: int = 30        # bars to search for overhead resistance
     target_pivot_width: int = 2      # a swing high tops this many bars on each side

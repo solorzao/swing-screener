@@ -133,6 +133,13 @@ def analyze_frames(
         if ctx is None:
             continue
 
+        # Freshness / anti-chase gate: skip a trigger that already ran too far above
+        # the fast EMA (the entry zone would be a chase). This makes the freshness rule
+        # part of the strategy end-to-end -- it gates both what the screener surfaces
+        # AND what the shadow book forward-tests, so the A/B reflects entries we'd take.
+        if cfg.max_extension_atr > 0 and ctx.extension_atr > cfg.max_extension_atr:
+            continue
+
         # Standard (real) highs for overhead-resistance lookup; HA smears real highs.
         recent_highs = frame["high"].tail(
             cfg.target_lookback + 2 * cfg.target_pivot_width

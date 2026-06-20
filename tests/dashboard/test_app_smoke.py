@@ -51,12 +51,32 @@ def test_every_page_renders_with_seeded_data(tmp_path, monkeypatch):
 def test_seeded_ticker_surfaces_on_candidates(tmp_path, monkeypatch):
     url = f"sqlite:///{tmp_path / 'dash.sqlite'}"
     monkeypatch.setenv("SWING_DB_URL", url)
-    monkeypatch.setattr(quotes, "latest_closes", lambda tickers, **kw: {"AMD": 104.0})
+    # 100.0 sits inside the seeded entry zone [96, 101] -> actionable -> shown by default
+    monkeypatch.setattr(quotes, "latest_closes", lambda tickers, **kw: {"AMD": 100.0})
     _seed(url)
     at = AppTest.from_file(APP).run()
     at.sidebar.radio[0].set_value("Today's Candidates").run()
     rendered = " ".join(str(getattr(el, "value", "")) for el in at.markdown)
     assert "AMD" in rendered or any("AMD" in str(df.value.to_string()) for df in at.dataframe)
+
+
+def test_already_ran_pick_hidden_by_default_shown_when_unfiltered(tmp_path, monkeypatch):
+    # AMD's latest price (104) has run above its entry ceiling (101): "already ran".
+    # The default "hide" filter drops it; unticking the checkbox brings it back.
+    url = f"sqlite:///{tmp_path / 'dash.sqlite'}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    monkeypatch.setattr(quotes, "latest_closes", lambda tickers, **kw: {"AMD": 104.0})
+    _seed(url)
+    at = AppTest.from_file(APP).run()
+    at.sidebar.radio[0].set_value("Today's Candidates").run()
+
+    default_tables = " ".join(df.value.to_string() for df in at.dataframe)
+    assert "AMD" not in default_tables  # hidden by default -- it already ran
+
+    at.checkbox[0].set_value(False).run()  # show plays that already ran
+    shown_tables = " ".join(df.value.to_string() for df in at.dataframe)
+    assert "AMD" in shown_tables
+    assert "already ran" in shown_tables  # the status label is rendered
 
 
 def test_play_type_filter_keeps_only_reversal(tmp_path, monkeypatch):

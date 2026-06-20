@@ -27,6 +27,11 @@ ATR-scaled **entry zone** `[floor, ceiling]`, a **stop**, a **target**, categori
    "zone" candles that hold above `EMA50` (a continuation, not a reversal).
 3. **Trigger** — the most recent *closed* bar flips bullish (the first strong green HA candle
    out of the pullback).
+4. **Freshness (anti-chase)** — the trigger is rejected if its close already sits more than
+   `max_extension_atr` (default **2.0**) ATR above `EMA20`. A setup that has already run far
+   off the pullback is a chase, not an entry, so it never reaches the screen *or* the shadow
+   book (the freshness rule is part of the strategy end-to-end). Empirically, fresh pullback
+   triggers fire under ~1 ATR of extension; late chases fire at ~2.7.
 
 The continuation **target** is structure-aware: the nearest standard-candle swing-high
 resistance above the entry ceiling, else an ATR measured-move (`reference + 2·ATR`), floored
@@ -114,7 +119,9 @@ Full run instructions, flags, and how to inspect results:
 [`docs/running-locally.md`](docs/running-locally.md).
 
 **Dashboard** — a 10-view sidebar app: Overview, Today's Candidates (continuation/reversal
-filter), Deep Analysis (request on-demand reports), Active Trades (inline close + live P/L),
+filter + a live **actionability** status — each pick is graded against its latest price as
+✅ actionable / 🏃 already ran / ⛔ stopped, and already-ran picks are hidden by default),
+Deep Analysis (request on-demand reports), Active Trades (inline close + live P/L),
 Trade Entry, Closed Trades (equity curve), Screener Performance (per-arm A/B + play-type
 filter), Exit Log, Universe, Digest Log.
 

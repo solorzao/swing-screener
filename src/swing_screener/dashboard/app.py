@@ -31,6 +31,7 @@ from swing_screener.db.models import ExitEvent, PaperTrade, Trade
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.arms import BASELINE
 from swing_screener.settings import load_settings
+from swing_screener.signals.actionability import classify as classify_actionability
 from swing_screener.storage.blob import blob_enabled, download_bytes
 
 
@@ -121,11 +122,40 @@ def _render_candidates(session: Session) -> None:
         ui.empty_state(f"No {choice} plays in this run.")
         return
 
+    # Live actionability: a signal is computed at the trigger close but read later, by
+    # which point price may have run past the entry (a chase) or broken the stop. Tag
+    # each pick against its latest close so already-ran picks can be flagged + hidden.
+    prices = quotes.latest_closes([s.ticker for s in signals], cache_dir=_cache_dir())
+    act = {
+        s.id: classify_actionability(
+            entry_floor=s.entry_floor, entry_ceiling=s.entry_ceiling,
+            stop=s.stop, price=prices.get(s.ticker),
+        )
+        for s in signals
+    }
+
+    hide_ran = st.checkbox(
+        "Hide plays that already ran (price past entry or stop)", value=True,
+        help="Keeps only setups whose latest price is still in or below the entry zone. "
+             "Picks with no live quote are kept.",
+    )
+    if hide_ran:
+        kept = [s for s in signals if act[s.id].status in ("actionable", "unknown")]
+        if not kept:
+            ui.empty_state("Every pick in this run has already run past its entry. "
+                           "Untick the filter to see them all.")
+            return
+        signals = kept
+
+    _STATUS_LABEL = {"actionable": "✅ actionable", "extended": "🏃 already ran",
+                     "broken": "⛔ stopped", "unknown": "· no quote"}
     df = pd.DataFrame(
         [
             {
                 "rank": s.rank,
                 "ticker": s.ticker,
+                "status": _STATUS_LABEL[act[s.id].status],
+                "past_entry_r": act[s.id].dist_r,
                 "play_type": s.play_type,
                 "strength": s.strength,
                 "timeframe": s.timeframe,
@@ -151,6 +181,12 @@ def _render_candidates(session: Session) -> None:
         hide_index=True,
         column_config={
             "rank": st.column_config.NumberColumn("Rank", format="%d"),
+            "status": st.column_config.TextColumn("Status"),
+            "past_entry_r": st.column_config.NumberColumn(
+                "Past entry (R)", format="%.2f",
+                help="How far the latest price sits above the entry ceiling, in R. "
+                     "≤ 0 means there's still room to enter; > 0 means it ran.",
+            ),
             "play_type": st.column_config.TextColumn("Play"),
             "score": st.column_config.ProgressColumn(
                 "Score", min_value=0.0, max_value=1.0, format="%.2f"

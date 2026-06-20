@@ -5,10 +5,17 @@ from types import SimpleNamespace
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from swing_screener.config import StrategyConfig
 from swing_screener.db import repo
 from swing_screener.db.models import PaperTrade, Signal
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline import run
+
+# The synthetic _firing fixture's trigger sits far past the fast EMA, so the default
+# freshness gate would suppress it. These pipeline-mechanics tests (persistence,
+# ranking, charts, shadow fills, idempotency) disable the gate so they exercise the
+# plumbing, not the anti-chase policy (covered in tests/pipeline/test_analyze.py).
+_NO_EXT_GATE = StrategyConfig(max_extension_atr=0.0)
 
 
 def _r(tf):
@@ -77,7 +84,7 @@ def test_run_persists_ranked_signals_and_writes_charts(tmp_path, bars, monkeypat
     res = run.run_screen(
         universe_path=_write_universe(tmp_path, ["AAPL", "ZZZ"]), db_url=db,
         cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts",
-        today=date(2024, 4, 1),
+        today=date(2024, 4, 1), cfg=_NO_EXT_GATE,
     )
     assert res.n_signals >= 1
     with Session(get_engine(db)) as s:
@@ -154,6 +161,7 @@ def test_run_isolates_failing_tickers(tmp_path, bars, monkeypatch):
     res = run.run_screen(
         universe_path=_write_universe(tmp_path, ["BAD", "AAPL"]), db_url=db,
         cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts", today=date(2024, 4, 1),
+        cfg=_NO_EXT_GATE,
     )
     assert res.n_signals >= 1  # AAPL still processed despite BAD raising
 
@@ -166,6 +174,7 @@ def test_run_shadow_book_opens_paper_trade(tmp_path, bars, monkeypatch):
     res = run.run_screen(
         universe_path=_write_universe(tmp_path, ["AAPL"]), db_url=db,
         cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts", today=date(2024, 4, 2),
+        cfg=_NO_EXT_GATE,
     )
     assert res.n_paper_opened >= 1  # prior-bar signal filled by the appended next bar
 
@@ -180,6 +189,7 @@ def test_run_is_idempotent_for_same_day(tmp_path, bars, monkeypatch):
     kwargs = dict(
         universe_path=_write_universe(tmp_path, ["AAPL"]), db_url=db,
         cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts", today=today,
+        cfg=_NO_EXT_GATE,
     )
     res1 = run.run_screen(**kwargs)
     run.run_screen(**kwargs)  # second run for the SAME day
@@ -209,6 +219,7 @@ def test_run_double_fire_does_not_duplicate_or_double_advance(tmp_path, bars, mo
     kwargs = dict(
         universe_path=_write_universe(tmp_path, ["AAPL"]), db_url=db,
         cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts", today=today,
+        cfg=_NO_EXT_GATE,
     )
 
     def _snapshot():
