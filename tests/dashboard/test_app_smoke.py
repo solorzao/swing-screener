@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -77,6 +77,28 @@ def test_already_ran_pick_hidden_by_default_shown_when_unfiltered(tmp_path, monk
     shown_tables = " ".join(df.value.to_string() for df in at.dataframe)
     assert "AMD" in shown_tables
     assert "already ran" in shown_tables  # the status label is rendered
+
+
+def test_repeat_pick_hidden_by_default_shown_when_unfiltered(tmp_path, monkeypatch):
+    # AMD's setup first appeared on an earlier run (first_seen < run_date) -> a repeat.
+    # The default repeat filter hides it; unticking it brings the repeat back.
+    url = f"sqlite:///{tmp_path / 'dash.sqlite'}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    monkeypatch.setattr(quotes, "latest_closes", lambda tickers, **kw: {"AMD": 100.0})
+    engine = get_engine(url)
+    with Session(engine) as s:
+        s.add(Signal(run_date=date.today(), ticker="AMD", timeframe="1d", horizon="medium",
+                     play_type="continuation", score=0.9, rank=1, trigger_close=100.0,
+                     atr=4.0, rsi=55.0, entry_floor=96.0, entry_ceiling=101.0,
+                     stop=95.0, target=110.0,
+                     first_seen_date=date.today() - timedelta(days=3)))
+        s.commit()
+    at = AppTest.from_file(APP).run()
+    at.sidebar.radio[0].set_value("Today's Candidates").run()
+
+    assert "AMD" not in " ".join(df.value.to_string() for df in at.dataframe)  # repeat hidden
+    at.checkbox[1].set_value(False).run()  # checkbox[0]=hide-ran, checkbox[1]=hide-repeats
+    assert "AMD" in " ".join(df.value.to_string() for df in at.dataframe)
 
 
 def test_play_type_filter_keeps_only_reversal(tmp_path, monkeypatch):

@@ -50,6 +50,13 @@ class Signal(Base):
     entry_ceiling: Mapped[float]
     stop: Mapped[float]
     target: Mapped[float]
+    # freshness / anti-chase metric: (trigger_close - EMA20) / ATR at the trigger.
+    # None for reversal plays (different geometry) and legacy rows.
+    extension_atr: Mapped[float | None] = mapped_column(default=None)
+    # streak start: the earliest run_date of the consecutive runs this (ticker,
+    # timeframe, play_type) setup has been firing -- lets the surface age out repeats.
+    # Equal to run_date for a freshly-appearing setup; None for legacy rows.
+    first_seen_date: Mapped[date | None] = mapped_column(default=None)
     chart_path: Mapped[str | None] = mapped_column(String(512), default=None)
 
 

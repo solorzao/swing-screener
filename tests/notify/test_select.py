@@ -9,10 +9,10 @@ from swing_screener.notify import select as sel
 RUN = date(2026, 6, 15)
 
 
-def _sig(ticker, tf, rank):
+def _sig(ticker, tf, rank, first_seen=None):
     return Signal(run_date=RUN, ticker=ticker, timeframe=tf, horizon="medium", score=1.0 / rank,
                   rank=rank, trigger_close=100.0, atr=4.0, rsi=55.0, entry_floor=96.0,
-                  entry_ceiling=101.0, stop=95.0, target=110.0)
+                  entry_ceiling=101.0, stop=95.0, target=110.0, first_seen_date=first_seen)
 
 
 def _seed():
@@ -54,11 +54,37 @@ def test_exit_alerts_only_real_trades():
     assert len(alerts) == 1 and alerts[0].reason == "stop" and alerts[0].is_paper is False
 
 
-def _rev(ticker, rank, strength="early"):
+def _rev(ticker, rank, strength="early", first_seen=None):
     return Signal(run_date=RUN, ticker=ticker, timeframe="1d", horizon="medium",
                   play_type="reversal", strength=strength, score=1.0 / rank, rank=rank,
                   trigger_close=50.0, atr=2.0, rsi=22.0, entry_floor=50.0, entry_ceiling=52.0,
-                  stop=47.0, target=58.0)
+                  stop=47.0, target=58.0, first_seen_date=first_seen)
+
+
+def test_cooldown_drops_stale_repeats_keeps_fresh_and_legacy():
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add_all([
+            _sig("AMD", "1d", 1, first_seen=RUN),             # first seen today
+            _sig("AEP", "1d", 2, first_seen=date(2026, 6, 1)),  # old streak (stale)
+            _sig("MSFT", "1d", 3),                            # first_seen None (legacy)
+        ])
+        s.commit()
+
+        # cooldown of 1 day -> AEP (first seen 14 days ago) drops; today's + legacy stay.
+        picks = sel.daily_picks(s, RUN, max_age_days=1)
+        assert [p.ticker for p in picks] == ["AMD", "MSFT"]
+        # no cooldown -> all three, by rank
+        assert [p.ticker for p in sel.daily_picks(s, RUN)] == ["AMD", "AEP", "MSFT"]
+
+
+def test_cooldown_applies_to_reversal_picks():
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add_all([_rev("GME", 1, first_seen=RUN),
+                   _rev("BBBY", 2, first_seen=date(2026, 6, 1))])
+        s.commit()
+        assert [p.ticker for p in sel.reversal_picks(s, RUN, max_age_days=1)] == ["GME"]
 
 
 def test_reversal_picks_are_separate_from_continuation():

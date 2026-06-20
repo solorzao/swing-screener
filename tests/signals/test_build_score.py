@@ -5,10 +5,11 @@ from swing_screener.signals.detect import PullbackContext
 from swing_screener.signals.score import score_signal
 
 
-def _ctx(trigger_close=100.0, atr=4.0):
+def _ctx(trigger_close=100.0, atr=4.0, extension_atr=0.0):
     return PullbackContext(
         trigger_ts=pd.Timestamp("2024-01-10"), trigger_close=trigger_close, atr=atr,
         swing_low=96.0, pullback_bars=2, shaved_bottom=True, rsi=55.0,
+        extension_atr=extension_atr,
     )
 
 
@@ -29,3 +30,13 @@ def test_result_scores_in_range():
                                      "macd_hist": 0.5, "macd_hist_rising": True},
                             mtf_aligned=False)
     assert 0.0 <= score_signal(si) <= 1.0
+
+
+def test_freshness_decays_with_extension():
+    row = {"ema_fast": 105.0, "ema_slow": 100.0, "body_frac": 0.8,
+           "macd_hist": 0.5, "macd_hist_rising": True}
+    # at/below EMA20 -> fully fresh; at the gate threshold -> zero freshness.
+    fresh = build_score_inputs(_ctx(extension_atr=0.0), row, False, max_extension_atr=2.0)
+    chased = build_score_inputs(_ctx(extension_atr=2.0), row, False, max_extension_atr=2.0)
+    assert fresh.freshness == 1.0
+    assert chased.freshness == 0.0

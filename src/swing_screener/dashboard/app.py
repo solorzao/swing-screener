@@ -27,7 +27,7 @@ from swing_screener.analytics import performance
 from swing_screener.dashboard import quotes, ui
 from swing_screener.dashboard.pl import position_pl, total_unrealized_pl
 from swing_screener.db import repo
-from swing_screener.db.models import ExitEvent, PaperTrade, Trade
+from swing_screener.db.models import ExitEvent, PaperTrade, Signal, Trade
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.arms import BASELINE
 from swing_screener.settings import load_settings
@@ -147,6 +147,25 @@ def _render_candidates(session: Session) -> None:
             return
         signals = kept
 
+    # Staleness: a "repeat" is a setup first seen on an earlier run (its streak started
+    # before today). Hiding them keeps the list to genuinely new triggers.
+    def _is_repeat(s: Signal) -> bool:
+        return (s.first_seen_date is not None and run_date is not None
+                and s.first_seen_date < run_date)
+
+    hide_repeats = st.checkbox(
+        "Hide repeats (first seen on an earlier run)", value=True,
+        help="Shows only setups that first appeared in the latest run, so the same play "
+             "isn't surfaced day after day. Picks with no first-seen date are kept.",
+    )
+    if hide_repeats:
+        kept = [s for s in signals if not _is_repeat(s)]
+        if not kept:
+            ui.empty_state("Every pick here is a repeat from an earlier run. "
+                           "Untick the filter to see them all.")
+            return
+        signals = kept
+
     _STATUS_LABEL = {"actionable": "✅ actionable", "extended": "🏃 already ran",
                      "broken": "⛔ stopped", "unknown": "· no quote"}
     df = pd.DataFrame(
@@ -163,6 +182,8 @@ def _render_candidates(session: Session) -> None:
                 "score": s.score,
                 "rsi": s.rsi,
                 "atr": s.atr,
+                "extension": s.extension_atr,
+                "first_seen": s.first_seen_date,
                 "mtf_aligned": s.mtf_aligned,
                 "oversold": s.oversold,
                 "quality_tier": s.quality_tier,
@@ -193,6 +214,12 @@ def _render_candidates(session: Session) -> None:
             ),
             "rsi": st.column_config.NumberColumn("RSI", format="%.0f"),
             "atr": st.column_config.NumberColumn("ATR", format="%.2f"),
+            "extension": st.column_config.NumberColumn(
+                "Ext (ATR)", format="%.2f",
+                help="How far the trigger ran above EMA20, in ATR. Higher = closer to a "
+                     "chase (continuation only).",
+            ),
+            "first_seen": st.column_config.DateColumn("First seen", format="MMM DD"),
             "entry_floor": st.column_config.NumberColumn("Entry ▼", format="$%.2f"),
             "entry_ceiling": st.column_config.NumberColumn("Entry ▲", format="$%.2f"),
             "stop": st.column_config.NumberColumn("Stop", format="$%.2f"),

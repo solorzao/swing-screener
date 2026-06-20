@@ -37,6 +37,32 @@ def latest_run_date(session: Session) -> date | None:
     return session.scalars(stmt).first()
 
 
+def prior_first_seen(
+    session: Session, before_date: date
+) -> dict[tuple[str, str, str], date]:
+    """Map ``(ticker, timeframe, play_type) -> first_seen_date`` for the most recent
+    run STRICTLY BEFORE ``before_date``.
+
+    Used to carry a setup's streak-start forward: if the same setup fired in the
+    immediately-prior run, today's signal inherits that run's ``first_seen_date``;
+    otherwise today's run starts a fresh streak. Querying ``run_date < before_date``
+    keeps a same-day re-run (delete + reinsert of today) from disturbing the result.
+    A prior row whose ``first_seen_date`` is NULL (legacy) falls back to its run_date.
+    """
+    prev = session.scalars(
+        select(Signal.run_date)
+        .where(Signal.run_date < before_date)
+        .order_by(Signal.run_date.desc())
+        .limit(1)
+    ).first()
+    if prev is None:
+        return {}
+    rows = session.scalars(select(Signal).where(Signal.run_date == prev))
+    return {
+        (r.ticker, r.timeframe, r.play_type): (r.first_seen_date or prev) for r in rows
+    }
+
+
 def delete_signals_for(session: Session, run_date: date) -> None:
     session.execute(delete(Signal).where(Signal.run_date == run_date))
     session.commit()

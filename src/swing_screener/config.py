@@ -30,6 +30,12 @@ class StrategyConfig:
     # < 1 ATR of extension while a late chase fires at ~2.7 ATR. 0 disables the gate.
     max_extension_atr: float = 2.0
 
+    # staleness / cooldown: drop a digest pick once its setup has been on the list for
+    # more than this many days (by first_seen_date) so the same play isn't re-pitched
+    # day after day. A freshly-appearing setup (first_seen == run_date) always shows.
+    # None disables the cooldown; legacy rows with no first_seen_date are never dropped.
+    digest_repeat_cooldown_days: int | None = 1
+
     # structure-aware continuation target (Step A)
     target_lookback: int = 30        # bars to search for overhead resistance
     target_pivot_width: int = 2      # a swing high tops this many bars on each side

@@ -48,9 +48,11 @@ Continuation/Reversal filter throughout the dashboard.
 
 ### Scoring & exits
 
-The composite **score** blends HA trigger strength (0.35), multi-timeframe alignment (0.20),
-trend slope (0.15), volatility fit (0.10), **RSI** bull-range pullback quality (0.15), and
-**MACD-histogram** momentum (0.05).
+The composite **score** blends HA trigger strength (0.25), multi-timeframe alignment (0.20),
+trend slope (0.15), volatility fit (0.10), **RSI** bull-range pullback quality (0.15),
+**MACD-histogram** momentum (0.05), and **freshness** (0.10) — the last rewards a trigger that
+has *not* already extended away from EMA20, so clean setups outrank chases (0.10 was carved
+out of trigger strength, which used to over-reward already-run candles).
 
 Baseline exits are tiered: 🔴 hard stop (overrides), 🟠 HA momentum flip, 🟡 target /
 time-stop. On top of that baseline, the shadow book forward-tests **partial scale-outs** (a
@@ -120,7 +122,8 @@ Full run instructions, flags, and how to inspect results:
 
 **Dashboard** — a 10-view sidebar app: Overview, Today's Candidates (continuation/reversal
 filter + a live **actionability** status — each pick is graded against its latest price as
-✅ actionable / 🏃 already ran / ⛔ stopped, and already-ran picks are hidden by default),
+✅ actionable / 🏃 already ran / ⛔ stopped, already-ran picks hidden by default, and
+**repeats** first seen on an earlier run aged out so the same play isn't shown day after day),
 Deep Analysis (request on-demand reports), Active Trades (inline close + live P/L),
 Trade Entry, Closed Trades (equity curve), Screener Performance (per-arm A/B + play-type
 filter), Exit Log, Universe, Digest Log.

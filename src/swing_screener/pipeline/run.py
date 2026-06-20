@@ -164,7 +164,7 @@ def _bar_row(frame: pd.DataFrame) -> dict[str, float | bool]:
     return row
 
 
-def _to_signal(r: SignalResult, rank: int, run_date: date) -> Signal:
+def _to_signal(r: SignalResult, rank: int, run_date: date, first_seen: date) -> Signal:
     return Signal(
         run_date=run_date, ticker=r.ticker, timeframe=r.timeframe, horizon=r.horizon,
         play_type=r.play_type, strength=r.strength,
@@ -172,6 +172,7 @@ def _to_signal(r: SignalResult, rank: int, run_date: date) -> Signal:
         volatility_tier=r.volatility_tier, oversold=r.oversold, trigger_close=r.trigger_close,
         atr=r.atr, rsi=r.rsi, entry_floor=r.entry_floor, entry_ceiling=r.entry_ceiling,
         stop=r.stop, target=r.target,
+        extension_atr=r.extension_atr, first_seen_date=first_seen,
     )
 
 
@@ -255,12 +256,20 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
     n_charts = 0
     n_paper_opened = 0
     with Session(engine) as s:
+        # Streak-start per (ticker, timeframe, play_type): inherit first_seen_date from
+        # the prior run if the same setup fired then, else today. Read BEFORE deleting
+        # today's rows (the lookup only considers run_date < today, so it's unaffected).
+        prior_seen = repo.prior_first_seen(s, today)
+
+        def _first_seen(r: SignalResult) -> date:
+            return prior_seen.get((r.ticker, r.timeframe, r.play_type), today)
+
         repo.delete_signals_for(s, today)
         repo.delete_paper_trades_opened_on(s, today)
         # Rank WITHIN each play_type (independent top-N lists for the two sections).
-        cont_signals = [_to_signal(r, rank, today)
+        cont_signals = [_to_signal(r, rank, today, _first_seen(r))
                         for rank, r in enumerate(today_results, start=1)]
-        rev_signals = [_to_signal(r, rank, today)
+        rev_signals = [_to_signal(r, rank, today, _first_seen(r))
                        for rank, r in enumerate(today_reversals, start=1)]
         repo.save_signals(s, cont_signals + rev_signals)
 

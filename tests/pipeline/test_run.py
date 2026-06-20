@@ -179,6 +179,25 @@ def test_run_shadow_book_opens_paper_trade(tmp_path, bars, monkeypatch):
     assert res.n_paper_opened >= 1  # prior-bar signal filled by the appended next bar
 
 
+def test_run_stamps_extension_and_inherits_first_seen_across_runs(tmp_path, bars, monkeypatch):
+    def fake_fetch(ticker, *, cache_dir, today, cfg):
+        return {"1d": _firing(bars)} if ticker == "AAPL" else {}
+    monkeypatch.setattr(run, "_fetch_all_timeframes", fake_fetch)
+    db = f"sqlite:///{tmp_path / 'db.sqlite'}"
+    kw = dict(universe_path=_write_universe(tmp_path, ["AAPL"]), db_url=db,
+              cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts", cfg=_NO_EXT_GATE)
+
+    run.run_screen(today=date(2024, 4, 1), **kw)
+    run.run_screen(today=date(2024, 4, 2), **kw)  # same setup fires again next run
+
+    with Session(get_engine(db)) as s:
+        d1 = next(x for x in repo.latest_signals(s, date(2024, 4, 1)) if x.ticker == "AAPL")
+        d2 = next(x for x in repo.latest_signals(s, date(2024, 4, 2)) if x.ticker == "AAPL")
+    assert d1.first_seen_date == date(2024, 4, 1)            # fresh on the first run
+    assert d2.first_seen_date == date(2024, 4, 1)            # streak start carried forward
+    assert d1.extension_atr is not None and d1.extension_atr > 0  # freshness metric persisted
+
+
 def test_run_is_idempotent_for_same_day(tmp_path, bars, monkeypatch):
     def fake_fetch(ticker, *, cache_dir, today, cfg):
         return {"1d": _firing(bars)} if ticker == "AAPL" else {}

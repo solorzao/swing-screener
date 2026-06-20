@@ -1,7 +1,8 @@
 # Screener freshness + system roadmap — design
 
 **Date:** 2026-06-20
-**Status:** Step 1 shipped (freshness gate + live actionability); roadmap proposed.
+**Status:** Steps 1 + 2 shipped (freshness gate, live actionability, persisted
+extension/first-seen, freshness score term, staleness cooldown); roadmap proposed.
 **Scope:** Fix the "screeners suggest plays that already ran" complaint, and chart a path
 toward a measurement-driven, self-optimizing system (a deterministic
 build → deploy → measure → optimize → repeat loop with a strategy leaderboard).
@@ -55,27 +56,40 @@ a signal now pass `StrategyConfig(max_extension_atr=0.0)` to disable the gate, s
 testing their actual concern. New tests cover the gate (`test_analyze`), the pure classifier
 (`test_actionability`), and the dashboard hide/show behavior (`test_app_smoke`).
 
+## Step 2 — shipped
+
+- **Persisted `extension_atr` + `first_seen_date` on `Signal`** (migration
+  `e9c7b3a15d24`, both nullable). `SignalResult.extension_atr` carries the metric through the
+  pipeline; reversals and legacy rows are NULL.
+- **`first_seen_date` = streak start.** `repo.prior_first_seen` maps the immediately-prior
+  run's `(ticker, timeframe, play_type)` setups to their first-seen date; the pipeline inherits
+  it when the same setup fires again, else stamps today. The lookup only considers
+  `run_date < today`, so a same-day re-run is still idempotent.
+- **Freshness term in the score** (`score.py`/`build_score.py`): `freshness = clip01(1 -
+  extension/max_extension_atr)`, weighted **0.10**, carved out of trigger `strength` (0.35 →
+  0.25) which over-rewarded big already-run candles. Clean setups now outrank chases.
+- **Staleness cooldown.** `notify/select.py` pickers take `max_age_days`; `send_digest` passes
+  `StrategyConfig.digest_repeat_cooldown_days` (default **1**) so a setup on the list longer
+  than the window stops being re-pitched. The dashboard "Today's Candidates" gains **Ext (ATR)**
+  + **First seen** columns and a default-on "Hide repeats" filter. NULL-first_seen rows always
+  pass (fail-open), so legacy rows and existing tests are unaffected.
+
 ## Roadmap — toward the self-optimizing system
 
 The system already has the rare half of the loop: it forward-tests every signal across
 parallel exit **arms** with same-sample A/B analytics. To close the loop:
 
-1. **Persist `extension_atr` + `first_seen_date` on `Signal`** (one Alembic migration). Enables
-   surfacing "how extended", a staleness/cooldown filter (suppress a setup re-firing within N
-   bars, or one that already reached target in the shadow book), and aging of repeats.
-2. **Freshness term in the score.** Add an extension/freshness factor so a clean, un-extended
-   setup outranks a chased one — counterbalancing the `body_frac` bias.
-3. **Screen-level strategy variants as arms.** Today arms vary only the *exit* policy
+1. **Screen-level strategy variants as arms.** Today arms vary only the *exit* policy
    (`pipeline/arms.py`). Promote `StrategyConfig` variants (extension thresholds, RSI gates,
    score weights) into named arms forward-tested head-to-head — a true *strategy* leaderboard,
    not just an exit leaderboard.
-4. **Leaderboard table + dashboard view** ranking variants by expectancy / profit factor /
+2. **Leaderboard table + dashboard view** ranking variants by expectancy / profit factor /
    fill rate over a trailing window, *with sample size and significance*.
-5. **Score calibration.** Track realized expectancy by score decile to verify the score
+3. **Score calibration.** Track realized expectancy by score decile to verify the score
    predicts winners; a flat curve means the score is miscalibrated.
-6. **Regime tagging.** Stamp each run with market context (SPY vs 200DMA, volatility bucket)
+4. **Regime tagging.** Stamp each run with market context (SPY vs 200DMA, volatility bucket)
    and break performance down by regime — continuation wants uptrends, reversals want washouts.
-7. **Scheduled optimizer/sweep job** that replays history across a config grid with
+5. **Scheduled optimizer/sweep job** that replays history across a config grid with
    walk-forward / out-of-sample guardrails and proposes the next config — the deterministic
    analog of the post's "AI-native orchestrator."
 
