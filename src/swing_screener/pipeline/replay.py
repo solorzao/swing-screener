@@ -39,7 +39,12 @@ def _higher_frames(prior_raw: pd.DataFrame, cfg: StrategyConfig) -> dict[str, pd
     """Resample the PRIOR daily slice to 1wk/1mo and enrich -- so the mtf_aligned read
     for a 1d signal matches what a live run on that date would have computed. Built per
     step because a once-resampled weekly frame's last (partial) bar would leak future
-    daily bars."""
+    daily bars.
+
+    PERF: this per-step resample+enrich is the replay hot path (the daily frame is
+    enriched once and sliced, but the higher frames cannot be -- see above -- so this
+    is ~O(N^2) over a ticker's bars). Fine for single-ticker / few-hundred-bar runs;
+    a future optimization (incremental higher-frame maintenance) is deferred per D2."""
     out: dict[str, pd.DataFrame] = {}
     wk = resample_ohlcv(prior_raw, "1W")
     mo = resample_ohlcv(prior_raw, "1ME")
@@ -55,7 +60,11 @@ def replay_ticker(
     warmup_bars: int = 250, seed: int = 0,
 ) -> list[PaperTrade]:
     """Replay one ticker's 1d engine over daily_raw; return the resulting PaperTrade rows
-    (detached from the throwaway session). Long-only, 1d-only."""
+    (detached from the throwaway session). Long-only, 1d-only.
+
+    ``seed`` is accepted but currently unused: replay and the fixture are fully
+    deterministic. It is a forward hook for the callers that DO randomize -- the B4
+    ``replay_universe`` and the B7 shuffle-placebo control thread a seed through here."""
     if len(daily_raw) <= warmup_bars + 2:
         return []
     enriched = build_frame(daily_raw, cfg)          # enrich ONCE; slice thereafter
@@ -98,7 +107,12 @@ def replay_ticker(
 
 
 def _detach(t: PaperTrade) -> PaperTrade:
-    """Copy the row's columns into a fresh, session-free PaperTrade for aggregation."""
+    """Copy the row's columns into a fresh, session-free PaperTrade for aggregation.
+
+    A plain copy (not ``expunge``/``make_transient``) is deliberate: callers replay
+    many tickers into separate throwaway in-memory engines and concatenate the rows,
+    so the result must be provably session- and identity-free. ``load_all_paper_trades``
+    autoflushes first, so every column read here is flushed state."""
     cols = {c.name: getattr(t, c.name) for c in PaperTrade.__table__.columns
             if c.name != "id"}
     return PaperTrade(**cols)
