@@ -28,7 +28,7 @@ from swing_screener.db import repo
 from swing_screener.db.models import Base, PaperTrade
 from swing_screener.pipeline.analyze import analyze_frames, analyze_reversals
 from swing_screener.pipeline.arms import build_arms
-from swing_screener.pipeline.run import _bar_row
+from swing_screener.pipeline.bars import _bar_row
 from swing_screener.pipeline.shadow import FillCandidate, advance_open, open_from_signals
 from swing_screener.signals.frame import build_frame
 

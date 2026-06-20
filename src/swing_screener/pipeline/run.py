@@ -25,13 +25,12 @@ from swing_screener.pipeline.analyze import (
     build_frames,
 )
 from swing_screener.pipeline.arms import BASELINE, build_arms
+from swing_screener.pipeline.bars import _bar_row
 from swing_screener.pipeline.shadow import FillCandidate, advance_open, open_from_signals
 from swing_screener.settings import load_settings
 from swing_screener.storage.blob import blob_enabled, upload_chart
 
 log = logging.getLogger(__name__)
-
-_BAR_KEYS = ("low", "high", "close", "shaved_head", "bearish", "shaved_bottom", "atr")
 
 # Azure SQL serverless error raised while the database is auto-resuming from a
 # paused state: the first connection of the day fails with this until the DB
@@ -149,19 +148,6 @@ def _fetch_all_timeframes(ticker: str, *, cache_dir: Path, today: date,
         out["1wk"] = resample_ohlcv(daily, "1W")
         out["1mo"] = resample_ohlcv(daily, "1ME")
     return out
-
-
-def _bar_row(frame: pd.DataFrame) -> dict[str, float | bool]:
-    last = frame.iloc[-1]
-    row: dict[str, float | bool] = {k: last[k] for k in _BAR_KEYS}
-    # body_shrinking: the HA body is smaller than the prior bar's (momentum
-    # decelerating) -- an input to the conditional-partial softening gate. The
-    # exit machinery reads it off the bar, so it's computed here where the full
-    # frame is in hand. False when there's no prior bar to compare against.
-    row["body_shrinking"] = bool(
-        len(frame) >= 2 and frame["body_frac"].iloc[-1] < frame["body_frac"].iloc[-2]
-    )
-    return row
 
 
 def _to_signal(r: SignalResult, rank: int, run_date: date) -> Signal:
