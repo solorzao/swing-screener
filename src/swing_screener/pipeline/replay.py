@@ -106,6 +106,22 @@ def replay_ticker(
         return [_detach(t) for t in repo.load_all_paper_trades(s)]
 
 
+def replay_universe(
+    bars_by_ticker: dict[str, pd.DataFrame], cfg: StrategyConfig, *,
+    warmup_bars: int = 250, seed: int = 0,
+) -> list[PaperTrade]:
+    """Replay each ticker independently (books don't interact) and concatenate the
+    resulting PaperTrade rows. One bad ticker is logged and skipped (per-ticker
+    isolation, mirroring run.py)."""
+    out: list[PaperTrade] = []
+    for ticker, daily in bars_by_ticker.items():
+        try:
+            out.extend(replay_ticker(ticker, daily, cfg, warmup_bars=warmup_bars, seed=seed))
+        except Exception:  # noqa: BLE001 -- isolation
+            log.warning("replay failed for %s; skipping", ticker, exc_info=True)
+    return out
+
+
 def _detach(t: PaperTrade) -> PaperTrade:
     """Copy the row's columns into a fresh, session-free PaperTrade for aggregation.
 
