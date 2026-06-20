@@ -237,10 +237,13 @@ def advance_open(
 
         if decision.action == "EXIT":
             # Exit-price modelling is deliberately asymmetric with entries: entries
-            # are worst-cased (top of zone), but stop/target exits assume a clean
-            # fill at the level (a gap-through bar fills worse in reality). So the
-            # shadow book records stops/targets slightly favourably; momentum/time
-            # exits use the bar close, which is realistic.
+            # are worst-cased (top of zone), while stop/target exits fill at the level
+            # MINUS the optional `slip` haircut (subtracted because the book is long-only,
+            # so a worse fill is always a lower price). With `fill_slippage_atr == 0.0`
+            # (the default) slip is 0, so stops/targets record at the exact level
+            # (slightly favourable, since a gap-through fills worse in reality); a
+            # non-zero haircut pessimises them by `slip`. momentum/time exits use the bar
+            # close, which is realistic, and are never haircut.
             if decision.reason == "stop":
                 exit_price = pt.stop - slip
             elif decision.reason == "target":      # only an all-or-nothing arm (partial_frac == 0)
