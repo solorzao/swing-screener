@@ -149,13 +149,18 @@ def format_leaderboard(by_variant: Mapping[str, PerformanceSummary]) -> str:
     """
     order = leaderboard_order(by_variant)
     header = (f"{'variant':<18}{'expectancy_r':>14}{'95%_low':>10}"
-              f"{'win_rate':>10}{'closed':>8}{'sample':>8}")
+              f"{'win_rate':>10}{'closed':>8}{'clusters':>10}{'sample':>8}")
     lines = [header, "-" * len(header)]
     for v in order:
         s = by_variant[v]
-        flag = "thin" if s.n_closed < MIN_LEADERBOARD_N else "ok"
+        # "iid" wins over thin/ok: when the clustered bootstrap couldn't run, the 95%_low is
+        # the weaker IID-fallback bound, which the reader needs to see over the sample-size flag.
+        if s.thin_clusters:
+            flag = "iid"
+        else:
+            flag = "thin" if s.n_closed < MIN_LEADERBOARD_N else "ok"
         lines.append(f"{v:<18}{s.expectancy_r:>14.2f}{s.expectancy_ci_low:>10.2f}"
-                     f"{s.win_rate:>10.2f}{s.n_closed:>8d}{flag:>8}")
+                     f"{s.win_rate:>10.2f}{s.n_closed:>8d}{s.n_clusters:>10d}{flag:>8}")
     return "\n".join(lines)
 
 

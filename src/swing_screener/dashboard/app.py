@@ -478,6 +478,15 @@ def _render_closed(session: Session) -> None:
         st.altair_chart(ui.line(points, "Exit date", "Cumulative $"), width="stretch")
 
 
+def _leaderboard_flag(s: performance.PerformanceSummary) -> str:
+    """Trust flag for a leaderboard row (matches the replay CLI). 'iid' wins over thin/ok:
+    when the clustered bootstrap couldn't run, the 95% low is the weaker IID-fallback bound,
+    which the reader needs to see over the sample-size flag."""
+    if s.thin_clusters:
+        return "iid"
+    return "thin" if s.n_closed < performance.MIN_LEADERBOARD_N else "ok"
+
+
 def _render_performance(session: Session) -> None:
     ui.page_header("Screener Performance")
     paper_trades = list(session.scalars(select(PaperTrade)))
@@ -522,7 +531,8 @@ def _render_performance(session: Session) -> None:
                     "ci_high": by_variant[v].expectancy_ci_high,
                     "win_rate": by_variant[v].win_rate,
                     "closed": by_variant[v].n_closed,
-                    "sample": ("thin" if by_variant[v].n_closed < performance.MIN_LEADERBOARD_N else "ok"),
+                    "clusters": by_variant[v].n_clusters,
+                    "sample": _leaderboard_flag(by_variant[v]),
                 }
                 for v in var_order
             ]
@@ -538,12 +548,15 @@ def _render_performance(session: Session) -> None:
                 "ci_high": st.column_config.NumberColumn("95% high", format="%.2f"),
                 "win_rate": st.column_config.NumberColumn("Win rate", format="percent"),
                 "closed": st.column_config.NumberColumn("Closed (n)", format="%d"),
+                "clusters": st.column_config.NumberColumn("Tickers", format="%d"),
                 "sample": st.column_config.TextColumn("Sample"),
             },
         )
         st.caption(
             f"Trusted samples (≥ {performance.MIN_LEADERBOARD_N} closed trades) rank above 'thin' ones, "
-            "then by the lower 95% bound of expectancy — so a lucky thin sample can't win."
+            "then by the lower 95% bound of expectancy — so a lucky thin sample can't win. "
+            "'iid' flags rows with too few distinct tickers to ticker-cluster the bound, "
+            "so their 95% low is the weaker IID-fallback estimate."
         )
         # The exit-arm A/B below is only honest on ONE screen (its arms share fills),
         # so scope everything downstream to the default (live) screen variant.
