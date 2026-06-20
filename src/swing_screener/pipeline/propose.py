@@ -19,7 +19,11 @@ from pathlib import Path
 
 import numpy as np
 
-from swing_screener.analytics.performance import MIN_LEADERBOARD_N, _CLUSTER_FLOOR
+from swing_screener.analytics.performance import (
+    MIN_LEADERBOARD_N,
+    _CLUSTER_FLOOR,
+    _is_closed_filled,
+)
 from swing_screener.config import StrategyConfig
 from swing_screener.db.models import PaperTrade
 from swing_screener.pipeline.optimize import OptimizeResult, fetch_daily, optimize
@@ -50,7 +54,9 @@ def _closed_by_ticker(trades: list[PaperTrade]) -> dict[str, list[float]]:
     """Realized R per ticker over closed-filled trades (the bootstrap's clusters)."""
     d: dict[str, list[float]] = {}
     for t in trades:
-        if t.status == "closed" and t.fill_status == "filled" and t.realized_r is not None:
+        # The second clause is redundant at runtime (_is_closed_filled already requires it)
+        # but narrows realized_r from float | None to float for mypy.
+        if _is_closed_filled(t) and t.realized_r is not None:
             d.setdefault(t.ticker, []).append(t.realized_r)
     return d
 
@@ -81,10 +87,8 @@ def _placebo_cleared(
     """Pool both books' R, randomly relabel winner/incumbent (preserving sizes), and
     confirm the observed delta exceeds the 95th percentile of the shuffled null. If a
     random relabel reproduces the edge, it is an artifact, not signal."""
-    wv = [t.realized_r for t in winner
-          if t.status == "closed" and t.fill_status == "filled" and t.realized_r is not None]
-    iv = [t.realized_r for t in incumbent
-          if t.status == "closed" and t.fill_status == "filled" and t.realized_r is not None]
+    wv = [t.realized_r for t in winner if _is_closed_filled(t) and t.realized_r is not None]
+    iv = [t.realized_r for t in incumbent if _is_closed_filled(t) and t.realized_r is not None]
     nw = len(wv)
     pool = np.array(wv + iv, dtype=float)
     if nw == 0 or nw == len(pool):
@@ -105,6 +109,7 @@ def _provenance(result: OptimizeResult) -> str:
     try:
         sha = subprocess.run(
             ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parents[3],
             capture_output=True, text=True, check=True,
         ).stdout.strip() or "unknown"
     except (OSError, subprocess.SubprocessError):
