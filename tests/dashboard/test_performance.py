@@ -181,9 +181,45 @@ def test_leaderboard_ranks_trusted_above_thin_lucky_sample(tmp_path, monkeypatch
     order = list(board["variant"])
     # the deep +0.5R variant (n=25) outranks the lone lucky +3R trade despite lower expectancy
     assert order.index("deep") < order.index("thinlucky")
-    # the 1-trade variant is flagged thin
+    # the 1-trade / 1-ticker variant is flagged 'iid' (too few tickers to cluster the bound);
+    # the deep, well-clustered variant reads 'ok'
     flags = dict(zip(board["variant"], board["sample"], strict=True))
-    assert flags["thinlucky"] == "thin" and flags["deep"] == "ok"
+    assert flags["thinlucky"] == "iid" and flags["deep"] == "ok"
+
+
+def _seed_clustered_vs_thin_variants(url):
+    engine = get_engine(url)
+    with Session(engine) as s:
+        # "broad" variant: 8 distinct tickers (>= the cluster floor) -> the lower bound is
+        # ticker-clustered, NOT the IID fallback (thin_clusters=False).
+        for i in range(8):
+            s.add(PaperTrade(ticker=f"T{i}", timeframe="1d", horizon="medium", signal_score=0.8,
+                             rank=1, arm="baseline", variant="broad", fill_status="filled",
+                             stop=95.0, target=110.0, risk=5.0, status="closed", realized_r=0.5,
+                             hold_bars=3, exit_date=date(2026, 1, 5)))
+        # "narrow" variant: 2 trades on a single ticker (< the floor) -> IID fallback.
+        for r in (1.0, 1.2):
+            s.add(PaperTrade(ticker="SOLO", timeframe="1d", horizon="medium", signal_score=0.8,
+                             rank=1, arm="baseline", variant="narrow", fill_status="filled",
+                             stop=95.0, target=110.0, risk=5.0, status="closed", realized_r=r,
+                             hold_bars=3, exit_date=date(2026, 1, 6)))
+        s.commit()
+
+
+def test_leaderboard_flags_iid_fallback_for_thin_clusters(tmp_path, monkeypatch):
+    url = f"sqlite:///{tmp_path / 'perf_clusters.sqlite'}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    _seed_clustered_vs_thin_variants(url)
+    at = AppTest.from_file(APP).run()
+    at.sidebar.radio[0].set_value("Screener Performance").run()
+    assert not at.exception
+
+    board = at.dataframe[0].value  # leaderboard is the first table on the page
+    clusters = dict(zip(board["variant"], board["clusters"], strict=True))
+    assert clusters["broad"] == 8 and clusters["narrow"] == 1
+    # the single-ticker variant's bound is the IID fallback; the 8-ticker one is not
+    samples = dict(zip(board["variant"], board["sample"], strict=True))
+    assert samples["narrow"] == "iid" and samples["broad"] != "iid"
 
 
 def _seed_calibration(url):

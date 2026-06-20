@@ -3,7 +3,9 @@ from pathlib import Path
 
 import pandas as pd
 
+from swing_screener.analytics.performance import summarize
 from swing_screener.config import StrategyConfig
+from swing_screener.db.models import PaperTrade
 from swing_screener.pipeline.replay import format_leaderboard, replay
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "amd_daily_2018.csv"
@@ -45,3 +47,25 @@ def test_replay_respects_an_explicit_variant_set():
     board = replay({"AMD": _amd()}, timeframe="1d", base_cfg=cfg, variants=variants)
     assert set(board) == {"loose", "tight"}
     assert board["loose"].n_total >= board["tight"].n_total
+
+
+def _closed(ticker: str, r: float) -> PaperTrade:
+    return PaperTrade(ticker=ticker, status="closed", fill_status="filled", realized_r=r)
+
+
+def test_leaderboard_marks_the_iid_fallback_for_thin_clusters():
+    # Thin: 3 distinct tickers (< the cluster floor of 8) -> the bound falls back to IID.
+    thin = summarize([_closed(t, 1.0) for t in ("A", "B", "C")])
+    assert thin.thin_clusters and thin.n_clusters == 3
+    # Clustered: 8 distinct tickers (>= the floor) AND n_closed >= 2 -> bootstrap fires.
+    clustered = summarize([_closed(f"T{i}", 0.5) for i in range(8)])
+    assert not clustered.thin_clusters and clustered.n_clusters == 8
+
+    txt = format_leaderboard({"thin": thin, "clustered": clustered})
+    assert "clusters" in txt  # the new column header
+
+    rows = {line.split()[0]: line for line in txt.splitlines() if line.startswith(("thin", "clustered"))}
+    # The thin-clusters row carries the IID-fallback flag and its (sub-floor) cluster count.
+    assert "iid" in rows["thin"] and rows["thin"].split()[-1] == "iid"
+    # The properly-clustered row does NOT -- its bound is ticker-clustered, not IID.
+    assert "iid" not in rows["clustered"]

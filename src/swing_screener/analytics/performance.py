@@ -193,6 +193,16 @@ def leaderboard_order(
     return sorted(summaries, key=_key, reverse=True)
 
 
+def leaderboard_flag(s: PerformanceSummary) -> str:
+    """Trust flag for a leaderboard row -- the single source of truth shared by the replay
+    CLI table and the dashboard. ``iid`` wins over ``thin``/``ok``: when the clustered
+    bootstrap couldn't run (fewer than the distinct-ticker floor), ``expectancy_ci_low`` is
+    the weaker IID-fallback bound, which the reader needs to see over the sample-size flag."""
+    if s.thin_clusters:
+        return "iid"
+    return "thin" if s.n_closed < MIN_LEADERBOARD_N else "ok"
+
+
 def _rank_labels(edges: Sequence[int]) -> list[str]:
     """Build inclusive bucket labels from ascending ``edges``.
 
