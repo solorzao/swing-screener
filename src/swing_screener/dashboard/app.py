@@ -616,6 +616,37 @@ def _render_performance(session: Session) -> None:
             width="stretch",
         )
 
+    # Score calibration: does a higher composite score actually earn more? Expectancy by
+    # score band should trend up; a flat/inverted curve means the score needs rework. Chart
+    # only bands that have closed trades (an empty band would read as a spurious 0).
+    by_score = performance.score_bucket(trades, [0.5, 0.6, 0.7, 0.8])
+    scored = {k: v for k, v in by_score.items() if v.n_closed > 0}
+    if len(scored) > 1:
+        st.markdown("**Score calibration** — expectancy by signal-score band")
+        st.altair_chart(
+            ui.bar({k: v.expectancy_r for k, v in scored.items()}, "Score band", "Expectancy R"),
+            width="stretch",
+        )
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {"band": k, "expectancy_r": v.expectancy_r, "win_rate": v.win_rate,
+                     "closed": v.n_closed}
+                    for k, v in scored.items()
+                ]
+            ),
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "band": st.column_config.TextColumn("Score band"),
+                "expectancy_r": st.column_config.NumberColumn("Expectancy R", format="%.2f"),
+                "win_rate": st.column_config.NumberColumn("Win rate", format="percent"),
+                "closed": st.column_config.NumberColumn("Closed (n)", format="%d"),
+            },
+        )
+        st.caption("A predictive score trends upward across bands; a flat or inverted curve "
+                   "means it isn't separating winners from losers (revisit the weights).")
+
     curve = performance.equity_curve(trades)
     if curve:
         st.markdown("**Equity curve (cumulative R)**")

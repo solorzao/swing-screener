@@ -129,7 +129,7 @@ filter + a live **actionability** status — each pick is graded against its lat
 **repeats** first seen on an earlier run aged out so the same play isn't shown day after day),
 Deep Analysis (request on-demand reports), Active Trades (inline close + live P/L),
 Trade Entry, Closed Trades (equity curve), Screener Performance (strategy-variant
-leaderboard + per-arm exit A/B + play-type
+leaderboard + per-arm exit A/B + score calibration + play-type
 filter), Exit Log, Universe, Digest Log.
 
 ```powershell

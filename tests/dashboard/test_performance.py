@@ -186,6 +186,37 @@ def test_leaderboard_ranks_trusted_above_thin_lucky_sample(tmp_path, monkeypatch
     assert flags["thinlucky"] == "thin" and flags["deep"] == "ok"
 
 
+def _seed_calibration(url):
+    engine = get_engine(url)
+    with Session(engine) as s:
+        # low-score band loses, high-score band wins -> a calibrated, upward curve
+        for i in range(4):
+            s.add(PaperTrade(ticker=f"L{i}", timeframe="1d", horizon="medium", signal_score=0.45,
+                             rank=1, fill_status="filled", stop=95.0, target=110.0, risk=5.0,
+                             status="closed", realized_r=-1.0, hold_bars=3,
+                             exit_date=date(2026, 1, 5)))
+            s.add(PaperTrade(ticker=f"H{i}", timeframe="1d", horizon="medium", signal_score=0.85,
+                             rank=1, fill_status="filled", stop=95.0, target=110.0, risk=5.0,
+                             status="closed", realized_r=2.0, hold_bars=3,
+                             exit_date=date(2026, 1, 6)))
+        s.commit()
+
+
+def test_performance_renders_score_calibration(tmp_path, monkeypatch):
+    url = f"sqlite:///{tmp_path / 'perf_cal.sqlite'}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    _seed_calibration(url)
+    at = AppTest.from_file(APP).run()
+    at.sidebar.radio[0].set_value("Screener Performance").run()
+    assert not at.exception
+
+    md = " ".join(str(getattr(m, "value", "")) for m in at.markdown)
+    assert "Score calibration" in md
+    # the calibration table shows both populated bands
+    tables = " ".join(df.value.to_string() for df in at.dataframe)
+    assert "0.80-1.00" in tables and "0.00-0.50" in tables
+
+
 def test_performance_empty_state_has_no_chart(tmp_path, monkeypatch):
     url = f"sqlite:///{tmp_path / 'perf_empty.sqlite'}"
     monkeypatch.setenv("SWING_DB_URL", url)

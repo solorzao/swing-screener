@@ -153,6 +153,43 @@ def rank_bucket(
     return {label: summarize(groups[label]) for label in labels}
 
 
+def _score_labels(edges: Sequence[float]) -> list[str]:
+    """Band labels from ascending score ``edges`` in (0, 1).
+
+    edges ``[0.5, 0.7]`` -> ["0.00-0.50", "0.50-0.70", "0.70-1.00"]. Bands are
+    lower-inclusive / upper-exclusive; the last runs to 1.00 inclusive.
+    """
+    labels: list[str] = []
+    low = 0.0
+    for edge in edges:
+        labels.append(f"{low:.2f}-{edge:.2f}")
+        low = edge
+    labels.append(f"{low:.2f}-1.00")
+    return labels
+
+
+def score_bucket(
+    trades: Iterable[PaperTrade], edges: Sequence[float]
+) -> dict[str, PerformanceSummary]:
+    """Bucket trades by ``signal_score`` into bands defined by ``edges`` and summarize each.
+
+    The calibration check: a predictive score makes ``expectancy_r`` trend UP across the
+    bands (high-score setups should out-earn low-score ones). A flat or inverted trend
+    means the score isn't separating winners from losers. Every band label appears even
+    when empty; a score exactly on an edge falls into the higher band (lower-inclusive).
+    """
+    labels = _score_labels(edges)
+    groups: dict[str, list[PaperTrade]] = {label: [] for label in labels}
+    for t in trades:
+        idx = len(edges)
+        for i, edge in enumerate(edges):
+            if t.signal_score < edge:
+                idx = i
+                break
+        groups[labels[idx]].append(t)
+    return {label: summarize(groups[label]) for label in labels}
+
+
 def equity_curve(trades: Iterable[PaperTrade]) -> list[tuple[date, float]]:
     """Cumulative realized R over closed-filled trades, ordered by ``exit_date``.
 

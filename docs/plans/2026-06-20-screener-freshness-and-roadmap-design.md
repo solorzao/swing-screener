@@ -1,10 +1,10 @@
 # Screener freshness + system roadmap — design
 
 **Date:** 2026-06-20
-**Status:** Steps 1–5 shipped (freshness gate, live actionability, persisted
+**Status:** Steps 1–6 shipped (freshness gate, live actionability, persisted
 extension/first-seen, freshness score term, staleness cooldown, screen-variant shadow-book
-dimension + strategy leaderboard, offline replay/backtest harness, leaderboard significance);
-roadmap proposed.
+dimension + strategy leaderboard, offline replay/backtest harness, leaderboard significance,
+score calibration); roadmap proposed.
 **Scope:** Fix the "screeners suggest plays that already ran" complaint, and chart a path
 toward a measurement-driven, self-optimizing system (a deterministic
 build → deploy → measure → optimize → repeat loop with a strategy leaderboard).
@@ -119,16 +119,24 @@ variant (its 1-sample CI collapses to the point estimate, which the two-tier key
 dashboard shows the 95% interval + a thin/ok flag and adds a trailing-window cut (90/180/365d by
 open date).
 
+## Step 6 — shipped (score calibration)
+
+`analytics.performance.score_bucket(trades, edges)` buckets closed trades by `signal_score`
+into bands and summarizes each, so the dashboard can ask: does a higher composite score
+actually earn more? "Screener Performance" now renders a **Score calibration** section — an
+expectancy-by-band bar chart + table (bands `0.0–0.5 / 0.5–0.6 / 0.6–0.7 / 0.7–0.8 / 0.8–1.0`,
+empty bands hidden from the chart) — with a caption: a predictive score trends up across bands;
+a flat or inverted curve means the weights need rework. Runs on the selected variant/arm, so
+calibration can be read per screen config.
+
 ## Roadmap — toward the self-optimizing system
 
 The live forward-testing dimensions (exit arms + screen variants), the offline replay harness,
-and trustworthy leaderboards are in place. Remaining:
+trustworthy leaderboards, and score calibration are in place. Remaining:
 
-1. **Score calibration.** Track realized expectancy by score decile to verify the score
-   predicts winners; a flat curve means the score is miscalibrated.
-2. **Regime tagging.** Stamp each run with market context (SPY vs 200DMA, volatility bucket)
+1. **Regime tagging.** Stamp each run with market context (SPY vs 200DMA, volatility bucket)
    and break performance down by regime — continuation wants uptrends, reversals want washouts.
-3. **Scheduled optimizer job** that drives the replay harness over a config grid on a cadence
+2. **Scheduled optimizer job** that drives the replay harness over a config grid on a cadence
    and proposes the next `build_screen_variants` set — the deterministic analog of the post's
    "AI-native orchestrator."
 
