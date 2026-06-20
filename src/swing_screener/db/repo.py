@@ -57,6 +57,26 @@ def load_open_paper_trades(session: Session) -> list[PaperTrade]:
     return list(session.scalars(stmt))
 
 
+def load_closed_paper_trades(
+    session: Session, *, play_type: str | None = None, arm: str | None = None
+) -> list[PaperTrade]:
+    """Filled trades that have closed with a realized result. Optional play_type / arm
+    facets for sliced A/B reads. Mirrors analytics.performance._is_closed_filled."""
+    stmt = select(PaperTrade).where(
+        PaperTrade.status == "closed", PaperTrade.fill_status == "filled"
+    )
+    if play_type is not None:
+        stmt = stmt.where(PaperTrade.play_type == play_type)
+    if arm is not None:
+        stmt = stmt.where(PaperTrade.arm == arm)
+    return list(session.scalars(stmt))
+
+
+def load_all_paper_trades(session: Session) -> list[PaperTrade]:
+    """Every paper trade (any status/fill). For replay aggregation + QC."""
+    return list(session.scalars(select(PaperTrade)))
+
+
 def record_exit_event(session: Session, *, is_paper: bool, trade_id: int | None,
                       tier: str, reason: str, message: str, created_date: date) -> ExitEvent:
     event = ExitEvent(created_date=created_date, is_paper=is_paper, trade_id=trade_id,
