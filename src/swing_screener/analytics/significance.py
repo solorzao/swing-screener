@@ -13,12 +13,13 @@ family of non-baseline arms. Pure, no I/O.
 import random
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import date
 
 import numpy as np
 
 from swing_screener.db.models import PaperTrade
 
-PairKey = tuple[str, str, object, str]  # (ticker, timeframe, opened_date, play_type)
+PairKey = tuple[str, str, "date | None", str]  # (ticker, timeframe, opened_date, play_type)
 
 
 def _is_closed_filled(t: PaperTrade) -> bool:
@@ -107,13 +108,17 @@ def compare_arm_to_baseline(
 
 
 def evaluate_arms(
-    trades: list[PaperTrade], arms: list[str], *, baseline: str = "baseline", **kw: object
+    trades: list[PaperTrade], arms: list[str], *, baseline: str = "baseline",
+    min_pairs: int = 30, min_clusters: int = 10, margin_r: float = 0.05,
+    alpha: float = 0.05, n_boot: int = 2000, seed: int = 0,
 ) -> dict[str, ArmVerdict]:
     """Compare each challenger arm to baseline with family_size = number of challengers
-    (the multiple-comparisons family). kw passes through to compare_arm_to_baseline."""
-    kw.pop("family_size", None)  # we own it here
+    (the multiple-comparisons family)."""
     return {
-        arm: compare_arm_to_baseline(trades, arm, baseline=baseline,
-                                     family_size=len(arms), **kw)  # type: ignore[arg-type]
+        arm: compare_arm_to_baseline(
+            trades, arm, baseline=baseline, family_size=len(arms),
+            min_pairs=min_pairs, min_clusters=min_clusters, margin_r=margin_r,
+            alpha=alpha, n_boot=n_boot, seed=seed,
+        )
         for arm in arms
     }
