@@ -258,6 +258,25 @@ def _score_labels(edges: Sequence[float]) -> list[str]:
     return labels
 
 
+def _bucket_trades_by_score(
+    trades: Iterable[PaperTrade], edges: Sequence[float]
+) -> dict[str, list[PaperTrade]]:
+    """Group trades into score bands (lower-inclusive: a score on an edge falls in the
+    higher band). The single source of the score-band MEMBERSHIP rule, shared by
+    score_bucket (which summarizes each group) and the reflection grader (which needs the
+    raw trade lists)."""
+    labels = _score_labels(edges)
+    groups: dict[str, list[PaperTrade]] = {label: [] for label in labels}
+    for t in trades:
+        idx = len(edges)
+        for i, edge in enumerate(edges):
+            if t.signal_score < edge:
+                idx = i
+                break
+        groups[labels[idx]].append(t)
+    return groups
+
+
 def score_bucket(
     trades: Iterable[PaperTrade], edges: Sequence[float]
 ) -> dict[str, PerformanceSummary]:
@@ -268,16 +287,10 @@ def score_bucket(
     means the score isn't separating winners from losers. Every band label appears even
     when empty; a score exactly on an edge falls into the higher band (lower-inclusive).
     """
-    labels = _score_labels(edges)
-    groups: dict[str, list[PaperTrade]] = {label: [] for label in labels}
-    for t in trades:
-        idx = len(edges)
-        for i, edge in enumerate(edges):
-            if t.signal_score < edge:
-                idx = i
-                break
-        groups[labels[idx]].append(t)
-    return {label: summarize(groups[label]) for label in labels}
+    return {
+        label: summarize(group)
+        for label, group in _bucket_trades_by_score(trades, edges).items()
+    }
 
 
 def equity_curve(trades: Iterable[PaperTrade]) -> list[tuple[date, float]]:
