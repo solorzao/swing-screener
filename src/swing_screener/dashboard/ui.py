@@ -8,6 +8,8 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+from swing_screener.analytics.significance import ArmVerdict
+
 ACCENT = "#4F46E5"
 POS = "#16A34A"  # P/L positive (green)
 NEG = "#DC2626"  # P/L negative (red)
@@ -93,6 +95,21 @@ def connection_label(db_url: str) -> str:
         db = u.database or "?"
         return f"Azure SQL · {db}"
     return driver
+
+
+def format_arm_verdict(v: ArmVerdict) -> str:
+    """One-line human verdict for the dashboard arm A/B view.
+
+    'insufficient_data' deliberately omits the CI (it's NaN there) and shows the
+    pair/ticker counts so a thin sample reads as 'not yet' rather than a false call.
+    """
+    icon = {"winner": "✅", "no_edge": "➖", "insufficient_data": "⏳"}.get(v.verdict, "?")
+    if v.verdict == "insufficient_data":
+        return (f"{icon} {v.arm}: insufficient data "
+                f"({v.n_pairs} pairs / {v.n_clusters} tickers)")
+    return (f"{icon} {v.arm}: {v.mean_diff_r:+.2f}R "
+            f"[{v.ci_low:+.2f}, {v.ci_high:+.2f}] vs {v.baseline} "
+            f"· {v.n_pairs} pairs/{v.n_clusters} tickers · {v.verdict}")
 
 
 def page_header(title: str, caption: str | None = None) -> None:

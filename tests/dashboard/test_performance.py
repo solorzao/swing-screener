@@ -85,6 +85,21 @@ def test_performance_shows_per_arm_ab_when_multiple_arms(tmp_path, monkeypatch):
     assert _expectancy() == "1.60"
 
 
+def test_performance_renders_ab_significance_verdict(tmp_path, monkeypatch):
+    url = f"sqlite:///{tmp_path / 'perf_sig.sqlite'}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    _seed_two_arms(url)  # one paired fill -> below the data floor for the guard
+    at = AppTest.from_file(APP).run()
+    at.sidebar.radio[0].set_value("Screener Performance").run()
+    assert not at.exception
+
+    # The significance guard renders one verdict line per non-baseline challenger arm.
+    # With a single paired fill it must read as "insufficient data", never a winner.
+    texts = " ".join(str(getattr(el, "value", el.body)) for el in at.markdown)
+    assert "insufficient data" in texts
+    assert "partial33_cond" in texts
+
+
 def _seed_mixed_play_types(url):
     engine = get_engine(url)
     with Session(engine) as s:

@@ -24,12 +24,14 @@ from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from swing_screener.analytics import performance
+from swing_screener.analytics.significance import evaluate_arms
+from swing_screener.config import StrategyConfig
 from swing_screener.dashboard import quotes, ui
 from swing_screener.dashboard.pl import position_pl, total_unrealized_pl
 from swing_screener.db import repo
 from swing_screener.db.models import ExitEvent, PaperTrade, Trade
 from swing_screener.db.session import get_engine
-from swing_screener.pipeline.arms import BASELINE
+from swing_screener.pipeline.arms import BASELINE, build_arms
 from swing_screener.settings import load_settings
 from swing_screener.storage.blob import blob_enabled, download_bytes
 
@@ -423,13 +425,17 @@ def _render_performance(session: Session) -> None:
 
     # Play-type filter (continuation vs reversal). The partial/trail arms span both
     # engines, so scope the arm A/B to one play type to judge it there in isolation.
+    # play_type_filter (None = "All") is reused below to scope the significance guard.
+    play_type_filter: str | None = None
     if len({t.play_type for t in paper_trades}) > 1:
         choice = st.segmented_control("Play type", ["All", "Continuation", "Reversal"],
                                       default="All")
         if choice == "Continuation":
-            paper_trades = [t for t in paper_trades if t.play_type == "continuation"]
+            play_type_filter = "continuation"
         elif choice == "Reversal":
-            paper_trades = [t for t in paper_trades if t.play_type == "reversal"]
+            play_type_filter = "reversal"
+        if play_type_filter is not None:
+            paper_trades = [t for t in paper_trades if t.play_type == play_type_filter]
         if not paper_trades:
             ui.empty_state(f"No {choice} shadow-book trades.")
             return
@@ -463,6 +469,23 @@ def _render_performance(session: Session) -> None:
                 "closed": st.column_config.NumberColumn("Closed", format="%d"),
             },
         )
+
+        # Significance guard: is a challenger arm's edge real, or noise on a thin,
+        # optimistically-filled sample? Load from the DB scoped to the same play-type
+        # filter so the verdict matches the breakdown above; compare each non-baseline
+        # arm against baseline (the multiple-comparisons family).
+        closed = repo.load_closed_paper_trades(session, play_type=play_type_filter)
+        challengers = [a for a in build_arms(StrategyConfig()) if a != BASELINE]
+        verdicts = evaluate_arms(closed, challengers)
+        with st.expander(
+            "A/B significance (clustered paired bootstrap, optimistic-fill margin)"
+        ):
+            st.caption("Forward-/replay fills are optimistic; a 'winner' must clear the "
+                       "margin, not merely beat zero. Multiple-comparisons corrected "
+                       "across arms.")
+            for challenger in challengers:
+                st.write(ui.format_arm_verdict(verdicts[challenger]))
+
         default_idx = arms.index(BASELINE) if BASELINE in arms else 0
         arm = st.radio("Arm detail", arms, index=default_idx, horizontal=True)
         trades = [t for t in paper_trades if t.arm == arm]
