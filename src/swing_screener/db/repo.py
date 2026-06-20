@@ -63,7 +63,9 @@ def load_closed_paper_trades(
     """Filled trades that have closed with a realized result. Optional play_type / arm
     facets for sliced A/B reads. Mirrors analytics.performance._is_closed_filled."""
     stmt = select(PaperTrade).where(
-        PaperTrade.status == "closed", PaperTrade.fill_status == "filled"
+        PaperTrade.status == "closed",
+        PaperTrade.fill_status == "filled",
+        PaperTrade.realized_r.is_not(None),
     )
     if play_type is not None:
         stmt = stmt.where(PaperTrade.play_type == play_type)

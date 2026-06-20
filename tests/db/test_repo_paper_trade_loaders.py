@@ -30,6 +30,8 @@ def test_load_closed_paper_trades_filters_status_fill_and_optional_facets():
                 realized_r=None),
             _pt(play_type="reversal", strength="early",       # reversal (non-baseline arm
                 arm="partial33_cond"),                        # so arm="baseline" -> 1)
+            # No filled+closed+null-R row is constructed: the shadow writer never
+            # produces one, so it's intentionally outside this fixture.
         ])
         s.commit()
 
