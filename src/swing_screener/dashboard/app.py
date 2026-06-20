@@ -484,7 +484,7 @@ def _render_performance(session: Session) -> None:
                        "margin, not merely beat zero. Multiple-comparisons corrected "
                        "across arms.")
             for challenger in challengers:
-                st.write(ui.format_arm_verdict(verdicts[challenger]))
+                st.markdown(ui.format_arm_verdict(verdicts[challenger]))
 
         default_idx = arms.index(BASELINE) if BASELINE in arms else 0
         arm = st.radio("Arm detail", arms, index=default_idx, horizontal=True)
