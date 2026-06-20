@@ -163,8 +163,8 @@ src/swing_screener/
                        shadow (multi-arm shadow book), arms (exit arms),
                        variants (screen arms), regime (SPY market context),
                        replay (offline backtest harness), optimize (walk-forward
-                       config sweep), exitcheck (intraday exit alerts),
-                       run (nightly orchestrator CLI)
+                       config sweep), propose (auto config-change PR),
+                       exitcheck (intraday exit alerts), run (nightly CLI)
   notify/              run, select, analysis (Opus analyst), ondemand
                        (queued deep analysis), ticker_report, pdf, body,
                        acs / smtp / transport (email), alerts
@@ -200,6 +200,11 @@ slice, then reports whether the winner holds out-of-sample — the build→measu
 ```powershell
 .\.venv\Scripts\python -m swing_screener.pipeline.optimize --tickers AMD,NVDA --cache-dir .cache
 ```
+
+A weekly GitHub Actions workflow ([`optimize.yml`](.github/workflows/optimize.yml)) runs this
+automatically and, **only** when a swept config beats the shipped gate on a trusted
+out-of-sample basis, opens a config-change PR for you to review (`pipeline.propose`) — the
+scheduled loop, with a human approval gate (nothing auto-deploys).
 
 ## Development
 
