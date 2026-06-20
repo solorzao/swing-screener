@@ -12,12 +12,16 @@ the replay corpus via ``pipeline.replay``) and returns ``Verdict`` rows. Falsifi
 prior claims against the previous edge file lives in a later task, not here.
 """
 
+import argparse
 import logging
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import NamedTuple
 
 import anthropic
+import pandas as pd
+from sqlalchemy.orm import Session
 
 from swing_screener.analytics.performance import (
     _CLUSTER_FLOOR,
@@ -27,10 +31,34 @@ from swing_screener.analytics.performance import (
     _score_labels,
     summarize,
 )
+from swing_screener.config import StrategyConfig
 from swing_screener.config_secrets import get_secret
+from swing_screener.data.fetch import fetch_bars
+from swing_screener.db import repo
 from swing_screener.db.models import PaperTrade
+from swing_screener.db.session import get_engine
+from swing_screener.pipeline.arms import BASELINE
+from swing_screener.pipeline.optimize import fetch_daily
+from swing_screener.pipeline.replay import replay_book
+from swing_screener.pipeline.variants import DEFAULT_VARIANT
+from swing_screener.settings import load_settings
 
 log = logging.getLogger(__name__)
+
+# The per-play-type thesis used when an edge file is missing (a fresh repo or a deleted
+# file). The SAME sentences seed ``edge/<pt>.md`` -- keeping the default and the seed in
+# one place so they can never drift apart; ``run_reflection`` prefers a prior file's own
+# (possibly hand-edited) thesis and only falls back to these.
+_DEFAULT_THESIS = {
+    "continuation": (
+        "Heiken-Ashi pullback-continuation: an established uptrend, a shallow HA pullback, "
+        "enter long on the bullish HA flip out of the pullback zone."
+    ),
+    "reversal": (
+        "Oversold Heiken-Ashi reversal: a downtrend washout showing a green-out-of-red HA "
+        "flip; enter on a pullback into the bounce, not a chase."
+    ),
+}
 
 # PRE-REGISTERED univariate family (frozen; adding a dimension is a deliberate git-visible
 # change that resets K). Categorical dims enumerate buckets; "score" lists its band labels.
@@ -523,3 +551,149 @@ def author_edge_file(
             play_type, thesis, verdicts, n_closed_now=n_closed_now,
             prior_falsified=_section_body(prior_text, "Falsified / retired"),
         )
+
+
+# ===========================================================================
+# ORCHESTRATION -- the event trigger, the run, and the CLI.
+#
+# The reflection is EVENT-driven, not time-driven: a play type is reflected only once its
+# live FORWARD book has grown by a meaningful batch of new closed trades since the last
+# reflection (the counter the edge file's frontmatter records). The run grades that forward
+# book against a haircut 1d replay screen, authors the markdown via the Opus seam, and writes
+# the file back -- the ONLY side effect. No DB writes; no level/config changes. The CLI mirrors
+# ``propose.main`` (load_settings -> engine -> Session -> cached fetch seams -> run) and the
+# workflow PRs the edge/*.md diff for a human to merge.
+# ===========================================================================
+
+_PLAY_TYPES = ("continuation", "reversal")
+# New closed FORWARD trades (per play type) required to re-arm a reflection. Tied to the
+# leaderboard's trust floor so a reflection never fires on a sample too thin to grade.
+_REFLECT_TRIGGER_N = MIN_LEADERBOARD_N
+# Fixed a-priori microstructure haircut applied to the screened (replay) tier so its
+# expectancy is net-of-cost like the forward book's. NOT swept -- a sweep here would turn the
+# honesty haircut into a tunable knob and reopen the overfit door.
+_REPLAY_HAIRCUT_ATR = 0.05
+_EDGE_DIR = Path("edge")
+
+
+def _edge_text(edge_dir: Path, play_type: str) -> str:
+    """The current edge file's text, or "" if it does not exist."""
+    path = edge_dir / f"{play_type}.md"
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def _thesis_for(prior_text: str, play_type: str) -> str:
+    """The play type's thesis: the prior file's ``## Thesis`` body if present (so a
+    hand-edited thesis survives), else the shared per-play-type default."""
+    body = _section_body(prior_text, "Thesis")
+    return body if body else _DEFAULT_THESIS[play_type]
+
+
+def due_play_types(session: Session, edge_dir: Path = _EDGE_DIR) -> list[str]:
+    """The play types whose live FORWARD book has grown enough to re-arm a reflection.
+
+    For each play type, read the counter the edge file's frontmatter recorded at the last
+    reflection (``parse_state``; 0 when the file is missing) and the CURRENT count of closed
+    FORWARD trades at (arm=BASELINE, variant=DEFAULT_VARIANT) -- the exact facet the grader
+    grades. A play type is due iff ``current - last >= _REFLECT_TRIGGER_N``.
+    """
+    due: list[str] = []
+    for pt in _PLAY_TYPES:
+        last = parse_state(_edge_text(edge_dir, pt)).forward_closed_at_last_reflection
+        current = len(repo.load_closed_paper_trades(
+            session, play_type=pt, arm=BASELINE, variant=DEFAULT_VARIANT,
+        ))
+        if current - last >= _REFLECT_TRIGGER_N:
+            due.append(pt)
+    return due
+
+
+def run_reflection(
+    session: Session,
+    *,
+    replay_frames: dict[str, pd.DataFrame],
+    spy_daily: pd.DataFrame | None,
+    edge_dir: Path = _EDGE_DIR,
+    client: anthropic.Anthropic | None = None,
+    today: str | None = None,
+) -> list[str]:
+    """Reflect every DUE play type and rewrite its ``edge/<pt>.md``; return the list reflected.
+
+    For each due play type: load the live forward book (arm=BASELINE, variant=DEFAULT_VARIANT);
+    build the screened tier by replaying ``replay_frames`` on the 1d timeframe with the fixed
+    ``_REPLAY_HAIRCUT_ATR`` microstructure haircut and the point-in-time SPY regime stamped
+    (``spy_daily``), then keep only this play type's trades; ``grade`` forward-vs-replay; and
+    ``author_edge_file`` the markdown (carrying the prior thesis + Falsified items, stamping the
+    code-owned FORWARD counter). Writing the file is the ONLY side effect -- no DB writes.
+
+    Known Phase-1 approximation: the forward book pools ALL timeframes while the replay screen
+    is 1d only; acceptable here (the screened tier is a directional candidate, not gold).
+    """
+    cfg = replace(StrategyConfig(), fill_slippage_atr=_REPLAY_HAIRCUT_ATR)
+    due = due_play_types(session, edge_dir=edge_dir)
+    if not due:
+        return []
+
+    # Replay ONCE over the whole universe (the screened tier is the same corpus for every play
+    # type; we just slice it per play type below), with the haircut on both the base + default
+    # variant and the regime stamped from SPY.
+    replay_all = replay_book(
+        replay_frames, timeframe="1d", base_cfg=cfg,
+        variants={DEFAULT_VARIANT: cfg}, spy_daily=spy_daily,
+    )
+
+    for pt in due:
+        forward = repo.load_closed_paper_trades(
+            session, play_type=pt, arm=BASELINE, variant=DEFAULT_VARIANT,
+        )
+        replay_pt = [t for t in replay_all if t.play_type == pt]
+        verdicts = grade(pt, forward, replay_pt)
+
+        prior_text = _edge_text(edge_dir, pt)
+        thesis = _thesis_for(prior_text, pt)
+        content = author_edge_file(
+            pt, thesis, verdicts, prior_text,
+            n_closed_now=len(forward), last_reflected=today, client=client,
+        )
+        (edge_dir / f"{pt}.md").write_text(content, encoding="utf-8")
+        log.info("reflected %s: %d forward closed, %d replay-screened",
+                 pt, len(forward), len(replay_pt))
+    return due
+
+
+# Default basket mirrors optimize.yml's; the replay universe the screened tier is built over.
+_DEFAULT_TICKERS = "AMD,NVDA,AAPL,MSFT,META,AMZN,GOOGL,TSLA,JPM,XOM,WMT,AVGO"
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Event-triggered reflection: grade each due play type's forward book "
+                    "against a haircut 1d replay screen and rewrite its edge/*.md (no DB "
+                    "writes). A workflow PRs the diff for a human to merge.")
+    settings = load_settings()
+    parser.add_argument("--tickers", default=_DEFAULT_TICKERS, help="comma-separated")
+    parser.add_argument("--cache-dir", type=Path, default=settings.cache_dir)
+    parser.add_argument("--edge-dir", type=Path, default=_EDGE_DIR)
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO)
+
+    tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
+    replay_frames = fetch_daily(tickers, args.cache_dir)
+    if not replay_frames:
+        log.warning("no replay data fetched for %s; screened tier will be empty", tickers)
+    spy_daily = fetch_bars("SPY", "1d", cache_dir=args.cache_dir)
+
+    engine = get_engine(settings.db_url)
+    with Session(engine) as session:
+        reflected = run_reflection(
+            session, replay_frames=replay_frames, spy_daily=spy_daily,
+            edge_dir=args.edge_dir,
+        )
+    if reflected:
+        log.info("reflected play types: %s", ", ".join(reflected))
+    else:
+        log.info("no play type due for reflection (forward book has not advanced enough)")
+
+
+if __name__ == "__main__":
+    main()
