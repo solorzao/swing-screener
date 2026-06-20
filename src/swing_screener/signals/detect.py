@@ -14,6 +14,10 @@ class PullbackContext:
     pullback_bars: int
     shaved_bottom: bool       # trigger quality flag
     rsi: float
+    # how far the trigger close already sits above the fast EMA, in ATR units.
+    # A freshness/anti-chase measure: a large value means the move "already ran".
+    # Defaulted so callers/tests that construct a context by hand stay valid.
+    extension_atr: float = 0.0
 
 
 def detect_last_bar(f: pd.DataFrame, cfg: StrategyConfig) -> PullbackContext | None:
@@ -57,12 +61,18 @@ def detect_last_bar(f: pd.DataFrame, cfg: StrategyConfig) -> PullbackContext | N
     if swing_low <= last["ema_slow"]:
         return None
 
+    atr = float(last["atr"])
+    # Extension above the fast EMA in ATR units -- the anti-chase/freshness measure.
+    # The gate itself lives in analyze_frames (policy); detect only reports the metric.
+    extension_atr = (float(last["close"]) - float(last["ema_fast"])) / atr if atr else 0.0
+
     return PullbackContext(
         trigger_ts=f.index[-1],
         trigger_close=float(last["close"]),
-        atr=float(last["atr"]),
+        atr=atr,
         swing_low=float(swing_low),
         pullback_bars=len(pullback),
         shaved_bottom=bool(last["shaved_bottom"]),
         rsi=float(last["rsi"]),
+        extension_atr=extension_atr,
     )

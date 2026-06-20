@@ -53,8 +53,15 @@ def _uptrend(bars):
                  for i in range(60)])
 
 
+# The synthetic _firing helper uses an outsized one-bar green flip on a steep ramp,
+# so its trigger sits ~5 ATR above the fast EMA -- far past the freshness gate. These
+# plumbing tests (zone/score/tags/MTF) disable the gate so they exercise their actual
+# concern independent of the anti-chase policy (which has its own test below).
+_NO_EXT_GATE = StrategyConfig(max_extension_atr=0.0)
+
+
 def test_fires_with_zone_score_and_tags(bars):
-    res = analyze_ticker("AAPL", {"1d": _firing(bars)}, StrategyConfig())
+    res = analyze_ticker("AAPL", {"1d": _firing(bars)}, _NO_EXT_GATE)
     assert len(res) == 1
     r = res[0]
     assert r.ticker == "AAPL" and r.timeframe == "1d" and r.horizon == "medium"
@@ -66,9 +73,9 @@ def test_fires_with_zone_score_and_tags(bars):
 
 
 def test_mtf_alignment_boosts_score(bars):
-    base = analyze_ticker("AAPL", {"1d": _firing(bars)}, StrategyConfig())[0]
+    base = analyze_ticker("AAPL", {"1d": _firing(bars)}, _NO_EXT_GATE)[0]
     aligned = analyze_ticker(
-        "AAPL", {"1d": _firing(bars), "1wk": _uptrend(bars)}, StrategyConfig()
+        "AAPL", {"1d": _firing(bars), "1wk": _uptrend(bars)}, _NO_EXT_GATE
     )[0]
     assert aligned.mtf_aligned is True
     assert aligned.score > base.score
@@ -77,3 +84,14 @@ def test_mtf_alignment_boosts_score(bars):
 def test_no_fire_returns_empty(bars):
     res = analyze_ticker("AAPL", {"1d": _uptrend(bars)}, StrategyConfig())
     assert res == []
+
+
+def test_overextended_trigger_is_filtered_by_freshness_gate(bars):
+    # The _firing trigger has already run well past the fast EMA (a chase). With the
+    # default gate it is suppressed; disabling the gate surfaces it again. This is the
+    # "stop suggesting plays that already ran" rule at the screen layer.
+    frames = {"1d": _firing(bars)}
+    assert analyze_ticker("AAPL", frames, StrategyConfig()) == []          # gated out
+    surfaced = analyze_ticker("AAPL", frames, _NO_EXT_GATE)                # gate off
+    assert len(surfaced) == 1
+    assert surfaced[0].ctx.extension_atr > StrategyConfig().max_extension_atr

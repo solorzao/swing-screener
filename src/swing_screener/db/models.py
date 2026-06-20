@@ -50,6 +50,13 @@ class Signal(Base):
     entry_ceiling: Mapped[float]
     stop: Mapped[float]
     target: Mapped[float]
+    # freshness / anti-chase metric: (trigger_close - EMA20) / ATR at the trigger.
+    # None for reversal plays (different geometry) and legacy rows.
+    extension_atr: Mapped[float | None] = mapped_column(default=None)
+    # streak start: the earliest run_date of the consecutive runs this (ticker,
+    # timeframe, play_type) setup has been firing -- lets the surface age out repeats.
+    # Equal to run_date for a freshly-appearing setup; None for legacy rows.
+    first_seen_date: Mapped[date | None] = mapped_column(default=None)
     chart_path: Mapped[str | None] = mapped_column(String(512), default=None)
 
 
@@ -96,11 +103,22 @@ class PaperTrade(Base):
     # different exit management) so breakdown(trades, "arm") gives a same-sample A/B
     # of e.g. all-or-nothing ("baseline") vs a conditional partial ("partial33_cond").
     arm: Mapped[str] = mapped_column(String(32), default="baseline", index=True)
+    # screen variant: the ENTRY/screen config that produced this fill -- the orthogonal
+    # complement to `arm`. "default" is the live screen config; other variants re-screen
+    # the prior bar under a tweaked StrategyConfig (e.g. a tighter freshness gate) and are
+    # booked under the baseline exit, so breakdown(trades, "variant") is a strategy
+    # leaderboard. Unlike arms, variants are NOT same-sample (different entries).
+    variant: Mapped[str] = mapped_column(String(32), default="default", index=True)
     # categorization tags denormalized from the signal so the shadow book can be
     # sliced by them in QC without a join back to the (run-date-scoped) signal row.
     quality_tier: Mapped[str] = mapped_column(String(32), default="")
     volatility_tier: Mapped[str] = mapped_column(String(32), default="")
     oversold: Mapped[bool] = mapped_column(default=False)
+    # broad market regime at fill time (SPY proxy), for performance attribution:
+    # market_trend "bull"/"bear" (vs 200DMA), market_vol "calm"/"elevated"/"high" (ATR%).
+    # None = unknown (SPY data unavailable) or a legacy row.
+    market_trend: Mapped[str | None] = mapped_column(String(16), default=None)
+    market_vol: Mapped[str | None] = mapped_column(String(16), default=None)
     fill_status: Mapped[str] = mapped_column(String(32))  # filled / missed / invalidated
     entry_date: Mapped[date | None] = mapped_column(default=None)
     entry_price: Mapped[float | None] = mapped_column(default=None)

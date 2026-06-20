@@ -27,6 +27,11 @@ ATR-scaled **entry zone** `[floor, ceiling]`, a **stop**, a **target**, categori
    "zone" candles that hold above `EMA50` (a continuation, not a reversal).
 3. **Trigger** — the most recent *closed* bar flips bullish (the first strong green HA candle
    out of the pullback).
+4. **Freshness (anti-chase)** — the trigger is rejected if its close already sits more than
+   `max_extension_atr` (default **2.0**) ATR above `EMA20`. A setup that has already run far
+   off the pullback is a chase, not an entry, so it never reaches the screen *or* the shadow
+   book (the freshness rule is part of the strategy end-to-end). Empirically, fresh pullback
+   triggers fire under ~1 ATR of extension; late chases fire at ~2.7.
 
 The continuation **target** is structure-aware: the nearest standard-candle swing-high
 resistance above the entry ceiling, else an ATR measured-move (`reference + 2·ATR`), floored
@@ -43,9 +48,11 @@ Continuation/Reversal filter throughout the dashboard.
 
 ### Scoring & exits
 
-The composite **score** blends HA trigger strength (0.35), multi-timeframe alignment (0.20),
-trend slope (0.15), volatility fit (0.10), **RSI** bull-range pullback quality (0.15), and
-**MACD-histogram** momentum (0.05).
+The composite **score** blends HA trigger strength (0.25), multi-timeframe alignment (0.20),
+trend slope (0.15), volatility fit (0.10), **RSI** bull-range pullback quality (0.15),
+**MACD-histogram** momentum (0.05), and **freshness** (0.10) — the last rewards a trigger that
+has *not* already extended away from EMA20, so clean setups outrank chases (0.10 was carved
+out of trigger strength, which used to over-reward already-run candles).
 
 Baseline exits are tiered: 🔴 hard stop (overrides), 🟠 HA momentum flip, 🟡 target /
 time-stop. On top of that baseline, the shadow book forward-tests **partial scale-outs** (a
@@ -84,10 +91,13 @@ and the target/exit overhaul
   persistence + enrichment, and a nightly orchestrator CLI.
 - The **shadow book** fills the *prior* bar's signals against the latest bar (worst-case
   in-zone, no lookahead) and advances open trades through the exit logic, recording outcomes
-  in R-multiples. It opens every fill once per **experiment arm** — `baseline`
-  (all-or-nothing), `partial33_cond` (conditional partial + breakeven runner), and
-  `partial33_chand` (partial + Chandelier trail) — so the dashboard can run a **same-sample
-  A/B** of exit policies (`analytics/performance.py`).
+  in R-multiples. It runs **two orthogonal experiment dimensions**. (1) Exit **arms** —
+  `baseline` (all-or-nothing), `partial33_cond` (conditional partial + breakeven runner), and
+  `partial33_chand` (partial + Chandelier trail) — open one shared fill under each exit policy
+  for a **same-sample A/B** of exits. (2) Screen **variants** (`pipeline/variants.py`) —
+  re-screen the prior bar under alternative entry configs (e.g. a tighter freshness gate) and
+  book each variant's own fills under the baseline exit, so `breakdown(trades, "variant")` is a
+  **strategy leaderboard**. Both feed `analytics/performance.py`.
 - **Notifications** (`notify/`) send daily/weekly/monthly digest emails (summary + PDF),
   intraday exit alerts, and **on-demand single-ticker deep analysis** (request a ticker in the
   dashboard → a queued worker runs a multi-timeframe Opus read → emails a PDF → surfaces it
@@ -114,8 +124,12 @@ Full run instructions, flags, and how to inspect results:
 [`docs/running-locally.md`](docs/running-locally.md).
 
 **Dashboard** — a 10-view sidebar app: Overview, Today's Candidates (continuation/reversal
-filter), Deep Analysis (request on-demand reports), Active Trades (inline close + live P/L),
-Trade Entry, Closed Trades (equity curve), Screener Performance (per-arm A/B + play-type
+filter + a live **actionability** status — each pick is graded against its latest price as
+✅ actionable / 🏃 already ran / ⛔ stopped, already-ran picks hidden by default, and
+**repeats** first seen on an earlier run aged out so the same play isn't shown day after day),
+Deep Analysis (request on-demand reports), Active Trades (inline close + live P/L),
+Trade Entry, Closed Trades (equity curve), Screener Performance (strategy-variant
+leaderboard + per-arm exit A/B + score calibration + market-regime cut + play-type
 filter), Exit Log, Universe, Digest Log.
 
 ```powershell
@@ -144,10 +158,12 @@ src/swing_screener/
   data/                universe (+ S&P 500 seed), resample, fetch         [I/O]
   db/                  models, session, repo (SQLAlchemy + SQLite/mssql)  [I/O]
   charts/              render (annotated Heiken Ashi via mplfinance)      [I/O]
-  analytics/           performance (shadow-book QC: expectancy, win %)    [pure]
+  analytics/           performance (shadow-book QC: expectancy + 95% CI)  [pure]
   pipeline/            analyze (MTF continuation + reversal + score),
-                       shadow (multi-arm shadow book), arms (experiment
-                       arms), exitcheck (intraday exit alerts),
+                       shadow (multi-arm shadow book), arms (exit arms),
+                       variants (screen arms), regime (SPY market context),
+                       replay (offline backtest harness), optimize (walk-forward
+                       config sweep), exitcheck (intraday exit alerts),
                        run (nightly orchestrator CLI)
   notify/              run, select, analysis (Opus analyst), ondemand
                        (queued deep analysis), ticker_report, pdf, body,
@@ -170,6 +186,20 @@ Run the nightly pipeline directly:
 
 It is **idempotent per run-date** (safe to re-run a day) and isolates per-ticker failures
 (one bad symbol never aborts the run).
+
+**Backtest the screen variants** over cached daily history (offline; prints a leaderboard
+ranking each `build_screen_variants` config by expectancy / win rate / fill rate):
+
+```powershell
+.\.venv\Scripts\python -m swing_screener.pipeline.replay --tickers AMD,NVDA --cache-dir .cache
+```
+
+**Sweep + propose a config** (walk-forward: ranks a grid of screen configs on an in-sample
+slice, then reports whether the winner holds out-of-sample — the build→measure→optimize loop):
+
+```powershell
+.\.venv\Scripts\python -m swing_screener.pipeline.optimize --tickers AMD,NVDA --cache-dir .cache
+```
 
 ## Development
 

@@ -121,6 +121,132 @@ def test_performance_play_type_filter_scopes_the_arm_ab(tmp_path, monkeypatch):
     assert _expectancy() == "-0.50"
 
 
+def _seed_two_variants(url):
+    engine = get_engine(url)
+    with Session(engine) as s:
+        # two screen variants, each on the baseline exit arm, different realized R
+        s.add(PaperTrade(ticker="AMD", timeframe="1d", horizon="medium", signal_score=0.9,
+                         rank=1, arm="baseline", variant="default", fill_status="filled",
+                         stop=95.0, target=110.0, risk=5.0, status="closed", realized_r=1.0,
+                         hold_bars=4, exit_date=date(2026, 1, 5)))
+        s.add(PaperTrade(ticker="NVDA", timeframe="1d", horizon="medium", signal_score=0.8,
+                         rank=1, arm="baseline", variant="extguard_tight", fill_status="filled",
+                         stop=190.0, target=220.0, risk=10.0, status="closed", realized_r=2.0,
+                         hold_bars=3, exit_date=date(2026, 1, 6)))
+        s.commit()
+
+
+def test_performance_shows_strategy_leaderboard_for_variants(tmp_path, monkeypatch):
+    url = f"sqlite:///{tmp_path / 'perf_var.sqlite'}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    _seed_two_variants(url)
+    at = AppTest.from_file(APP).run()
+    at.sidebar.radio[0].set_value("Screener Performance").run()
+    assert not at.exception
+
+    md = " ".join(str(getattr(m, "value", "")) for m in at.markdown)
+    assert "Strategy leaderboard" in md
+    tables = " ".join(df.value.to_string() for df in at.dataframe)
+    assert "extguard_tight" in tables and "default" in tables
+    # downstream KPIs are scoped to the default variant -> expectancy 1.0, not blended w/ 2.0
+    assert next(m.value for m in at.metric if m.label == "Expectancy R") == "1.00"
+
+
+def _seed_deep_vs_thin_variants(url):
+    engine = get_engine(url)
+    with Session(engine) as s:
+        # deep variant: 25 steady +0.5R trades (trusted, modest expectancy)
+        for i in range(25):
+            s.add(PaperTrade(ticker=f"T{i}", timeframe="1d", horizon="medium", signal_score=0.8,
+                             rank=1, arm="baseline", variant="deep", fill_status="filled",
+                             stop=95.0, target=110.0, risk=5.0, status="closed", realized_r=0.5,
+                             hold_bars=3, exit_date=date(2026, 1, 5)))
+        # thin variant: a single lucky +3R trade (high point estimate, no confidence)
+        s.add(PaperTrade(ticker="LUCK", timeframe="1d", horizon="medium", signal_score=0.8,
+                         rank=1, arm="baseline", variant="thinlucky", fill_status="filled",
+                         stop=95.0, target=110.0, risk=5.0, status="closed", realized_r=3.0,
+                         hold_bars=3, exit_date=date(2026, 1, 5)))
+        s.commit()
+
+
+def test_leaderboard_ranks_trusted_above_thin_lucky_sample(tmp_path, monkeypatch):
+    url = f"sqlite:///{tmp_path / 'perf_sig.sqlite'}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    _seed_deep_vs_thin_variants(url)
+    at = AppTest.from_file(APP).run()
+    at.sidebar.radio[0].set_value("Screener Performance").run()
+    assert not at.exception
+
+    board = at.dataframe[0].value  # leaderboard is the first table on the page
+    order = list(board["variant"])
+    # the deep +0.5R variant (n=25) outranks the lone lucky +3R trade despite lower expectancy
+    assert order.index("deep") < order.index("thinlucky")
+    # the 1-trade variant is flagged thin
+    flags = dict(zip(board["variant"], board["sample"], strict=True))
+    assert flags["thinlucky"] == "thin" and flags["deep"] == "ok"
+
+
+def _seed_calibration(url):
+    engine = get_engine(url)
+    with Session(engine) as s:
+        # low-score band loses, high-score band wins -> a calibrated, upward curve
+        for i in range(4):
+            s.add(PaperTrade(ticker=f"L{i}", timeframe="1d", horizon="medium", signal_score=0.45,
+                             rank=1, fill_status="filled", stop=95.0, target=110.0, risk=5.0,
+                             status="closed", realized_r=-1.0, hold_bars=3,
+                             exit_date=date(2026, 1, 5)))
+            s.add(PaperTrade(ticker=f"H{i}", timeframe="1d", horizon="medium", signal_score=0.85,
+                             rank=1, fill_status="filled", stop=95.0, target=110.0, risk=5.0,
+                             status="closed", realized_r=2.0, hold_bars=3,
+                             exit_date=date(2026, 1, 6)))
+        s.commit()
+
+
+def test_performance_renders_score_calibration(tmp_path, monkeypatch):
+    url = f"sqlite:///{tmp_path / 'perf_cal.sqlite'}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    _seed_calibration(url)
+    at = AppTest.from_file(APP).run()
+    at.sidebar.radio[0].set_value("Screener Performance").run()
+    assert not at.exception
+
+    md = " ".join(str(getattr(m, "value", "")) for m in at.markdown)
+    assert "Score calibration" in md
+    # the calibration table shows both populated bands
+    tables = " ".join(df.value.to_string() for df in at.dataframe)
+    assert "0.80-1.00" in tables and "0.00-0.50" in tables
+
+
+def _seed_regimes(url):
+    engine = get_engine(url)
+    with Session(engine) as s:
+        # continuation does well in a bull regime, poorly in a bear regime
+        for i in range(3):
+            s.add(PaperTrade(ticker=f"B{i}", timeframe="1d", horizon="medium", signal_score=0.8,
+                             rank=1, market_trend="bull", market_vol="calm", fill_status="filled",
+                             stop=95.0, target=110.0, risk=5.0, status="closed", realized_r=1.5,
+                             hold_bars=3, exit_date=date(2026, 1, 5)))
+            s.add(PaperTrade(ticker=f"R{i}", timeframe="1d", horizon="medium", signal_score=0.8,
+                             rank=1, market_trend="bear", market_vol="high", fill_status="filled",
+                             stop=95.0, target=110.0, risk=5.0, status="closed", realized_r=-0.8,
+                             hold_bars=3, exit_date=date(2026, 1, 6)))
+        s.commit()
+
+
+def test_performance_renders_regime_breakdown(tmp_path, monkeypatch):
+    url = f"sqlite:///{tmp_path / 'perf_regime.sqlite'}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    _seed_regimes(url)
+    at = AppTest.from_file(APP).run()
+    at.sidebar.radio[0].set_value("Screener Performance").run()
+    assert not at.exception
+
+    md = " ".join(str(getattr(m, "value", "")) for m in at.markdown)
+    assert "Performance by market regime" in md
+    tables = " ".join(df.value.to_string() for df in at.dataframe)
+    assert "trend: bull" in tables and "trend: bear" in tables
+
+
 def test_performance_empty_state_has_no_chart(tmp_path, monkeypatch):
     url = f"sqlite:///{tmp_path / 'perf_empty.sqlite'}"
     monkeypatch.setenv("SWING_DB_URL", url)

@@ -25,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from swing_screener.config import StrategyConfig
 from swing_screener.config_secrets import get_secret
 from swing_screener.data.universe import names_by_ticker
 from swing_screener.db import repo
@@ -187,7 +188,10 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         alerts = sel.pending_exit_alerts(session, run_date)
         _emit_pending_exit_alert(session, run_date, recipient, send)
 
-        picks = _PICKERS[kind](session, run_date)
+        # Staleness cooldown: drop picks whose setup has been on the list too long so the
+        # same play isn't re-pitched daily (legacy NULL-first_seen rows always pass).
+        cooldown = StrategyConfig().digest_repeat_cooldown_days
+        picks = _PICKERS[kind](session, run_date, max_age_days=cooldown)
         already = _already_sent(session, kind, run_date)
         if already and not force:  # don't re-send the same digest (force overrides for ad-hoc resends)
             return DigestResult(n_picks=len(picks), pdf_attached=False, sent=False)
@@ -231,7 +235,8 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         reversal_digest: list[DigestPick] | None = None
         reversal_pdf: list[PdfPick] = []
         if kind == "daily":
-            reversal_digest, reversal_pdf = _build_picks(sel.reversal_picks(session, run_date))
+            reversal_digest, reversal_pdf = _build_picks(
+                sel.reversal_picks(session, run_date, max_age_days=cooldown))
 
         pdf_path: Path | None = None
         if digest_picks or reversal_pdf:

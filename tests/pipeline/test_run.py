@@ -5,10 +5,17 @@ from types import SimpleNamespace
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from swing_screener.config import StrategyConfig
 from swing_screener.db import repo
 from swing_screener.db.models import PaperTrade, Signal
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline import run
+
+# The synthetic _firing fixture's trigger sits far past the fast EMA, so the default
+# freshness gate would suppress it. These pipeline-mechanics tests (persistence,
+# ranking, charts, shadow fills, idempotency) disable the gate so they exercise the
+# plumbing, not the anti-chase policy (covered in tests/pipeline/test_analyze.py).
+_NO_EXT_GATE = StrategyConfig(max_extension_atr=0.0)
 
 
 def _r(tf):
@@ -77,7 +84,7 @@ def test_run_persists_ranked_signals_and_writes_charts(tmp_path, bars, monkeypat
     res = run.run_screen(
         universe_path=_write_universe(tmp_path, ["AAPL", "ZZZ"]), db_url=db,
         cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts",
-        today=date(2024, 4, 1),
+        today=date(2024, 4, 1), cfg=_NO_EXT_GATE,
     )
     assert res.n_signals >= 1
     with Session(get_engine(db)) as s:
@@ -154,6 +161,7 @@ def test_run_isolates_failing_tickers(tmp_path, bars, monkeypatch):
     res = run.run_screen(
         universe_path=_write_universe(tmp_path, ["BAD", "AAPL"]), db_url=db,
         cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts", today=date(2024, 4, 1),
+        cfg=_NO_EXT_GATE,
     )
     assert res.n_signals >= 1  # AAPL still processed despite BAD raising
 
@@ -166,8 +174,92 @@ def test_run_shadow_book_opens_paper_trade(tmp_path, bars, monkeypatch):
     res = run.run_screen(
         universe_path=_write_universe(tmp_path, ["AAPL"]), db_url=db,
         cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts", today=date(2024, 4, 2),
+        cfg=_NO_EXT_GATE,
     )
     assert res.n_paper_opened >= 1  # prior-bar signal filled by the appended next bar
+
+
+def test_run_stamps_extension_and_inherits_first_seen_across_runs(tmp_path, bars, monkeypatch):
+    def fake_fetch(ticker, *, cache_dir, today, cfg):
+        return {"1d": _firing(bars)} if ticker == "AAPL" else {}
+    monkeypatch.setattr(run, "_fetch_all_timeframes", fake_fetch)
+    db = f"sqlite:///{tmp_path / 'db.sqlite'}"
+    kw = dict(universe_path=_write_universe(tmp_path, ["AAPL"]), db_url=db,
+              cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts", cfg=_NO_EXT_GATE)
+
+    run.run_screen(today=date(2024, 4, 1), **kw)
+    run.run_screen(today=date(2024, 4, 2), **kw)  # same setup fires again next run
+
+    with Session(get_engine(db)) as s:
+        d1 = next(x for x in repo.latest_signals(s, date(2024, 4, 1)) if x.ticker == "AAPL")
+        d2 = next(x for x in repo.latest_signals(s, date(2024, 4, 2)) if x.ticker == "AAPL")
+    assert d1.first_seen_date == date(2024, 4, 1)            # fresh on the first run
+    assert d2.first_seen_date == date(2024, 4, 1)            # streak start carried forward
+    assert d1.extension_atr is not None and d1.extension_atr > 0  # freshness metric persisted
+
+
+def test_run_books_screen_variant_paper_trades(tmp_path, bars, monkeypatch):
+    # The shadow book forward-tests screen variants as a second dimension. Stub the
+    # variant set to an alt that DOESN'T gate the firing fixture (it only retunes the
+    # target floor) so both books fill, and assert variant-tagged trades are created --
+    # default carries all exit arms, the alt only the baseline exit.
+    from dataclasses import replace
+
+    from swing_screener.pipeline.arms import BASELINE
+    from swing_screener.pipeline.variants import DEFAULT_VARIANT
+
+    def stub_variants(base):
+        return {DEFAULT_VARIANT: base, "alt": replace(base, min_target_r=3.0)}
+    monkeypatch.setattr(run, "build_screen_variants", stub_variants)
+
+    def fake_fetch(ticker, *, cache_dir, today, cfg):
+        return {"1d": _firing_then_fill_bar(bars)} if ticker == "AAPL" else {}
+    monkeypatch.setattr(run, "_fetch_all_timeframes", fake_fetch)
+
+    db = f"sqlite:///{tmp_path / 'db.sqlite'}"
+    run.run_screen(universe_path=_write_universe(tmp_path, ["AAPL"]), db_url=db,
+                   cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts",
+                   today=date(2024, 4, 2), cfg=_NO_EXT_GATE)
+
+    with Session(get_engine(db)) as s:
+        papers = list(s.scalars(select(PaperTrade)))
+    variants = {p.variant for p in papers}
+    assert {"default", "alt"} <= variants                       # both books exist
+    # the alt variant is booked under the baseline exit only (no partial arms)
+    alt_arms = {p.arm for p in papers if p.variant == "alt"}
+    assert alt_arms == {BASELINE}
+    # the default variant still carries the full exit-arm A/B
+    assert len({p.arm for p in papers if p.variant == "default"}) >= 2
+
+
+def _spy_bull(bars):
+    """A 220-bar rising SPY daily frame -> last close above its 200-day SMA (bull)."""
+    rows, p = [], 100.0
+    for _ in range(220):
+        rows.append({"open": p, "high": p + 0.1, "low": p - 0.1, "close": p + 0.1})
+        p += 0.1
+    return bars(rows)
+
+
+def test_run_tags_fills_with_market_regime(tmp_path, bars, monkeypatch):
+    # SPY (the regime proxy) is fetched through the same seam as the universe, so the
+    # mock serves a bull SPY frame alongside the firing ticker; every fill is tagged bull.
+    def fake_fetch(ticker, *, cache_dir, today, cfg):
+        if ticker == "SPY":
+            return {"1d": _spy_bull(bars)}
+        return {"1d": _firing_then_fill_bar(bars)} if ticker == "AAPL" else {}
+    monkeypatch.setattr(run, "_fetch_all_timeframes", fake_fetch)
+
+    db = f"sqlite:///{tmp_path / 'db.sqlite'}"
+    run.run_screen(universe_path=_write_universe(tmp_path, ["AAPL"]), db_url=db,
+                   cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts",
+                   today=date(2024, 4, 2), cfg=_NO_EXT_GATE)
+
+    with Session(get_engine(db)) as s:
+        papers = list(s.scalars(select(PaperTrade)))
+    assert papers, "expected the firing fixture to open paper trades"
+    assert all(p.market_trend == "bull" for p in papers)
+    assert all(p.market_vol in ("calm", "elevated", "high") for p in papers)
 
 
 def test_run_is_idempotent_for_same_day(tmp_path, bars, monkeypatch):
@@ -180,6 +272,7 @@ def test_run_is_idempotent_for_same_day(tmp_path, bars, monkeypatch):
     kwargs = dict(
         universe_path=_write_universe(tmp_path, ["AAPL"]), db_url=db,
         cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts", today=today,
+        cfg=_NO_EXT_GATE,
     )
     res1 = run.run_screen(**kwargs)
     run.run_screen(**kwargs)  # second run for the SAME day
@@ -209,6 +302,7 @@ def test_run_double_fire_does_not_duplicate_or_double_advance(tmp_path, bars, mo
     kwargs = dict(
         universe_path=_write_universe(tmp_path, ["AAPL"]), db_url=db,
         cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts", today=today,
+        cfg=_NO_EXT_GATE,
     )
 
     def _snapshot():

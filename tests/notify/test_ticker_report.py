@@ -34,7 +34,9 @@ def _flat(bars):
 
 
 def test_build_ticker_reads_attaches_setup_on_firing_frame(bars):
-    cfg = StrategyConfig()
+    # the synthetic _firing trigger runs past the freshness gate; this test is about
+    # the report attaching a setup, so disable the anti-chase gate here.
+    cfg = StrategyConfig(max_extension_atr=0.0)
     frames = build_frames({"1d": _firing(bars)}, cfg)
 
     reads = build_ticker_reads("AAPL", frames, cfg)

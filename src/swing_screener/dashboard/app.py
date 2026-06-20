@@ -14,7 +14,7 @@ test can monkeypatch that seam and avoid the network.
 """
 
 from collections.abc import Callable
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -27,10 +27,12 @@ from swing_screener.analytics import performance
 from swing_screener.dashboard import quotes, ui
 from swing_screener.dashboard.pl import position_pl, total_unrealized_pl
 from swing_screener.db import repo
-from swing_screener.db.models import ExitEvent, PaperTrade, Trade
+from swing_screener.db.models import ExitEvent, PaperTrade, Signal, Trade
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.arms import BASELINE
+from swing_screener.pipeline.variants import DEFAULT_VARIANT
 from swing_screener.settings import load_settings
+from swing_screener.signals.actionability import classify as classify_actionability
 from swing_screener.storage.blob import blob_enabled, download_bytes
 
 
@@ -121,11 +123,59 @@ def _render_candidates(session: Session) -> None:
         ui.empty_state(f"No {choice} plays in this run.")
         return
 
+    # Live actionability: a signal is computed at the trigger close but read later, by
+    # which point price may have run past the entry (a chase) or broken the stop. Tag
+    # each pick against its latest close so already-ran picks can be flagged + hidden.
+    prices = quotes.latest_closes([s.ticker for s in signals], cache_dir=_cache_dir())
+    act = {
+        s.id: classify_actionability(
+            entry_floor=s.entry_floor, entry_ceiling=s.entry_ceiling,
+            stop=s.stop, price=prices.get(s.ticker),
+        )
+        for s in signals
+    }
+
+    hide_ran = st.checkbox(
+        "Hide plays that already ran (price past entry or stop)", value=True,
+        help="Keeps only setups whose latest price is still in or below the entry zone. "
+             "Picks with no live quote are kept.",
+    )
+    if hide_ran:
+        kept = [s for s in signals if act[s.id].status in ("actionable", "unknown")]
+        if not kept:
+            ui.empty_state("Every pick in this run has already run past its entry. "
+                           "Untick the filter to see them all.")
+            return
+        signals = kept
+
+    # Staleness: a "repeat" is a setup first seen on an earlier run (its streak started
+    # before today). Hiding them keeps the list to genuinely new triggers.
+    def _is_repeat(s: Signal) -> bool:
+        return (s.first_seen_date is not None and run_date is not None
+                and s.first_seen_date < run_date)
+
+    hide_repeats = st.checkbox(
+        "Hide repeats (first seen on an earlier run)", value=True,
+        help="Shows only setups that first appeared in the latest run, so the same play "
+             "isn't surfaced day after day. Picks with no first-seen date are kept.",
+    )
+    if hide_repeats:
+        kept = [s for s in signals if not _is_repeat(s)]
+        if not kept:
+            ui.empty_state("Every pick here is a repeat from an earlier run. "
+                           "Untick the filter to see them all.")
+            return
+        signals = kept
+
+    _STATUS_LABEL = {"actionable": "✅ actionable", "extended": "🏃 already ran",
+                     "broken": "⛔ stopped", "unknown": "· no quote"}
     df = pd.DataFrame(
         [
             {
                 "rank": s.rank,
                 "ticker": s.ticker,
+                "status": _STATUS_LABEL[act[s.id].status],
+                "past_entry_r": act[s.id].dist_r,
                 "play_type": s.play_type,
                 "strength": s.strength,
                 "timeframe": s.timeframe,
@@ -133,6 +183,8 @@ def _render_candidates(session: Session) -> None:
                 "score": s.score,
                 "rsi": s.rsi,
                 "atr": s.atr,
+                "extension": s.extension_atr,
+                "first_seen": s.first_seen_date,
                 "mtf_aligned": s.mtf_aligned,
                 "oversold": s.oversold,
                 "quality_tier": s.quality_tier,
@@ -151,12 +203,24 @@ def _render_candidates(session: Session) -> None:
         hide_index=True,
         column_config={
             "rank": st.column_config.NumberColumn("Rank", format="%d"),
+            "status": st.column_config.TextColumn("Status"),
+            "past_entry_r": st.column_config.NumberColumn(
+                "Past entry (R)", format="%.2f",
+                help="How far the latest price sits above the entry ceiling, in R. "
+                     "≤ 0 means there's still room to enter; > 0 means it ran.",
+            ),
             "play_type": st.column_config.TextColumn("Play"),
             "score": st.column_config.ProgressColumn(
                 "Score", min_value=0.0, max_value=1.0, format="%.2f"
             ),
             "rsi": st.column_config.NumberColumn("RSI", format="%.0f"),
             "atr": st.column_config.NumberColumn("ATR", format="%.2f"),
+            "extension": st.column_config.NumberColumn(
+                "Ext (ATR)", format="%.2f",
+                help="How far the trigger ran above EMA20, in ATR. Higher = closer to a "
+                     "chase (continuation only).",
+            ),
+            "first_seen": st.column_config.DateColumn("First seen", format="MMM DD"),
             "entry_floor": st.column_config.NumberColumn("Entry ▼", format="$%.2f"),
             "entry_ceiling": st.column_config.NumberColumn("Entry ▲", format="$%.2f"),
             "stop": st.column_config.NumberColumn("Stop", format="$%.2f"),
@@ -434,6 +498,57 @@ def _render_performance(session: Session) -> None:
             ui.empty_state(f"No {choice} shadow-book trades.")
             return
 
+    # Strategy leaderboard: rank ENTRY/screen variants head-to-head under a fixed exit
+    # (the baseline arm) -- the complement of the exit-arm A/B below. Variants are NOT
+    # same-sample (each screens its own fills), so this compares strategies, not exits.
+    if len({t.variant for t in paper_trades}) > 1:
+        st.markdown("**Strategy leaderboard** — same exit (baseline), different screen config")
+        baseline = [t for t in paper_trades if t.arm == BASELINE]
+        # Trailing-window cut: judge variants on recent setups (by open date), not all
+        # history. "All" keeps everything; None (bare test mode) is treated as "All".
+        window = st.segmented_control("Window", ["All", "90d", "180d", "365d"], default="All")
+        if window in ("90d", "180d", "365d"):
+            cutoff = date.today() - timedelta(days=int(window[:-1]))
+            baseline = [t for t in baseline if t.opened_date and t.opened_date >= cutoff]
+        by_variant = performance.breakdown(baseline, "variant")
+        # Shared trust-tiered ranking: trusted samples above thin, then by lower CI bound.
+        var_order = performance.leaderboard_order(by_variant)
+        var_df = pd.DataFrame(
+            [
+                {
+                    "variant": v,
+                    "expectancy_r": by_variant[v].expectancy_r,
+                    "ci_low": by_variant[v].expectancy_ci_low,
+                    "ci_high": by_variant[v].expectancy_ci_high,
+                    "win_rate": by_variant[v].win_rate,
+                    "closed": by_variant[v].n_closed,
+                    "sample": ("thin" if by_variant[v].n_closed < performance.MIN_LEADERBOARD_N else "ok"),
+                }
+                for v in var_order
+            ]
+        )
+        st.dataframe(
+            var_df,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "variant": st.column_config.TextColumn("Variant"),
+                "expectancy_r": st.column_config.NumberColumn("Expectancy R", format="%.2f"),
+                "ci_low": st.column_config.NumberColumn("95% low", format="%.2f"),
+                "ci_high": st.column_config.NumberColumn("95% high", format="%.2f"),
+                "win_rate": st.column_config.NumberColumn("Win rate", format="percent"),
+                "closed": st.column_config.NumberColumn("Closed (n)", format="%d"),
+                "sample": st.column_config.TextColumn("Sample"),
+            },
+        )
+        st.caption(
+            f"Trusted samples (≥ {performance.MIN_LEADERBOARD_N} closed trades) rank above 'thin' ones, "
+            "then by the lower 95% bound of expectancy — so a lucky thin sample can't win."
+        )
+        # The exit-arm A/B below is only honest on ONE screen (its arms share fills),
+        # so scope everything downstream to the default (live) screen variant.
+        paper_trades = [t for t in paper_trades if t.variant == DEFAULT_VARIANT]
+
     # Parallel-arm shadow book: when more than one experiment arm is present, lead
     # with the same-sample A/B (every arm saw the identical fills) and let the user
     # drill into one arm's detail below. With a single arm the view is unchanged.
@@ -492,6 +607,70 @@ def _render_performance(session: Session) -> None:
         st.altair_chart(
             ui.bar({k: v.win_rate for k, v in by_rank.items()}, "Rank bucket", "Win rate"),
             width="stretch",
+        )
+
+    # Score calibration: does a higher composite score actually earn more? Expectancy by
+    # score band should trend up; a flat/inverted curve means the score needs rework. Chart
+    # only bands that have closed trades (an empty band would read as a spurious 0).
+    by_score = performance.score_bucket(trades, [0.5, 0.6, 0.7, 0.8])
+    scored = {k: v for k, v in by_score.items() if v.n_closed > 0}
+    if len(scored) > 1:
+        st.markdown("**Score calibration** — expectancy by signal-score band")
+        st.altair_chart(
+            ui.bar({k: v.expectancy_r for k, v in scored.items()}, "Score band", "Expectancy R"),
+            width="stretch",
+        )
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {"band": k, "expectancy_r": v.expectancy_r, "win_rate": v.win_rate,
+                     "closed": v.n_closed}
+                    for k, v in scored.items()
+                ]
+            ),
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "band": st.column_config.TextColumn("Score band"),
+                "expectancy_r": st.column_config.NumberColumn("Expectancy R", format="%.2f"),
+                "win_rate": st.column_config.NumberColumn("Win rate", format="percent"),
+                "closed": st.column_config.NumberColumn("Closed (n)", format="%d"),
+            },
+        )
+        st.caption("A predictive score trends upward across bands; a flat or inverted curve "
+                   "means it isn't separating winners from losers (revisit the weights).")
+
+    # Regime attribution: how the engine does by market context (SPY proxy). Continuation
+    # wants uptrends, reversals want washouts -- this shows whether the book agrees. Skip
+    # unknown-regime trades (legacy / SPY unavailable); show a cut only when it has > 1 bucket.
+    by_trend = performance.breakdown(
+        [t for t in trades if t.market_trend is not None], "market_trend")
+    by_vol = performance.breakdown(
+        [t for t in trades if t.market_vol is not None], "market_vol")
+    if len(by_trend) > 1 or len(by_vol) > 1:
+        st.markdown("**Performance by market regime** — SPY trend (vs 200-day) & volatility")
+        if len(by_trend) > 1:
+            st.altair_chart(
+                ui.bar({k: v.expectancy_r for k, v in by_trend.items()},
+                       "Market trend", "Expectancy R"),
+                width="stretch",
+            )
+        regime_rows = (
+            [{"regime": f"trend: {k}", "expectancy_r": v.expectancy_r,
+              "win_rate": v.win_rate, "closed": v.n_closed} for k, v in by_trend.items()]
+            + [{"regime": f"vol: {k}", "expectancy_r": v.expectancy_r,
+                "win_rate": v.win_rate, "closed": v.n_closed} for k, v in by_vol.items()]
+        )
+        st.dataframe(
+            pd.DataFrame(regime_rows),
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "regime": st.column_config.TextColumn("Regime"),
+                "expectancy_r": st.column_config.NumberColumn("Expectancy R", format="%.2f"),
+                "win_rate": st.column_config.NumberColumn("Win rate", format="percent"),
+                "closed": st.column_config.NumberColumn("Closed (n)", format="%d"),
+            },
         )
 
     curve = performance.equity_curve(trades)
@@ -568,9 +747,11 @@ def _render_overview(session: Session) -> None:
     total_unrealized = total_unrealized_pl(open_trades, prices)
 
     candidates = len(repo.latest_signals(session, run_date)) if run_date else 0
-    # headline win rate is the baseline arm only, so the dual-book's extra arms don't
-    # blend into (or move) the landing-page number.
-    baseline_trades = list(session.scalars(select(PaperTrade).where(PaperTrade.arm == BASELINE)))
+    # headline win rate is the live screen (default variant) on the baseline exit arm, so
+    # neither the extra exit arms nor the screen-variant books move the landing-page number.
+    baseline_trades = list(session.scalars(
+        select(PaperTrade).where(PaperTrade.arm == BASELINE,
+                                 PaperTrade.variant == DEFAULT_VARIANT)))
     win_rate = performance.summarize(baseline_trades).win_rate
 
     c1, c2, c3, c4 = st.columns(4)

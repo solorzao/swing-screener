@@ -10,12 +10,17 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
+from swing_screener.config import StrategyConfig
 from swing_screener.db import repo
 from swing_screener.db.session import get_engine
 from swing_screener.notify import pdf as pdf_mod
 from swing_screener.notify.pdf import PdfPick, build_digest_pdf
 from swing_screener.pipeline import run
 from swing_screener.storage import blob
+
+# _firing's trigger sits past the freshness gate; these blob-plumbing tests disable
+# the anti-chase gate so the firing fixture still produces a charted signal.
+_NO_EXT_GATE = StrategyConfig(max_extension_atr=0.0)
 
 # 1x1 transparent PNG -- valid bytes so reportlab can actually embed it.
 _PNG = base64.b64decode(
@@ -95,6 +100,7 @@ def test_pipeline_blob_enabled_sets_key_and_uploads(tmp_path, bars, monkeypatch)
     run.run_screen(
         universe_path=_write_universe(tmp_path, ["AAPL", "ZZZ"]), db_url=db,
         cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts", today=today,
+        cfg=_NO_EXT_GATE,
     )
 
     expected_key = f"{today:%Y%m%d}/AAPL_1d_{today:%Y%m%d}.png"
@@ -137,6 +143,7 @@ def test_pipeline_blob_disabled_keeps_local_path(tmp_path, bars, monkeypatch):
     run.run_screen(
         universe_path=_write_universe(tmp_path, ["AAPL"]), db_url=db,
         cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts", today=today,
+        cfg=_NO_EXT_GATE,
     )
 
     expected_local = str(tmp_path / "charts" / f"AAPL_1d_{today:%Y%m%d}.png")

@@ -25,7 +25,9 @@ from swing_screener.pipeline.analyze import (
     build_frames,
 )
 from swing_screener.pipeline.arms import BASELINE, build_arms
+from swing_screener.pipeline.regime import MARKET_PROXY, classify_regime
 from swing_screener.pipeline.shadow import FillCandidate, advance_open, open_from_signals
+from swing_screener.pipeline.variants import DEFAULT_VARIANT, build_screen_variants
 from swing_screener.settings import load_settings
 from swing_screener.storage.blob import blob_enabled, upload_chart
 
@@ -164,7 +166,32 @@ def _bar_row(frame: pd.DataFrame) -> dict[str, float | bool]:
     return row
 
 
-def _to_signal(r: SignalResult, rank: int, run_date: date) -> Signal:
+def _shadow_candidates(
+    prior_list: list[tuple[SignalResult, float, float]],
+) -> tuple[list[FillCandidate], dict[tuple[str, str], tuple[float, float]]]:
+    """Build the shadow-book fill candidates + next-bar map for one variant's prior signals.
+
+    Ranks WITHIN each play_type (continuation and reversal each rank from 1) by score --
+    a ranking space distinct from the persisted ``Signal.rank``. The next-bar high/low is
+    the actual traded bar, so it's config-independent across variants.
+    """
+    prior_cont = sorted((x for x in prior_list if x[0].play_type == "continuation"),
+                        key=lambda x: x[0].score, reverse=True)
+    prior_rev = sorted((x for x in prior_list if x[0].play_type == "reversal"),
+                       key=lambda x: x[0].score, reverse=True)
+    candidates = [
+        FillCandidate(pr.ticker, pr.timeframe, pr.horizon, pr.score, rank,
+                      pr.mtf_aligned, None, pr.zone, quality_tier=pr.quality_tier,
+                      volatility_tier=pr.volatility_tier, oversold=pr.oversold,
+                      play_type=pr.play_type, strength=pr.strength)
+        for group in (prior_cont, prior_rev)
+        for rank, (pr, _h, _l) in enumerate(group, start=1)
+    ]
+    next_bars = {(pr.ticker, pr.timeframe): (h, low) for (pr, h, low) in prior_list}
+    return candidates, next_bars
+
+
+def _to_signal(r: SignalResult, rank: int, run_date: date, first_seen: date) -> Signal:
     return Signal(
         run_date=run_date, ticker=r.ticker, timeframe=r.timeframe, horizon=r.horizon,
         play_type=r.play_type, strength=r.strength,
@@ -172,6 +199,7 @@ def _to_signal(r: SignalResult, rank: int, run_date: date) -> Signal:
         volatility_tier=r.volatility_tier, oversold=r.oversold, trigger_close=r.trigger_close,
         atr=r.atr, rsi=r.rsi, entry_floor=r.entry_floor, entry_ceiling=r.entry_ceiling,
         stop=r.stop, target=r.target,
+        extension_atr=r.extension_atr, first_seen_date=first_seen,
     )
 
 
@@ -218,6 +246,15 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
     prior: list[tuple[SignalResult, float, float]] = []  # (prior signal, next_high, next_low)
     latest_bars: dict[tuple[str, str], dict[str, float | bool]] = {}
 
+    # Screen-variant leaderboard: re-screen the prior bar under each alt config (they share
+    # the base's indicator periods, so the same enriched frames are reused) and book each
+    # variant's fills separately under the baseline exit. prior_variants mirrors `prior`.
+    screen_variants = build_screen_variants(cfg)
+    alt_variants = {n: c for n, c in screen_variants.items() if n != DEFAULT_VARIANT}
+    prior_variants: dict[str, list[tuple[SignalResult, float, float]]] = {
+        n: [] for n in alt_variants
+    }
+
     n_failed = 0
     for entry in universe:
         try:
@@ -244,6 +281,13 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
             for pr in prior_signals:
                 last = frames[pr.timeframe].iloc[-1]
                 prior.append((pr, float(last["high"]), float(last["low"])))
+            # Re-screen the SAME prior frames under each alt screen variant (own fills).
+            for vname, vcfg in alt_variants.items():
+                vsignals = (analyze_frames(entry.ticker, prior_frames, vcfg)
+                            + analyze_reversals(entry.ticker, prior_frames, vcfg))
+                for pr in vsignals:
+                    last = frames[pr.timeframe].iloc[-1]
+                    prior_variants[vname].append((pr, float(last["high"]), float(last["low"])))
         except Exception:  # per-ticker isolation: one bad ticker never aborts the run
             log.warning("ticker %s failed; skipping", entry.ticker, exc_info=True)
             n_failed += 1
@@ -252,15 +296,33 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
     today_results.sort(key=lambda r: r.score, reverse=True)
     today_reversals.sort(key=lambda r: r.score, reverse=True)
 
+    # Market regime once per run (SPY proxy), stamped onto every fill for WHEN-it-works
+    # attribution. Skip the fetch entirely when there's nothing to fill (e.g. an empty
+    # universe) -- no fills, no tags. Routed through the same fetch seam as the universe so
+    # tests stay offline; SPY unavailable -> unknown regime (fails safe, never raises).
+    spy_daily = None
+    if prior or any(prior_variants.values()):
+        spy_daily = _fetch_all_timeframes(
+            MARKET_PROXY, cache_dir=cache_dir, today=today, cfg=cfg).get("1d")
+    regime = classify_regime(spy_daily, cfg)
+
     n_charts = 0
     n_paper_opened = 0
     with Session(engine) as s:
+        # Streak-start per (ticker, timeframe, play_type): inherit first_seen_date from
+        # the prior run if the same setup fired then, else today. Read BEFORE deleting
+        # today's rows (the lookup only considers run_date < today, so it's unaffected).
+        prior_seen = repo.prior_first_seen(s, today)
+
+        def _first_seen(r: SignalResult) -> date:
+            return prior_seen.get((r.ticker, r.timeframe, r.play_type), today)
+
         repo.delete_signals_for(s, today)
         repo.delete_paper_trades_opened_on(s, today)
         # Rank WITHIN each play_type (independent top-N lists for the two sections).
-        cont_signals = [_to_signal(r, rank, today)
+        cont_signals = [_to_signal(r, rank, today, _first_seen(r))
                         for rank, r in enumerate(today_results, start=1)]
-        rev_signals = [_to_signal(r, rank, today)
+        rev_signals = [_to_signal(r, rank, today, _first_seen(r))
                        for rank, r in enumerate(today_reversals, start=1)]
         repo.save_signals(s, cont_signals + rev_signals)
 
@@ -274,29 +336,24 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
             n_charts += 1
         s.commit()
 
-        # NOTE: `rank` here is the rank within the prior-bar (forward-tested) set
-        # being filled this run -- a different ranking space from Signal.rank. Ranked
-        # within play_type so continuation and reversal shadow trades each rank from 1.
-        prior_cont = sorted((x for x in prior if x[0].play_type == "continuation"),
-                            key=lambda x: x[0].score, reverse=True)
-        prior_rev = sorted((x for x in prior if x[0].play_type == "reversal"),
-                           key=lambda x: x[0].score, reverse=True)
-        candidates = [
-            FillCandidate(pr.ticker, pr.timeframe, pr.horizon, pr.score, rank,
-                          pr.mtf_aligned, None, pr.zone, quality_tier=pr.quality_tier,
-                          volatility_tier=pr.volatility_tier, oversold=pr.oversold,
-                          play_type=pr.play_type, strength=pr.strength)
-            for group in (prior_cont, prior_rev)
-            for rank, (pr, _h, _l) in enumerate(group, start=1)
-        ]
-        next_bars = {(pr.ticker, pr.timeframe): (h, low) for (pr, h, low) in prior}
         # Parallel-arm shadow book: every fill is opened once per arm and advanced
         # under its own arm config, so breakdown(trades, "arm") is a same-sample A/B.
         arms = build_arms(cfg)
+        candidates, next_bars = _shadow_candidates(prior)
         opened = open_from_signals(s, candidates, next_bars, fill_date=today,
-                                   arms=tuple(arms))
+                                   arms=tuple(arms), variant=DEFAULT_VARIANT,
+                                   market_trend=regime.trend, market_vol=regime.vol)
         # count distinct fills (one arm), not the per-arm duplicates
         n_paper_opened = sum(1 for t in opened if t.status == "open" and t.arm == BASELINE)
+        # Screen variants: book each alt config's own fills under the baseline exit only
+        # (one extra book per variant), so breakdown(baseline-arm trades, "variant") ranks
+        # the screen configs head-to-head. advance_open keys exits off `arm`, so these ride
+        # the baseline exit automatically -- no variant awareness needed downstream.
+        for vname in alt_variants:
+            vcands, vnext = _shadow_candidates(prior_variants[vname])
+            open_from_signals(s, vcands, vnext, fill_date=today, arms=(BASELINE,),
+                              variant=vname, market_trend=regime.trend,
+                              market_vol=regime.vol)
         advance_open(s, latest_bars, arms, today=today)
 
         # Enrich the universe rows with the metrics gathered during the loop

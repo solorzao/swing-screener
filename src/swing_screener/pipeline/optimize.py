@@ -1,0 +1,146 @@
+"""Offline config-sweep optimizer -- the capstone of the measurement loop.
+
+Drives the replay harness over a grid of screen configs, ranks them with the leaderboard's
+significance, and proposes the next ``build_screen_variants`` set. A config grid is just a
+variant set, so this reuses ``replay`` directly.
+
+Walk-forward guard against overfitting: rank the grid on an IN-SAMPLE (earlier) slice of
+history, then report the winner's OUT-OF-SAMPLE (later) performance. A config that only fits
+the past wins in-sample but falls apart out-of-sample, which the report surfaces -- so a human
+(or a later automated step) promotes only edges that actually hold up. Offline + deterministic;
+no DB writes, no network beyond the cached parquet it reads.
+"""
+
+import argparse
+import logging
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
+from pathlib import Path
+
+import pandas as pd
+
+from swing_screener.analytics.performance import PerformanceSummary, leaderboard_order
+from swing_screener.config import StrategyConfig
+from swing_screener.pipeline.replay import (
+    _load_cached_daily,
+    _warmup,
+    format_leaderboard,
+    replay,
+)
+from swing_screener.pipeline.variants import _assert_shared_indicators
+
+log = logging.getLogger(__name__)
+
+# The 1-D sweep: the freshness gate threshold (the knob this whole effort introduced). Includes
+# the shipped default (2.0) so the incumbent is in the bake-off. Keep grids small + interpretable.
+_EXT_GRID = (1.0, 1.5, 2.0, 2.5)
+
+
+@dataclass(frozen=True)
+class OptimizeResult:
+    in_sample: dict[str, PerformanceSummary]
+    out_of_sample: dict[str, PerformanceSummary]
+    winner: str | None   # best in-sample config that actually traded; None if none did
+
+
+def build_config_grid(base: StrategyConfig) -> dict[str, StrategyConfig]:
+    """Sweep ``max_extension_atr``; every grid point shares the base's indicator periods
+    (replay reuses the base frames), enforced by the variants guard."""
+    grid = {f"ext_{e:.1f}": replace(base, max_extension_atr=e) for e in _EXT_GRID}
+    for name, cfg in grid.items():
+        _assert_shared_indicators(base, name, cfg)
+    return grid
+
+
+def _split(
+    frames: Mapping[str, pd.DataFrame], oos_frac: float, lookback: int
+) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame]]:
+    """Split each frame into (in-sample, out-of-sample) by bar index. The OOS slice keeps
+    ``lookback`` leading bars so detection has its warmup; its trades still come from the
+    later period."""
+    in_s: dict[str, pd.DataFrame] = {}
+    out_s: dict[str, pd.DataFrame] = {}
+    for ticker, f in frames.items():
+        split = int(len(f) * (1.0 - oos_frac))
+        in_s[ticker] = f.iloc[:split]
+        out_s[ticker] = f.iloc[max(0, split - lookback):]
+    return in_s, out_s
+
+
+def optimize(
+    frames: Mapping[str, pd.DataFrame],
+    *,
+    timeframe: str,
+    base_cfg: StrategyConfig | None = None,
+    grid: Mapping[str, StrategyConfig] | None = None,
+    oos_frac: float = 0.3,
+) -> OptimizeResult:
+    """Sweep ``grid`` over ``frames`` with a walk-forward split and pick an in-sample winner.
+
+    Ranks the grid on the in-sample slice (trust-tiered, like the leaderboard) and carries the
+    winner's out-of-sample line so the report can show whether the edge holds up.
+    """
+    base_cfg = base_cfg or StrategyConfig()
+    grid = grid or build_config_grid(base_cfg)
+    in_frames, out_frames = _split(frames, oos_frac, _warmup(base_cfg))
+
+    in_sample = replay(in_frames, timeframe=timeframe, base_cfg=base_cfg, variants=grid)
+    out_of_sample = replay(out_frames, timeframe=timeframe, base_cfg=base_cfg, variants=grid)
+
+    # Best in-sample config that actually traded (a 0-trade config can't be a winner).
+    winner = next((n for n in leaderboard_order(in_sample) if in_sample[n].n_closed > 0), None)
+    return OptimizeResult(in_sample=in_sample, out_of_sample=out_of_sample, winner=winner)
+
+
+def format_report(result: OptimizeResult) -> str:
+    """Human-readable proposal: the in-sample leaderboard, the winner, and whether it holds
+    out-of-sample (the promote / keep-current verdict)."""
+    lines = ["IN-SAMPLE leaderboard:", format_leaderboard(result.in_sample), ""]
+    if result.winner is None:
+        lines.append("No config produced a closed trade in-sample; nothing to propose.")
+        return "\n".join(lines)
+
+    oos = result.out_of_sample.get(result.winner)
+    lines.append(f"Winner (in-sample): {result.winner}")
+    if oos is None or oos.n_closed == 0:
+        lines.append("  out-of-sample: no closed trades -> cannot confirm; keep current config.")
+    else:
+        holds = oos.expectancy_ci_low > 0
+        lines.append(
+            f"  out-of-sample: expectancy_r={oos.expectancy_r:.2f} "
+            f"(95% low {oos.expectancy_ci_low:.2f}), closed={oos.n_closed}"
+        )
+        lines.append(
+            "  verdict: holds out-of-sample -> consider promoting into build_screen_variants"
+            if holds else
+            "  verdict: does NOT hold out-of-sample -> likely overfit, keep current config"
+        )
+    return "\n".join(lines)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Sweep screen configs over cached daily history and propose a winner.")
+    parser.add_argument("--tickers", required=True, help="comma-separated, e.g. AMD,NVDA")
+    parser.add_argument("--cache-dir", type=Path, default=Path(".cache"))
+    parser.add_argument("--oos-frac", type=float, default=0.3,
+                        help="fraction of each history held out for out-of-sample validation")
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO)
+
+    frames: dict[str, pd.DataFrame] = {}
+    for ticker in (t.strip().upper() for t in args.tickers.split(",") if t.strip()):
+        df = _load_cached_daily(ticker, args.cache_dir)
+        if df is None:
+            log.warning("no cached daily data for %s; skipping", ticker)
+            continue
+        frames[ticker] = df
+
+    if not frames:
+        log.error("no data to optimize (looked in %s/1d)", args.cache_dir)
+        return
+    print(format_report(optimize(frames, timeframe="1d", oos_frac=args.oos_frac)))  # noqa: T201
+
+
+if __name__ == "__main__":
+    main()

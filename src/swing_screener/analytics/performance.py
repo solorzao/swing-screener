@@ -7,12 +7,22 @@ empty input. The nullable ``PaperTrade`` fields (``realized_r``, ``hold_bars``,
 ``exit_date``) are guarded with explicit ``is not None`` checks.
 """
 
+import statistics
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 
 from swing_screener.db.models import PaperTrade
+
+# 95% two-sided normal quantile for the expectancy confidence interval. A normal
+# approximation (not a small-sample t), so very thin samples read optimistically --
+# which is exactly why the sample size travels with the interval everywhere it's shown.
+_Z95 = 1.96
+
+# Below this many closed trades a variant's expectancy is too thin to trust. The leaderboards
+# (dashboard + replay CLI) rank trusted variants above thin ones, then by the lower CI bound.
+MIN_LEADERBOARD_N = 20
 
 
 @dataclass(frozen=True)
@@ -27,6 +37,13 @@ class PerformanceSummary:
     expectancy_r: float
     profit_factor: float
     avg_hold_bars: float
+    # Confidence on the expectancy estimate: the standard error of the mean R and its
+    # 95% interval. With < 2 closed trades the std is undefined, so stderr is 0 and the
+    # interval collapses to the point estimate -- thin samples are flagged by n_closed,
+    # never crowned. Used to rank variants by a LOWER bound so noise can't win.
+    expectancy_stderr: float
+    expectancy_ci_low: float
+    expectancy_ci_high: float
 
 
 def _is_filled(t: PaperTrade) -> bool:
@@ -55,6 +72,16 @@ def summarize(trades: Iterable[PaperTrade]) -> PerformanceSummary:
     win_rate = len(wins) / n_closed if n_closed else 0.0
     expectancy_r = sum(realized) / n_closed if n_closed else 0.0
 
+    # Standard error of the mean R + its 95% interval. Sample stdev (ddof=1) needs >= 2
+    # points; with fewer the edge is unmeasurable, so stderr is 0 and the CI collapses to
+    # the point estimate (n_closed is what flags it as untrustworthy downstream).
+    if n_closed >= 2:
+        expectancy_stderr = statistics.stdev(realized) / (n_closed ** 0.5)
+    else:
+        expectancy_stderr = 0.0
+    expectancy_ci_low = expectancy_r - _Z95 * expectancy_stderr
+    expectancy_ci_high = expectancy_r + _Z95 * expectancy_stderr
+
     if not n_closed:
         profit_factor = 0.0
     elif losses:
@@ -76,6 +103,9 @@ def summarize(trades: Iterable[PaperTrade]) -> PerformanceSummary:
         expectancy_r=expectancy_r,
         profit_factor=profit_factor,
         avg_hold_bars=avg_hold_bars,
+        expectancy_stderr=expectancy_stderr,
+        expectancy_ci_low=expectancy_ci_low,
+        expectancy_ci_high=expectancy_ci_high,
     )
 
 
@@ -85,6 +115,23 @@ def breakdown(trades: Iterable[PaperTrade], key: str) -> dict[str, PerformanceSu
     for t in trades:
         groups[str(getattr(t, key))].append(t)
     return {k: summarize(v) for k, v in groups.items()}
+
+
+def leaderboard_order(
+    summaries: Mapping[str, PerformanceSummary], *, min_n: int = MIN_LEADERBOARD_N
+) -> list[str]:
+    """Names best-first for every leaderboard: trusted samples (``n_closed >= min_n``) above
+    thin ones, then by the lower 95% expectancy bound within each tier.
+
+    The two-tier key is load-bearing: a 1-trade sample has no computable interval (its CI
+    collapses to the point estimate), so ranking by the lower bound ALONE would let a lone
+    lucky trade top a deep, steady config. Sorting trusted-first defeats that.
+    """
+    def _key(name: str) -> tuple[bool, float]:
+        s = summaries[name]
+        return (s.n_closed >= min_n, s.expectancy_ci_low)
+
+    return sorted(summaries, key=_key, reverse=True)
 
 
 def _rank_labels(edges: Sequence[int]) -> list[str]:
@@ -117,6 +164,43 @@ def rank_bucket(
         idx = len(edges)
         for i, edge in enumerate(edges):
             if t.rank <= edge:
+                idx = i
+                break
+        groups[labels[idx]].append(t)
+    return {label: summarize(groups[label]) for label in labels}
+
+
+def _score_labels(edges: Sequence[float]) -> list[str]:
+    """Band labels from ascending score ``edges`` in (0, 1).
+
+    edges ``[0.5, 0.7]`` -> ["0.00-0.50", "0.50-0.70", "0.70-1.00"]. Bands are
+    lower-inclusive / upper-exclusive; the last runs to 1.00 inclusive.
+    """
+    labels: list[str] = []
+    low = 0.0
+    for edge in edges:
+        labels.append(f"{low:.2f}-{edge:.2f}")
+        low = edge
+    labels.append(f"{low:.2f}-1.00")
+    return labels
+
+
+def score_bucket(
+    trades: Iterable[PaperTrade], edges: Sequence[float]
+) -> dict[str, PerformanceSummary]:
+    """Bucket trades by ``signal_score`` into bands defined by ``edges`` and summarize each.
+
+    The calibration check: a predictive score makes ``expectancy_r`` trend UP across the
+    bands (high-score setups should out-earn low-score ones). A flat or inverted trend
+    means the score isn't separating winners from losers. Every band label appears even
+    when empty; a score exactly on an edge falls into the higher band (lower-inclusive).
+    """
+    labels = _score_labels(edges)
+    groups: dict[str, list[PaperTrade]] = {label: [] for label in labels}
+    for t in trades:
+        idx = len(edges)
+        for i, edge in enumerate(edges):
+            if t.signal_score < edge:
                 idx = i
                 break
         groups[labels[idx]].append(t)

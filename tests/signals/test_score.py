@@ -42,3 +42,13 @@ def test_strong_rsi_and_hist_outscore_weak():
                        atr_pct=0.03, mtf_aligned=True,
                        rsi=35.0, macd_hist=-0.5, macd_hist_rising=False)
     assert score_signal(strong) > score_signal(weak)
+
+
+def test_fresh_setup_outscores_extended_chase():
+    # identical signals except freshness: the un-extended one must rank higher, so the
+    # screener stops floating already-run plays to the top.
+    fresh = ScoreInputs(shaved_bottom=True, body_frac=0.9, trend_slope=0.5,
+                        atr_pct=0.03, mtf_aligned=True, freshness=1.0)
+    chase = ScoreInputs(shaved_bottom=True, body_frac=0.9, trend_slope=0.5,
+                        atr_pct=0.03, mtf_aligned=True, freshness=0.0)
+    assert score_signal(fresh) > score_signal(chase)

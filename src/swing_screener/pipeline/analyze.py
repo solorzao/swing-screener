@@ -51,6 +51,8 @@ class SignalResult:
     zone: EntryZone
     play_type: str = "continuation"   # "continuation" | "reversal"
     strength: str | None = None       # reversal only: "early" | "confirmed"
+    # continuation freshness metric ((close-EMA20)/ATR); None for reversal plays.
+    extension_atr: float | None = None
 
 
 def _is_uptrend(frame: pd.DataFrame) -> bool:
@@ -133,6 +135,13 @@ def analyze_frames(
         if ctx is None:
             continue
 
+        # Freshness / anti-chase gate: skip a trigger that already ran too far above
+        # the fast EMA (the entry zone would be a chase). This makes the freshness rule
+        # part of the strategy end-to-end -- it gates both what the screener surfaces
+        # AND what the shadow book forward-tests, so the A/B reflects entries we'd take.
+        if cfg.max_extension_atr > 0 and ctx.extension_atr > cfg.max_extension_atr:
+            continue
+
         # Standard (real) highs for overhead-resistance lookup; HA smears real highs.
         recent_highs = frame["high"].tail(
             cfg.target_lookback + 2 * cfg.target_pivot_width
@@ -148,7 +157,9 @@ def analyze_frames(
         mtf_aligned = higher is not None and _is_uptrend(frames[higher])
 
         last_row = cast(dict[str, float | bool], frame.iloc[-1].to_dict())
-        score = score_signal(build_score_inputs(ctx, last_row, mtf_aligned))
+        score = score_signal(
+            build_score_inputs(ctx, last_row, mtf_aligned, cfg.max_extension_atr)
+        )
 
         price = ctx.trigger_close
         avg_dollar_vol = _avg_dollar_volume(frame, cfg)
@@ -174,6 +185,7 @@ def analyze_frames(
                 frame=frame,
                 ctx=ctx,
                 zone=zone,
+                extension_atr=ctx.extension_atr,
             )
         )
 

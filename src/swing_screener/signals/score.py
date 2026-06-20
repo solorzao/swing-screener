@@ -17,6 +17,10 @@ class ScoreInputs:
     rsi: float = 45.0              # trigger-bar RSI (bull-range pullback quality)
     macd_hist: float = 0.0         # trigger-bar MACD histogram (0 -> _hist_accel 0)
     macd_hist_rising: bool = False  # histogram > prior bar's histogram
+    # freshness 0..1: 1.0 when the trigger is at/below EMA20 (not extended), decaying to
+    # 0 at the anti-chase gate threshold. Rewards entries that have NOT already run.
+    # Defaults to 1.0 so callers that omit it neither flatter nor penalise the signal.
+    freshness: float = 1.0
 
 
 def _clip01(x: float) -> float:
@@ -46,6 +50,9 @@ def score_signal(s: ScoreInputs) -> float:
     mtf = 1.0 if s.mtf_aligned else 0.0
     rsi_q = _rsi_quality(s.rsi)
     hist = _hist_accel(s.macd_hist, s.macd_hist_rising)
-    score = (0.35 * strength + 0.20 * mtf + 0.15 * slope
-             + 0.10 * vol_fit + 0.15 * rsi_q + 0.05 * hist)
+    fresh = _clip01(s.freshness)
+    # 0.10 carved out of `strength` (which over-rewarded big, already-extended trigger
+    # bodies) and given to freshness, so a clean un-extended setup outranks a chase.
+    score = (0.25 * strength + 0.20 * mtf + 0.15 * slope
+             + 0.10 * vol_fit + 0.15 * rsi_q + 0.05 * hist + 0.10 * fresh)
     return _clip01(score)
