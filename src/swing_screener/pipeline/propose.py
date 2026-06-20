@@ -164,6 +164,10 @@ def propose(
         return None
     if _clustered_two_sample_delta_low(winner_trades, incumbent_trades) <= 0:
         return None
+    # Note the deliberate weighting split: the clustered delta gate above is TICKER-weighted
+    # (resamples whole tickers, respecting correlation), while observed_delta + the placebo
+    # below are TRADE-weighted (pooled per-trade R). Both must pass; on a borderline case they
+    # can disagree, which is intended -- the clustered gate is the correlation-aware one.
     observed_delta = w_oos.expectancy_r - inc_oos_expectancy
     if not _placebo_cleared(winner_trades, incumbent_trades, observed_delta):
         return None
