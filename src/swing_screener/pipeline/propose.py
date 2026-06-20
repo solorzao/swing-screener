@@ -15,12 +15,9 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-import pandas as pd
-
 from swing_screener.analytics.performance import MIN_LEADERBOARD_N
 from swing_screener.config import StrategyConfig
-from swing_screener.data.fetch import fetch_bars
-from swing_screener.pipeline.optimize import OptimizeResult, optimize
+from swing_screener.pipeline.optimize import OptimizeResult, fetch_daily, optimize
 from swing_screener.pipeline.replay import format_leaderboard
 
 log = logging.getLogger(__name__)
@@ -103,15 +100,6 @@ def apply_to_config(source: str, proposal: Proposal) -> str:
     return new
 
 
-def _load_daily(tickers: list[str], cache_dir: Path) -> dict[str, pd.DataFrame]:
-    frames: dict[str, pd.DataFrame] = {}
-    for ticker in tickers:
-        df = fetch_bars(ticker, "1d", cache_dir=cache_dir)
-        if df is not None and not df.empty:
-            frames[ticker] = df
-    return frames
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Sweep configs over daily history and, if one beats the incumbent "
@@ -126,7 +114,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
 
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
-    frames = _load_daily(tickers, args.cache_dir)
+    frames = fetch_daily(tickers, args.cache_dir)
     if not frames:
         log.error("no data fetched for %s; proposing nothing", tickers)
         return

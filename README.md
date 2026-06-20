@@ -206,6 +206,27 @@ automatically and, **only** when a swept config beats the shipped gate on a trus
 out-of-sample basis, opens a config-change PR for you to review (`pipeline.propose`) — the
 scheduled loop, with a human approval gate (nothing auto-deploys).
 
+## Using the self-optimization loop
+
+The system **measures itself** automatically (every nightly run forward-tests alternate screen
+configs in the shadow book and tags each fill with the market regime) and **proposes its own
+tuning** — but a human approves the change that ships. Auto-deploying a backtest winner is how
+you ship overfit changes against real money, so the approval gate is deliberate. You engage it
+three ways, in increasing automation:
+
+1. **See what's working** — open the dashboard's **Screener Performance** page: the strategy
+   leaderboard (which screen config is winning, with confidence + sample size), score
+   calibration, and the market-regime breakdown. This is the accumulated live evidence; check
+   it when you want.
+2. **Ask for a recommendation now** — in Claude Code, run **`/tune-screener`** (optionally with
+   tickers, e.g. `/tune-screener AMD,NVDA,AAPL`). It runs the optimizer and tells you in plain
+   language whether a gate change is worth making *and offers to open the PR* — no flags to
+   remember. (The raw version is the `pipeline.optimize` command above.)
+3. **Let it propose on a schedule** — the weekly `optimize.yml` workflow opens a config-change
+   PR when (and only when) there's a trusted out-of-sample winner. You review and merge.
+
+In all three, **you decide**; the system just does the legwork and shows its work.
+
 ## Development
 
 - **Quality gate (also CI):** `ruff check src tests alembic`, `mypy`, `pytest -q` — all must
