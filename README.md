@@ -160,8 +160,9 @@ src/swing_screener/
   charts/              render (annotated Heiken Ashi via mplfinance)      [I/O]
   analytics/           performance (shadow-book QC: expectancy, win %)    [pure]
   pipeline/            analyze (MTF continuation + reversal + score),
-                       shadow (multi-arm shadow book), arms (experiment
-                       arms), exitcheck (intraday exit alerts),
+                       shadow (multi-arm shadow book), arms (exit arms),
+                       variants (screen arms), replay (offline backtest
+                       harness), exitcheck (intraday exit alerts),
                        run (nightly orchestrator CLI)
   notify/              run, select, analysis (Opus analyst), ondemand
                        (queued deep analysis), ticker_report, pdf, body,
@@ -184,6 +185,13 @@ Run the nightly pipeline directly:
 
 It is **idempotent per run-date** (safe to re-run a day) and isolates per-ticker failures
 (one bad symbol never aborts the run).
+
+**Backtest the screen variants** over cached daily history (offline; prints a leaderboard
+ranking each `build_screen_variants` config by expectancy / win rate / fill rate):
+
+```powershell
+.\.venv\Scripts\python -m swing_screener.pipeline.replay --tickers AMD,NVDA --cache-dir .cache
+```
 
 ## Development
 

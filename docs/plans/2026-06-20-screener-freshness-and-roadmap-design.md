@@ -1,9 +1,9 @@
 # Screener freshness + system roadmap — design
 
 **Date:** 2026-06-20
-**Status:** Steps 1–3 shipped (freshness gate, live actionability, persisted
+**Status:** Steps 1–4 shipped (freshness gate, live actionability, persisted
 extension/first-seen, freshness score term, staleness cooldown, screen-variant shadow-book
-dimension + strategy leaderboard); roadmap proposed.
+dimension + strategy leaderboard, offline replay/backtest harness); roadmap proposed.
 **Scope:** Fix the "screeners suggest plays that already ran" complaint, and chart a path
 toward a measurement-driven, self-optimizing system (a deterministic
 build → deploy → measure → optimize → repeat loop with a strategy leaderboard).
@@ -96,22 +96,31 @@ a shared fill (same-sample); the new **`variant`** varies the ENTRY/screen confi
 - Per the chosen "both, live first" plan, the **offline replay/backtest harness** (sweep many
   configs over history, emit a leaderboard) is the next step — it reuses this `variant` plumbing.
 
+## Step 4 — shipped (offline replay/backtest harness)
+
+`pipeline/replay.py` — the offline complement to the live shadow book. `replay(frames, *,
+timeframe, base_cfg, variants)` walks each ticker's historical OHLCV forward bar-by-bar,
+driving the SAME `open_from_signals` + `advance_open` against a throwaway SQLite db (so the
+partial/trail exit machinery is reproduced exactly, not re-implemented), then returns
+`breakdown(trades, "variant")`. A `python -m swing_screener.pipeline.replay --tickers AMD,NVDA`
+CLI replays the cached daily history and prints a leaderboard. No network — feed it the parquet
+cache or a CSV. Assumes one bar per calendar day (1d/1wk/1mo); 4h needs per-day batching (the
+same-day guard in `advance_open`), noted as a follow-up.
+
 ## Roadmap — toward the self-optimizing system
 
-The live forward-testing dimensions (exit arms + screen variants) are in place. Remaining:
+The live forward-testing dimensions (exit arms + screen variants) and the offline replay harness
+are in place. Remaining:
 
-1. **Offline replay/backtest harness** — replay the screener over cached history across a config
-   grid, emit a per-variant leaderboard (walk-forward / out-of-sample). The wider sweep tool
-   that complements the live shadow book; promote a winner into `build_screen_variants`.
-2. **Leaderboard significance.** The dashboard leaderboard ships (Step 3); add sample size +
+1. **Leaderboard significance.** The dashboard leaderboard ships (Step 3); add sample size +
    confidence so a thin-sample variant isn't crowned, and a trailing-window cut.
-3. **Score calibration.** Track realized expectancy by score decile to verify the score
+2. **Score calibration.** Track realized expectancy by score decile to verify the score
    predicts winners; a flat curve means the score is miscalibrated.
-4. **Regime tagging.** Stamp each run with market context (SPY vs 200DMA, volatility bucket)
+3. **Regime tagging.** Stamp each run with market context (SPY vs 200DMA, volatility bucket)
    and break performance down by regime — continuation wants uptrends, reversals want washouts.
-5. **Scheduled optimizer job** that drives the replay harness (item 1) over a config grid on a
-   cadence and proposes the next `build_screen_variants` set — the deterministic analog of the
-   post's "AI-native orchestrator."
+4. **Scheduled optimizer job** that drives the replay harness over a config grid on a cadence
+   and proposes the next `build_screen_variants` set — the deterministic analog of the post's
+   "AI-native orchestrator."
 
 Smaller features: earnings-date avoidance, liquidity/gap gating, sector-breadth context in the
 digest, R-based position sizing, and intraday **entry alerts** (notify when a candidate trades
