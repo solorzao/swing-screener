@@ -25,6 +25,7 @@ from swing_screener.analytics.performance import (
     MIN_LEADERBOARD_N,
     PerformanceSummary,
     breakdown,
+    leaderboard_order,
 )
 from swing_screener.config import StrategyConfig
 from swing_screener.db.models import PaperTrade
@@ -115,11 +116,7 @@ def format_leaderboard(by_variant: Mapping[str, PerformanceSummary]) -> str:
     lower 95% bound of expectancy -- matching the dashboard, so a thin lucky variant can't
     top a deeper one. The sample size + interval are printed so the ranking is auditable.
     """
-    def _key(v: str) -> tuple[bool, float]:
-        s = by_variant[v]
-        return (s.n_closed >= MIN_LEADERBOARD_N, s.expectancy_ci_low)
-
-    order = sorted(by_variant, key=_key, reverse=True)
+    order = leaderboard_order(by_variant)
     header = (f"{'variant':<18}{'expectancy_r':>14}{'95%_low':>10}"
               f"{'win_rate':>10}{'closed':>8}{'sample':>8}")
     lines = [header, "-" * len(header)]

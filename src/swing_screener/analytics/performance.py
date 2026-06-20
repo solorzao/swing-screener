@@ -9,7 +9,7 @@ empty input. The nullable ``PaperTrade`` fields (``realized_r``, ``hold_bars``,
 
 import statistics
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 
@@ -115,6 +115,23 @@ def breakdown(trades: Iterable[PaperTrade], key: str) -> dict[str, PerformanceSu
     for t in trades:
         groups[str(getattr(t, key))].append(t)
     return {k: summarize(v) for k, v in groups.items()}
+
+
+def leaderboard_order(
+    summaries: Mapping[str, PerformanceSummary], *, min_n: int = MIN_LEADERBOARD_N
+) -> list[str]:
+    """Names best-first for every leaderboard: trusted samples (``n_closed >= min_n``) above
+    thin ones, then by the lower 95% expectancy bound within each tier.
+
+    The two-tier key is load-bearing: a 1-trade sample has no computable interval (its CI
+    collapses to the point estimate), so ranking by the lower bound ALONE would let a lone
+    lucky trade top a deep, steady config. Sorting trusted-first defeats that.
+    """
+    def _key(name: str) -> tuple[bool, float]:
+        s = summaries[name]
+        return (s.n_closed >= min_n, s.expectancy_ci_low)
+
+    return sorted(summaries, key=_key, reverse=True)
 
 
 def _rank_labels(edges: Sequence[int]) -> list[str]:

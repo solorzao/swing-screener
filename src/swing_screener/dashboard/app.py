@@ -511,15 +511,8 @@ def _render_performance(session: Session) -> None:
             cutoff = date.today() - timedelta(days=int(window[:-1]))
             baseline = [t for t in baseline if t.opened_date and t.opened_date >= cutoff]
         by_variant = performance.breakdown(baseline, "variant")
-        # Rank trusted samples (>= performance.MIN_LEADERBOARD_N closed) ABOVE thin ones, then within
-        # each tier by the LOWER 95% bound of expectancy. The two-tier key matters because a
-        # 1-trade sample has no computable interval (its CI collapses to the point estimate),
-        # so a lone lucky trade would otherwise top a deep, steady variant.
-        def _rank_key(v: str) -> tuple[bool, float]:
-            s = by_variant[v]
-            return (s.n_closed >= performance.MIN_LEADERBOARD_N, s.expectancy_ci_low)
-
-        var_order = sorted(by_variant, key=_rank_key, reverse=True)
+        # Shared trust-tiered ranking: trusted samples above thin, then by lower CI bound.
+        var_order = performance.leaderboard_order(by_variant)
         var_df = pd.DataFrame(
             [
                 {

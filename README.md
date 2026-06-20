@@ -162,8 +162,9 @@ src/swing_screener/
   pipeline/            analyze (MTF continuation + reversal + score),
                        shadow (multi-arm shadow book), arms (exit arms),
                        variants (screen arms), regime (SPY market context),
-                       replay (offline backtest harness), exitcheck (intraday
-                       exit alerts), run (nightly orchestrator CLI)
+                       replay (offline backtest harness), optimize (walk-forward
+                       config sweep), exitcheck (intraday exit alerts),
+                       run (nightly orchestrator CLI)
   notify/              run, select, analysis (Opus analyst), ondemand
                        (queued deep analysis), ticker_report, pdf, body,
                        acs / smtp / transport (email), alerts
@@ -191,6 +192,13 @@ ranking each `build_screen_variants` config by expectancy / win rate / fill rate
 
 ```powershell
 .\.venv\Scripts\python -m swing_screener.pipeline.replay --tickers AMD,NVDA --cache-dir .cache
+```
+
+**Sweep + propose a config** (walk-forward: ranks a grid of screen configs on an in-sample
+slice, then reports whether the winner holds out-of-sample — the build→measure→optimize loop):
+
+```powershell
+.\.venv\Scripts\python -m swing_screener.pipeline.optimize --tickers AMD,NVDA --cache-dir .cache
 ```
 
 ## Development

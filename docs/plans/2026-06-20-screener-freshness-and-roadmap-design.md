@@ -1,10 +1,11 @@
 # Screener freshness + system roadmap — design
 
 **Date:** 2026-06-20
-**Status:** Steps 1–7 shipped (freshness gate, live actionability, persisted
+**Status:** Steps 1–8 shipped (freshness gate, live actionability, persisted
 extension/first-seen, freshness score term, staleness cooldown, screen-variant shadow-book
 dimension + strategy leaderboard, offline replay/backtest harness, leaderboard significance,
-score calibration, market-regime attribution); roadmap proposed.
+score calibration, market-regime attribution, config-sweep optimizer). The measurement loop is
+complete; remaining work is ops + smaller features.
 **Scope:** Fix the "screeners suggest plays that already ran" complaint, and chart a path
 toward a measurement-driven, self-optimizing system (a deterministic
 build → deploy → measure → optimize → repeat loop with a strategy leaderboard).
@@ -141,15 +142,38 @@ Performance" gains a **Performance by market regime** cut (expectancy-by-trend c
 trend/vol table), so you can see whether continuation really wants bull regimes and reversals
 the washouts. Unknown-regime trades are excluded from the cut.
 
-## Roadmap — toward the self-optimizing system
+## Step 8 — shipped (config-sweep optimizer)
 
-The live forward-testing dimensions (exit arms + screen variants), the offline replay harness,
-trustworthy leaderboards, score calibration, and regime attribution are in place. Remaining:
+`pipeline/optimize.py` — the capstone that turns the measurement stack into the post's
+build → measure → optimize → repeat loop. `optimize(frames, *, timeframe, grid, oos_frac)`
+drives the replay harness over a config grid (a grid is just a variant set, so it reuses
+`replay`), with a **walk-forward guard**: it ranks the grid on an in-sample (earlier) slice
+using the shared `leaderboard_order` (trust-tiered, significance-aware), then reports the
+winner's out-of-sample (later) performance so an edge that only fits the past is exposed.
+`build_config_grid` sweeps the freshness gate (`max_extension_atr` ∈ 1.0/1.5/2.0/2.5, the
+incumbent included). `format_report` prints the in-sample leaderboard, the winner, and a
+promote / keep-current verdict. CLI: `python -m swing_screener.pipeline.optimize --tickers
+AMD,NVDA`. Offline + deterministic, no DB writes.
 
-1. **Scheduled optimizer job** that drives the replay harness over a config grid on a cadence
-   and proposes the next `build_screen_variants` set — the deterministic analog of the post's
-   "AI-native orchestrator." This is the capstone: it turns the now-complete measurement stack
-   into the post's autonomous build → measure → optimize → repeat loop.
+Refactor: the trust-tiered ranking moved to `analytics.performance.leaderboard_order`, now
+shared by the dashboard leaderboard, the replay CLI, and the optimizer (one source of truth).
+
+## Roadmap — complete; remaining work is ops + smaller features
+
+The full self-optimizing loop is in place: live forward-testing (exit arms + screen variants),
+the offline replay harness, trustworthy significance-ranked leaderboards, score calibration,
+regime attribution, and the config-sweep optimizer that proposes the next variant set. What
+remains is operational, not architectural:
+
+- **Schedule the optimizer** as a seventh Azure Container Apps Job (mirrors the existing six +
+  the deploy runbook) so it sweeps on a cadence and surfaces a proposal — the only piece of the
+  "scheduled" optimizer that's deployment rather than code.
+- Promote a proven variant from the leaderboard/optimizer into `build_screen_variants`.
+- Extend the optimizer grid beyond the freshness gate (e.g. RSI gates, score weights) and the
+  replay harness to 4h (per-day batching for `advance_open`'s same-day guard).
+- Smaller features: earnings-date avoidance, liquidity/gap gating, sector-breadth context in the
+  digest, R-based position sizing, and intraday **entry alerts** (notify when a candidate trades
+  into its zone — the inverse of the exit alert).
 
 Smaller features: earnings-date avoidance, liquidity/gap gating, sector-breadth context in the
 digest, R-based position sizing, and intraday **entry alerts** (notify when a candidate trades
