@@ -181,6 +181,12 @@ def advance_open(
         # keep their hard stop; a non-positive/NaN ATR (undefined early bars) skips the
         # trail this bar rather than poisoning the stop.
         atr_val = float(bar.get("atr", 0.0))
+        # Fill-pessimism haircut on LEVEL fills (worse for a long). 0 when off or atr undefined.
+        slip = (
+            cfg.fill_slippage_atr * atr_val
+            if (cfg.fill_slippage_atr > 0.0 and atr_val > 0.0)
+            else 0.0
+        )
         if pt.partial_done and cfg.trail_mode == "chandelier" and atr_val > 0.0:
             pt.stop = max(pt.stop, prior_high_water - cfg.chandelier_atr_mult * atr_val)
 
@@ -221,8 +227,8 @@ def advance_open(
                 pt.last_advanced = today
                 continue
             pt.partial_done = True
-            pt.partial_price = pt.target
-            pt.partial_r = (pt.target - pt.entry_price) / pt.risk
+            pt.partial_price = pt.target - slip
+            pt.partial_r = (pt.partial_price - pt.entry_price) / pt.risk
             pt.remaining_frac = 1.0 - cfg.partial_frac
             pt.stop = pt.entry_price            # breakeven after the partial
             pt.hold_bars = held
@@ -231,14 +237,17 @@ def advance_open(
 
         if decision.action == "EXIT":
             # Exit-price modelling is deliberately asymmetric with entries: entries
-            # are worst-cased (top of zone), but stop/target exits assume a clean
-            # fill at the level (a gap-through bar fills worse in reality). So the
-            # shadow book records stops/targets slightly favourably; momentum/time
-            # exits use the bar close, which is realistic.
+            # are worst-cased (top of zone), while stop/target exits fill at the level
+            # MINUS the optional `slip` haircut (subtracted because the book is long-only,
+            # so a worse fill is always a lower price). With `fill_slippage_atr == 0.0`
+            # (the default) slip is 0, so stops/targets record at the exact level
+            # (slightly favourable, since a gap-through fills worse in reality); a
+            # non-zero haircut pessimises them by `slip`. momentum/time exits use the bar
+            # close, which is realistic, and are never haircut.
             if decision.reason == "stop":
-                exit_price = pt.stop
+                exit_price = pt.stop - slip
             elif decision.reason == "target":      # only an all-or-nothing arm (partial_frac == 0)
-                exit_price = pt.target
+                exit_price = pt.target - slip
             else:
                 exit_price = float(bar["close"])
 

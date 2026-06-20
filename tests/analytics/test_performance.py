@@ -1,3 +1,4 @@
+import statistics
 from datetime import date
 
 from swing_screener.analytics.performance import (
@@ -122,3 +123,81 @@ def test_equity_curve_cumulative_in_exit_date_order():
         (date(2024, 1, 5), 1.0),
         (date(2024, 1, 8), 2.0),
     ]
+
+
+# --- ticker-clustered bootstrap lower bound -------------------------------------------
+
+def _ct(ticker, realized_r):
+    """A minimal closed-filled trade on a named ticker, for clustering tests."""
+    return PaperTrade(
+        ticker=ticker, timeframe="1d", horizon="medium", signal_score=0.8, rank=1,
+        mtf_aligned=True, quality_tier="reputable", volatility_tier="med",
+        fill_status="filled", stop=95.0, target=110.0, risk=5.0, status="closed",
+        realized_r=realized_r, hold_bars=3, exit_date=date(2024, 1, 1),
+    )
+
+
+def _iid_low(realized):
+    """The old IID normal-approximation lower bound, recomputed independently."""
+    mean = sum(realized) / len(realized)
+    se = statistics.stdev(realized) / (len(realized) ** 0.5) if len(realized) >= 2 else 0.0
+    return mean - 1.96 * se
+
+
+def test_clustered_bound_materially_below_iid_when_one_ticker_dominates():
+    # 18 strongly-positive trades all on "AAA" + 7 tiny trades spread one-per-ticker.
+    # The IID bound treats all 25 as independent and reads optimistic; the clustered
+    # bootstrap resamples whole tickers, so resamples that omit "AAA" collapse the mean
+    # -> the 2.5th percentile sits FAR below the IID lower bound.
+    realized = [2.0] * 18 + [0.05] * 7
+    trades = [_ct("AAA", 2.0) for _ in range(18)]
+    trades += [_ct(f"T{i}", 0.05) for i in range(7)]  # 8 distinct tickers, clears the floor
+    s = summarize(trades)
+
+    iid_low = _iid_low(realized)
+    assert s.n_clusters == 8 and s.thin_clusters is False
+    # "materially below": at least a full 0.5R gap, not a rounding wobble.
+    assert s.expectancy_ci_low < iid_low - 0.5
+    # sanity on the magnitude: the clustered bound is dragged toward the tiny-ticker world.
+    assert s.expectancy_ci_low < 0.5
+
+
+def test_clustered_bound_is_deterministic_for_fixed_seed():
+    trades = [_ct("AAA", 2.0) for _ in range(18)] + [_ct(f"T{i}", 0.05) for i in range(7)]
+    first = summarize(trades).expectancy_ci_low
+    second = summarize(trades).expectancy_ci_low
+    assert first == second  # identical, not merely close -- a fixed bootstrap seed
+
+
+def test_clustered_bound_falls_back_to_iid_below_distinct_ticker_floor():
+    # Only 3 distinct tickers (< the floor): too few clusters to bootstrap, so the bound
+    # falls back to the IID estimate and is flagged thin.
+    realized = [2.0, 2.0, 2.0, 0.05, 0.05, 1.0, 1.0]
+    trades = (
+        [_ct("AAA", 2.0) for _ in range(3)]
+        + [_ct("BBB", 0.05) for _ in range(2)]
+        + [_ct("CCC", 1.0) for _ in range(2)]
+    )
+    s = summarize(trades)
+    assert s.n_clusters == 3 and s.thin_clusters is True
+    assert abs(s.expectancy_ci_low - _iid_low(realized)) < 1e-9
+
+
+def test_clustered_bound_never_above_iid_across_varied_inputs():
+    # The min(iid_low, clustered_low) rule: on ANY input the reported lower bound is
+    # never MORE optimistic than the IID bound, whether clustering fires or falls back.
+    cases = [
+        # many tickers, mixed signs -> clustering fires
+        [_ct(f"T{i}", r) for i, r in enumerate(
+            [3.0, -1.0, 2.0, -2.0, 1.5, 0.5, -0.5, 4.0, -3.0, 1.0])],
+        # one dominant ticker + spread tail -> clustering fires, widens hard
+        ([_ct("AAA", 2.0) for _ in range(18)] + [_ct(f"T{i}", -0.2) for i in range(7)]),
+        # below the floor -> falls back to IID (must be EQUAL, the boundary of the min)
+        [_ct("AAA", 1.0), _ct("BBB", -1.0), _ct("CCC", 2.0)],
+        # all-identical, many tickers -> bootstrap mean is constant, equals IID
+        [_ct(f"T{i}", 1.0) for i in range(12)],
+    ]
+    for trades in cases:
+        realized = [t.realized_r for t in trades]
+        s = summarize(trades)
+        assert s.expectancy_ci_low <= _iid_low(realized) + 1e-9

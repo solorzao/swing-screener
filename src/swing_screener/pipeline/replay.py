@@ -45,6 +45,48 @@ def _warmup(cfg: StrategyConfig) -> int:
     return cfg.ema_slow + cfg.max_pullback_bars + 5
 
 
+def replay_book(
+    frames: Mapping[str, pd.DataFrame],
+    *,
+    timeframe: str,
+    base_cfg: StrategyConfig | None = None,
+    variants: Mapping[str, StrategyConfig] | None = None,
+) -> list[PaperTrade]:
+    """Walk each ticker forward and return the raw shadow-book PaperTrades (detached).
+
+    The trade-level substrate the leaderboard, no-lookahead test, and propose() delta
+    test all read. Behavior-identical to the loop previously inlined in ``replay()``.
+
+    ``frames`` maps ticker -> raw OHLCV (the harness enriches once with ``base_cfg``;
+    variants must share its indicator periods). ``variants`` defaults to
+    ``build_screen_variants(base_cfg)``. The returned trades are expunged from the
+    throwaway session so callers can read their columns after it is torn down.
+    """
+    base_cfg = base_cfg or StrategyConfig()
+    variants = variants or build_screen_variants(base_cfg)
+    warmup = _warmup(base_cfg)
+
+    # One throwaway file db for the whole replay (in-memory sqlite would not survive the
+    # per-bar session churn); a single Session streams every write through one connection.
+    with tempfile.TemporaryDirectory() as tmp:
+        engine = get_engine(f"sqlite:///{Path(tmp) / 'replay.db'}")
+        try:
+            with Session(engine) as s:
+                for ticker, raw in frames.items():
+                    if raw is None or len(raw) <= warmup:
+                        continue
+                    enriched = build_frame(raw, base_cfg)
+                    _replay_one(s, ticker, timeframe, enriched, base_cfg, variants, warmup)
+                trades = list(s.scalars(select(PaperTrade)))
+                for t in trades:
+                    s.expunge(t)
+        finally:
+            # Release the pooled connection so SQLite drops its file handle before the
+            # TemporaryDirectory is torn down (Windows refuses to unlink an open file).
+            engine.dispose()
+        return trades
+
+
 def replay(
     frames: Mapping[str, pd.DataFrame],
     *,
@@ -57,24 +99,13 @@ def replay(
     ``frames`` maps ticker -> raw OHLCV (the harness enriches once with ``base_cfg``;
     variants must share its indicator periods). ``variants`` defaults to
     ``build_screen_variants(base_cfg)``. Returns ``{variant: PerformanceSummary}`` over
-    the pooled fills, each variant booked under the baseline exit.
+    the pooled fills, each variant booked under the baseline exit. Thin wrapper over
+    ``replay_book``.
     """
-    base_cfg = base_cfg or StrategyConfig()
-    variants = variants or build_screen_variants(base_cfg)
-    warmup = _warmup(base_cfg)
-
-    # One throwaway file db for the whole replay (in-memory sqlite would not survive the
-    # per-bar session churn); a single Session streams every write through one connection.
-    with tempfile.TemporaryDirectory() as tmp:
-        engine = get_engine(f"sqlite:///{Path(tmp) / 'replay.db'}")
-        with Session(engine) as s:
-            for ticker, raw in frames.items():
-                if raw is None or len(raw) <= warmup:
-                    continue
-                enriched = build_frame(raw, base_cfg)
-                _replay_one(s, ticker, timeframe, enriched, base_cfg, variants, warmup)
-            trades = list(s.scalars(select(PaperTrade)))
-    return breakdown(trades, "variant")
+    return breakdown(
+        replay_book(frames, timeframe=timeframe, base_cfg=base_cfg, variants=variants),
+        "variant",
+    )
 
 
 def _replay_one(

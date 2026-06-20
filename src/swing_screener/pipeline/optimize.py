@@ -13,16 +13,22 @@ no DB writes, no network beyond the cached parquet it reads.
 
 import argparse
 import logging
+from collections import defaultdict
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pandas as pd
 
-from swing_screener.analytics.performance import PerformanceSummary, leaderboard_order
+from swing_screener.analytics.performance import (
+    PerformanceSummary,
+    breakdown,
+    leaderboard_order,
+)
 from swing_screener.config import StrategyConfig
 from swing_screener.data.fetch import fetch_bars
-from swing_screener.pipeline.replay import _warmup, format_leaderboard, replay
+from swing_screener.db.models import PaperTrade
+from swing_screener.pipeline.replay import _warmup, format_leaderboard, replay, replay_book
 from swing_screener.pipeline.variants import _assert_shared_indicators
 
 log = logging.getLogger(__name__)
@@ -37,6 +43,11 @@ class OptimizeResult:
     in_sample: dict[str, PerformanceSummary]
     out_of_sample: dict[str, PerformanceSummary]
     winner: str | None   # best in-sample config that actually traded; None if none did
+    # The raw OOS book grouped by variant -- the trade-level substrate propose()'s clustered
+    # two-sample delta + placebo gates read. ``out_of_sample`` is the SAME book summarized, so
+    # the two never disagree. Defaults empty so summary-only callers (format_report tests) need
+    # not supply it; propose() treats a missing winner book as "cannot certify" (returns None).
+    out_of_sample_trades: dict[str, list[PaperTrade]] = field(default_factory=dict)
 
 
 def build_config_grid(base: StrategyConfig) -> dict[str, StrategyConfig]:
@@ -81,11 +92,25 @@ def optimize(
     in_frames, out_frames = _split(frames, oos_frac, _warmup(base_cfg))
 
     in_sample = replay(in_frames, timeframe=timeframe, base_cfg=base_cfg, variants=grid)
-    out_of_sample = replay(out_frames, timeframe=timeframe, base_cfg=base_cfg, variants=grid)
+
+    # Build the OOS book ONCE and derive both views from it: the per-variant trade lists
+    # (for propose()'s clustered delta + placebo gates) and the summarized leaderboard. Running
+    # replay_book + breakdown here -- instead of replay() then a second replay_book() -- keeps the
+    # expensive bar-by-bar walk single-pass and guarantees the trades and summaries agree.
+    oos_book = replay_book(out_frames, timeframe=timeframe, base_cfg=base_cfg, variants=grid)
+    out_of_sample_trades: dict[str, list[PaperTrade]] = defaultdict(list)
+    for t in oos_book:
+        out_of_sample_trades[t.variant].append(t)
+    out_of_sample = breakdown(oos_book, "variant")
 
     # Best in-sample config that actually traded (a 0-trade config can't be a winner).
     winner = next((n for n in leaderboard_order(in_sample) if in_sample[n].n_closed > 0), None)
-    return OptimizeResult(in_sample=in_sample, out_of_sample=out_of_sample, winner=winner)
+    return OptimizeResult(
+        in_sample=in_sample,
+        out_of_sample=out_of_sample,
+        winner=winner,
+        out_of_sample_trades=dict(out_of_sample_trades),
+    )
 
 
 def format_report(result: OptimizeResult) -> str:

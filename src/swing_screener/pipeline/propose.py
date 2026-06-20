@@ -10,13 +10,22 @@ loop never spams overfit changes.
 """
 
 import argparse
+import hashlib
 import logging
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from swing_screener.analytics.performance import MIN_LEADERBOARD_N
+import numpy as np
+
+from swing_screener.analytics.performance import (
+    MIN_LEADERBOARD_N,
+    _CLUSTER_FLOOR,
+    _is_closed_filled,
+)
 from swing_screener.config import StrategyConfig
+from swing_screener.db.models import PaperTrade
 from swing_screener.pipeline.optimize import OptimizeResult, fetch_daily, optimize
 from swing_screener.pipeline.replay import format_leaderboard
 
@@ -41,6 +50,74 @@ def _incumbent_name(base_cfg: StrategyConfig) -> str:
     return f"ext_{base_cfg.max_extension_atr:.1f}"
 
 
+def _closed_by_ticker(trades: list[PaperTrade]) -> dict[str, list[float]]:
+    """Realized R per ticker over closed-filled trades (the bootstrap's clusters)."""
+    d: dict[str, list[float]] = {}
+    for t in trades:
+        # The second clause is redundant at runtime (_is_closed_filled already requires it)
+        # but narrows realized_r from float | None to float for mypy.
+        if _is_closed_filled(t) and t.realized_r is not None:
+            d.setdefault(t.ticker, []).append(t.realized_r)
+    return d
+
+
+def _clustered_two_sample_delta_low(
+    winner: list[PaperTrade], incumbent: list[PaperTrade], *, seed: int = 12345, n_boot: int = 1000,
+) -> float:
+    """Lower 2.5% bound on (mean winner R - mean incumbent R), resampling TICKERS with
+    replacement INDEPENDENTLY in each book (two-sample clustered bootstrap, NOT paired --
+    variants are not same-sample, D1). -inf if either book is empty (cannot certify)."""
+    w, i = _closed_by_ticker(winner), _closed_by_ticker(incumbent)
+    if not w or not i:
+        return float("-inf")
+    rng = np.random.default_rng(seed)
+    wt, it = list(w), list(i)
+    deltas = np.empty(n_boot)
+    for b in range(n_boot):
+        wm = np.concatenate([w[wt[k]] for k in rng.integers(0, len(wt), len(wt))]).mean()
+        im = np.concatenate([i[it[k]] for k in rng.integers(0, len(it), len(it))]).mean()
+        deltas[b] = wm - im
+    return float(np.percentile(deltas, 2.5))
+
+
+def _placebo_cleared(
+    winner: list[PaperTrade], incumbent: list[PaperTrade], observed_delta: float,
+    *, seed: int = 12345, n_shuffle: int = 1000,
+) -> bool:
+    """Pool both books' R, randomly relabel winner/incumbent (preserving sizes), and
+    confirm the observed delta exceeds the 95th percentile of the shuffled null. If a
+    random relabel reproduces the edge, it is an artifact, not signal."""
+    wv = [t.realized_r for t in winner if _is_closed_filled(t) and t.realized_r is not None]
+    iv = [t.realized_r for t in incumbent if _is_closed_filled(t) and t.realized_r is not None]
+    nw = len(wv)
+    pool = np.array(wv + iv, dtype=float)
+    if nw == 0 or nw == len(pool):
+        return False
+    rng = np.random.default_rng(seed)
+    null = np.empty(n_shuffle)
+    for b in range(n_shuffle):
+        perm = rng.permutation(pool)
+        null[b] = perm[:nw].mean() - perm[nw:].mean()
+    return observed_delta > float(np.percentile(null, 95))
+
+
+def _provenance(result: OptimizeResult) -> str:
+    """A reproducibility footer for the PR body: a stable hash of the swept grid, the current
+    git SHA, and the configuration count -- so the researcher degrees-of-freedom behind a
+    proposal are auditable after the fact."""
+    grid_hash = hashlib.sha1(",".join(sorted(result.in_sample)).encode()).hexdigest()[:12]
+    try:
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parents[3],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip() or "unknown"
+    except (OSError, subprocess.SubprocessError):
+        sha = "unknown"
+    return (f"\n### Provenance\n"
+            f"grid: `{grid_hash}` · sha: `{sha}` · n_configs={len(result.in_sample)}\n")
+
+
 def propose(
     result: OptimizeResult,
     base_cfg: StrategyConfig,
@@ -52,22 +129,47 @@ def propose(
     Guards (all must hold, or nothing is proposed):
       * there is an in-sample winner, and it is NOT already the incumbent;
       * the winner has a TRUSTED out-of-sample sample (``n_closed >= min_oos_trades``);
-      * its out-of-sample lower 95% bound is positive (a real edge, not noise); and
-      * its out-of-sample expectancy beats the incumbent's.
+      * its out-of-sample lower 95% bound is positive (a real edge, not noise);
+      * its out-of-sample expectancy beats the incumbent's (point estimate);
+      * the winner's OOS book spans ``>= _CLUSTER_FLOOR`` distinct tickers (enough clusters
+        to certify the difference, not a one-name artifact);
+      * the clustered TWO-SAMPLE delta (winner minus incumbent, resampling tickers
+        independently in each book -- D1: NOT paired) has a lower 2.5% bound above 0; and
+      * a label-shuffle PLACEBO is cleared (a random relabel of the pooled R does not
+        reproduce the observed edge -- so the edge is signal, not luck).
     The out-of-sample gates are the anti-overfit teeth: an edge that only shows up
-    in-sample never makes it into a PR.
+    in-sample, on too few names, or that a coin-flip relabel reproduces, never makes it
+    into a PR.
     """
+    incumbent_name = _incumbent_name(base_cfg)
     winner = result.winner
-    if winner is None or winner == _incumbent_name(base_cfg):
+    if winner is None or winner == incumbent_name:
         return None
 
     w_oos = result.out_of_sample.get(winner)
     if w_oos is None or w_oos.n_closed < min_oos_trades or w_oos.expectancy_ci_low <= 0:
         return None
 
-    inc_oos = result.out_of_sample.get(_incumbent_name(base_cfg))
+    inc_oos = result.out_of_sample.get(incumbent_name)
     inc_oos_expectancy = inc_oos.expectancy_r if inc_oos is not None else 0.0
     if w_oos.expectancy_r <= inc_oos_expectancy:
+        return None
+
+    # Trade-level teeth (D1: a TWO-SAMPLE comparison of independent books, clustered by ticker --
+    # the variants produce different fills, so this is NOT the paired arm A/B). The summary gates
+    # above only test the winner's own line; these test the winner-vs-incumbent DIFFERENCE.
+    winner_trades = result.out_of_sample_trades.get(winner, [])
+    incumbent_trades = result.out_of_sample_trades.get(incumbent_name, [])
+    if len(_closed_by_ticker(winner_trades)) < _CLUSTER_FLOOR:
+        return None
+    if _clustered_two_sample_delta_low(winner_trades, incumbent_trades) <= 0:
+        return None
+    # Note the deliberate weighting split: the clustered delta gate above is TICKER-weighted
+    # (resamples whole tickers, respecting correlation), while observed_delta + the placebo
+    # below are TRADE-weighted (pooled per-trade R). Both must pass; on a borderline case they
+    # can disagree, which is intended -- the clustered gate is the correlation-aware one.
+    observed_delta = w_oos.expectancy_r - inc_oos_expectancy
+    if not _placebo_cleared(winner_trades, incumbent_trades, observed_delta):
         return None
 
     proposed = float(winner.removeprefix("ext_"))
@@ -82,6 +184,7 @@ def propose(
         f"n={w_oos.n_closed}).\n\n"
         "### In-sample leaderboard\n```\n" + format_leaderboard(result.in_sample) + "\n```\n"
         "### Out-of-sample leaderboard\n```\n" + format_leaderboard(result.out_of_sample) + "\n```\n"
+        + _provenance(result)
     )
     return Proposal(knob="max_extension_atr", current=base_cfg.max_extension_atr,
                     proposed=proposed, title=title, body=body)
