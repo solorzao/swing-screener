@@ -478,15 +478,6 @@ def _render_closed(session: Session) -> None:
         st.altair_chart(ui.line(points, "Exit date", "Cumulative $"), width="stretch")
 
 
-def _leaderboard_flag(s: performance.PerformanceSummary) -> str:
-    """Trust flag for a leaderboard row (matches the replay CLI). 'iid' wins over thin/ok:
-    when the clustered bootstrap couldn't run, the 95% low is the weaker IID-fallback bound,
-    which the reader needs to see over the sample-size flag."""
-    if s.thin_clusters:
-        return "iid"
-    return "thin" if s.n_closed < performance.MIN_LEADERBOARD_N else "ok"
-
-
 def _render_performance(session: Session) -> None:
     ui.page_header("Screener Performance")
     paper_trades = list(session.scalars(select(PaperTrade)))
@@ -532,7 +523,7 @@ def _render_performance(session: Session) -> None:
                     "win_rate": by_variant[v].win_rate,
                     "closed": by_variant[v].n_closed,
                     "clusters": by_variant[v].n_clusters,
-                    "sample": _leaderboard_flag(by_variant[v]),
+                    "sample": performance.leaderboard_flag(by_variant[v]),
                 }
                 for v in var_order
             ]

@@ -22,9 +22,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from swing_screener.analytics.performance import (
-    MIN_LEADERBOARD_N,
     PerformanceSummary,
     breakdown,
+    leaderboard_flag,
     leaderboard_order,
 )
 from swing_screener.config import StrategyConfig
@@ -153,12 +153,7 @@ def format_leaderboard(by_variant: Mapping[str, PerformanceSummary]) -> str:
     lines = [header, "-" * len(header)]
     for v in order:
         s = by_variant[v]
-        # "iid" wins over thin/ok: when the clustered bootstrap couldn't run, the 95%_low is
-        # the weaker IID-fallback bound, which the reader needs to see over the sample-size flag.
-        if s.thin_clusters:
-            flag = "iid"
-        else:
-            flag = "thin" if s.n_closed < MIN_LEADERBOARD_N else "ok"
+        flag = leaderboard_flag(s)   # shared with the dashboard (iid > thin > ok)
         lines.append(f"{v:<18}{s.expectancy_r:>14.2f}{s.expectancy_ci_low:>10.2f}"
                      f"{s.win_rate:>10.2f}{s.n_closed:>8d}{s.n_clusters:>10d}{flag:>8}")
     return "\n".join(lines)
