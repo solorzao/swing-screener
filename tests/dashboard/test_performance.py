@@ -121,6 +121,37 @@ def test_performance_play_type_filter_scopes_the_arm_ab(tmp_path, monkeypatch):
     assert _expectancy() == "-0.50"
 
 
+def _seed_two_variants(url):
+    engine = get_engine(url)
+    with Session(engine) as s:
+        # two screen variants, each on the baseline exit arm, different realized R
+        s.add(PaperTrade(ticker="AMD", timeframe="1d", horizon="medium", signal_score=0.9,
+                         rank=1, arm="baseline", variant="default", fill_status="filled",
+                         stop=95.0, target=110.0, risk=5.0, status="closed", realized_r=1.0,
+                         hold_bars=4, exit_date=date(2026, 1, 5)))
+        s.add(PaperTrade(ticker="NVDA", timeframe="1d", horizon="medium", signal_score=0.8,
+                         rank=1, arm="baseline", variant="extguard_tight", fill_status="filled",
+                         stop=190.0, target=220.0, risk=10.0, status="closed", realized_r=2.0,
+                         hold_bars=3, exit_date=date(2026, 1, 6)))
+        s.commit()
+
+
+def test_performance_shows_strategy_leaderboard_for_variants(tmp_path, monkeypatch):
+    url = f"sqlite:///{tmp_path / 'perf_var.sqlite'}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    _seed_two_variants(url)
+    at = AppTest.from_file(APP).run()
+    at.sidebar.radio[0].set_value("Screener Performance").run()
+    assert not at.exception
+
+    md = " ".join(str(getattr(m, "value", "")) for m in at.markdown)
+    assert "Strategy leaderboard" in md
+    tables = " ".join(df.value.to_string() for df in at.dataframe)
+    assert "extguard_tight" in tables and "default" in tables
+    # downstream KPIs are scoped to the default variant -> expectancy 1.0, not blended w/ 2.0
+    assert next(m.value for m in at.metric if m.label == "Expectancy R") == "1.00"
+
+
 def test_performance_empty_state_has_no_chart(tmp_path, monkeypatch):
     url = f"sqlite:///{tmp_path / 'perf_empty.sqlite'}"
     monkeypatch.setenv("SWING_DB_URL", url)

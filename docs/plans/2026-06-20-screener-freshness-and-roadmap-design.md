@@ -1,8 +1,9 @@
 # Screener freshness + system roadmap — design
 
 **Date:** 2026-06-20
-**Status:** Steps 1 + 2 shipped (freshness gate, live actionability, persisted
-extension/first-seen, freshness score term, staleness cooldown); roadmap proposed.
+**Status:** Steps 1–3 shipped (freshness gate, live actionability, persisted
+extension/first-seen, freshness score term, staleness cooldown, screen-variant shadow-book
+dimension + strategy leaderboard); roadmap proposed.
 **Scope:** Fix the "screeners suggest plays that already ran" complaint, and chart a path
 toward a measurement-driven, self-optimizing system (a deterministic
 build → deploy → measure → optimize → repeat loop with a strategy leaderboard).
@@ -74,24 +75,43 @@ testing their actual concern. New tests cover the gate (`test_analyze`), the pur
   + **First seen** columns and a default-on "Hide repeats" filter. NULL-first_seen rows always
   pass (fail-open), so legacy rows and existing tests are unaffected.
 
+## Step 3 — shipped (live screen-variant dimension)
+
+A second, orthogonal experiment dimension on the shadow book. `arm` varies the EXIT policy on
+a shared fill (same-sample); the new **`variant`** varies the ENTRY/screen config.
+
+- **`pipeline/variants.py`** — `build_screen_variants(base)` returns `{name: StrategyConfig}`;
+  the shipped set is `default` (the live config) + `extguard_tight` (freshness gate 1.5 vs the
+  base's 2.0). Variants MUST share the base's indicator periods (the shadow book reuses the
+  base frames); a guard raises if one retunes an indicator.
+- **Pipeline** (`pipeline/run.py`) re-screens the prior bar under each alt variant (reusing the
+  enriched frames) and books each variant's own fills under the baseline exit only — one extra
+  book per variant. `advance_open` keys exits off `arm`, so variant trades ride the baseline
+  exit with no downstream changes.
+- **Data model** — `paper_trades.variant` (migration `c4d8e2f6a9b1`, NOT NULL server_default
+  `default`, indexed). `breakdown(baseline-arm trades, "variant")` is the leaderboard.
+- **Dashboard** — "Screener Performance" leads with a **Strategy leaderboard** (variants ranked
+  by expectancy under the baseline exit); the exit-arm A/B and headline metric are scoped to the
+  `default` variant so they stay honest.
+- Per the chosen "both, live first" plan, the **offline replay/backtest harness** (sweep many
+  configs over history, emit a leaderboard) is the next step — it reuses this `variant` plumbing.
+
 ## Roadmap — toward the self-optimizing system
 
-The system already has the rare half of the loop: it forward-tests every signal across
-parallel exit **arms** with same-sample A/B analytics. To close the loop:
+The live forward-testing dimensions (exit arms + screen variants) are in place. Remaining:
 
-1. **Screen-level strategy variants as arms.** Today arms vary only the *exit* policy
-   (`pipeline/arms.py`). Promote `StrategyConfig` variants (extension thresholds, RSI gates,
-   score weights) into named arms forward-tested head-to-head — a true *strategy* leaderboard,
-   not just an exit leaderboard.
-2. **Leaderboard table + dashboard view** ranking variants by expectancy / profit factor /
-   fill rate over a trailing window, *with sample size and significance*.
+1. **Offline replay/backtest harness** — replay the screener over cached history across a config
+   grid, emit a per-variant leaderboard (walk-forward / out-of-sample). The wider sweep tool
+   that complements the live shadow book; promote a winner into `build_screen_variants`.
+2. **Leaderboard significance.** The dashboard leaderboard ships (Step 3); add sample size +
+   confidence so a thin-sample variant isn't crowned, and a trailing-window cut.
 3. **Score calibration.** Track realized expectancy by score decile to verify the score
    predicts winners; a flat curve means the score is miscalibrated.
 4. **Regime tagging.** Stamp each run with market context (SPY vs 200DMA, volatility bucket)
    and break performance down by regime — continuation wants uptrends, reversals want washouts.
-5. **Scheduled optimizer/sweep job** that replays history across a config grid with
-   walk-forward / out-of-sample guardrails and proposes the next config — the deterministic
-   analog of the post's "AI-native orchestrator."
+5. **Scheduled optimizer job** that drives the replay harness (item 1) over a config grid on a
+   cadence and proposes the next `build_screen_variants` set — the deterministic analog of the
+   post's "AI-native orchestrator."
 
 Smaller features: earnings-date avoidance, liquidity/gap gating, sector-breadth context in the
 digest, R-based position sizing, and intraday **entry alerts** (notify when a candidate trades

@@ -103,6 +103,12 @@ class PaperTrade(Base):
     # different exit management) so breakdown(trades, "arm") gives a same-sample A/B
     # of e.g. all-or-nothing ("baseline") vs a conditional partial ("partial33_cond").
     arm: Mapped[str] = mapped_column(String(32), default="baseline", index=True)
+    # screen variant: the ENTRY/screen config that produced this fill -- the orthogonal
+    # complement to `arm`. "default" is the live screen config; other variants re-screen
+    # the prior bar under a tweaked StrategyConfig (e.g. a tighter freshness gate) and are
+    # booked under the baseline exit, so breakdown(trades, "variant") is a strategy
+    # leaderboard. Unlike arms, variants are NOT same-sample (different entries).
+    variant: Mapped[str] = mapped_column(String(32), default="default", index=True)
     # categorization tags denormalized from the signal so the shadow book can be
     # sliced by them in QC without a join back to the (run-date-scoped) signal row.
     quality_tier: Mapped[str] = mapped_column(String(32), default="")

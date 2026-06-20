@@ -91,10 +91,13 @@ and the target/exit overhaul
   persistence + enrichment, and a nightly orchestrator CLI.
 - The **shadow book** fills the *prior* bar's signals against the latest bar (worst-case
   in-zone, no lookahead) and advances open trades through the exit logic, recording outcomes
-  in R-multiples. It opens every fill once per **experiment arm** — `baseline`
-  (all-or-nothing), `partial33_cond` (conditional partial + breakeven runner), and
-  `partial33_chand` (partial + Chandelier trail) — so the dashboard can run a **same-sample
-  A/B** of exit policies (`analytics/performance.py`).
+  in R-multiples. It runs **two orthogonal experiment dimensions**. (1) Exit **arms** —
+  `baseline` (all-or-nothing), `partial33_cond` (conditional partial + breakeven runner), and
+  `partial33_chand` (partial + Chandelier trail) — open one shared fill under each exit policy
+  for a **same-sample A/B** of exits. (2) Screen **variants** (`pipeline/variants.py`) —
+  re-screen the prior bar under alternative entry configs (e.g. a tighter freshness gate) and
+  book each variant's own fills under the baseline exit, so `breakdown(trades, "variant")` is a
+  **strategy leaderboard**. Both feed `analytics/performance.py`.
 - **Notifications** (`notify/`) send daily/weekly/monthly digest emails (summary + PDF),
   intraday exit alerts, and **on-demand single-ticker deep analysis** (request a ticker in the
   dashboard → a queued worker runs a multi-timeframe Opus read → emails a PDF → surfaces it
@@ -125,7 +128,8 @@ filter + a live **actionability** status — each pick is graded against its lat
 ✅ actionable / 🏃 already ran / ⛔ stopped, already-ran picks hidden by default, and
 **repeats** first seen on an earlier run aged out so the same play isn't shown day after day),
 Deep Analysis (request on-demand reports), Active Trades (inline close + live P/L),
-Trade Entry, Closed Trades (equity curve), Screener Performance (per-arm A/B + play-type
+Trade Entry, Closed Trades (equity curve), Screener Performance (strategy-variant
+leaderboard + per-arm exit A/B + play-type
 filter), Exit Log, Universe, Digest Log.
 
 ```powershell

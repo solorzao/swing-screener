@@ -198,6 +198,40 @@ def test_run_stamps_extension_and_inherits_first_seen_across_runs(tmp_path, bars
     assert d1.extension_atr is not None and d1.extension_atr > 0  # freshness metric persisted
 
 
+def test_run_books_screen_variant_paper_trades(tmp_path, bars, monkeypatch):
+    # The shadow book forward-tests screen variants as a second dimension. Stub the
+    # variant set to an alt that DOESN'T gate the firing fixture (it only retunes the
+    # target floor) so both books fill, and assert variant-tagged trades are created --
+    # default carries all exit arms, the alt only the baseline exit.
+    from dataclasses import replace
+
+    from swing_screener.pipeline.arms import BASELINE
+    from swing_screener.pipeline.variants import DEFAULT_VARIANT
+
+    def stub_variants(base):
+        return {DEFAULT_VARIANT: base, "alt": replace(base, min_target_r=3.0)}
+    monkeypatch.setattr(run, "build_screen_variants", stub_variants)
+
+    def fake_fetch(ticker, *, cache_dir, today, cfg):
+        return {"1d": _firing_then_fill_bar(bars)} if ticker == "AAPL" else {}
+    monkeypatch.setattr(run, "_fetch_all_timeframes", fake_fetch)
+
+    db = f"sqlite:///{tmp_path / 'db.sqlite'}"
+    run.run_screen(universe_path=_write_universe(tmp_path, ["AAPL"]), db_url=db,
+                   cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts",
+                   today=date(2024, 4, 2), cfg=_NO_EXT_GATE)
+
+    with Session(get_engine(db)) as s:
+        papers = list(s.scalars(select(PaperTrade)))
+    variants = {p.variant for p in papers}
+    assert {"default", "alt"} <= variants                       # both books exist
+    # the alt variant is booked under the baseline exit only (no partial arms)
+    alt_arms = {p.arm for p in papers if p.variant == "alt"}
+    assert alt_arms == {BASELINE}
+    # the default variant still carries the full exit-arm A/B
+    assert len({p.arm for p in papers if p.variant == "default"}) >= 2
+
+
 def test_run_is_idempotent_for_same_day(tmp_path, bars, monkeypatch):
     def fake_fetch(ticker, *, cache_dir, today, cfg):
         return {"1d": _firing(bars)} if ticker == "AAPL" else {}

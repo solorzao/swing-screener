@@ -59,6 +59,7 @@ def open_from_signals(
     *,
     fill_date: date,
     arms: Sequence[str] = (BASELINE,),
+    variant: str = "default",
 ) -> list[PaperTrade]:
     """Resolve each candidate against its next bar and persist a paper trade per arm.
 
@@ -70,6 +71,9 @@ def open_from_signals(
     candidate is duplicated once per arm and tagged with ``arm``; the arms then
     diverge only in ``advance_open``. Both filled and terminal rows are duplicated
     so every arm is a complete book (per-arm ``fill_rate``/``n_total`` stay correct).
+
+    ``variant`` tags the ENTRY/screen config these candidates came from (the orthogonal
+    leaderboard dimension); the caller passes the screened fills for one variant at a time.
     """
     trades: list[PaperTrade] = []
     for cand in candidates:
@@ -95,6 +99,7 @@ def open_from_signals(
                 "volatility_tier": cand.volatility_tier,
                 "oversold": cand.oversold,
                 "arm": arm,
+                "variant": variant,
                 "fill_status": fill.status,
                 "stop": cand.zone.stop,
                 "target": cand.zone.target,

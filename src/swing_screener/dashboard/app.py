@@ -30,6 +30,7 @@ from swing_screener.db import repo
 from swing_screener.db.models import ExitEvent, PaperTrade, Signal, Trade
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.arms import BASELINE
+from swing_screener.pipeline.variants import DEFAULT_VARIANT
 from swing_screener.settings import load_settings
 from swing_screener.signals.actionability import classify as classify_actionability
 from swing_screener.storage.blob import blob_enabled, download_bytes
@@ -497,6 +498,42 @@ def _render_performance(session: Session) -> None:
             ui.empty_state(f"No {choice} shadow-book trades.")
             return
 
+    # Strategy leaderboard: rank ENTRY/screen variants head-to-head under a fixed exit
+    # (the baseline arm) -- the complement of the exit-arm A/B below. Variants are NOT
+    # same-sample (each screens its own fills), so this compares strategies, not exits.
+    if len({t.variant for t in paper_trades}) > 1:
+        by_variant = performance.breakdown(
+            [t for t in paper_trades if t.arm == BASELINE], "variant")
+        st.markdown("**Strategy leaderboard** — same exit (baseline), different screen config")
+        var_order = sorted(by_variant, key=lambda v: by_variant[v].expectancy_r, reverse=True)
+        var_df = pd.DataFrame(
+            [
+                {
+                    "variant": v,
+                    "expectancy_r": by_variant[v].expectancy_r,
+                    "win_rate": by_variant[v].win_rate,
+                    "fill_rate": by_variant[v].fill_rate,
+                    "closed": by_variant[v].n_closed,
+                }
+                for v in var_order
+            ]
+        )
+        st.dataframe(
+            var_df,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "variant": st.column_config.TextColumn("Variant"),
+                "expectancy_r": st.column_config.NumberColumn("Expectancy R", format="%.2f"),
+                "win_rate": st.column_config.NumberColumn("Win rate", format="percent"),
+                "fill_rate": st.column_config.NumberColumn("Fill rate", format="percent"),
+                "closed": st.column_config.NumberColumn("Closed", format="%d"),
+            },
+        )
+        # The exit-arm A/B below is only honest on ONE screen (its arms share fills),
+        # so scope everything downstream to the default (live) screen variant.
+        paper_trades = [t for t in paper_trades if t.variant == DEFAULT_VARIANT]
+
     # Parallel-arm shadow book: when more than one experiment arm is present, lead
     # with the same-sample A/B (every arm saw the identical fills) and let the user
     # drill into one arm's detail below. With a single arm the view is unchanged.
@@ -631,9 +668,11 @@ def _render_overview(session: Session) -> None:
     total_unrealized = total_unrealized_pl(open_trades, prices)
 
     candidates = len(repo.latest_signals(session, run_date)) if run_date else 0
-    # headline win rate is the baseline arm only, so the dual-book's extra arms don't
-    # blend into (or move) the landing-page number.
-    baseline_trades = list(session.scalars(select(PaperTrade).where(PaperTrade.arm == BASELINE)))
+    # headline win rate is the live screen (default variant) on the baseline exit arm, so
+    # neither the extra exit arms nor the screen-variant books move the landing-page number.
+    baseline_trades = list(session.scalars(
+        select(PaperTrade).where(PaperTrade.arm == BASELINE,
+                                 PaperTrade.variant == DEFAULT_VARIANT)))
     win_rate = performance.summarize(baseline_trades).win_rate
 
     c1, c2, c3, c4 = st.columns(4)
