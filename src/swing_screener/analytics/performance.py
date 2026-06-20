@@ -85,6 +85,9 @@ def _clustered_ci_low(by_ticker: dict[str, list[float]], iid_low: float) -> tupl
     n_clusters = len(tickers)
     if n_clusters < _CLUSTER_FLOOR:
         return iid_low, n_clusters, True
+    # Reseed per call (NOT a shared/module rng) so each breakdown group's bound is
+    # reproducible independent of call order -- a shared rng would make a group's CI
+    # depend on how many groups ran before it. Do not "optimize" this to module scope.
     rng = np.random.default_rng(_BOOT_SEED)
     pools = [np.asarray(by_ticker[t], dtype=float) for t in tickers]
     idx = np.arange(n_clusters)
