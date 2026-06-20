@@ -1,10 +1,10 @@
 # Screener freshness + system roadmap — design
 
 **Date:** 2026-06-20
-**Status:** Steps 1–6 shipped (freshness gate, live actionability, persisted
+**Status:** Steps 1–7 shipped (freshness gate, live actionability, persisted
 extension/first-seen, freshness score term, staleness cooldown, screen-variant shadow-book
 dimension + strategy leaderboard, offline replay/backtest harness, leaderboard significance,
-score calibration); roadmap proposed.
+score calibration, market-regime attribution); roadmap proposed.
 **Scope:** Fix the "screeners suggest plays that already ran" complaint, and chart a path
 toward a measurement-driven, self-optimizing system (a deterministic
 build → deploy → measure → optimize → repeat loop with a strategy leaderboard).
@@ -129,16 +129,27 @@ empty bands hidden from the chart) — with a caption: a predictive score trends
 a flat or inverted curve means the weights need rework. Runs on the selected variant/arm, so
 calibration can be read per screen config.
 
+## Step 7 — shipped (market-regime attribution)
+
+`pipeline/regime.py` — `classify_regime(spy_daily, cfg)` reads the SPY daily proxy and returns
+a `MarketRegime(trend, vol)`: trend `bull`/`bear` (last close vs the 200-day SMA), vol
+`calm`/`elevated`/`high` (ATR% bands). The pipeline classifies once per run — routed through the
+same fetch seam as the universe so tests stay offline, and **skipped entirely on a no-fill run**
+(no fills, no SPY fetch) — and stamps every paper trade with `market_trend` + `market_vol`
+(migration `d5b9f3a72e16`, nullable; NULL = unknown / SPY unavailable / legacy). "Screener
+Performance" gains a **Performance by market regime** cut (expectancy-by-trend chart + a
+trend/vol table), so you can see whether continuation really wants bull regimes and reversals
+the washouts. Unknown-regime trades are excluded from the cut.
+
 ## Roadmap — toward the self-optimizing system
 
 The live forward-testing dimensions (exit arms + screen variants), the offline replay harness,
-trustworthy leaderboards, and score calibration are in place. Remaining:
+trustworthy leaderboards, score calibration, and regime attribution are in place. Remaining:
 
-1. **Regime tagging.** Stamp each run with market context (SPY vs 200DMA, volatility bucket)
-   and break performance down by regime — continuation wants uptrends, reversals want washouts.
-2. **Scheduled optimizer job** that drives the replay harness over a config grid on a cadence
+1. **Scheduled optimizer job** that drives the replay harness over a config grid on a cadence
    and proposes the next `build_screen_variants` set — the deterministic analog of the post's
-   "AI-native orchestrator."
+   "AI-native orchestrator." This is the capstone: it turns the now-complete measurement stack
+   into the post's autonomous build → measure → optimize → repeat loop.
 
 Smaller features: earnings-date avoidance, liquidity/gap gating, sector-breadth context in the
 digest, R-based position sizing, and intraday **entry alerts** (notify when a candidate trades

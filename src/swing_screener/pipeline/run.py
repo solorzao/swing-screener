@@ -25,6 +25,7 @@ from swing_screener.pipeline.analyze import (
     build_frames,
 )
 from swing_screener.pipeline.arms import BASELINE, build_arms
+from swing_screener.pipeline.regime import MARKET_PROXY, classify_regime
 from swing_screener.pipeline.shadow import FillCandidate, advance_open, open_from_signals
 from swing_screener.pipeline.variants import DEFAULT_VARIANT, build_screen_variants
 from swing_screener.settings import load_settings
@@ -295,6 +296,16 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
     today_results.sort(key=lambda r: r.score, reverse=True)
     today_reversals.sort(key=lambda r: r.score, reverse=True)
 
+    # Market regime once per run (SPY proxy), stamped onto every fill for WHEN-it-works
+    # attribution. Skip the fetch entirely when there's nothing to fill (e.g. an empty
+    # universe) -- no fills, no tags. Routed through the same fetch seam as the universe so
+    # tests stay offline; SPY unavailable -> unknown regime (fails safe, never raises).
+    spy_daily = None
+    if prior or any(prior_variants.values()):
+        spy_daily = _fetch_all_timeframes(
+            MARKET_PROXY, cache_dir=cache_dir, today=today, cfg=cfg).get("1d")
+    regime = classify_regime(spy_daily, cfg)
+
     n_charts = 0
     n_paper_opened = 0
     with Session(engine) as s:
@@ -330,7 +341,8 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         arms = build_arms(cfg)
         candidates, next_bars = _shadow_candidates(prior)
         opened = open_from_signals(s, candidates, next_bars, fill_date=today,
-                                   arms=tuple(arms), variant=DEFAULT_VARIANT)
+                                   arms=tuple(arms), variant=DEFAULT_VARIANT,
+                                   market_trend=regime.trend, market_vol=regime.vol)
         # count distinct fills (one arm), not the per-arm duplicates
         n_paper_opened = sum(1 for t in opened if t.status == "open" and t.arm == BASELINE)
         # Screen variants: book each alt config's own fills under the baseline exit only
@@ -340,7 +352,8 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         for vname in alt_variants:
             vcands, vnext = _shadow_candidates(prior_variants[vname])
             open_from_signals(s, vcands, vnext, fill_date=today, arms=(BASELINE,),
-                              variant=vname)
+                              variant=vname, market_trend=regime.trend,
+                              market_vol=regime.vol)
         advance_open(s, latest_bars, arms, today=today)
 
         # Enrich the universe rows with the metrics gathered during the loop

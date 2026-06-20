@@ -647,6 +647,39 @@ def _render_performance(session: Session) -> None:
         st.caption("A predictive score trends upward across bands; a flat or inverted curve "
                    "means it isn't separating winners from losers (revisit the weights).")
 
+    # Regime attribution: how the engine does by market context (SPY proxy). Continuation
+    # wants uptrends, reversals want washouts -- this shows whether the book agrees. Skip
+    # unknown-regime trades (legacy / SPY unavailable); show a cut only when it has > 1 bucket.
+    by_trend = performance.breakdown(
+        [t for t in trades if t.market_trend is not None], "market_trend")
+    by_vol = performance.breakdown(
+        [t for t in trades if t.market_vol is not None], "market_vol")
+    if len(by_trend) > 1 or len(by_vol) > 1:
+        st.markdown("**Performance by market regime** — SPY trend (vs 200-day) & volatility")
+        if len(by_trend) > 1:
+            st.altair_chart(
+                ui.bar({k: v.expectancy_r for k, v in by_trend.items()},
+                       "Market trend", "Expectancy R"),
+                width="stretch",
+            )
+        regime_rows = (
+            [{"regime": f"trend: {k}", "expectancy_r": v.expectancy_r,
+              "win_rate": v.win_rate, "closed": v.n_closed} for k, v in by_trend.items()]
+            + [{"regime": f"vol: {k}", "expectancy_r": v.expectancy_r,
+                "win_rate": v.win_rate, "closed": v.n_closed} for k, v in by_vol.items()]
+        )
+        st.dataframe(
+            pd.DataFrame(regime_rows),
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "regime": st.column_config.TextColumn("Regime"),
+                "expectancy_r": st.column_config.NumberColumn("Expectancy R", format="%.2f"),
+                "win_rate": st.column_config.NumberColumn("Win rate", format="percent"),
+                "closed": st.column_config.NumberColumn("Closed (n)", format="%d"),
+            },
+        )
+
     curve = performance.equity_curve(trades)
     if curve:
         st.markdown("**Equity curve (cumulative R)**")

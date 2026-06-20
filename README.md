@@ -129,7 +129,7 @@ filter + a live **actionability** status — each pick is graded against its lat
 **repeats** first seen on an earlier run aged out so the same play isn't shown day after day),
 Deep Analysis (request on-demand reports), Active Trades (inline close + live P/L),
 Trade Entry, Closed Trades (equity curve), Screener Performance (strategy-variant
-leaderboard + per-arm exit A/B + score calibration + play-type
+leaderboard + per-arm exit A/B + score calibration + market-regime cut + play-type
 filter), Exit Log, Universe, Digest Log.
 
 ```powershell
@@ -161,9 +161,9 @@ src/swing_screener/
   analytics/           performance (shadow-book QC: expectancy + 95% CI)  [pure]
   pipeline/            analyze (MTF continuation + reversal + score),
                        shadow (multi-arm shadow book), arms (exit arms),
-                       variants (screen arms), replay (offline backtest
-                       harness), exitcheck (intraday exit alerts),
-                       run (nightly orchestrator CLI)
+                       variants (screen arms), regime (SPY market context),
+                       replay (offline backtest harness), exitcheck (intraday
+                       exit alerts), run (nightly orchestrator CLI)
   notify/              run, select, analysis (Opus analyst), ondemand
                        (queued deep analysis), ticker_report, pdf, body,
                        acs / smtp / transport (email), alerts

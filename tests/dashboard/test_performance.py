@@ -217,6 +217,36 @@ def test_performance_renders_score_calibration(tmp_path, monkeypatch):
     assert "0.80-1.00" in tables and "0.00-0.50" in tables
 
 
+def _seed_regimes(url):
+    engine = get_engine(url)
+    with Session(engine) as s:
+        # continuation does well in a bull regime, poorly in a bear regime
+        for i in range(3):
+            s.add(PaperTrade(ticker=f"B{i}", timeframe="1d", horizon="medium", signal_score=0.8,
+                             rank=1, market_trend="bull", market_vol="calm", fill_status="filled",
+                             stop=95.0, target=110.0, risk=5.0, status="closed", realized_r=1.5,
+                             hold_bars=3, exit_date=date(2026, 1, 5)))
+            s.add(PaperTrade(ticker=f"R{i}", timeframe="1d", horizon="medium", signal_score=0.8,
+                             rank=1, market_trend="bear", market_vol="high", fill_status="filled",
+                             stop=95.0, target=110.0, risk=5.0, status="closed", realized_r=-0.8,
+                             hold_bars=3, exit_date=date(2026, 1, 6)))
+        s.commit()
+
+
+def test_performance_renders_regime_breakdown(tmp_path, monkeypatch):
+    url = f"sqlite:///{tmp_path / 'perf_regime.sqlite'}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    _seed_regimes(url)
+    at = AppTest.from_file(APP).run()
+    at.sidebar.radio[0].set_value("Screener Performance").run()
+    assert not at.exception
+
+    md = " ".join(str(getattr(m, "value", "")) for m in at.markdown)
+    assert "Performance by market regime" in md
+    tables = " ".join(df.value.to_string() for df in at.dataframe)
+    assert "trend: bull" in tables and "trend: bear" in tables
+
+
 def test_performance_empty_state_has_no_chart(tmp_path, monkeypatch):
     url = f"sqlite:///{tmp_path / 'perf_empty.sqlite'}"
     monkeypatch.setenv("SWING_DB_URL", url)

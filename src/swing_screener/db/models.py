@@ -114,6 +114,11 @@ class PaperTrade(Base):
     quality_tier: Mapped[str] = mapped_column(String(32), default="")
     volatility_tier: Mapped[str] = mapped_column(String(32), default="")
     oversold: Mapped[bool] = mapped_column(default=False)
+    # broad market regime at fill time (SPY proxy), for performance attribution:
+    # market_trend "bull"/"bear" (vs 200DMA), market_vol "calm"/"elevated"/"high" (ATR%).
+    # None = unknown (SPY data unavailable) or a legacy row.
+    market_trend: Mapped[str | None] = mapped_column(String(16), default=None)
+    market_vol: Mapped[str | None] = mapped_column(String(16), default=None)
     fill_status: Mapped[str] = mapped_column(String(32))  # filled / missed / invalidated
     entry_date: Mapped[date | None] = mapped_column(default=None)
     entry_price: Mapped[float | None] = mapped_column(default=None)

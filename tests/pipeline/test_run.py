@@ -232,6 +232,36 @@ def test_run_books_screen_variant_paper_trades(tmp_path, bars, monkeypatch):
     assert len({p.arm for p in papers if p.variant == "default"}) >= 2
 
 
+def _spy_bull(bars):
+    """A 220-bar rising SPY daily frame -> last close above its 200-day SMA (bull)."""
+    rows, p = [], 100.0
+    for _ in range(220):
+        rows.append({"open": p, "high": p + 0.1, "low": p - 0.1, "close": p + 0.1})
+        p += 0.1
+    return bars(rows)
+
+
+def test_run_tags_fills_with_market_regime(tmp_path, bars, monkeypatch):
+    # SPY (the regime proxy) is fetched through the same seam as the universe, so the
+    # mock serves a bull SPY frame alongside the firing ticker; every fill is tagged bull.
+    def fake_fetch(ticker, *, cache_dir, today, cfg):
+        if ticker == "SPY":
+            return {"1d": _spy_bull(bars)}
+        return {"1d": _firing_then_fill_bar(bars)} if ticker == "AAPL" else {}
+    monkeypatch.setattr(run, "_fetch_all_timeframes", fake_fetch)
+
+    db = f"sqlite:///{tmp_path / 'db.sqlite'}"
+    run.run_screen(universe_path=_write_universe(tmp_path, ["AAPL"]), db_url=db,
+                   cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts",
+                   today=date(2024, 4, 2), cfg=_NO_EXT_GATE)
+
+    with Session(get_engine(db)) as s:
+        papers = list(s.scalars(select(PaperTrade)))
+    assert papers, "expected the firing fixture to open paper trades"
+    assert all(p.market_trend == "bull" for p in papers)
+    assert all(p.market_vol in ("calm", "elevated", "high") for p in papers)
+
+
 def test_run_is_idempotent_for_same_day(tmp_path, bars, monkeypatch):
     def fake_fetch(ticker, *, cache_dir, today, cfg):
         return {"1d": _firing(bars)} if ticker == "AAPL" else {}
