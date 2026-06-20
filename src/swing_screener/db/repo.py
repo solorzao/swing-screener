@@ -83,6 +83,26 @@ def load_open_paper_trades(session: Session) -> list[PaperTrade]:
     return list(session.scalars(stmt))
 
 
+def load_closed_paper_trades(
+    session: Session, *, play_type: str | None = None, arm: str | None = None,
+    variant: str | None = None,
+) -> list[PaperTrade]:
+    """Filled trades that have closed with a realized result, optionally faceted by
+    play_type / arm / variant. The reflection grades the LIVE forward book at
+    (arm=BASELINE, variant=DEFAULT_VARIANT) per play type."""
+    stmt = select(PaperTrade).where(
+        PaperTrade.status == "closed", PaperTrade.fill_status == "filled",
+        PaperTrade.realized_r.is_not(None),
+    )
+    if play_type is not None:
+        stmt = stmt.where(PaperTrade.play_type == play_type)
+    if arm is not None:
+        stmt = stmt.where(PaperTrade.arm == arm)
+    if variant is not None:
+        stmt = stmt.where(PaperTrade.variant == variant)
+    return list(session.scalars(stmt))
+
+
 def record_exit_event(session: Session, *, is_paper: bool, trade_id: int | None,
                       tier: str, reason: str, message: str, created_date: date) -> ExitEvent:
     event = ExitEvent(created_date=created_date, is_paper=is_paper, trade_id=trade_id,

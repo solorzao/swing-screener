@@ -2,6 +2,7 @@ import statistics
 from datetime import date
 
 from swing_screener.analytics.performance import (
+    _clustered_ci_low,
     breakdown,
     equity_curve,
     rank_bucket,
@@ -181,6 +182,46 @@ def test_clustered_bound_falls_back_to_iid_below_distinct_ticker_floor():
     s = summarize(trades)
     assert s.n_clusters == 3 and s.thin_clusters is True
     assert abs(s.expectancy_ci_low - _iid_low(realized)) < 1e-9
+
+
+def _dispersed_by_ticker():
+    """>= the cluster floor (8) distinct tickers with heavy dispersion, so a stricter
+    percentile lands materially below the 2.5% one. One ticker is strongly negative and
+    one strongly positive; the rest spread between -- resamples that load up on the
+    extreme negative ticker drag the deep-tail (0.5%) percentile well below the 2.5%."""
+    return {
+        "AAA": [-20.0, -20.0, -20.0, -20.0],
+        "BBB": [-3.0, -3.0],
+        "CCC": [-1.0],
+        "DDD": [0.0],
+        "EEE": [0.5],
+        "FFF": [1.0, 1.0],
+        "GGG": [3.0],
+        "HHH": [6.0, 6.0, 6.0],
+    }
+
+
+def test_clustered_ci_low_stricter_percentile_gives_lower_bound():
+    # A stricter (deeper-tail) percentile -> a lower, more conservative bound on the SAME
+    # multi-ticker data. iid_low is a large positive sentinel so min() never clips either
+    # clustered value -- both bounds come straight from the bootstrap percentile.
+    by_ticker = _dispersed_by_ticker()
+    sentinel = 1e9
+    low_2_5, n_clusters, thin = _clustered_ci_low(by_ticker, sentinel)
+    low_0_5, n2, thin2 = _clustered_ci_low(by_ticker, sentinel, lower_pct=0.5)
+    assert n_clusters == n2 == 8 and thin is thin2 is False
+    # genuine, deterministic magnitude: the 0.5% bound is at least a full 0.5R lower.
+    assert low_0_5 <= low_2_5 - 0.5
+
+
+def test_clustered_ci_low_default_pct_is_byte_identical_to_explicit_2_5():
+    # Omitting lower_pct must be IDENTICAL (not merely close) to passing 2.5 -- the
+    # default path is the Phase-0 behavior, unchanged to the bit.
+    by_ticker = _dispersed_by_ticker()
+    sentinel = 1e9
+    assert _clustered_ci_low(by_ticker, sentinel) == _clustered_ci_low(
+        by_ticker, sentinel, lower_pct=2.5
+    )
 
 
 def test_clustered_bound_never_above_iid_across_varied_inputs():
