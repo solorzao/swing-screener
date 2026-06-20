@@ -158,7 +158,7 @@ src/swing_screener/
   data/                universe (+ S&P 500 seed), resample, fetch         [I/O]
   db/                  models, session, repo (SQLAlchemy + SQLite/mssql)  [I/O]
   charts/              render (annotated Heiken Ashi via mplfinance)      [I/O]
-  analytics/           performance (shadow-book QC: expectancy, win %)    [pure]
+  analytics/           performance (shadow-book QC: expectancy + 95% CI)  [pure]
   pipeline/            analyze (MTF continuation + reversal + score),
                        shadow (multi-arm shadow book), arms (exit arms),
                        variants (screen arms), replay (offline backtest

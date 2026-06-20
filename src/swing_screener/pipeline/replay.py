@@ -21,7 +21,11 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from swing_screener.analytics.performance import PerformanceSummary, breakdown
+from swing_screener.analytics.performance import (
+    MIN_LEADERBOARD_N,
+    PerformanceSummary,
+    breakdown,
+)
 from swing_screener.config import StrategyConfig
 from swing_screener.db.models import PaperTrade
 from swing_screener.db.session import get_engine
@@ -105,14 +109,25 @@ def _replay_one(
 
 
 def format_leaderboard(by_variant: Mapping[str, PerformanceSummary]) -> str:
-    """A fixed-width leaderboard table, best expectancy first."""
-    order = sorted(by_variant, key=lambda v: by_variant[v].expectancy_r, reverse=True)
-    header = f"{'variant':<18}{'expectancy_r':>14}{'win_rate':>10}{'fill_rate':>11}{'closed':>8}"
+    """A fixed-width leaderboard table, most-trustworthy first.
+
+    Ranks trusted samples (>= ``MIN_LEADERBOARD_N`` closed) above thin ones, then by the
+    lower 95% bound of expectancy -- matching the dashboard, so a thin lucky variant can't
+    top a deeper one. The sample size + interval are printed so the ranking is auditable.
+    """
+    def _key(v: str) -> tuple[bool, float]:
+        s = by_variant[v]
+        return (s.n_closed >= MIN_LEADERBOARD_N, s.expectancy_ci_low)
+
+    order = sorted(by_variant, key=_key, reverse=True)
+    header = (f"{'variant':<18}{'expectancy_r':>14}{'95%_low':>10}"
+              f"{'win_rate':>10}{'closed':>8}{'sample':>8}")
     lines = [header, "-" * len(header)]
     for v in order:
         s = by_variant[v]
-        lines.append(f"{v:<18}{s.expectancy_r:>14.2f}{s.win_rate:>10.2f}"
-                     f"{s.fill_rate:>11.2f}{s.n_closed:>8d}")
+        flag = "thin" if s.n_closed < MIN_LEADERBOARD_N else "ok"
+        lines.append(f"{v:<18}{s.expectancy_r:>14.2f}{s.expectancy_ci_low:>10.2f}"
+                     f"{s.win_rate:>10.2f}{s.n_closed:>8d}{flag:>8}")
     return "\n".join(lines)
 
 

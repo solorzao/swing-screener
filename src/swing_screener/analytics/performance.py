@@ -7,12 +7,22 @@ empty input. The nullable ``PaperTrade`` fields (``realized_r``, ``hold_bars``,
 ``exit_date``) are guarded with explicit ``is not None`` checks.
 """
 
+import statistics
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date
 
 from swing_screener.db.models import PaperTrade
+
+# 95% two-sided normal quantile for the expectancy confidence interval. A normal
+# approximation (not a small-sample t), so very thin samples read optimistically --
+# which is exactly why the sample size travels with the interval everywhere it's shown.
+_Z95 = 1.96
+
+# Below this many closed trades a variant's expectancy is too thin to trust. The leaderboards
+# (dashboard + replay CLI) rank trusted variants above thin ones, then by the lower CI bound.
+MIN_LEADERBOARD_N = 20
 
 
 @dataclass(frozen=True)
@@ -27,6 +37,13 @@ class PerformanceSummary:
     expectancy_r: float
     profit_factor: float
     avg_hold_bars: float
+    # Confidence on the expectancy estimate: the standard error of the mean R and its
+    # 95% interval. With < 2 closed trades the std is undefined, so stderr is 0 and the
+    # interval collapses to the point estimate -- thin samples are flagged by n_closed,
+    # never crowned. Used to rank variants by a LOWER bound so noise can't win.
+    expectancy_stderr: float
+    expectancy_ci_low: float
+    expectancy_ci_high: float
 
 
 def _is_filled(t: PaperTrade) -> bool:
@@ -55,6 +72,16 @@ def summarize(trades: Iterable[PaperTrade]) -> PerformanceSummary:
     win_rate = len(wins) / n_closed if n_closed else 0.0
     expectancy_r = sum(realized) / n_closed if n_closed else 0.0
 
+    # Standard error of the mean R + its 95% interval. Sample stdev (ddof=1) needs >= 2
+    # points; with fewer the edge is unmeasurable, so stderr is 0 and the CI collapses to
+    # the point estimate (n_closed is what flags it as untrustworthy downstream).
+    if n_closed >= 2:
+        expectancy_stderr = statistics.stdev(realized) / (n_closed ** 0.5)
+    else:
+        expectancy_stderr = 0.0
+    expectancy_ci_low = expectancy_r - _Z95 * expectancy_stderr
+    expectancy_ci_high = expectancy_r + _Z95 * expectancy_stderr
+
     if not n_closed:
         profit_factor = 0.0
     elif losses:
@@ -76,6 +103,9 @@ def summarize(trades: Iterable[PaperTrade]) -> PerformanceSummary:
         expectancy_r=expectancy_r,
         profit_factor=profit_factor,
         avg_hold_bars=avg_hold_bars,
+        expectancy_stderr=expectancy_stderr,
+        expectancy_ci_low=expectancy_ci_low,
+        expectancy_ci_high=expectancy_ci_high,
     )
 
 

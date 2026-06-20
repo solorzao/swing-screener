@@ -14,7 +14,7 @@ test can monkeypatch that seam and avoid the network.
 """
 
 from collections.abc import Callable
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -502,18 +502,34 @@ def _render_performance(session: Session) -> None:
     # (the baseline arm) -- the complement of the exit-arm A/B below. Variants are NOT
     # same-sample (each screens its own fills), so this compares strategies, not exits.
     if len({t.variant for t in paper_trades}) > 1:
-        by_variant = performance.breakdown(
-            [t for t in paper_trades if t.arm == BASELINE], "variant")
         st.markdown("**Strategy leaderboard** — same exit (baseline), different screen config")
-        var_order = sorted(by_variant, key=lambda v: by_variant[v].expectancy_r, reverse=True)
+        baseline = [t for t in paper_trades if t.arm == BASELINE]
+        # Trailing-window cut: judge variants on recent setups (by open date), not all
+        # history. "All" keeps everything; None (bare test mode) is treated as "All".
+        window = st.segmented_control("Window", ["All", "90d", "180d", "365d"], default="All")
+        if window in ("90d", "180d", "365d"):
+            cutoff = date.today() - timedelta(days=int(window[:-1]))
+            baseline = [t for t in baseline if t.opened_date and t.opened_date >= cutoff]
+        by_variant = performance.breakdown(baseline, "variant")
+        # Rank trusted samples (>= performance.MIN_LEADERBOARD_N closed) ABOVE thin ones, then within
+        # each tier by the LOWER 95% bound of expectancy. The two-tier key matters because a
+        # 1-trade sample has no computable interval (its CI collapses to the point estimate),
+        # so a lone lucky trade would otherwise top a deep, steady variant.
+        def _rank_key(v: str) -> tuple[bool, float]:
+            s = by_variant[v]
+            return (s.n_closed >= performance.MIN_LEADERBOARD_N, s.expectancy_ci_low)
+
+        var_order = sorted(by_variant, key=_rank_key, reverse=True)
         var_df = pd.DataFrame(
             [
                 {
                     "variant": v,
                     "expectancy_r": by_variant[v].expectancy_r,
+                    "ci_low": by_variant[v].expectancy_ci_low,
+                    "ci_high": by_variant[v].expectancy_ci_high,
                     "win_rate": by_variant[v].win_rate,
-                    "fill_rate": by_variant[v].fill_rate,
                     "closed": by_variant[v].n_closed,
+                    "sample": ("thin" if by_variant[v].n_closed < performance.MIN_LEADERBOARD_N else "ok"),
                 }
                 for v in var_order
             ]
@@ -525,10 +541,16 @@ def _render_performance(session: Session) -> None:
             column_config={
                 "variant": st.column_config.TextColumn("Variant"),
                 "expectancy_r": st.column_config.NumberColumn("Expectancy R", format="%.2f"),
+                "ci_low": st.column_config.NumberColumn("95% low", format="%.2f"),
+                "ci_high": st.column_config.NumberColumn("95% high", format="%.2f"),
                 "win_rate": st.column_config.NumberColumn("Win rate", format="percent"),
-                "fill_rate": st.column_config.NumberColumn("Fill rate", format="percent"),
-                "closed": st.column_config.NumberColumn("Closed", format="%d"),
+                "closed": st.column_config.NumberColumn("Closed (n)", format="%d"),
+                "sample": st.column_config.TextColumn("Sample"),
             },
+        )
+        st.caption(
+            f"Trusted samples (≥ {performance.MIN_LEADERBOARD_N} closed trades) rank above 'thin' ones, "
+            "then by the lower 95% bound of expectancy — so a lucky thin sample can't win."
         )
         # The exit-arm A/B below is only honest on ONE screen (its arms share fills),
         # so scope everything downstream to the default (live) screen variant.

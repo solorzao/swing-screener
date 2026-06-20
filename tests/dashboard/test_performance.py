@@ -152,6 +152,40 @@ def test_performance_shows_strategy_leaderboard_for_variants(tmp_path, monkeypat
     assert next(m.value for m in at.metric if m.label == "Expectancy R") == "1.00"
 
 
+def _seed_deep_vs_thin_variants(url):
+    engine = get_engine(url)
+    with Session(engine) as s:
+        # deep variant: 25 steady +0.5R trades (trusted, modest expectancy)
+        for i in range(25):
+            s.add(PaperTrade(ticker=f"T{i}", timeframe="1d", horizon="medium", signal_score=0.8,
+                             rank=1, arm="baseline", variant="deep", fill_status="filled",
+                             stop=95.0, target=110.0, risk=5.0, status="closed", realized_r=0.5,
+                             hold_bars=3, exit_date=date(2026, 1, 5)))
+        # thin variant: a single lucky +3R trade (high point estimate, no confidence)
+        s.add(PaperTrade(ticker="LUCK", timeframe="1d", horizon="medium", signal_score=0.8,
+                         rank=1, arm="baseline", variant="thinlucky", fill_status="filled",
+                         stop=95.0, target=110.0, risk=5.0, status="closed", realized_r=3.0,
+                         hold_bars=3, exit_date=date(2026, 1, 5)))
+        s.commit()
+
+
+def test_leaderboard_ranks_trusted_above_thin_lucky_sample(tmp_path, monkeypatch):
+    url = f"sqlite:///{tmp_path / 'perf_sig.sqlite'}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    _seed_deep_vs_thin_variants(url)
+    at = AppTest.from_file(APP).run()
+    at.sidebar.radio[0].set_value("Screener Performance").run()
+    assert not at.exception
+
+    board = at.dataframe[0].value  # leaderboard is the first table on the page
+    order = list(board["variant"])
+    # the deep +0.5R variant (n=25) outranks the lone lucky +3R trade despite lower expectancy
+    assert order.index("deep") < order.index("thinlucky")
+    # the 1-trade variant is flagged thin
+    flags = dict(zip(board["variant"], board["sample"], strict=True))
+    assert flags["thinlucky"] == "thin" and flags["deep"] == "ok"
+
+
 def test_performance_empty_state_has_no_chart(tmp_path, monkeypatch):
     url = f"sqlite:///{tmp_path / 'perf_empty.sqlite'}"
     monkeypatch.setenv("SWING_DB_URL", url)

@@ -46,6 +46,34 @@ def test_summarize():
 def test_summarize_empty():
     s = summarize([])
     assert s.n_total == 0 and s.fill_rate == 0.0 and s.win_rate == 0.0
+    assert s.expectancy_stderr == 0.0
+    assert s.expectancy_ci_low == 0.0 and s.expectancy_ci_high == 0.0
+
+
+def test_expectancy_confidence_interval():
+    import statistics
+    s = summarize(_book())
+    expected_se = statistics.stdev([2.0, -1.0, 1.0]) / (3 ** 0.5)
+    assert abs(s.expectancy_stderr - expected_se) < 1e-9
+    assert s.expectancy_ci_low < s.expectancy_r < s.expectancy_ci_high
+    assert abs(s.expectancy_ci_low - (s.expectancy_r - 1.96 * expected_se)) < 1e-9
+
+
+def test_thin_sample_interval_collapses_to_point():
+    s = summarize([_pt(realized_r=1.5, hold_bars=2, exit_date=date(2024, 1, 1))])
+    assert s.n_closed == 1
+    assert s.expectancy_stderr == 0.0
+    assert s.expectancy_ci_low == s.expectancy_r == s.expectancy_ci_high
+
+
+def test_lower_bound_penalises_thin_noisy_samples():
+    # identical point estimate (~1.0R), but the large tight sample earns a higher LOWER
+    # bound than the tiny noisy one -- so ranking by ci_low never crowns the noise.
+    tight = [_pt(realized_r=r, hold_bars=1, exit_date=date(2024, 1, 1))
+             for r in (0.9, 1.1, 0.9, 1.1, 1.0, 1.0, 0.9, 1.1)]
+    noisy = [_pt(realized_r=r, hold_bars=1, exit_date=date(2024, 1, 1)) for r in (-2.0, 4.0)]
+    assert abs(summarize(tight).expectancy_r - summarize(noisy).expectancy_r) < 1e-9
+    assert summarize(tight).expectancy_ci_low > summarize(noisy).expectancy_ci_low
 
 
 def test_breakdown_by_timeframe():

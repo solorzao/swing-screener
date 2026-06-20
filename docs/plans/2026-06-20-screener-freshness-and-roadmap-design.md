@@ -1,9 +1,10 @@
 # Screener freshness + system roadmap — design
 
 **Date:** 2026-06-20
-**Status:** Steps 1–4 shipped (freshness gate, live actionability, persisted
+**Status:** Steps 1–5 shipped (freshness gate, live actionability, persisted
 extension/first-seen, freshness score term, staleness cooldown, screen-variant shadow-book
-dimension + strategy leaderboard, offline replay/backtest harness); roadmap proposed.
+dimension + strategy leaderboard, offline replay/backtest harness, leaderboard significance);
+roadmap proposed.
 **Scope:** Fix the "screeners suggest plays that already ran" complaint, and chart a path
 toward a measurement-driven, self-optimizing system (a deterministic
 build → deploy → measure → optimize → repeat loop with a strategy leaderboard).
@@ -107,18 +108,27 @@ CLI replays the cached daily history and prints a leaderboard. No network — fe
 cache or a CSV. Assumes one bar per calendar day (1d/1wk/1mo); 4h needs per-day batching (the
 same-day guard in `advance_open`), noted as a follow-up.
 
+## Step 5 — shipped (leaderboard significance)
+
+`PerformanceSummary` now carries `expectancy_stderr` + a 95% CI (`expectancy_ci_low/high`,
+normal approximation; sample stdev needs n ≥ 2, so a thinner sample's interval collapses to the
+point estimate). `analytics.performance.MIN_LEADERBOARD_N` (20) is the trust threshold. Both
+leaderboards — the dashboard and the replay CLI — now rank **trusted samples (n ≥ threshold)
+above thin ones, then by the lower CI bound**, so a lone lucky trade can't top a deep, steady
+variant (its 1-sample CI collapses to the point estimate, which the two-tier key defeats). The
+dashboard shows the 95% interval + a thin/ok flag and adds a trailing-window cut (90/180/365d by
+open date).
+
 ## Roadmap — toward the self-optimizing system
 
-The live forward-testing dimensions (exit arms + screen variants) and the offline replay harness
-are in place. Remaining:
+The live forward-testing dimensions (exit arms + screen variants), the offline replay harness,
+and trustworthy leaderboards are in place. Remaining:
 
-1. **Leaderboard significance.** The dashboard leaderboard ships (Step 3); add sample size +
-   confidence so a thin-sample variant isn't crowned, and a trailing-window cut.
-2. **Score calibration.** Track realized expectancy by score decile to verify the score
+1. **Score calibration.** Track realized expectancy by score decile to verify the score
    predicts winners; a flat curve means the score is miscalibrated.
-3. **Regime tagging.** Stamp each run with market context (SPY vs 200DMA, volatility bucket)
+2. **Regime tagging.** Stamp each run with market context (SPY vs 200DMA, volatility bucket)
    and break performance down by regime — continuation wants uptrends, reversals want washouts.
-4. **Scheduled optimizer job** that drives the replay harness over a config grid on a cadence
+3. **Scheduled optimizer job** that drives the replay harness over a config grid on a cadence
    and proposes the next `build_screen_variants` set — the deterministic analog of the post's
    "AI-native orchestrator."
 
