@@ -77,6 +77,12 @@ class StrategyConfig:
     # down, never below breakeven). Only active once a partial has been booked.
     trail_mode: str = "breakeven"
     chandelier_atr_mult: float = 3.0   # m in the Chandelier trail (flat)
+    # Fill-pessimism haircut on LEVEL exits (stop/target/partial), as a fraction of ATR.
+    # Models that a level fill executes slightly worse than the exact level (slippage/
+    # gap-through). 0.0 = OFF (exact-level fills, the historical default; a strict no-op).
+    # Fixed a-priori from a microstructure rule -- NEVER added to the optimizer grid.
+    # momentum_flip/time_stop exits use the bar close and are NOT haircut.
+    fill_slippage_atr: float = 0.0
     time_stop_factor: float = 1.0    # time stop = factor * max_hold_bars[tf]
     max_hold_bars: dict[str, int] = field(default_factory=lambda: {
         "4h": 18,   # ~3 trading days of 4h bars
