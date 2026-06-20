@@ -1,11 +1,12 @@
 # Screener freshness + system roadmap — design
 
 **Date:** 2026-06-20
-**Status:** Steps 1–8 shipped (freshness gate, live actionability, persisted
+**Status:** Steps 1–9 shipped (freshness gate, live actionability, persisted
 extension/first-seen, freshness score term, staleness cooldown, screen-variant shadow-book
 dimension + strategy leaderboard, offline replay/backtest harness, leaderboard significance,
-score calibration, market-regime attribution, config-sweep optimizer). The measurement loop is
-complete; remaining work is ops + smaller features.
+score calibration, market-regime attribution, config-sweep optimizer, scheduled human-gated
+auto-proposal). The self-optimizing loop is complete + scheduled; remaining work is smaller
+features.
 **Scope:** Fix the "screeners suggest plays that already ran" complaint, and chart a path
 toward a measurement-driven, self-optimizing system (a deterministic
 build → deploy → measure → optimize → repeat loop with a strategy leaderboard).
@@ -158,23 +159,37 @@ AMD,NVDA`. Offline + deterministic, no DB writes.
 Refactor: the trust-tiered ranking moved to `analytics.performance.leaderboard_order`, now
 shared by the dashboard leaderboard, the replay CLI, and the optimizer (one source of truth).
 
-## Roadmap — complete; remaining work is ops + smaller features
+## Step 9 — shipped (scheduled auto-proposal, human-gated)
 
-The full self-optimizing loop is in place: live forward-testing (exit arms + screen variants),
-the offline replay harness, trustworthy significance-ranked leaderboards, score calibration,
-regime attribution, and the config-sweep optimizer that proposes the next variant set. What
-remains is operational, not architectural:
+`pipeline/propose.py` + `.github/workflows/optimize.yml` close the *scheduled* loop while
+keeping a human in it. Weekly (and on demand), a GitHub Actions job runs the walk-forward
+optimizer over a basket of liquid names and — only when a swept config beats the incumbent gate
+on a **trusted, out-of-sample** basis (`n ≥ MIN_LEADERBOARD_N`, positive lower CI bound, and
+better OOS expectancy than the incumbent) — edits `config.py`'s `max_extension_atr` default and
+opens a PR with the in/out-of-sample leaderboards as evidence. A human reviews + merges; nothing
+auto-deploys. Conservative by design: a thin or in-sample-only edge proposes nothing, so the
+loop never spams overfit changes. `propose()` / `apply_to_config()` are pure + unit-tested; the
+decision rules are the anti-overfit teeth.
 
-- **Schedule the optimizer** as a seventh Azure Container Apps Job (mirrors the existing six +
-  the deploy runbook) so it sweeps on a cadence and surfaces a proposal — the only piece of the
-  "scheduled" optimizer that's deployment rather than code.
-- Promote a proven variant from the leaderboard/optimizer into `build_screen_variants`.
-- Extend the optimizer grid beyond the freshness gate (e.g. RSI gates, score weights) and the
-  replay harness to 4h (per-day batching for `advance_open`'s same-day guard).
+**Architecture note:** this replaced the earlier "seventh Azure Container Apps Job + persist the
+parquet cache to Blob" sketch. A GitHub Actions workflow uses the native `GITHUB_TOKEN` PR
+machinery (no GitHub credentials in Azure, no new Key Vault secret) and self-contained data
+fetch (GitHub runners aren't the rate-limited Azure egress IPs), so it needs neither the Blob
+cache nor a cloud job. (Caveat: `GITHUB_TOKEN`-opened PRs don't auto-trigger CI — push or reopen
+to run it.)
+
+## Roadmap — loop complete; remaining work is smaller features
+
+The full self-optimizing loop is in place AND scheduled: live forward-testing (exit arms +
+screen variants), the offline replay harness, trustworthy significance-ranked leaderboards,
+score calibration, regime attribution, the config-sweep optimizer, and a weekly human-gated
+auto-proposal PR. The system measures itself autonomously and proposes its own improvements; a
+human still approves the one that ships (deliberate — auto-deploying a backtest winner is how you
+ship overfit changes against real money). Remaining work is additive, not architectural:
+
+- Promote a proven variant from the leaderboard/optimizer into `build_screen_variants`, and
+  extend the optimizer grid beyond the freshness gate (RSI gates, score weights).
+- Extend the replay harness to 4h (per-day batching for `advance_open`'s same-day guard).
 - Smaller features: earnings-date avoidance, liquidity/gap gating, sector-breadth context in the
   digest, R-based position sizing, and intraday **entry alerts** (notify when a candidate trades
   into its zone — the inverse of the exit alert).
-
-Smaller features: earnings-date avoidance, liquidity/gap gating, sector-breadth context in the
-digest, R-based position sizing, and intraday **entry alerts** (notify when a candidate trades
-into its zone — the inverse of the exit alert).

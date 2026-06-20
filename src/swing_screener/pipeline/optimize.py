@@ -21,12 +21,8 @@ import pandas as pd
 
 from swing_screener.analytics.performance import PerformanceSummary, leaderboard_order
 from swing_screener.config import StrategyConfig
-from swing_screener.pipeline.replay import (
-    _load_cached_daily,
-    _warmup,
-    format_leaderboard,
-    replay,
-)
+from swing_screener.data.fetch import fetch_bars
+from swing_screener.pipeline.replay import _warmup, format_leaderboard, replay
 from swing_screener.pipeline.variants import _assert_shared_indicators
 
 log = logging.getLogger(__name__)
@@ -118,9 +114,20 @@ def format_report(result: OptimizeResult) -> str:
     return "\n".join(lines)
 
 
+def fetch_daily(tickers: list[str], cache_dir: Path) -> dict[str, pd.DataFrame]:
+    """Daily OHLCV per ticker via the cached fetch seam (reads the per-day parquet cache
+    when present, else downloads). Tickers that fail to fetch are skipped (isolation)."""
+    frames: dict[str, pd.DataFrame] = {}
+    for ticker in tickers:
+        df = fetch_bars(ticker, "1d", cache_dir=cache_dir)
+        if df is not None and not df.empty:
+            frames[ticker] = df
+    return frames
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Sweep screen configs over cached daily history and propose a winner.")
+        description="Sweep screen configs over daily history and propose a winner.")
     parser.add_argument("--tickers", required=True, help="comma-separated, e.g. AMD,NVDA")
     parser.add_argument("--cache-dir", type=Path, default=Path(".cache"))
     parser.add_argument("--oos-frac", type=float, default=0.3,
@@ -128,16 +135,10 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
 
-    frames: dict[str, pd.DataFrame] = {}
-    for ticker in (t.strip().upper() for t in args.tickers.split(",") if t.strip()):
-        df = _load_cached_daily(ticker, args.cache_dir)
-        if df is None:
-            log.warning("no cached daily data for %s; skipping", ticker)
-            continue
-        frames[ticker] = df
-
+    tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
+    frames = fetch_daily(tickers, args.cache_dir)
     if not frames:
-        log.error("no data to optimize (looked in %s/1d)", args.cache_dir)
+        log.error("no data to optimize for %s (fetch failed?)", tickers)
         return
     print(format_report(optimize(frames, timeframe="1d", oos_frac=args.oos_frac)))  # noqa: T201
 
