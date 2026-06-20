@@ -13,6 +13,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 
+import numpy as np
+
 from swing_screener.db.models import PaperTrade
 
 # 95% two-sided normal quantile for the expectancy confidence interval. A normal
@@ -23,6 +25,15 @@ _Z95 = 1.96
 # Below this many closed trades a variant's expectancy is too thin to trust. The leaderboards
 # (dashboard + replay CLI) rank trusted variants above thin ones, then by the lower CI bound.
 MIN_LEADERBOARD_N = 20
+
+# Ticker-clustered bootstrap for the expectancy lower bound. Trades concentrate on a few
+# tickers and overlap in time, so the IID normal approximation treats correlated trades as
+# independent and UNDERSTATES uncertainty. Resampling whole tickers (clusters) respects the
+# within-ticker correlation and reads honestly. Below _CLUSTER_FLOOR distinct tickers there
+# are too few clusters to bootstrap, so the bound falls back to IID (flagged thin).
+_CLUSTER_FLOOR = 8
+_N_BOOT = 1000
+_BOOT_SEED = 12345
 
 
 @dataclass(frozen=True)
@@ -41,9 +52,18 @@ class PerformanceSummary:
     # 95% interval. With < 2 closed trades the std is undefined, so stderr is 0 and the
     # interval collapses to the point estimate -- thin samples are flagged by n_closed,
     # never crowned. Used to rank variants by a LOWER bound so noise can't win.
+    #
+    # ``expectancy_ci_low`` is the HARDENED bound: a ticker-clustered bootstrap (resampling
+    # whole tickers) when there are enough distinct tickers, otherwise the IID bound. It is
+    # never more optimistic than the IID bound. ``n_clusters`` is the distinct-ticker count;
+    # ``thin_clusters`` flags that the clustered bootstrap couldn't run (too few tickers) and
+    # the bound fell back to IID. ``expectancy_ci_high`` stays the IID upper bound -- every
+    # gate keys off the lower bound, so only that one is hardened.
     expectancy_stderr: float
     expectancy_ci_low: float
     expectancy_ci_high: float
+    n_clusters: int
+    thin_clusters: bool
 
 
 def _is_filled(t: PaperTrade) -> bool:
@@ -53,6 +73,27 @@ def _is_filled(t: PaperTrade) -> bool:
 def _is_closed_filled(t: PaperTrade) -> bool:
     """A realized result: a filled trade that has closed with an R-multiple."""
     return t.status == "closed" and t.fill_status == "filled" and t.realized_r is not None
+
+
+def _clustered_ci_low(by_ticker: dict[str, list[float]], iid_low: float) -> tuple[float, int, bool]:
+    """Ticker-clustered bootstrap lower 2.5% bound on mean R. Resample TICKERS with
+    replacement (respecting within-ticker correlation), pool their trades, take the mean;
+    the 2.5th percentile is the lower bound. Returns min(iid_low, clustered_low) so it can
+    never read MORE optimistic than the IID bound; below the distinct-ticker floor it falls
+    back to iid_low flagged thin."""
+    tickers = list(by_ticker)
+    n_clusters = len(tickers)
+    if n_clusters < _CLUSTER_FLOOR:
+        return iid_low, n_clusters, True
+    rng = np.random.default_rng(_BOOT_SEED)
+    pools = [np.asarray(by_ticker[t], dtype=float) for t in tickers]
+    idx = np.arange(n_clusters)
+    means = np.empty(_N_BOOT)
+    for b in range(_N_BOOT):
+        pick = rng.choice(idx, size=n_clusters, replace=True)
+        means[b] = np.concatenate([pools[i] for i in pick]).mean()
+    clustered_low = float(np.percentile(means, 2.5))
+    return min(iid_low, clustered_low), n_clusters, False
 
 
 def summarize(trades: Iterable[PaperTrade]) -> PerformanceSummary:
@@ -79,8 +120,21 @@ def summarize(trades: Iterable[PaperTrade]) -> PerformanceSummary:
         expectancy_stderr = statistics.stdev(realized) / (n_closed ** 0.5)
     else:
         expectancy_stderr = 0.0
-    expectancy_ci_low = expectancy_r - _Z95 * expectancy_stderr
     expectancy_ci_high = expectancy_r + _Z95 * expectancy_stderr
+
+    # Harden the LOWER bound with a ticker-clustered bootstrap. The IID bound assumes every
+    # trade is independent; in reality trades cluster on a few tickers, so resampling whole
+    # tickers reads honestly and never more optimistically than IID. Below the distinct-ticker
+    # floor (or with < 2 closed trades) the bootstrap can't run and it falls back to IID, thin.
+    by_ticker: dict[str, list[float]] = defaultdict(list)
+    for t in closed:
+        if t.realized_r is not None:
+            by_ticker[t.ticker].append(t.realized_r)
+    iid_low = expectancy_r - _Z95 * expectancy_stderr
+    if n_closed >= 2:
+        expectancy_ci_low, n_clusters, thin_clusters = _clustered_ci_low(by_ticker, iid_low)
+    else:
+        expectancy_ci_low, n_clusters, thin_clusters = iid_low, len(by_ticker), True
 
     if not n_closed:
         profit_factor = 0.0
@@ -106,6 +160,8 @@ def summarize(trades: Iterable[PaperTrade]) -> PerformanceSummary:
         expectancy_stderr=expectancy_stderr,
         expectancy_ci_low=expectancy_ci_low,
         expectancy_ci_high=expectancy_ci_high,
+        n_clusters=n_clusters,
+        thin_clusters=thin_clusters,
     )
 
 
