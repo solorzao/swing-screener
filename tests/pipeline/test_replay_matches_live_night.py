@@ -28,6 +28,9 @@ def test_one_replay_step_equals_a_direct_live_call():
     # signal fires there, so rank=1 under both the hand call (literal rank=1) and the
     # replay (which enumerates within play_type from 1 -- one signal => rank 1). Picked
     # so `direct`/`replayed` are non-empty and the comparison is meaningful.
+    # To re-derive this pin if the fixture changes: run replay_ticker(..., warmup_bars=250)
+    # and take any filled row's opened_date, mapped back to its cursor index, where
+    # exactly one 1d signal fires that day.
     i = 339
     today = enriched.index[i].date()
 
@@ -59,5 +62,6 @@ def test_one_replay_step_equals_a_direct_live_call():
     replayed = {(t.ticker, t.arm, t.opened_date): (t.entry_price, t.stop, t.target)
                 for t in book if t.opened_date == today}
     assert replayed, "test must compare at least one fill"
-    for k, v in replayed.items():
-        assert direct.get(k) == v
+    # Full-dict equality (not replayed ⊆ direct): also catches a replay that UNDER- or
+    # over-produces fills relative to the direct live-night call, not just value drift.
+    assert replayed == direct
