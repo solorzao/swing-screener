@@ -75,12 +75,16 @@ def _is_closed_filled(t: PaperTrade) -> bool:
     return t.status == "closed" and t.fill_status == "filled" and t.realized_r is not None
 
 
-def _clustered_ci_low(by_ticker: dict[str, list[float]], iid_low: float) -> tuple[float, int, bool]:
-    """Ticker-clustered bootstrap lower 2.5% bound on mean R. Resample TICKERS with
-    replacement (respecting within-ticker correlation), pool their trades, take the mean;
-    the 2.5th percentile is the lower bound. Returns min(iid_low, clustered_low) so it can
-    never read MORE optimistic than the IID bound; below the distinct-ticker floor it falls
-    back to iid_low flagged thin."""
+def _clustered_ci_low(
+    by_ticker: dict[str, list[float]], iid_low: float, *, lower_pct: float = 2.5
+) -> tuple[float, int, bool]:
+    """Ticker-clustered bootstrap lower bound on mean R at the ``lower_pct`` percentile.
+    Resample TICKERS with replacement (respecting within-ticker correlation), pool their
+    trades, take the mean; the ``lower_pct``-th percentile of those means is the lower bound.
+    ``lower_pct`` defaults to 2.5 (the fixed leaderboard bound); a stricter/deeper percentile
+    (e.g. multiple-comparisons-corrected) yields a lower, more conservative bound. Returns
+    min(iid_low, clustered_low) so it can never read MORE optimistic than the IID bound;
+    below the distinct-ticker floor it falls back to iid_low flagged thin."""
     tickers = list(by_ticker)
     n_clusters = len(tickers)
     if n_clusters < _CLUSTER_FLOOR:
@@ -95,7 +99,7 @@ def _clustered_ci_low(by_ticker: dict[str, list[float]], iid_low: float) -> tupl
     for b in range(_N_BOOT):
         pick = rng.choice(idx, size=n_clusters, replace=True)
         means[b] = np.concatenate([pools[i] for i in pick]).mean()
-    clustered_low = float(np.percentile(means, 2.5))
+    clustered_low = float(np.percentile(means, lower_pct))
     return min(iid_low, clustered_low), n_clusters, False
 
 
@@ -254,6 +258,25 @@ def _score_labels(edges: Sequence[float]) -> list[str]:
     return labels
 
 
+def _bucket_trades_by_score(
+    trades: Iterable[PaperTrade], edges: Sequence[float]
+) -> dict[str, list[PaperTrade]]:
+    """Group trades into score bands (lower-inclusive: a score on an edge falls in the
+    higher band). The single source of the score-band MEMBERSHIP rule, shared by
+    score_bucket (which summarizes each group) and the reflection grader (which needs the
+    raw trade lists)."""
+    labels = _score_labels(edges)
+    groups: dict[str, list[PaperTrade]] = {label: [] for label in labels}
+    for t in trades:
+        idx = len(edges)
+        for i, edge in enumerate(edges):
+            if t.signal_score < edge:
+                idx = i
+                break
+        groups[labels[idx]].append(t)
+    return groups
+
+
 def score_bucket(
     trades: Iterable[PaperTrade], edges: Sequence[float]
 ) -> dict[str, PerformanceSummary]:
@@ -264,16 +287,10 @@ def score_bucket(
     means the score isn't separating winners from losers. Every band label appears even
     when empty; a score exactly on an edge falls into the higher band (lower-inclusive).
     """
-    labels = _score_labels(edges)
-    groups: dict[str, list[PaperTrade]] = {label: [] for label in labels}
-    for t in trades:
-        idx = len(edges)
-        for i, edge in enumerate(edges):
-            if t.signal_score < edge:
-                idx = i
-                break
-        groups[labels[idx]].append(t)
-    return {label: summarize(groups[label]) for label in labels}
+    return {
+        label: summarize(group)
+        for label, group in _bucket_trades_by_score(trades, edges).items()
+    }
 
 
 def equity_curve(trades: Iterable[PaperTrade]) -> list[tuple[date, float]]:
