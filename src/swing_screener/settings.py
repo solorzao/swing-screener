@@ -11,9 +11,12 @@ directory, so we ``Path(value).resolve()`` regardless of source. This module is
 intentionally import-light: NO azure imports live here.
 """
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -44,10 +47,27 @@ class Settings:
     risk_per_trade_dollars: float | None
     risk_pct: float
     max_shares: int | None
+    # Execution master switch + hard-limit caps (for the execution adapter). The switch
+    # FAILS SAFE: default "off" and any unknown value coerces back to "off" -- the screener
+    # never accidentally arms. The caps are optional (None -> the adapter applies no cap).
+    execution_mode: str  # one of off/paper/live
+    max_daily_notional: float | None
+    max_daily_loss: float | None
+    max_concurrent: int | None
 
 
 _TRUE = {"1", "true", "yes", "on"}
 _REASONING = {"none", "low", "medium", "high"}
+_EXECUTION_MODES = {"off", "paper", "live"}
+
+
+@dataclass(frozen=True)
+class Limits:
+    """The optional hard-limit caps the execution adapter enforces (None -> no cap)."""
+
+    max_daily_notional: float | None
+    max_daily_loss: float | None
+    max_concurrent: int | None
 
 
 def _abs(value: str) -> Path:
@@ -106,6 +126,10 @@ def load_settings() -> Settings:
         reasoning = "high"
     kinds_raw = env.get("SWING_DEEP_ANALYSIS_KINDS", "daily,weekly,monthly")
     kinds = frozenset(k.strip().lower() for k in kinds_raw.split(",") if k.strip())
+    execution_mode = env.get("SWING_EXECUTION_MODE", "off").strip().lower()
+    if execution_mode not in _EXECUTION_MODES:  # fail safe: unknown -> off, never armed
+        log.warning("Unknown SWING_EXECUTION_MODE %r; falling back to 'off'.", execution_mode)
+        execution_mode = "off"
     return Settings(
         db_url=env.get("SWING_DB_URL", "sqlite:///local.db"),
         chart_dir=_abs(env.get("SWING_CHART_DIR", ".charts")),
@@ -127,6 +151,10 @@ def load_settings() -> Settings:
         risk_per_trade_dollars=_opt_float(env.get("SWING_RISK_PER_TRADE_DOLLARS")),
         risk_pct=_float(env.get("SWING_RISK_PCT"), 0.01),
         max_shares=_opt_int(env.get("SWING_MAX_SHARES")),
+        execution_mode=execution_mode,
+        max_daily_notional=_opt_float(env.get("SWING_MAX_DAILY_NOTIONAL")),
+        max_daily_loss=_opt_float(env.get("SWING_MAX_DAILY_LOSS")),
+        max_concurrent=_opt_int(env.get("SWING_MAX_CONCURRENT")),
     )
 
 
@@ -145,3 +173,18 @@ def resolve_risk_unit(settings: Settings) -> tuple[float, int | None]:
     else:
         risk_unit = 0.0
     return risk_unit, settings.max_shares
+
+
+def resolve_execution(settings: Settings) -> tuple[str, Limits]:
+    """Resolve the execution mode + the hard-limit caps the adapter enforces.
+
+    ``settings.execution_mode`` is already validated/coerced in ``load_settings`` (an
+    unknown value is "off" by the time it reaches here), so this is a thin, pure projection:
+    it pairs the mode with a ``Limits`` bundle of the caps. Pure: depends only on the passed
+    ``settings`` snapshot, no env read.
+    """
+    return settings.execution_mode, Limits(
+        max_daily_notional=settings.max_daily_notional,
+        max_daily_loss=settings.max_daily_loss,
+        max_concurrent=settings.max_concurrent,
+    )

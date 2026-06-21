@@ -55,6 +55,14 @@ class OrderIntent:
     edge_played: str
     key_risk: str
     insight: str
+    # Order spec (for the execution adapter). ``limit_price`` is COPIED from the facts'
+    # entry_ceiling (the deterministic buy-at-or-below level) -- never computed here, so the
+    # adapter can never lift the price. ``notional`` is derivable (shares * limit_price), so
+    # it's computed where needed rather than stored.
+    side: str = "long"
+    limit_price: float = 0.0
+    order_type: str = "market"
+    time_in_force: str = "day"
 
 
 def _score_band(score: float) -> str:
@@ -125,6 +133,8 @@ def build_order_intent(
     ``size_order`` (0/0.0 when sizing is unconfigured -> renderer shows R-multiples).
     ``key_risk`` is left empty: the single biggest risk already lives inside the
     analyst's ``insight`` prose, so we don't try to re-parse it into a short field.
+    The order spec is deterministic too: ``side="long"`` and ``limit_price`` is the facts'
+    ``entry_ceiling`` (the buy-at-or-below ceiling, COPIED -- never computed here).
     """
     shares, risk_dollars = size_order(
         conviction=conviction_result.conviction, entry_ceiling=facts.entry_ceiling,
@@ -144,6 +154,8 @@ def build_order_intent(
         edge_played=edge_played,
         key_risk="",
         insight=conviction_result.insight,
+        side="long",
+        limit_price=facts.entry_ceiling,  # COPIED from facts -- the buy-at-or-below ceiling.
     )
 
 

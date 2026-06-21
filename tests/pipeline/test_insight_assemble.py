@@ -96,6 +96,20 @@ def test_build_order_intent_unconfigured_risk_unit_zero_size() -> None:
     assert intent.risk_dollars == 0.0
 
 
+def test_build_order_intent_order_spec_fields() -> None:
+    # the order-spec fields: long side, limit price COPIED from the facts ceiling
+    # (the deterministic buy-at-or-below level -- never computed), market/day defaults.
+    facts = _facts()
+    intent = build_order_intent(
+        facts, _conv(), play_type="continuation", edge_played="e",
+        risk_unit_dollars=250.0,
+    )
+    assert intent.side == "long"
+    assert intent.limit_price == facts.entry_ceiling == 101.0
+    assert intent.order_type == "market"
+    assert intent.time_in_force == "day"
+
+
 # ---------------------------------------------------------------------------
 # record_analyst_call: persists both convictions + nudge + model, UNSCORED.
 # ---------------------------------------------------------------------------
