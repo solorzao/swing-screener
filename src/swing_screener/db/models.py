@@ -245,11 +245,19 @@ class ExecutionLog(Base):
     target: Mapped[float]
     risk_dollars: Mapped[float]
     notional: Mapped[float]
-    # the outcome: recorded / filled_paper / skipped / rejected, plus a human detail.
+    # the outcome: recorded / filled_paper / skipped / rejected, plus the Phase 4 live
+    # statuses (submitted_live / filled_live / canceled / rejected_live), and a human detail.
     status: Mapped[str] = mapped_column(String(16))
     detail: Mapped[str] = mapped_column(String(512))
     # the idempotency guard: unique per intent x run (see uq above).
     idempotency_key: Mapped[str] = mapped_column(String(64))
+    # Phase 4 live-broker tracking: the broker name (e.g. "alpaca"; "" for non-broker rows
+    # like manual / paper), the broker's order id, and the broker-reported status. The two
+    # id columns are NULL until a live order is actually placed; all three are indexed for
+    # per-broker / per-order lookups, so they stay bounded (Azure SQL can't index NVARCHAR(max)).
+    broker: Mapped[str] = mapped_column(String(16), default="", index=True)
+    broker_order_id: Mapped[str | None] = mapped_column(String(64), default=None, index=True)
+    broker_status: Mapped[str | None] = mapped_column(String(32), default=None)
 
 
 class AnalysisRequest(Base):

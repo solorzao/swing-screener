@@ -189,8 +189,11 @@ def score_analyst_calls(session: Session) -> int:
 
 
 # the statuses that COUNT against the per-day hard limits: a row only loads against the
-# notional/loss sums if the order actually submitted. ``skipped`` / ``rejected`` never did.
-_LIMIT_COUNTING_STATUSES = ("recorded", "filled_paper")
+# notional/loss sums if the order actually submitted and reserved its notional. The paper
+# statuses ``recorded`` / ``filled_paper`` plus the Phase 4 live statuses ``submitted_live``
+# (working, not yet filled) / ``filled_live`` all reserve it. ``skipped`` / ``rejected`` and
+# the live ``canceled`` / ``rejected_live`` never reserved notional, so they don't count.
+_LIMIT_COUNTING_STATUSES = ("recorded", "filled_paper", "submitted_live", "filled_live")
 
 
 def add_execution_log(session: Session, **fields: object) -> ExecutionLog:

@@ -54,6 +54,11 @@ def test_execution_log_string_lengths() -> None:
     assert ExecutionLog.__table__.c.status.type.length == 16
     assert ExecutionLog.__table__.c.detail.type.length == 512
     assert ExecutionLog.__table__.c.idempotency_key.type.length == 64
+    # Phase 4 live-broker columns: broker + broker_order_id are indexed, so they
+    # must stay bounded (Azure SQL can't index NVARCHAR(max)).
+    assert ExecutionLog.__table__.c.broker.type.length == 16
+    assert ExecutionLog.__table__.c.broker_order_id.type.length == 64
+    assert ExecutionLog.__table__.c.broker_status.type.length == 32
 
 
 def test_execution_log_idempotency_unique_constraint() -> None:
