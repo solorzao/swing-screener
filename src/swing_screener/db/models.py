@@ -155,6 +155,13 @@ class ExitEvent(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     created_date: Mapped[date]
     is_paper: Mapped[bool] = mapped_column(default=False)
+    # which book the closing trade belonged to, mirroring ``PaperTrade.account``.
+    # The shadow stepper records EVERY paper exit under ``is_paper=True`` -- both the
+    # research grid ("research") and the curated intent book ("paper") -- so ``is_paper``
+    # alone can't separate them. This display-only facet lets the exit log be sliced by
+    # book. Defaults to "research" so existing rows backfill to the research grid;
+    # bounded + indexed for Azure SQL, matching PaperTrade.account.
+    account: Mapped[str] = mapped_column(String(16), default="research", index=True)
     trade_id: Mapped[int | None] = mapped_column(default=None)
     tier: Mapped[str] = mapped_column(String(32))
     reason: Mapped[str] = mapped_column(String(32))

@@ -700,17 +700,24 @@ def _render_exits(session: Session) -> None:
         ui.empty_state("No exit events.")
         return
 
-    # Filter controls (main area). Default = every reason selected + "All" book, so
-    # the unfiltered view is unchanged.
+    # Filter controls (main area). Default = every reason selected + "All" book +
+    # "All" account, so the unfiltered view is unchanged. The Account facet splits the
+    # research grid from the curated intent book -- both record under is_paper=True, so
+    # the Book radio alone can't separate them.
     reasons = sorted({e.reason for e in events})
     selected = st.multiselect("Reason", reasons, default=reasons)
     book = st.radio("Book", ["All", "Paper", "Real"], horizontal=True, index=0)
+    account_choice = st.radio(
+        "Account", ["All", *sorted({e.account for e in events})], horizontal=True, index=0
+    )
 
     events = [e for e in events if e.reason in selected]
     if book == "Paper":
         events = [e for e in events if e.is_paper is True]
     elif book == "Real":
         events = [e for e in events if e.is_paper is False]
+    if account_choice != "All":
+        events = [e for e in events if e.account == account_choice]
 
     if not events:
         ui.empty_state("No exit events match the filters.")
@@ -722,6 +729,7 @@ def _render_exits(session: Session) -> None:
                 "date": e.created_date,
                 "trade_id": e.trade_id,
                 "is_paper": e.is_paper,
+                "account": e.account,
                 "tier": e.tier,
                 "reason": e.reason,
                 "message": e.message,

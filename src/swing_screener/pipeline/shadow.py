@@ -275,6 +275,7 @@ def advance_open(
             repo.record_exit_event(
                 session,
                 is_paper=True,
+                account=pt.account,
                 trade_id=pt.id,
                 tier=decision.tier or "",
                 reason=decision.reason or "",
