@@ -46,9 +46,9 @@ from swing_screener.settings import load_settings
 
 log = logging.getLogger(__name__)
 
-# The per-play-type thesis used when an edge file is missing (a fresh repo or a deleted
-# file). The SAME sentences seed ``edge/<pt>.md`` -- keeping the default and the seed in
-# one place so they can never drift apart; ``run_reflection`` prefers a prior file's own
+# The per-play-type thesis used ONLY when an edge file is missing (a fresh repo or a deleted
+# file). Same WORDING as the seed ``edge/<pt>.md`` thesis (the seed hard-wraps for width, so
+# it is not byte-identical -- the meaning is). ``run_reflection`` prefers a prior file's own
 # (possibly hand-edited) thesis and only falls back to these.
 _DEFAULT_THESIS = {
     "continuation": (
