@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from swing_screener.db.models import (
     AnalysisRequest,
+    AnalystCall,
     EmailLog,
     ExitEvent,
     PaperTrade,
@@ -16,6 +17,8 @@ from swing_screener.db.models import (
     Trade,
     Universe,
 )
+from swing_screener.pipeline.arms import BASELINE
+from swing_screener.pipeline.variants import DEFAULT_VARIANT
 
 if TYPE_CHECKING:
     from swing_screener.data.universe import UniverseEntry
@@ -101,6 +104,52 @@ def load_closed_paper_trades(
     if variant is not None:
         stmt = stmt.where(PaperTrade.variant == variant)
     return list(session.scalars(stmt))
+
+
+def score_analyst_calls(session: Session) -> int:
+    """Score each UNSCORED ``AnalystCall`` against its realized shadow-book outcome.
+
+    The learning join (North Star #9): an analyst call on run ``d`` for a pick
+    ``(ticker, timeframe, play_type)`` is graded by the BASELINE/DEFAULT paper trade
+    that FILLED on the first run AFTER ``d`` for that same pick -- i.e. the closed
+    ``PaperTrade`` (``arm == BASELINE``, ``variant == DEFAULT_VARIANT``, filled, with a
+    realized R) whose ``opened_date`` is the EARLIEST strictly greater than the call's
+    ``run_date``. The shadow book paper-trades the PRIOR-bar signal (fired on ``d``,
+    filled on ``d+1``), so this convention join on the pick keys + earliest post-call
+    fill is the robust link -- no Signal FK required.
+
+    Stamps ``realized_r`` + ``scored_at`` (the trade's ``exit_date``, else today) onto
+    each matched call. A pick that hasn't filled+closed yet stays unscored and is
+    rescored on a later run. Already-scored calls are skipped (``scored_at`` set), so a
+    re-run is idempotent. Returns the count newly scored; commits once.
+    """
+    unscored = list(session.scalars(
+        select(AnalystCall).where(AnalystCall.scored_at.is_(None))
+    ))
+    scored = 0
+    for call in unscored:
+        # `==` for the string/enum facets (renders `col = 'x'`); `.is_not(None)` for the
+        # NULL guard -- both portable to SQL Server, unlike a boolean `.is_(0)`.
+        trade = session.scalars(
+            select(PaperTrade).where(
+                PaperTrade.ticker == call.ticker,
+                PaperTrade.timeframe == call.timeframe,
+                PaperTrade.play_type == call.play_type,
+                PaperTrade.arm == BASELINE,
+                PaperTrade.variant == DEFAULT_VARIANT,
+                PaperTrade.status == "closed",
+                PaperTrade.fill_status == "filled",
+                PaperTrade.realized_r.is_not(None),
+                PaperTrade.opened_date > call.run_date,
+            ).order_by(PaperTrade.opened_date).limit(1)
+        ).first()
+        if trade is None:
+            continue
+        call.realized_r = trade.realized_r
+        call.scored_at = trade.exit_date or date.today()
+        scored += 1
+    session.commit()
+    return scored
 
 
 def record_exit_event(session: Session, *, is_paper: bool, trade_id: int | None,
