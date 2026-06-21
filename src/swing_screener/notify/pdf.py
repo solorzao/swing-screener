@@ -32,6 +32,7 @@ from reportlab.platypus import (
 from swing_screener.storage.blob import blob_enabled, download_bytes
 
 if TYPE_CHECKING:
+    from swing_screener.notify.proposals import ProposedOrder
     from swing_screener.notify.ticker_report import TickerReport
 
 
@@ -216,9 +217,34 @@ def build_story(picks: Sequence[PdfPick]) -> list:
     return story
 
 
+def build_proposals_story(proposals: "Sequence[ProposedOrder]") -> list:
+    """Flowables for the consolidated "Proposed orders — place on Robinhood" section.
+
+    Mirrors the email body's shopping list: a header + one human-placeable instruction per
+    proposal. Pure rendering of the already-built proposals -- empty in -> empty out (so the
+    section appears only when there's something to place)."""
+    from swing_screener.notify.proposals import PROPOSED_HEADER
+
+    if not proposals:
+        return []
+    styles = getSampleStyleSheet()
+    story: list = [
+        PageBreak(),
+        Paragraph(
+            f'<font color="#1a5fb4"><b>{_xml_escape(PROPOSED_HEADER)}</b></font>',
+            styles["Title"]),
+        Spacer(1, 0.15 * inch),
+    ]
+    for p in proposals:
+        story.append(Paragraph(_xml_escape(p.instruction()), styles["BodyText"]))
+        story.append(Spacer(1, 0.05 * inch))
+    return story
+
+
 def build_digest_pdf(picks: Sequence[PdfPick], out_path: Path, *,
                      reversal_picks: Sequence[PdfPick] | None = None,
-                     header: str | None = None) -> Path:
+                     header: str | None = None,
+                     proposals: "Sequence[ProposedOrder] | None" = None) -> Path:
     """Render ``picks`` (continuation) into a multi-section PDF and return it.
 
     ``header`` (e.g. "Swing Screener - Daily Picks (Jun 15, 2026)") is drawn ONCE
@@ -227,6 +253,10 @@ def build_digest_pdf(picks: Sequence[PdfPick], out_path: Path, *,
     non-empty, are appended after a "REVERSAL PLAYS" divider. A pick whose
     ``chart_path`` is ``None``/missing renders without its image; an empty
     ``picks`` sequence still produces a valid (placeholder) PDF.
+
+    ``proposals`` (the manual-mode "Proposed orders" shopping list), when non-empty,
+    appends the consolidated placeable-instructions section after the picks -- the
+    approval posture only; None/empty leaves the PDF unchanged.
     """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -242,6 +272,8 @@ def build_digest_pdf(picks: Sequence[PdfPick], out_path: Path, *,
             '<font color="#b4561a"><b>REVERSAL PLAYS</b></font>', styles["Title"]))
         story.append(Spacer(1, 0.15 * inch))
         story.extend(build_story(reversal_picks))
+    if proposals:
+        story.extend(build_proposals_story(proposals))
     doc = SimpleDocTemplate(str(out_path), pagesize=letter)
     doc.build(story)
     return out_path

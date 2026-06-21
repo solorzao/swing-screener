@@ -171,6 +171,9 @@ def compose_digest_body(
     *,
     has_pdf: bool,
     reversal_picks: Sequence[DigestPick] | None = None,
+    proposals_text: Sequence[str] | None = None,
+    proposals_html: str | None = None,
+    autonomy_status: str | None = None,
 ) -> EmailContent:
     """Render a digest into subject, plain-text, and HTML bodies.
 
@@ -179,6 +182,14 @@ def compose_digest_body(
     "Reversal Plays" section -- pass an empty list to show it as "no setups", or
     None to omit the section entirely (weekly/monthly). Exit alerts get their own
     badged section, and a PDF pointer is appended when ``has_pdf``.
+
+    ``proposals_text``/``proposals_html`` (the manual-mode "Proposed orders — place on
+    Robinhood" shopping list, already rendered in :mod:`notify.proposals`) are appended
+    when present -- the approval posture only; every other mode passes them as None, so
+    the body is byte-for-byte unchanged there.
+
+    ``autonomy_status`` (the one-line autonomy-gate countdown) is appended as a footer when
+    present -- the deep path only; a non-deep digest passes None, so the body is unchanged.
     """
     subject = f"Swing Screener - {_KIND_TITLE[kind]} Picks ({run_date})"
 
@@ -186,18 +197,24 @@ def compose_digest_body(
     lines = _section_text(CONTINUATION_TITLE, picks, run_date)
     if reversal_picks is not None:
         lines += ["", *_section_text(REVERSAL_TITLE, reversal_picks, run_date)]
+    if proposals_text:
+        lines += list(proposals_text)
     if exit_alerts:
         lines += ["", "Exit alerts:"]
         for a in exit_alerts:
             lines.append(f"{_BADGE.get(a.tier, '')} {a.ticker} — {a.reason}: {a.message}")
     if has_pdf:
         lines += ["", "Full analysis attached (PDF)."]
+    if autonomy_status:
+        lines += ["", autonomy_status]
     text = "\n".join(lines)
 
     # --- html ---
     html_parts = [_section_html(CONTINUATION_TITLE, picks, run_date)]
     if reversal_picks is not None:
         html_parts.append(_section_html(REVERSAL_TITLE, reversal_picks, run_date))
+    if proposals_html:
+        html_parts.append(proposals_html)
     if exit_alerts:
         items = "".join(
             f"<li>{_BADGE.get(a.tier, '')} {escape(a.ticker)} — "
@@ -207,6 +224,8 @@ def compose_digest_body(
         html_parts.append(f"<h3>Exit alerts</h3><ul>{items}</ul>")
     if has_pdf:
         html_parts.append("<p>Full analysis attached (PDF).</p>")
+    if autonomy_status:
+        html_parts.append(f"<p><i>{escape(autonomy_status)}</i></p>")
     html = "".join(html_parts)
 
     return EmailContent(subject=subject, text=text, html=html)

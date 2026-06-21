@@ -51,12 +51,21 @@ from swing_screener.notify.body import (
     compose_digest_body,
 )
 from swing_screener.notify.pdf import PdfPick, build_digest_pdf
+from swing_screener.notify.proposals import (
+    ProposedOrder,
+    build_proposals,
+    proposals_html,
+    proposals_text,
+    write_proposals_artifact,
+)
 from swing_screener.notify.transport import resolve_sender
+from swing_screener.pipeline.autonomy import autonomy_gate, gate_status_line
 from swing_screener.pipeline.broker import BrokerClient
 from swing_screener.pipeline.broker_alpaca import build_broker
 from swing_screener.pipeline.execution import (
     ExecutionAdapter,
     LiveAdapter,
+    ManualAdapter,
     NoOpAdapter,
     OrderResult,
     PaperAdapter,
@@ -221,12 +230,15 @@ def _already_sent(session: Session, kind: str, run_date: date) -> bool:
 def _adapter_for_mode(mode: str, *, broker: BrokerClient | None = None) -> ExecutionAdapter:
     """Resolve the configured execution mode to its adapter (prod path; tests inject one).
 
-    ``"paper"`` opens simulated fills; ``"live"`` submits one order to a real broker through
-    the injected ``broker`` -- but ONLY when a broker is configured: a stray ``live`` config
-    with NO broker can never place an order, so it falls back to the NoOp with a loud warning.
-    Everything else -- ``"off"`` (the default) -- resolves to the NoOp adapter, which writes
-    nothing (exactly today's behavior).
+    ``"manual"`` RECORDS an order ticket for the human to place by hand (no broker, no
+    position -- money never moves); ``"paper"`` opens simulated fills; ``"live"`` submits one
+    order to a real broker through the injected ``broker`` -- but ONLY when a broker is
+    configured: a stray ``live`` config with NO broker can never place an order, so it falls
+    back to the NoOp with a loud warning. Everything else -- ``"off"`` (the default) --
+    resolves to the NoOp adapter, which writes nothing (exactly today's behavior).
     """
+    if mode == "manual":
+        return ManualAdapter()  # needs no broker -- it only records a ticket
     if mode == "paper":
         return PaperAdapter()
     if mode == "live":
@@ -484,6 +496,17 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                 reversal_digest = _attach_digest_tickets(reversal_digest, tickets, "reversal")
                 reversal_pdf = _attach_pdf_tickets(reversal_pdf, tickets, "reversal")
 
+        # The consolidated "Proposed orders — place on Robinhood" shopping list: the human's
+        # actionable copy-list for the manual (approval) posture ONLY. Levels + conviction are
+        # COPIED from the built intents (never recomputed); a skipped/limit-blocked ticket is
+        # dropped from the placeable list. Every other mode -> no proposals, so the body/PDF/
+        # artifact are byte-for-byte unchanged. The JSON artifact write is wrapped so a failure
+        # logs + returns None and NEVER blocks the digest (mirrors the PDF seam).
+        proposals: list[ProposedOrder] = []
+        if exec_mode == "manual" and tickets:
+            proposals = build_proposals(collected_intents, tickets)
+            write_proposals_artifact(proposals, Path(pdf_dir), run_date)
+
         pdf_path: Path | None = None
         if digest_picks or reversal_pdf:
             try:
@@ -491,6 +514,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                     pdf_picks, Path(pdf_dir) / f"{kind}_{run_date:%Y%m%d}.pdf",
                     reversal_picks=reversal_pdf or None,
                     header=f"Swing Screener - {kind.capitalize()} Picks ({run_date:%b %d, %Y})",
+                    proposals=proposals or None,
                 )
             except Exception:  # PDF must never block the email
                 log.warning("PDF build failed for %s %s", kind, run_date, exc_info=True)
@@ -502,8 +526,18 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                       tier=a.tier, reason=a.reason, message=a.message)
             for a in alerts
         ]
+        # Autonomy-gate countdown footer: surfaced ONLY on the deep path (the digest already
+        # ran the analyst, so the gate's read-only SELECTs over scored calls + the verdicts
+        # sidecars are free). It NEVER writes -- the gate is a pure SELECT (North Star #1) --
+        # and a non-deep digest passes None, so the body is byte-for-byte unchanged there.
+        autonomy_status = (
+            gate_status_line(autonomy_gate(session, edge_dir=edge_dir)) if deep_on else None
+        )
         body = compose_digest_body(kind, run_date, digest_picks, alert_lines,
-                                   has_pdf=pdf_attached, reversal_picks=reversal_digest)
+                                   has_pdf=pdf_attached, reversal_picks=reversal_digest,
+                                   proposals_text=proposals_text(proposals),
+                                   proposals_html=proposals_html(proposals),
+                                   autonomy_status=autonomy_status)
         send(to=recipient, subject=body.subject, text=body.text, html=body.html,
              attachments=([pdf_path] if pdf_path is not None else []))
 

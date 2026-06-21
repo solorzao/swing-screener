@@ -26,6 +26,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from swing_screener.analytics.calibration import (
+    _CLUSTER_FLOOR,
+    MIN_LEADERBOARD_N,
     CalibrationVerdict,
     conviction_calibrated,
 )
@@ -123,6 +125,68 @@ def autonomy_gate(session: Session, *, edge_dir: Path = _EDGE_DIR) -> AutonomyRe
     )
 
 
+def _countdown_line(
+    pt: str, v: dict[str, Any], *, min_per_bucket: int, cluster_floor: int, sep: str = ": "
+) -> str:
+    """One play type's progress toward the calibration floors, as ``"<pt><sep>..."``.
+
+    A ready play type shows ``"<pt><sep>ready"``; otherwise the three floor fractions from
+    its ``CalibrationVerdict``: scored ``high`` / ``low`` calls vs ``min_per_bucket``, and
+    the binding distinct-ticker count (``min(n_clusters_high, n_clusters_low)`` -- the lower
+    of the two buckets is what actually gates) vs ``cluster_floor``. ``sep`` is the
+    play-type/body separator: ``": "`` for the CLI block, ``" "`` for the one-line status.
+    PURE."""
+    if v["ready"]:
+        return f"{pt}{sep}ready"
+    calib: CalibrationVerdict = v["calibration"]
+    tickers = min(calib.n_clusters_high, calib.n_clusters_low)
+    return (
+        f"{pt}{sep}{calib.n_high}/{min_per_bucket} high, "
+        f"{calib.n_low}/{min_per_bucket} low, "
+        f"{tickers}/{cluster_floor} tickers"
+    )
+
+
+def gate_countdown(
+    report: AutonomyReport,
+    *,
+    min_per_bucket: int = MIN_LEADERBOARD_N,
+    cluster_floor: int = _CLUSTER_FLOOR,
+) -> str:
+    """The autonomy-gate COUNTDOWN: per play type, progress toward the calibration floors.
+
+    One line per play type (``"continuation: 7/20 high, 3/20 low, 5/8 tickers"``), or
+    ``"<pt>: ready"`` for a play type that clears the gate. The denominators default to the
+    live floor constants (``MIN_LEADERBOARD_N`` / ``_CLUSTER_FLOOR``) -- they are NOT
+    hardcoded here, so a floor change propagates. PURE (string-building only)."""
+    return "\n".join(
+        _countdown_line(pt, v, min_per_bucket=min_per_bucket, cluster_floor=cluster_floor)
+        for pt, v in report.per_play_type.items()
+    )
+
+
+def gate_status_line(
+    report: AutonomyReport,
+    *,
+    min_per_bucket: int = MIN_LEADERBOARD_N,
+    cluster_floor: int = _CLUSTER_FLOOR,
+) -> str:
+    """The one-liner digest status: the gate verdict + the countdown, on a single line.
+
+    ``"Autonomy gate: READY (advisory)"`` when the gate is ready; otherwise
+    ``"Autonomy gate: NOT READY — continuation 7/20 high, ...; reversal 2/20 high, ..."`` --
+    the per-play-type progress (same fractions as ``gate_countdown``, joined with ``;`` so it
+    stays one line for the digest footer). Reads the live floors. PURE."""
+    if report.ready:
+        return "Autonomy gate: READY (advisory)"
+    progress = "; ".join(
+        _countdown_line(
+            pt, v, min_per_bucket=min_per_bucket, cluster_floor=cluster_floor, sep=" ")
+        for pt, v in report.per_play_type.items()
+    )
+    return f"Autonomy gate: NOT READY — {progress}"
+
+
 def render_report(report: AutonomyReport) -> str:
     """Render the advisory autonomy report as human-readable text (for the CLI / a surfaced
     status line). PURE. Always carries the advisory disclaimer -- the gate only advises; it
@@ -151,6 +215,11 @@ def render_report(report: AutonomyReport) -> str:
             f"n_high={calib.n_high}, n_low={calib.n_low}; {calib.reason})"
         )
         lines.append("")
+    # The COUNTDOWN: progress toward the calibration floors per play type, so the report
+    # reads as a watchable approach to the gate rather than a bare pass/fail.
+    lines.append("## Calibration progress")
+    lines.extend(f"- {line}" for line in gate_countdown(report).split("\n"))
+    lines.append("")
     if report.blocking_reasons:
         lines.append("## Blocking reasons")
         lines.extend(f"- {r}" for r in report.blocking_reasons)

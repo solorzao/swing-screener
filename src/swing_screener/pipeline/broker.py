@@ -67,14 +67,29 @@ class BrokerPosition:
     avg_entry_price: float
 
 
+@dataclass(frozen=True)
+class BrokerAccount:
+    """The account snapshot the read-only preflight check consults before a go-live.
+
+    ``cash`` / ``buying_power`` are in account currency; ``status`` is the venue's account
+    status string (e.g. ``"ACTIVE"``). Preflight reads this -- never writes it -- to confirm
+    the broker is reachable + funded before a human flips to real money."""
+
+    cash: float
+    buying_power: float
+    status: str
+
+
 class BrokerClient(Protocol):
     """The injectable broker contract Phase-4 live execution talks through.
 
-    A narrow seam: submit/read/cancel orders, read positions, report whether this client
-    trades REAL money (the autonomy gate consults ``is_real_money`` before arming), and report
-    the price a now-closed position last exited at (``last_close_price`` -- the reconciler
-    sources a live exit's ``exit_price`` from the BROKER through it, never a simulated level).
-    The real Alpaca client (Task 6) and :class:`FakeBroker` both satisfy it."""
+    A narrow seam: submit/read/cancel orders, read positions, read the account snapshot
+    (``get_account`` -- the read-only preflight check confirms the broker is reachable +
+    funded before a go-live), report whether this client trades REAL money (the autonomy gate
+    consults ``is_real_money`` before arming), and report the price a now-closed position last
+    exited at (``last_close_price`` -- the reconciler sources a live exit's ``exit_price`` from
+    the BROKER through it, never a simulated level). The real Alpaca client (Task 6) and
+    :class:`FakeBroker` both satisfy it."""
 
     name: str
 
@@ -82,6 +97,7 @@ class BrokerClient(Protocol):
     def get_order(self, broker_order_id: str) -> BrokerOrder: ...
     def list_open_orders(self) -> list[BrokerOrder]: ...
     def get_positions(self) -> list[BrokerPosition]: ...
+    def get_account(self) -> BrokerAccount: ...
     def cancel_order(self, broker_order_id: str) -> None: ...
     def cancel_all_orders(self) -> None: ...
     def is_real_money(self) -> bool: ...
@@ -100,8 +116,19 @@ class FakeBroker:
 
     name = "fake"
 
-    def __init__(self, *, real_money: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        real_money: bool = False,
+        cash: float = 100_000.0,
+        buying_power: float = 100_000.0,
+        status: str = "ACTIVE",
+    ) -> None:
         self._real_money = real_money
+        # The account snapshot get_account() reports -- defaults to a funded, ACTIVE account so
+        # the read-only preflight check passes by default; the knobs let a test drive an
+        # unfunded / non-ACTIVE account to exercise the NO-GO paths.
+        self._account = BrokerAccount(cash=cash, buying_power=buying_power, status=status)
         self._orders: dict[str, BrokerOrder] = {}
         self._positions: dict[str, BrokerPosition] = {}
         self._next_id = 0
@@ -146,6 +173,10 @@ class FakeBroker:
 
     def get_positions(self) -> list[BrokerPosition]:
         return list(self._positions.values())
+
+    def get_account(self) -> BrokerAccount:
+        """The account snapshot (cash / buying_power / status), as set at construction."""
+        return self._account
 
     def cancel_order(self, broker_order_id: str) -> None:
         self._orders[broker_order_id] = replace(
