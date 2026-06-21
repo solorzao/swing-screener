@@ -180,6 +180,29 @@ def test_close_position_removes_the_position() -> None:
 
 
 # ---------------------------------------------------------------------------
+# close_position scripts the venue's close price -> last_close_price reads it back.
+# The reconciler sources a live exit's exit_price from this (the broker owns the price).
+# ---------------------------------------------------------------------------
+def test_close_position_scripts_the_exit_price() -> None:
+    broker = FakeBroker()
+    order = broker.submit_order(_spec(symbol="GOOG", qty=3))
+    broker.fill(order.broker_order_id, price=50.0)
+
+    broker.close_position("GOOG", price=57.5)
+
+    assert broker.get_positions() == []
+    assert broker.last_close_price("GOOG") == 57.5
+
+
+def test_last_close_price_none_when_never_closed() -> None:
+    broker = FakeBroker()
+    order = broker.submit_order(_spec(symbol="GOOG", qty=3))
+    broker.fill(order.broker_order_id, price=50.0)
+    # an open position has no scripted close yet.
+    assert broker.last_close_price("GOOG") is None
+
+
+# ---------------------------------------------------------------------------
 # is_real_money honors the flag (default False).
 # ---------------------------------------------------------------------------
 def test_is_real_money_defaults_false() -> None:

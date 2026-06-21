@@ -154,7 +154,10 @@ def advance_open(
     own arm's config so the parallel arms diverge only in exit management.
     """
     arm_cfgs = {BASELINE: arms} if isinstance(arms, StrategyConfig) else dict(arms)
-    for pt in repo.load_open_paper_trades(session):
+    # exclude_live: the bar-stepper must NEVER advance an account="live" row -- a live
+    # position is filled/closed by the BROKER and owned by reconcile_live, the disjoint
+    # engine. Stepping one would invent a simulated fill over broker reality.
+    for pt in repo.load_open_paper_trades(session, exclude_live=True):
         if pt.entry_date == today or pt.last_advanced == today:
             continue
         bar = latest_bars.get((pt.ticker, pt.timeframe))

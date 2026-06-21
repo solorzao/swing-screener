@@ -70,8 +70,10 @@ class BrokerPosition:
 class BrokerClient(Protocol):
     """The injectable broker contract Phase-4 live execution talks through.
 
-    A narrow seam: submit/read/cancel orders, read positions, and report whether this
-    client trades REAL money (the autonomy gate consults ``is_real_money`` before arming).
+    A narrow seam: submit/read/cancel orders, read positions, report whether this client
+    trades REAL money (the autonomy gate consults ``is_real_money`` before arming), and report
+    the price a now-closed position last exited at (``last_close_price`` -- the reconciler
+    sources a live exit's ``exit_price`` from the BROKER through it, never a simulated level).
     The real Alpaca client (Task 6) and :class:`FakeBroker` both satisfy it."""
 
     name: str
@@ -83,6 +85,7 @@ class BrokerClient(Protocol):
     def cancel_order(self, broker_order_id: str) -> None: ...
     def cancel_all_orders(self) -> None: ...
     def is_real_money(self) -> bool: ...
+    def last_close_price(self, symbol: str) -> float | None: ...
 
 
 class FakeBroker:
@@ -102,6 +105,9 @@ class FakeBroker:
         self._orders: dict[str, BrokerOrder] = {}
         self._positions: dict[str, BrokerPosition] = {}
         self._next_id = 0
+        # symbol -> the price the position last closed at (scripted by close_position),
+        # so a test can drive a venue-side exit AT a price the reconciler reads back.
+        self._closes: dict[str, float] = {}
         # client_order_id -> broker_order_id, for the submit idempotency check.
         self._by_client_id: dict[str, str] = {}
         # broker_order_id -> the originally-submitted qty, so a no-qty fill can default to
@@ -152,6 +158,13 @@ class FakeBroker:
     def is_real_money(self) -> bool:
         return self._real_money
 
+    def last_close_price(self, symbol: str) -> float | None:
+        """The price ``symbol`` last closed at (scripted via ``close_position``), or None if
+        it was never closed (or closed without a scripted price). The reconciler reads a live
+        exit's ``exit_price`` from here -- the BROKER owns the exit price, never a simulation.
+        The real Alpaca client (Task 6) derives it from the closing order's filled price."""
+        return self._closes.get(symbol)
+
     # -- test-driver helpers (the scripting surface for Tasks 4/5/7) ----------
     def fill(self, broker_order_id: str, price: float, qty: int | None = None) -> None:
         """Fully fill an order at ``price`` (``qty`` defaults to the order's quantity) and
@@ -174,6 +187,11 @@ class FakeBroker:
         self._orders[broker_order_id] = replace(
             self._orders[broker_order_id], status="rejected")
 
-    def close_position(self, symbol: str) -> None:
-        """Remove a position -- simulating a venue-side exit (a sold/closed position)."""
+    def close_position(self, symbol: str, price: float | None = None) -> None:
+        """Remove a position -- simulating a venue-side exit (a sold/closed position). When a
+        ``price`` is given it is recorded as the close price (``last_close_price`` reads it
+        back), so a test can drive a live exit AT a known price that the reconciler sources
+        from the broker. Closing without a price (the original signature) is still supported."""
         self._positions.pop(symbol, None)
+        if price is not None:
+            self._closes[symbol] = price
