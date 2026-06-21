@@ -13,9 +13,10 @@ prior claims against the previous edge file lives in a later task, not here.
 """
 
 import argparse
+import json
 import logging
 import statistics
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import date
 from pathlib import Path
 from typing import NamedTuple
@@ -205,6 +206,29 @@ def grade(
                     ci_low=disp.eff_low, n_clusters=disp.n_clusters, source="none",
                 ))
     return verdicts
+
+
+# ===========================================================================
+# SERIALIZE -- the machine-readable verdicts sidecar.
+#
+# Phase 2's per-pick insight engine derives a deterministic baseline conviction from these
+# verdicts; it MUST read a code-owned artifact, never parse the LLM-authored ``edge/<pt>.md``
+# prose (which the model rewrites). ``run_reflection`` therefore also emits
+# ``edge/<pt>.verdicts.json`` -- a LOSSLESS round-trip of exactly the ``Verdict`` rows
+# ``grade`` produced, written deterministically regardless of whether the LLM authoring
+# succeeded. (``Verdict`` is a flat frozen dataclass of JSON-native scalars, so
+# ``asdict`` / ``Verdict(**d)`` round-trips every field.)
+# ===========================================================================
+
+
+def verdicts_to_json(verdicts: list[Verdict]) -> str:
+    """Serialize graded ``verdicts`` to the machine-readable sidecar JSON (lossless)."""
+    return json.dumps([asdict(v) for v in verdicts], indent=2)
+
+
+def load_verdicts(text: str) -> list[Verdict]:
+    """Inverse of ``verdicts_to_json``: parse the sidecar JSON back into ``Verdict`` rows."""
+    return [Verdict(**d) for d in json.loads(text)]
 
 
 # ===========================================================================
@@ -649,6 +673,12 @@ def run_reflection(
         )
         replay_pt = [t for t in replay_all if t.play_type == pt]
         verdicts = grade(pt, forward, replay_pt)
+
+        # Emit the machine-readable sidecar FIRST -- it is deterministic + code-owned, so it
+        # is written whether or not the (optional, fallible) LLM authoring below succeeds.
+        (edge_dir / f"{pt}.verdicts.json").write_text(
+            verdicts_to_json(verdicts), encoding="utf-8"
+        )
 
         prior_text = _edge_text(edge_dir, pt)
         thesis = _thesis_for(prior_text, pt)
