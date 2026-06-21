@@ -54,6 +54,12 @@ class Settings:
     max_daily_notional: float | None
     max_daily_loss: float | None
     max_concurrent: int | None
+    # Broker config (for the LiveAdapter). ``broker`` selects the impl ("alpaca" is the only
+    # one); ``allow_real_money`` is the explicit, separate, LOUD real-money flag -- a real-money
+    # endpoint arms only when execution_mode is "live" AND this is set AND the autonomy gate is
+    # ready (see ``can_arm_real_money``). Both default safe: no broker, real money disallowed.
+    broker: str
+    allow_real_money: bool
 
 
 _TRUE = {"1", "true", "yes", "on"}
@@ -155,6 +161,10 @@ def load_settings() -> Settings:
         max_daily_notional=_opt_float(env.get("SWING_MAX_DAILY_NOTIONAL")),
         max_daily_loss=_opt_float(env.get("SWING_MAX_DAILY_LOSS")),
         max_concurrent=_opt_int(env.get("SWING_MAX_CONCURRENT")),
+        broker=env.get("SWING_BROKER", "").strip().lower(),
+        allow_real_money=(
+            env.get("SWING_BROKER_ALLOW_REAL_MONEY", "").strip().lower() in _TRUE
+        ),
     )
 
 
@@ -188,3 +198,39 @@ def resolve_execution(settings: Settings) -> tuple[str, Limits]:
         max_daily_loss=settings.max_daily_loss,
         max_concurrent=settings.max_concurrent,
     )
+
+
+def can_arm_real_money(settings: Settings, *, gate_ready: bool) -> tuple[bool, str]:
+    """Decide whether a REAL-money endpoint may arm -- three independent locks.
+
+    Returns ``(True, "")`` ONLY when ALL three hold: ``execution_mode == "live"`` AND the
+    explicit ``allow_real_money`` flag AND a ready autonomy ``gate_ready``. Any single lock
+    missing refuses, naming the FIRST failing lock so a misconfig reads as one concrete cause.
+    This is the load-bearing safety property: no single misconfig can move real money. It
+    guards a real-money endpoint only -- a paper broker bypasses it (the adapter checks
+    ``broker.is_real_money()`` first). Pure: depends only on the args, no env/DB/IO.
+    """
+    if settings.execution_mode != "live":
+        return False, "execution_mode is not live"
+    if not settings.allow_real_money:
+        return False, "SWING_BROKER_ALLOW_REAL_MONEY is not set"
+    if not gate_ready:
+        return False, "autonomy gate is not ready"
+    return True, ""
+
+
+def real_money_limits_ok(limits: Limits) -> tuple[bool, str]:
+    """The mandate that a real-money endpoint may not run with an unbounded cap.
+
+    Returns ``(True, "")`` only if ``max_daily_notional``, ``max_daily_loss`` AND
+    ``max_concurrent`` are ALL set -- real money must never run uncapped. Otherwise refuses,
+    naming the FIRST unset cap. Paper is exempt (the adapter calls this for a real-money
+    endpoint only). Pure: depends only on the passed ``Limits``, no env/DB/IO.
+    """
+    if limits.max_daily_notional is None:
+        return False, "max_daily_notional is not set"
+    if limits.max_daily_loss is None:
+        return False, "max_daily_loss is not set"
+    if limits.max_concurrent is None:
+        return False, "max_concurrent is not set"
+    return True, ""

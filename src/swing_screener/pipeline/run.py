@@ -25,6 +25,9 @@ from swing_screener.pipeline.analyze import (
     build_frames,
 )
 from swing_screener.pipeline.arms import BASELINE, build_arms
+from swing_screener.pipeline.broker import BrokerClient
+from swing_screener.pipeline.broker_alpaca import build_broker
+from swing_screener.pipeline.reconcile import reconcile_live
 from swing_screener.pipeline.regime import MARKET_PROXY, classify_regime
 from swing_screener.pipeline.shadow import FillCandidate, advance_open, open_from_signals
 from swing_screener.pipeline.variants import DEFAULT_VARIANT, build_screen_variants
@@ -221,9 +224,18 @@ def _render_and_attach(r: SignalResult, signal: Signal, chart_dir: Path, today: 
 def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: Path,
                top_charts: int = 5, cfg: StrategyConfig | None = None,
                today: date | None = None, max_tickers: int | None = None,
-               migrate_fn: Callable[[str], None] | None = None) -> RunResult:
+               migrate_fn: Callable[[str], None] | None = None,
+               broker: BrokerClient | None = None) -> RunResult:
     cfg = cfg or StrategyConfig()
     today = today or date.today()
+    # Live reconcile cadence: the BROKER owns live fills/exits, so when execution_mode=="live"
+    # AND a broker is configured we reconcile the live book right where positions are advanced
+    # (a fill materializes an account="live" PaperTrade; a venue close reconciles its exit).
+    # GATED: off/paper or no broker -> the live book stays dark (no reconcile). The broker is
+    # built from settings here (tests inject a FakeBroker via the `broker=` seam).
+    settings = load_settings()
+    if broker is None and settings.execution_mode == "live":
+        broker = build_broker(settings)
 
     # Azure SQL: Alembic owns the schema, so upgrade to head BEFORE any engine
     # use (sqlite still goes through get_engine, which create_all's). Done up
@@ -355,6 +367,13 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
                               variant=vname, market_trend=regime.trend,
                               market_vol=regime.vol)
         advance_open(s, latest_bars, arms, today=today)
+        # Live book: the bar-stepper above excludes account="live" rows -- the BROKER owns
+        # their fills/exits. Reconcile them here (same cadence) so a broker fill materializes
+        # a live position + a venue close reconciles its exit. Only when live + a broker; the
+        # off/paper path never reaches here (broker is None).
+        if broker is not None and settings.execution_mode == "live":
+            n_reconciled = reconcile_live(s, broker, today=today)
+            log.info("live reconcile: %d change(s)", n_reconciled)
 
         # Enrich the universe rows with the metrics gathered during the loop
         # (one batch UPDATE; None-skips, self-commits).

@@ -33,6 +33,9 @@ PAPER_TRADE_INDEXES = {"ix_paper_trades_arm", "ix_paper_trades_variant",
                        "ix_paper_trades_account"}
 # the exit log is sliced by account (research grid vs the curated intent book).
 EXIT_EVENT_INDEXES = {"ix_exit_events_account"}
+# Phase 4 live-broker tracking: execution_logs is looked up by broker + broker order id.
+EXECUTION_LOG_BROKER_INDEXES = {"ix_execution_logs_broker",
+                                "ix_execution_logs_broker_order_id"}
 
 
 def _config(db_url: str) -> Config:
@@ -60,6 +63,7 @@ def test_migration_creates_every_table_and_index(tmp_path, monkeypatch):
     assert TICKER_INDEXES <= indexes
     assert PAPER_TRADE_INDEXES <= indexes
     assert EXIT_EVENT_INDEXES <= indexes
+    assert EXECUTION_LOG_BROKER_INDEXES <= indexes
 
 
 def test_migration_enforces_email_log_dedup(tmp_path, monkeypatch):

@@ -83,12 +83,37 @@ def save_paper_trades(session: Session, trades: Sequence[PaperTrade]) -> None:
     session.commit()
 
 
-def load_open_paper_trades(session: Session) -> list[PaperTrade]:
-    """Every OPEN paper trade, ACROSS ALL accounts. Intentionally NOT filtered by
-    ``account`` -- ``advance_open`` must keep stepping the curated intent book's open
-    trades alongside the research grid; only the CLOSED-trade aggregates are pinned to
-    ``account == "research"``."""
+def load_open_paper_trades(
+    session: Session, *, exclude_live: bool = False
+) -> list[PaperTrade]:
+    """Every OPEN paper trade, ACROSS ALL accounts by default. NOT filtered by ``account``
+    in the inclusive form -- ``advance_open`` must keep stepping the curated intent book's
+    open trades alongside the research grid, and the reconciler reads it inclusively too;
+    only the CLOSED-trade aggregates are pinned to ``account == "research"``.
+
+    ``exclude_live=True`` is the BAR-STEPPER's loader: it drops ``account == "live"`` rows so
+    the simulator never advances a broker-owned position. A live fill is filled+closed by the
+    BROKER and materialized/reconciled by ``reconcile_live`` (the two engines are disjoint);
+    if the stepper stepped a live row it would invent simulated fills over broker reality.
+    ``advance_open`` passes ``exclude_live=True``; ``research`` + ``paper`` still step.
+    ``!= "live"`` renders ``account <> 'live'`` (portable to SQL Server), not a boolean ``.is_()``."""
     stmt = select(PaperTrade).where(PaperTrade.status == "open")
+    if exclude_live:
+        stmt = stmt.where(PaperTrade.account != "live")
+    return list(session.scalars(stmt))
+
+
+def load_open_live_trades(session: Session) -> list[PaperTrade]:
+    """Every OPEN ``account == "live"`` paper trade -- the reconciler's own loader.
+
+    The complement of the stepper's ``exclude_live`` view: ``reconcile_live`` reads exactly the
+    broker-owned open positions to check for a venue-side close. Only ``status == "open"`` rows
+    come back, so a row already ``closed`` by a prior reconcile is never re-closed (the exit
+    reconciliation is idempotent on this filter). ``==`` renders ``col = 'x'`` (portable to SQL
+    Server), not a boolean ``.is_()``."""
+    stmt = select(PaperTrade).where(
+        PaperTrade.status == "open", PaperTrade.account == "live"
+    )
     return list(session.scalars(stmt))
 
 
@@ -189,8 +214,11 @@ def score_analyst_calls(session: Session) -> int:
 
 
 # the statuses that COUNT against the per-day hard limits: a row only loads against the
-# notional/loss sums if the order actually submitted. ``skipped`` / ``rejected`` never did.
-_LIMIT_COUNTING_STATUSES = ("recorded", "filled_paper")
+# notional/loss sums if the order actually submitted and reserved its notional. The paper
+# statuses ``recorded`` / ``filled_paper`` plus the Phase 4 live statuses ``submitted_live``
+# (working, not yet filled) / ``filled_live`` all reserve it. ``skipped`` / ``rejected`` and
+# the live ``canceled`` / ``rejected_live`` never reserved notional, so they don't count.
+_LIMIT_COUNTING_STATUSES = ("recorded", "filled_paper", "submitted_live", "filled_live")
 
 
 def add_execution_log(session: Session, **fields: object) -> ExecutionLog:
@@ -223,9 +251,10 @@ def execution_logs_for_day(
     """ExecutionLog rows for ``run_date`` + ``account`` that COUNT against the hard limits.
 
     The source for the per-day notional / loss sums: only rows whose order actually
-    submitted (``status`` in ``recorded`` / ``filled_paper``) load against the limits;
-    ``skipped`` / ``rejected`` are excluded. ``==`` / ``.in_(...)`` render portably to
-    SQL Server (no boolean ``.is_()``)."""
+    submitted (``status`` in ``recorded`` / ``filled_paper`` / ``submitted_live`` /
+    ``filled_live``) load against the limits; ``skipped`` / ``canceled`` / ``rejected_live`` /
+    ``rejected`` are excluded. ``==`` / ``.in_(...)`` render portably to SQL Server (no
+    boolean ``.is_()``)."""
     stmt = select(ExecutionLog).where(
         ExecutionLog.run_date == run_date,
         ExecutionLog.account == account,

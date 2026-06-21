@@ -52,8 +52,11 @@ from swing_screener.notify.body import (
 )
 from swing_screener.notify.pdf import PdfPick, build_digest_pdf
 from swing_screener.notify.transport import resolve_sender
+from swing_screener.pipeline.broker import BrokerClient
+from swing_screener.pipeline.broker_alpaca import build_broker
 from swing_screener.pipeline.execution import (
     ExecutionAdapter,
+    LiveAdapter,
     NoOpAdapter,
     OrderResult,
     PaperAdapter,
@@ -215,19 +218,36 @@ def _already_sent(session: Session, kind: str, run_date: date) -> bool:
     return session.scalars(stmt).first() is not None
 
 
-def _adapter_for_mode(mode: str) -> ExecutionAdapter:
+def _adapter_for_mode(mode: str, *, broker: BrokerClient | None = None) -> ExecutionAdapter:
     """Resolve the configured execution mode to its adapter (prod path; tests inject one).
 
-    ``"paper"`` opens simulated fills; everything else -- ``"off"`` (the default) AND
-    ``"live"`` -- resolves to the NoOp adapter, which writes nothing. ``"live"`` is Phase 4:
-    until then it is deliberately NOT armed (a warning makes that explicit), so a stray
-    ``live`` config can never place a real order.
+    ``"paper"`` opens simulated fills; ``"live"`` submits one order to a real broker through
+    the injected ``broker`` -- but ONLY when a broker is configured: a stray ``live`` config
+    with NO broker can never place an order, so it falls back to the NoOp with a loud warning.
+    Everything else -- ``"off"`` (the default) -- resolves to the NoOp adapter, which writes
+    nothing (exactly today's behavior).
     """
     if mode == "paper":
         return PaperAdapter()
     if mode == "live":
-        log.warning("execution_mode=live is Phase 4; not executing")
+        if broker is not None:
+            return LiveAdapter(broker)
+        log.warning("execution_mode=live but no broker configured; not executing")
     return NoOpAdapter()
+
+
+def _execution_halted(adapter: ExecutionAdapter, mode_reader: Callable[[], str]) -> bool:
+    """The per-submit KILL SWITCH: has the live arming been pulled mid-dispatch?
+
+    For a LIVE adapter ONLY, RE-READ the execution mode (``mode_reader``, default the live
+    env via ``load_settings``) before each submit: if it is no longer ``"live"``, the operator
+    has disarmed mid-loop, so we HALT -- the caller stops submitting the rest and pulls the
+    resting orders. For every other adapter (paper / off / a test fake) this is a no-op: only
+    the live path arms a real venue, so only it needs an in-loop abort.
+    """
+    if not isinstance(adapter, LiveAdapter):
+        return False
+    return mode_reader() != "live"
 
 
 def _ticket_line(intent: OrderIntent, result: OrderResult) -> OrderTicketLine:
@@ -270,6 +290,8 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                 edge_dir: Path = Path("edge"),
                 market_trend_fn: Callable[[], str | None] | None = None,
                 execution_adapter: ExecutionAdapter | None = None,
+                broker: BrokerClient | None = None,
+                mode_reader: Callable[[], str] | None = None,
                 ) -> DigestResult:
     send = smtp_send or resolve_sender()  # env-driven transport (ACS or SMTP)
     recipient = to or get_secret("DIGEST_TO")
@@ -287,9 +309,17 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
     risk_unit, max_sh = resolve_risk_unit(cfg)  # per-trade sizing (0.0 -> R-multiples)
     # Execution seam: tests inject a fake adapter; prod resolves it from the configured
     # mode. The default mode is "off" -> NoOpAdapter (writes nothing, dispatches nothing),
-    # so the digest stays byte-for-byte today's behavior until execution is armed.
+    # so the digest stays byte-for-byte today's behavior until execution is armed. For the
+    # LIVE mode the broker is built from settings (tests inject a FakeBroker via `broker=`);
+    # with no broker the live adapter is NOT armed (NoOp + warn).
     exec_mode, limits = resolve_execution(cfg)
-    adapter = execution_adapter or _adapter_for_mode(exec_mode)
+    # Resolve the live broker only when we own the adapter (no injected one) and the mode is
+    # live: the passed `broker` (a test FakeBroker) wins, else build it from settings. None
+    # otherwise -- so off/paper never builds a broker and the kill switch never cancels.
+    live_broker = None
+    if exec_mode == "live" and execution_adapter is None:
+        live_broker = broker or build_broker(cfg)
+    adapter = execution_adapter or _adapter_for_mode(exec_mode, broker=live_broker)
 
     engine = get_engine(db_url)
     with Session(engine) as session:
@@ -426,10 +456,21 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # digest stays byte-for-byte today's behavior; we skip the loop entirely for it.
         # GRACEFUL: ANY adapter failure is swallowed + logged and NEVER blocks the email
         # (mirrors the PDF/deep-analysis seam pattern) -- the run still sends.
+        # KILL SWITCH: for a LIVE adapter we RE-READ the execution mode before each submit
+        # (`_mode_reader`, default the live env); if it is no longer "live" the operator has
+        # disarmed mid-loop, so we STOP submitting the rest AND pull the resting orders via
+        # the broker's cancel_all_orders -- all inside the try/except, so it never blocks.
+        _mode_reader = mode_reader or (lambda: load_settings().execution_mode)
         tickets: dict[tuple[str, str], OrderTicketLine] = {}
         if collected_intents and not isinstance(adapter, NoOpAdapter):
             try:
                 for intent in collected_intents:
+                    if _execution_halted(adapter, _mode_reader):
+                        log.warning("execution kill switch: halting dispatch for %s %s "
+                                    "and canceling resting orders", kind, run_date)
+                        if live_broker is not None:
+                            live_broker.cancel_all_orders()
+                        break
                     result = adapter.submit(
                         intent, session=session, run_date=run_date, limits=limits)
                     tickets[(intent.ticker, intent.play_type)] = _ticket_line(intent, result)

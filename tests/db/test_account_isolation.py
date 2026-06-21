@@ -134,3 +134,50 @@ def test_load_open_includes_both_accounts() -> None:
         ])
         got = {t.ticker for t in repo.load_open_paper_trades(s)}
         assert got == {"OPENRES", "OPENPAPER"}
+
+
+def test_load_open_default_includes_live() -> None:
+    """The default (inclusive) loader returns the live row too -- reconcile uses it."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        repo.save_paper_trades(s, [
+            _pt(ticker="OPENRES", account="research", status="open", realized_r=None,
+                exit_date=None),
+            _pt(ticker="OPENLIVE", account="live", status="open", realized_r=None,
+                exit_date=None),
+        ])
+        got = {t.ticker for t in repo.load_open_paper_trades(s)}
+        assert got == {"OPENRES", "OPENLIVE"}
+
+
+def test_load_open_exclude_live_drops_the_live_row() -> None:
+    """The STEPPING loader (exclude_live=True) fences off the broker-owned live book:
+    research + paper still step; the live row -- reconcile's exclusively -- is dropped."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        repo.save_paper_trades(s, [
+            _pt(ticker="OPENRES", account="research", status="open", realized_r=None,
+                exit_date=None),
+            _pt(ticker="OPENPAPER", account="paper", status="open", realized_r=None,
+                exit_date=None),
+            _pt(ticker="OPENLIVE", account="live", status="open", realized_r=None,
+                exit_date=None),
+        ])
+        got = {t.ticker for t in repo.load_open_paper_trades(s, exclude_live=True)}
+        assert got == {"OPENRES", "OPENPAPER"}
+
+
+def test_load_open_live_trades_returns_live_only() -> None:
+    """reconcile_live's own loader: OPEN live rows only (research/paper excluded)."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        repo.save_paper_trades(s, [
+            _pt(ticker="OPENRES", account="research", status="open", realized_r=None,
+                exit_date=None),
+            _pt(ticker="OPENLIVE", account="live", status="open", realized_r=None,
+                exit_date=None),
+            # a CLOSED live row must NOT come back (only OPEN live trades are reconciled)
+            _pt(ticker="CLOSEDLIVE", account="live", status="closed"),
+        ])
+        got = {t.ticker for t in repo.load_open_live_trades(s)}
+        assert got == {"OPENLIVE"}

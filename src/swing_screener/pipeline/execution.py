@@ -14,6 +14,11 @@ pluggable adapters behind a single :class:`ExecutionAdapter` protocol:
   EXISTING shadow stepper (``advance_open`` / ``evaluate_exit``) then fills, trails, and
   closes it. The ``account="paper"`` tag keeps the curated intent book out of every
   research aggregate; still real-money-free (no broker is called).
+* :class:`LiveAdapter` (``name="live"``) -- Phase 4: submits ONE order to a real broker
+  (through the injected ``BrokerClient``) and records the ``broker_order_id``, opening NO
+  position (the fill price is unknown at submit; the reconciler materializes it later). A
+  real-money endpoint arms ONLY behind all three locks AND every cap; a paper broker
+  bypasses that guard. See the class for the full safety contract.
 
 The load-bearing safety lives in two places, both INSIDE ``submit`` (never trusting
 the caller):
@@ -44,6 +49,7 @@ limit sums (notional / open-count / realized-loss) cleanly separate.
 """
 
 import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from typing import Protocol
@@ -61,9 +67,16 @@ from swing_screener.db.repo import (
     save_paper_trades,
 )
 from swing_screener.pipeline.arms import BASELINE
+from swing_screener.pipeline.broker import BrokerClient, BrokerOrderSpec
 from swing_screener.pipeline.insight import OrderIntent
 from swing_screener.pipeline.variants import DEFAULT_VARIANT
-from swing_screener.settings import Limits
+from swing_screener.settings import (
+    Limits,
+    Settings,
+    can_arm_real_money,
+    load_settings,
+    real_money_limits_ok,
+)
 
 # the account the manual adapter books tickets under -- NOT "paper" / "research".
 MANUAL_ACCOUNT = "manual"
@@ -74,6 +87,10 @@ MANUAL_ACCOUNT = "manual"
 PAPER_ACCOUNT = "paper"
 # the NoOp adapter touches no book; it reports the research account purely as a label.
 OFF_ACCOUNT = "research"
+# the live adapter books order rows under "live" -- its own account so the (broker-placed)
+# live orders keep their limit sums cleanly separate from manual / paper / research, and the
+# reconciler (Task 5) materializes the eventual position under the same tag.
+LIVE_ACCOUNT = "live"
 
 
 @dataclass(frozen=True)
@@ -342,6 +359,145 @@ class PaperAdapter:
             session, created_date=run_date, ticker=intent.ticker,
             timeframe=intent.timeframe, play_type=intent.play_type, run_date=run_date,
             account=PAPER_ACCOUNT, mode="paper", side=intent.side,
+            limit_price=intent.limit_price, shares=intent.shares, stop=intent.stop,
+            target=intent.target, risk_dollars=intent.risk_dollars,
+            notional=notional(intent), status=status, detail=detail,
+            idempotency_key=key,
+        )
+
+
+def _default_gate_ready(session: Session) -> bool:
+    """Whether the advisory autonomy gate is ready (the live adapter's default seam).
+
+    Imported locally so ``execution`` -> ``autonomy`` stays a runtime edge, not an import-time
+    cycle (autonomy pulls in heavier analytics/repo modules). Tests inject ``gate_ready_fn``
+    instead, so this is consulted only against a real DB-backed book in production."""
+    from swing_screener.pipeline.autonomy import autonomy_gate
+
+    return autonomy_gate(session).ready
+
+
+class LiveAdapter:
+    """The ("live") adapter: submits ONE order to a real broker, records the broker order id.
+
+    The only adapter that talks to a venue. Unlike the paper adapter it opens NO position:
+    at submit time the fill price is unknown, so a ``submitted_live`` ExecutionLog carrying
+    the ``broker_order_id`` is the whole effect -- the reconciler (Task 5) later materializes
+    the position from the broker's eventual fill. The order goes out as a ``day`` limit order
+    keyed by the idempotency key as its ``client_order_id``, so a re-submit collapses to the
+    same broker order (the broker is idempotent on it) and the same single log row.
+
+    The load-bearing safety, all INSIDE ``submit`` (never trusting the caller):
+
+    1. The REAL-MONEY guard, consulted ONLY when ``broker.is_real_money()`` -- a paper broker
+       (Alpaca paper) needs no locks and skips it entirely. For a real-money endpoint it
+       demands all THREE arming locks (``can_arm_real_money``: mode=live AND allow_real_money
+       AND a ready gate) AND every hard cap set (``real_money_limits_ok``); either failing
+       logs a ``rejected_live`` row and refuses, placing no broker order.
+    2. The hard-limit clamp (``_limit_block``): a breach logs a ``skipped`` row and refuses
+       BEFORE any broker call -- the venue is never touched on a clamped order.
+    3. A graceful broker boundary: an exception from ``submit_order`` is caught and logged as
+       ``rejected_live`` (never propagated); a broker-returned ``rejected`` order likewise.
+
+    The settings + gate-readiness seams are injected so tests drive the real-money guard
+    without a real gate or DB: ``settings`` defaults to ``load_settings()`` at submit, and
+    ``gate_ready_fn`` defaults to the autonomy gate over the live session."""
+
+    name = "live"
+
+    def __init__(
+        self,
+        broker: BrokerClient,
+        *,
+        settings: Settings | None = None,
+        gate_ready_fn: Callable[[Session], bool] | None = None,
+    ) -> None:
+        self._broker = broker
+        # for can_arm_real_money; resolved lazily at submit (load_settings()) when not injected
+        # so the live env is read fresh, not captured at construction.
+        self._settings = settings
+        # session -> bool; the real-money gate-readiness seam (default: the autonomy gate).
+        self._gate_ready_fn = gate_ready_fn
+
+    def submit(
+        self, intent: OrderIntent, *, session: Session, run_date: date, limits: Limits
+    ) -> OrderResult:
+        key = idempotency_key(intent, run_date)
+
+        # 1. REAL-MONEY guard -- consulted ONLY for a real-money endpoint. A paper broker
+        #    (is_real_money() False) needs no locks and skips this block entirely.
+        if self._broker.is_real_money():
+            settings = self._settings or load_settings()
+            gate_ready = (self._gate_ready_fn or _default_gate_ready)(session)
+            ok, reason = can_arm_real_money(settings, gate_ready=gate_ready)
+            if not ok:
+                self._log(session, intent, run_date=run_date, key=key,
+                          status="rejected_live", detail=reason)
+                return OrderResult(status="rejected", account=LIVE_ACCOUNT, detail=reason)
+            ok2, reason2 = real_money_limits_ok(limits)
+            if not ok2:
+                self._log(session, intent, run_date=run_date, key=key,
+                          status="rejected_live", detail=reason2)
+                return OrderResult(status="rejected", account=LIVE_ACCOUNT, detail=reason2)
+
+        # 2. The hard-limit clamp -- BEFORE any broker call, so a clamped order never reaches
+        #    the venue. A breach logs a skipped row (audit) and refuses.
+        limit_reason = _limit_block(
+            session, intent, run_date=run_date, account=LIVE_ACCOUNT, limits=limits)
+        if limit_reason is not None:
+            self._log(session, intent, run_date=run_date, key=key,
+                      status="skipped", detail=limit_reason)
+            return OrderResult(status="skipped", account=LIVE_ACCOUNT, detail=limit_reason)
+
+        # 3. Submit to the venue, GRACEFULLY: any broker exception is logged + refused, never
+        #    propagated. The idempotency key is the broker's client_order_id, so a re-submit
+        #    collapses to the same broker order.
+        try:
+            order = self._broker.submit_order(BrokerOrderSpec(
+                client_order_id=key, symbol=intent.ticker, side="buy", qty=intent.shares,
+                order_type="limit", limit_price=intent.limit_price, time_in_force="day",
+            ))
+        except Exception as e:  # noqa: BLE001 -- a venue boundary: any failure must not raise.
+            detail = f"broker error: {e}"
+            self._log(session, intent, run_date=run_date, key=key,
+                      status="rejected_live", detail=detail)
+            return OrderResult(status="rejected", account=LIVE_ACCOUNT, detail=detail)
+
+        if order.status == "rejected":
+            self._log(session, intent, run_date=run_date, key=key,
+                      status="rejected_live", detail="broker rejected",
+                      broker_order_id=order.broker_order_id, broker_status=order.status)
+            return OrderResult(
+                status="rejected", account=LIVE_ACCOUNT, detail="broker rejected",
+                broker_order_id=order.broker_order_id,
+            )
+
+        # The order is working at the venue. Record it -- broker_order_id + broker_status --
+        # but open NO position: the fill price is unknown until the reconciler reads a fill.
+        self._log(session, intent, run_date=run_date, key=key, status="submitted_live",
+                  detail="order submitted", broker_order_id=order.broker_order_id,
+                  broker_status=order.status)
+        return OrderResult(
+            status="submitted_live", account=LIVE_ACCOUNT, detail="order submitted",
+            broker_order_id=order.broker_order_id,
+        )
+
+    def _log(
+        self, session: Session, intent: OrderIntent, *, run_date: date, key: str,
+        status: str, detail: str, broker_order_id: str | None = None,
+        broker_status: str | None = None,
+    ) -> None:
+        """Append one live ExecutionLog row (idempotent via the unique ``key``).
+
+        Carries the broker provenance (``broker`` name + the optional ``broker_order_id`` /
+        ``broker_status``) so the audit row is the single source of truth for a live order
+        the reconciler later picks up. The broker id/status stay None on the pre-broker exits
+        (the real-money refusal, the limit skip, a submit exception)."""
+        add_execution_log(
+            session, created_date=run_date, ticker=intent.ticker,
+            timeframe=intent.timeframe, play_type=intent.play_type, run_date=run_date,
+            account=LIVE_ACCOUNT, mode="live", broker=self._broker.name,
+            broker_order_id=broker_order_id, broker_status=broker_status, side=intent.side,
             limit_price=intent.limit_price, shares=intent.shares, stop=intent.stop,
             target=intent.target, risk_dollars=intent.risk_dollars,
             notional=notional(intent), status=status, detail=detail,
