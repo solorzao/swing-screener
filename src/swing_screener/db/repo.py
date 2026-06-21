@@ -234,6 +234,24 @@ def execution_logs_for_day(
     return list(session.scalars(stmt))
 
 
+def realized_r_on(session: Session, *, run_date: date, account: str) -> float:
+    """Sum of ``realized_r`` over CLOSED ``account`` trades whose ``exit_date == run_date``.
+
+    The day's realized R for one account -- the input to the execution adapter's
+    per-day-loss circuit breaker (a PRE-trade gate on how much the book has already
+    given back today). Only closed trades with a realized result count; an open or
+    unfilled trade contributes nothing. ``func.coalesce(..., 0.0)`` makes an empty
+    day return 0.0 rather than NULL, and ``== "closed"`` / ``== account`` render
+    ``col = 'x'`` (portable to SQL Server), not a boolean ``.is_()``."""
+    stmt = select(func.coalesce(func.sum(PaperTrade.realized_r), 0.0)).where(
+        PaperTrade.status == "closed",
+        PaperTrade.account == account,
+        PaperTrade.exit_date == run_date,
+        PaperTrade.realized_r.is_not(None),
+    )
+    return float(session.scalar(stmt) or 0.0)
+
+
 def count_open_positions(session: Session, *, account: str) -> int:
     """Count of OPEN ``PaperTrade`` rows for ``account`` (the per-account position cap).
 
