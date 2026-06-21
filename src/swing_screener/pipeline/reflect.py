@@ -37,7 +37,7 @@ from swing_screener.config import StrategyConfig
 from swing_screener.config_secrets import get_secret
 from swing_screener.data.fetch import fetch_bars
 from swing_screener.db import repo
-from swing_screener.db.models import PaperTrade
+from swing_screener.db.models import AnalystCall, PaperTrade
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.arms import BASELINE
 from swing_screener.pipeline.optimize import fetch_daily
@@ -249,6 +249,11 @@ _COST_CAVEAT = "net of cost (optimistic-fill haircut applied)"
 # gold vs candidate unmistakable to the reader.
 _SCREEN_DISCLAIMER = "backtest screen — NOT live-confirmed"
 _NONE_PLACEHOLDER = "_none yet_"
+# The section header for the code-owned analyst-calibration note (Task 6, Part D). The
+# learning loop's report card: does the analyst's judgment prove out on the scored book?
+_CALIBRATION_HEADER = "Analyst calibration"
+# Conviction grades, best-first, for a stable calibration-note ordering.
+_CALIBRATION_ORDER = ("high", "medium", "low", "avoid")
 
 
 @dataclass(frozen=True)
@@ -387,6 +392,63 @@ def _section(header: str, intro: str, body: str) -> str:
     return f"## {header}\n\n_{intro}_\n\n{content}\n"
 
 
+# ===========================================================================
+# ANALYST CALIBRATION -- the code-owned "is the analyst proving out?" note (Part D).
+#
+# Pure, deterministic, and computed from the SCORED ``AnalystCall`` rows -- never an LLM
+# opinion. ``analyst_calibration`` summarizes one play type's scored calls; the reflection
+# passes the rendered note into the edge file the same way it passes verdicts, so the
+# playbook records whether the analyst's judgment (its conviction grades + its nudges) is
+# actually earning R on the live shadow book.
+# ===========================================================================
+
+
+def analyst_calibration(calls: list[AnalystCall]) -> dict:
+    """Summarize a play type's SCORED analyst calls (pure; ignores unscored rows).
+
+    Returns ``{"by_conviction": {grade: (n, mean_r)}, "nudge_vs_baseline_r": (n, mean_r)
+    | None}``: per FINAL conviction grade, how many scored calls and their mean realized
+    R (so you can see if ``high`` out-earns ``low``); and across the NUDGED calls (final !=
+    baseline) the count + mean R (so you can see if the analyst's moves add R vs. simply
+    keeping the baseline). ``nudge_vs_baseline_r`` is None when no scored call was nudged.
+    """
+    scored = [c for c in calls if c.scored_at is not None and c.realized_r is not None]
+    by_conviction: dict[str, tuple[int, float]] = {}
+    for grade in _CALIBRATION_ORDER:
+        rs = [c.realized_r for c in scored
+              if c.final_conviction == grade and c.realized_r is not None]
+        if rs:
+            by_conviction[grade] = (len(rs), sum(rs) / len(rs))
+    nudged = [c.realized_r for c in scored
+              if c.final_conviction != c.baseline_conviction and c.realized_r is not None]
+    nudge = (len(nudged), sum(nudged) / len(nudged)) if nudged else None
+    return {"by_conviction": by_conviction, "nudge_vs_baseline_r": nudge}
+
+
+def render_calibration_note(calib: dict) -> str:
+    """Render an ``analyst_calibration`` summary into the deterministic note body.
+
+    One line per FINAL conviction grade (n + mean realized R) plus a nudge line (how the
+    analyst's nudges fared vs. the baseline). A play type with no scored calls yet renders
+    a clear placeholder so the section is always present and self-explanatory."""
+    by_conviction: dict[str, tuple[int, float]] = calib["by_conviction"]
+    nudge = calib["nudge_vs_baseline_r"]
+    if not by_conviction and nudge is None:
+        return "_No scored analyst calls yet -- calibration pending._"
+    lines = [
+        f"- **{grade}** conviction: mean {mean_r:+.2f}R over n={n} scored call(s)."
+        for grade, (n, mean_r) in by_conviction.items()
+    ]
+    if nudge is not None:
+        n, mean_r = nudge
+        lines.append(
+            f"- Nudges (final != baseline): mean {mean_r:+.2f}R over n={n} nudged call(s)."
+        )
+    else:
+        lines.append("- Nudges (final != baseline): none scored yet.")
+    return "\n".join(lines)
+
+
 def render_edge_file(
     play_type: str,
     thesis: str,
@@ -394,6 +456,7 @@ def render_edge_file(
     *,
     n_closed_now: int,
     prior_falsified: str = "",
+    calibration_note: str = "",
 ) -> str:
     """Render the markdown playbook for ``play_type`` from graded ``verdicts``.
 
@@ -450,6 +513,12 @@ def render_edge_file(
             "Prior claims now contradicted by the evidence, kept for the record.",
             prior_falsified,
         ),
+        _section(
+            _CALIBRATION_HEADER,
+            "Code-owned report card on the analyst's conviction calls (scored shadow-book "
+            "outcomes): does its judgment prove out?",
+            calibration_note,
+        ),
         _section("Open questions", "Things to investigate next.", ""),
     ]
     return "\n".join(parts)
@@ -485,7 +554,9 @@ _AUTHOR_SYSTEM = (
     "Output the FULL markdown playbook with exactly these sections, in this order: "
     "'## Thesis', '## Confirmed edges' (forward-confirmed gold -- live-confirmed only), "
     "'## Screened candidates' (replay-screened -- a backtest screen, NOT live-confirmed), "
-    "'## Hunches / needs a test', '## Falsified / retired', and '## Open questions'. Every "
+    "'## Hunches / needs a test', '## Falsified / retired', '## Analyst calibration' "
+    "(code-owned scored-call report card -- reproduce it VERBATIM, never alter a number), "
+    "and '## Open questions'. Every "
     "quantitative line must carry n + the clustered 95% CI lower bound + a net-of-cost "
     "caveat -- never a bare base rate. Do NOT emit a frontmatter header; the surrounding "
     "code owns that."
@@ -493,12 +564,17 @@ _AUTHOR_SYSTEM = (
 
 
 def _author_user_content(
-    play_type: str, thesis: str, verdicts: list[Verdict], prior_text: str, n_closed_now: int
+    play_type: str, thesis: str, verdicts: list[Verdict], prior_text: str, n_closed_now: int,
+    calibration_note: str = "",
 ) -> str:
     """The user turn: the thesis, the ground-truth scaffold (the deterministic render handed
     over verbatim so the model SEES the exact tiers/numbers it must preserve), and the prior
-    edge file text (so it can carry/curate the Falsified + Open-questions sections)."""
-    scaffold = render_edge_file(play_type, thesis, verdicts, n_closed_now=n_closed_now)
+    edge file text (so it can carry/curate the Falsified + Open-questions sections). The
+    scaffold already embeds the code-owned Analyst-calibration note the model must preserve."""
+    scaffold = render_edge_file(
+        play_type, thesis, verdicts, n_closed_now=n_closed_now,
+        calibration_note=calibration_note,
+    )
     return (
         f"Play type: {play_type}\n\n"
         f"Thesis:\n{thesis}\n\n"
@@ -526,6 +602,7 @@ def author_edge_file(
     last_reflected: str | None = None,
     client: anthropic.Anthropic | None = None,
     model: str = "claude-opus-4-8",
+    calibration_note: str = "",
 ) -> str:
     """Author the edge-file markdown via Opus, given the GROUND-TRUTH ``verdicts`` + the
     ``prior_text``. The model writes prose + drafts hypotheses but can NEVER change a tier or
@@ -551,7 +628,8 @@ def author_edge_file(
             messages=[{
                 "role": "user",
                 "content": _author_user_content(
-                    play_type, thesis, verdicts, prior_text, n_closed_now
+                    play_type, thesis, verdicts, prior_text, n_closed_now,
+                    calibration_note=calibration_note,
                 ),
             }],
         )
@@ -575,6 +653,7 @@ def author_edge_file(
         return render_edge_file(
             play_type, thesis, verdicts, n_closed_now=n_closed_now,
             prior_falsified=_section_body(prior_text, "Falsified / retired"),
+            calibration_note=calibration_note,
         )
 
 
@@ -680,11 +759,19 @@ def run_reflection(
             verdicts_to_json(verdicts), encoding="utf-8"
         )
 
+        # Code-owned analyst-calibration note: summarize this play type's SCORED calls
+        # so the playbook records whether the analyst's judgment is proving out. Like the
+        # verdicts, it is deterministic and authored by code, never the LLM.
+        calibration_note = render_calibration_note(
+            analyst_calibration(repo.load_scored_analyst_calls(session, play_type=pt))
+        )
+
         prior_text = _edge_text(edge_dir, pt)
         thesis = _thesis_for(prior_text, pt)
         content = author_edge_file(
             pt, thesis, verdicts, prior_text,
             n_closed_now=len(forward), last_reflected=today, client=client,
+            calibration_note=calibration_note,
         )
         (edge_dir / f"{pt}.md").write_text(content, encoding="utf-8")
         log.info("reflected %s: %d forward closed, %d replay-screened",

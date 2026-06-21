@@ -106,6 +106,19 @@ def load_closed_paper_trades(
     return list(session.scalars(stmt))
 
 
+def load_scored_analyst_calls(
+    session: Session, *, play_type: str | None = None
+) -> list[AnalystCall]:
+    """The SCORED analyst calls (``scored_at`` set), optionally faceted by play type.
+
+    The reflection's calibration note reads these to grade whether the analyst's
+    conviction calls / nudges are proving out on the live shadow book."""
+    stmt = select(AnalystCall).where(AnalystCall.scored_at.is_not(None))
+    if play_type is not None:
+        stmt = stmt.where(AnalystCall.play_type == play_type)
+    return list(session.scalars(stmt))
+
+
 def score_analyst_calls(session: Session) -> int:
     """Score each UNSCORED ``AnalystCall`` against its realized shadow-book outcome.
 

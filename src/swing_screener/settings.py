@@ -37,6 +37,13 @@ class Settings:
     deep_analysis_top_n: int
     deep_analysis_kinds: frozenset[str]
     analysis_max_searches: int
+    # Per-trade risk sizing (for the insight engine's order intent). All optional:
+    # with none set the resolver yields 0.0 -> the sizer renders R-multiples, never
+    # a guessed dollar.
+    account_equity: float | None
+    risk_per_trade_dollars: float | None
+    risk_pct: float
+    max_shares: int | None
 
 
 _TRUE = {"1", "true", "yes", "on"}
@@ -52,6 +59,36 @@ def _int(value: str | None, default: int) -> int:
     """Parse an int env var, falling back to ``default`` on missing/garbage."""
     try:
         return int(value) if value is not None else default
+    except ValueError:
+        return default
+
+
+def _opt_int(value: str | None) -> int | None:
+    """Parse an optional int env var: missing/garbage -> None."""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _opt_float(value: str | None) -> float | None:
+    """Parse an optional float env var: missing/garbage -> None."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def _float(value: str | None, default: float) -> float:
+    """Parse a float env var, falling back to ``default`` on missing/garbage."""
+    if value is None:
+        return default
+    try:
+        return float(value)
     except ValueError:
         return default
 
@@ -86,4 +123,25 @@ def load_settings() -> Settings:
         deep_analysis_top_n=_int(env.get("SWING_DEEP_ANALYSIS_TOP_N"), 5),
         deep_analysis_kinds=kinds,
         analysis_max_searches=_int(env.get("SWING_ANALYSIS_MAX_SEARCHES"), 4),
+        account_equity=_opt_float(env.get("SWING_ACCOUNT_EQUITY")),
+        risk_per_trade_dollars=_opt_float(env.get("SWING_RISK_PER_TRADE_DOLLARS")),
+        risk_pct=_float(env.get("SWING_RISK_PCT"), 0.01),
+        max_shares=_opt_int(env.get("SWING_MAX_SHARES")),
     )
+
+
+def resolve_risk_unit(settings: Settings) -> tuple[float, int | None]:
+    """Resolve the per-trade risk unit (1R, in dollars) + the optional share cap.
+
+    Precedence: an explicit ``risk_per_trade_dollars`` wins; else ``account_equity *
+    risk_pct`` when equity is set; else ``0.0``. A 0.0 risk unit is the deliberate
+    "unconfigured" signal -- ``insight.size_order`` reads it as R-multiples, never a
+    guessed dollar. Pure: depends only on the passed ``settings`` snapshot.
+    """
+    if settings.risk_per_trade_dollars is not None:
+        risk_unit = settings.risk_per_trade_dollars
+    elif settings.account_equity is not None:
+        risk_unit = settings.account_equity * settings.risk_pct
+    else:
+        risk_unit = 0.0
+    return risk_unit, settings.max_shares

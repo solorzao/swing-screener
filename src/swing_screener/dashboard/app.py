@@ -27,9 +27,10 @@ from swing_screener.analytics import performance
 from swing_screener.dashboard import quotes, ui
 from swing_screener.dashboard.pl import position_pl, total_unrealized_pl
 from swing_screener.db import repo
-from swing_screener.db.models import ExitEvent, PaperTrade, Signal, Trade
+from swing_screener.db.models import AnalystCall, ExitEvent, PaperTrade, Signal, Trade
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.arms import BASELINE
+from swing_screener.pipeline.reflect import analyst_calibration
 from swing_screener.pipeline.variants import DEFAULT_VARIANT
 from swing_screener.settings import load_settings
 from swing_screener.signals.actionability import classify as classify_actionability
@@ -922,6 +923,53 @@ def _render_analysis(session: Session) -> None:
             st.code(r.error or "unknown error")
 
 
+def _render_calibration(session: Session) -> None:
+    """The analyst-calibration view: are the Opus conviction calls proving out?
+
+    Reads the SCORED ``AnalystCall`` rows per play type and runs the same pure
+    ``analyst_calibration`` helper the reflection uses, so the dashboard and the edge
+    file agree by construction. Per conviction grade: how many scored calls + their mean
+    realized R (does ``high`` out-earn ``low``?). Plus the nudge line: how the analyst's
+    moves (final != baseline) fared vs. simply keeping the baseline."""
+    ui.page_header(
+        "Analyst Calibration",
+        caption="Scored conviction calls: is the analyst's judgment earning R?",
+    )
+    calls = list(session.scalars(select(AnalystCall)))
+    scored = [c for c in calls if c.scored_at is not None]
+    if not scored:
+        ui.empty_state(
+            f"No scored analyst calls yet ({len(calls)} pending). "
+            "Calls are scored once their shadow-book trade closes."
+        )
+        return
+
+    for play_type in sorted({c.play_type for c in scored}):
+        pt_calls = [c for c in calls if c.play_type == play_type]
+        calib = analyst_calibration(pt_calls)
+        st.markdown(f"**{play_type.capitalize()}**")
+        rows = [
+            {"conviction": grade, "scored_calls": n, "mean_r": mean_r}
+            for grade, (n, mean_r) in calib["by_conviction"].items()
+        ]
+        st.dataframe(
+            pd.DataFrame(rows),
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "conviction": st.column_config.TextColumn("Conviction"),
+                "scored_calls": st.column_config.NumberColumn("Scored calls"),
+                "mean_r": st.column_config.NumberColumn("Mean R", format="%.2f"),
+            },
+        )
+        nudge = calib["nudge_vs_baseline_r"]
+        if nudge is not None:
+            n, mean_r = nudge
+            st.caption(f"Nudges (final != baseline): mean {mean_r:+.2f}R over n={n}.")
+        else:
+            st.caption("Nudges (final != baseline): none scored yet.")
+
+
 # label -> renderer. Order defines sidebar order; first entry is the default
 # landing page. Radio nav (not st.navigation) so AppTest can drive page switches.
 PAGES: dict[str, Callable[[Session], None]] = {
@@ -932,6 +980,7 @@ PAGES: dict[str, Callable[[Session], None]] = {
     "Trade Entry": _render_entry,
     "Closed Trades": _render_closed,
     "Screener Performance": _render_performance,
+    "Analyst Calibration": _render_calibration,
     "Exit Log": _render_exits,
     "Universe": _render_universe,
     "Digest Log": _render_digests,

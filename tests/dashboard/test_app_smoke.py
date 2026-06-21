@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from streamlit.testing.v1 import AppTest
 
 from swing_screener.dashboard import quotes
-from swing_screener.db.models import PaperTrade, Signal, Trade
+from swing_screener.db.models import AnalystCall, PaperTrade, Signal, Trade
 from swing_screener.db.session import get_engine
 
 APP = str(Path(__file__).parents[2] / "src" / "swing_screener" / "dashboard" / "app.py")
@@ -26,8 +26,8 @@ def _seed(url):
 
 
 ALL_PAGES = ["Overview", "Today's Candidates", "Deep Analysis", "Active Trades",
-             "Trade Entry", "Closed Trades", "Screener Performance", "Exit Log",
-             "Universe", "Digest Log"]
+             "Trade Entry", "Closed Trades", "Screener Performance",
+             "Analyst Calibration", "Exit Log", "Universe", "Digest Log"]
 
 
 def test_app_renders_on_empty_db(tmp_path, monkeypatch):
@@ -133,6 +133,27 @@ def test_play_type_filter_keeps_only_reversal(tmp_path, monkeypatch):
     reversal_table = " ".join(df.value.to_string() for df in at.dataframe)
     assert "NVDA" in reversal_table
     assert "AMD" not in reversal_table
+
+
+def test_analyst_calibration_surfaces_scored_calls(tmp_path, monkeypatch):
+    # A scored AnalystCall (high conviction, +2.0R) must surface on the calibration page.
+    url = f"sqlite:///{tmp_path / 'calib.sqlite'}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    engine = get_engine(url)
+    with Session(engine) as s:
+        s.add(AnalystCall(
+            created_date=date.today(), ticker="AMD", timeframe="1d",
+            play_type="continuation", run_date=date.today(), baseline_conviction="medium",
+            final_conviction="high", nudge_reason="x", model="claude-opus-4-8",
+            realized_r=2.0, scored_at=date.today()))
+        s.commit()
+    at = AppTest.from_file(APP).run()
+    at.sidebar.radio[0].set_value("Analyst Calibration").run()
+    assert not at.exception
+    rendered = " ".join(str(getattr(el, "value", "")) for el in at.markdown)
+    tables = " ".join(df.value.to_string() for df in at.dataframe)
+    assert "Continuation" in rendered
+    assert "high" in tables
 
 
 def test_overview_reflects_open_position_count(tmp_path, monkeypatch):

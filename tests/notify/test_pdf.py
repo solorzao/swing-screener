@@ -21,6 +21,32 @@ def _pick(ticker="AMD", chart=None, name="Advanced Micro Devices", atr_pct=0.04)
     )
 
 
+def test_order_intent_block_renders_when_present():
+    from swing_screener.notify.pdf import build_story
+
+    pick = PdfPick(
+        ticker="AMD", name="Advanced Micro Devices", trade_type="medium", score=0.9,
+        chart_path=None, entry_floor=96.0, entry_ceiling=101.0, stop=95.0, target=110.0,
+        risk_reward=1.5, quality_tier="reputable", volatility_tier="high", oversold=False,
+        mtf_aligned=True, atr_pct=0.04, is_deep=True, rationale="Strong continuation.",
+        conviction="high", shares=40, risk_dollars=200.0,
+        edge_played="score=0.80-1.00 (forward_confirmed, +0.50R, n=40)")
+    story = build_story([pick])
+    rendered = " ".join(getattr(f, "text", "") for f in story)
+    assert "Order intent:" in rendered
+    assert "HIGH conviction" in rendered
+    assert "40 shares ($200 risk)" in rendered
+    assert "score=0.80-1.00" in rendered
+
+
+def test_order_intent_block_absent_for_non_insight_picks():
+    from swing_screener.notify.pdf import build_story
+
+    story = build_story([_pick("AMD", None)])   # no conviction -> no order-intent block
+    rendered = " ".join(getattr(f, "text", "") for f in story)
+    assert "Order intent:" not in rendered
+
+
 def test_atr_percent_row_in_levels_table():
     # ATR is surfaced as a percentage of price (not dollars) so it reads
     # consistently across high- and low-priced names.
