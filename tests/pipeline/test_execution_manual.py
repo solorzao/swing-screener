@@ -1,4 +1,4 @@
-"""The execution adapters (``pipeline.execution``): the order-ticket ("manual")
+﻿"""The execution adapters (``pipeline.execution``): the order-ticket ("manual")
 adapter, the NoOp ("off") adapter, and the in-code hard-limit clamp.
 
 Money never moves here: the manual adapter only RECORDS a ticket (no paper
@@ -99,19 +99,37 @@ def test_manual_duplicate_submit_is_noop_one_row() -> None:
 # the in-code hard-limit clamp: each cap blocks at/over its edge and logs a
 # `skipped` row with the reason, opening nothing. None caps never block.
 # ---------------------------------------------------------------------------
-def test_notional_cap_blocks_over_edge_and_logs_skipped() -> None:
+def _seed_manual_notional(s: Session, notional: float, key: str) -> None:
+    """Seed a PRIOR recorded ExecutionLog under account="manual" -- the account the
+    manual adapter actually sums for its per-day notional cap. The notional check is
+    cumulative: booked (this) + the new intent's own notional is what's compared to the
+    cap. (Seeding "research" here would contribute 0 to the manual sum -- the bug the
+    old test had, which let the new intent's OWN notional carry the assertion.)"""
+    add_execution_log(
+        s, created_date=RUN, ticker="X", timeframe="1d", play_type="continuation",
+        run_date=RUN, account="manual", mode="manual", side="long",
+        limit_price=10.0, shares=int(notional // 10), stop=9.0, target=12.0,
+        risk_dollars=10.0, notional=notional, status="recorded", detail="seed",
+        idempotency_key=key,
+    )
+
+
+def test_notional_cap_blocks_on_cumulative_manual_sum_over_edge() -> None:
+    """The CUMULATIVE cap: an intent whose OWN notional is UNDER the cap is still blocked
+    once booked + this_order EXCEEDS it -- proving _limit_block sums the booked manual
+    notional, not just the intent in isolation. cap=1000, booked=600, intent=500
+    (50 sh @ 10.00) -> 600+500=1100 > 1000 -> skipped."""
     with _session() as s:
-        # seed prior recorded notional near the cap; this intent (1010) pushes over.
-        add_execution_log(
-            s, created_date=RUN, ticker="X", timeframe="1d", play_type="continuation",
-            run_date=RUN, account="research", mode="manual", side="long",
-            limit_price=10.0, shares=10, stop=9.0, target=12.0, risk_dollars=10.0,
-            notional=300.0, status="recorded", detail="seed", idempotency_key="seed-notional",
-        )
+        _seed_manual_notional(s, 600.0, "seed-notional")
         limits = Limits(max_daily_notional=1000.0, max_daily_loss=None, max_concurrent=None)
-        result = ManualAdapter().submit(_intent(), session=s, run_date=RUN, limits=limits)
+        # intent notional 500 (< cap 1000): would PASS in isolation; blocked only via booked.
+        intent = _intent(shares=50, limit_price=10.0)
+        assert notional(intent) == 500.0  # below the cap on its own
+        result = ManualAdapter().submit(intent, session=s, run_date=RUN, limits=limits)
         assert result.status == "skipped"
         assert "notional" in result.detail.lower()
+        # the cumulative sum (1100) is what's reported, not the bare intent notional.
+        assert "1100" in result.detail
         # the over-cap intent is logged skipped (audit) but opens/records no order ticket.
         recorded = s.query(ExecutionLog).filter_by(status="recorded").count()
         assert recorded == 1  # only the seed; the new intent did NOT record
@@ -120,14 +138,53 @@ def test_notional_cap_blocks_over_edge_and_logs_skipped() -> None:
         assert s.query(PaperTrade).count() == 0
 
 
-def test_max_concurrent_blocks_at_edge_and_logs_skipped() -> None:
+def test_notional_cap_allows_at_edge_records() -> None:
+    """The AT-cap boundary is INCLUSIVE (the check is ``>``, not ``>=``): booked + this
+    order == cap is ALLOWED and records. cap=1000, booked=500, intent=500 -> 1000 == 1000
+    -> recorded. (One off-by-one to ``>=`` would wrongly block this.)"""
     with _session() as s:
-        # one open position in this account already AT the cap of 1.
+        _seed_manual_notional(s, 500.0, "seed-notional")
+        limits = Limits(max_daily_notional=1000.0, max_daily_loss=None, max_concurrent=None)
+        intent = _intent(shares=50, limit_price=10.0)  # notional 500 -> 500+500 == cap
+        result = ManualAdapter().submit(intent, session=s, run_date=RUN, limits=limits)
+        assert result.status == "recorded"
+        # both the seed and the at-cap order recorded; nothing skipped.
+        assert s.query(ExecutionLog).filter_by(status="recorded").count() == 2
+        assert s.query(ExecutionLog).filter_by(status="skipped").count() == 0
+
+
+def test_notional_cap_ignores_other_accounts_research_does_not_count() -> None:
+    """The cap sums ONLY the manual account: a large prior notional booked under
+    account="research" must NOT count toward the manual cap. booked(manual)=0, so an
+    intent whose own notional is under the cap records despite the research seed -- this
+    is the teeth that the old test lacked (it seeded research and still 'passed' purely
+    on the intent's own 1010 > 1000)."""
+    with _session() as s:
+        add_execution_log(
+            s, created_date=RUN, ticker="X", timeframe="1d", play_type="continuation",
+            run_date=RUN, account="research", mode="manual", side="long",
+            limit_price=10.0, shares=900, stop=9.0, target=12.0, risk_dollars=10.0,
+            notional=9000.0, status="recorded", detail="seed", idempotency_key="seed-research",
+        )
+        limits = Limits(max_daily_notional=1000.0, max_daily_loss=None, max_concurrent=None)
+        intent = _intent(shares=50, limit_price=10.0)  # 500, under cap; manual booked is 0
+        result = ManualAdapter().submit(intent, session=s, run_date=RUN, limits=limits)
+        assert result.status == "recorded"  # research notional is invisible to the manual cap
+
+
+def _open_manual_positions(s: Session, n: int) -> None:
+    for _ in range(n):
         s.add(PaperTrade(ticker="X", timeframe="1d", horizon="medium", account="manual",
                          signal_score=0.5, rank=1, fill_status="filled", status="open",
                          stop=9.0, target=12.0, risk=1.0))
-        s.commit()
-        limits = Limits(max_daily_notional=None, max_daily_loss=None, max_concurrent=1)
+    s.commit()
+
+
+def test_max_concurrent_blocks_at_edge_and_logs_skipped() -> None:
+    with _session() as s:
+        # two open positions in this account already AT the cap of 2 (open_count >= cap).
+        _open_manual_positions(s, 2)
+        limits = Limits(max_daily_notional=None, max_daily_loss=None, max_concurrent=2)
         result = ManualAdapter().submit(_intent(), session=s, run_date=RUN, limits=limits)
         assert result.status == "skipped"
         assert "concurrent" in result.detail.lower() or "position" in result.detail.lower()
@@ -136,19 +193,50 @@ def test_max_concurrent_blocks_at_edge_and_logs_skipped() -> None:
         assert skipped.ticker == "AMD"
 
 
+def test_max_concurrent_allows_just_under_edge_records() -> None:
+    """The other side of the boundary: open_count == cap-1 is ALLOWED (the check is
+    ``>=``). cap=2, one open manual position -> 1 < 2 -> records. Pins that the cap does
+    not block a slot that is still free."""
+    with _session() as s:
+        _open_manual_positions(s, 1)  # one short of the cap of 2
+        limits = Limits(max_daily_notional=None, max_daily_loss=None, max_concurrent=2)
+        result = ManualAdapter().submit(_intent(), session=s, run_date=RUN, limits=limits)
+        assert result.status == "recorded"
+        assert s.query(ExecutionLog).filter_by(status="recorded").one().ticker == "AMD"
+        assert s.query(ExecutionLog).filter_by(status="skipped").count() == 0
+
+
+def _close_manual_losses(s: Session, *rs: float) -> None:
+    for r in rs:
+        s.add(PaperTrade(ticker="X", timeframe="1d", horizon="medium", account="manual",
+                         signal_score=0.5, rank=1, fill_status="filled", status="closed",
+                         stop=9.0, target=12.0, risk=1.0, exit_date=RUN, realized_r=r))
+    s.commit()
+
+
 def test_daily_loss_circuit_breaker_blocks_at_edge() -> None:
     with _session() as s:
-        # closed account trades that exited today summing realized_r to -2.0 (the cap).
-        for r in (-1.5, -0.5):
-            s.add(PaperTrade(ticker="X", timeframe="1d", horizon="medium", account="manual",
-                             signal_score=0.5, rank=1, fill_status="filled", status="closed",
-                             stop=9.0, target=12.0, risk=1.0, exit_date=RUN, realized_r=r))
-        s.commit()
+        # closed account trades that exited today summing realized_r to -2.0 (the cap):
+        # day_r == -max_daily_loss -> the breaker trips (the check is ``<=``).
+        _close_manual_losses(s, -1.5, -0.5)
         limits = Limits(max_daily_notional=None, max_daily_loss=2.0, max_concurrent=None)
         result = ManualAdapter().submit(_intent(), session=s, run_date=RUN, limits=limits)
         assert result.status == "skipped"
         assert "loss" in result.detail.lower()
         assert s.query(ExecutionLog).filter_by(status="recorded").count() == 0
+
+
+def test_daily_loss_breaker_allows_just_under_edge_records() -> None:
+    """The other side of the breaker: a day_r just ABOVE -cap is ALLOWED. cap=2.0,
+    summed realized R = -1.99 (> -2.0) -> records. Pins that the breaker only trips once
+    the day's loss reaches the threshold, not a hair before it."""
+    with _session() as s:
+        _close_manual_losses(s, -1.5, -0.49)  # sums to -1.99, just above -2.0
+        limits = Limits(max_daily_notional=None, max_daily_loss=2.0, max_concurrent=None)
+        result = ManualAdapter().submit(_intent(), session=s, run_date=RUN, limits=limits)
+        assert result.status == "recorded"
+        assert s.query(ExecutionLog).filter_by(status="recorded").one().ticker == "AMD"
+        assert s.query(ExecutionLog).filter_by(status="skipped").count() == 0
 
 
 def test_daily_loss_only_counts_this_day_and_this_account() -> None:
