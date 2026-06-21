@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from swing_screener.config import StrategyConfig
 from swing_screener.config_secrets import get_secret
+from swing_screener.data.fetch import fetch_bars
 from swing_screener.data.universe import names_by_ticker
 from swing_screener.db import repo
 from swing_screener.db.models import EmailLog, ExitEvent, Signal
@@ -35,16 +36,30 @@ from swing_screener.notify import market_context
 from swing_screener.notify import select as sel
 from swing_screener.notify.alerts import compose_exit_alert
 from swing_screener.notify.analysis import (
+    ConvictionResult,
     SignalAnalysis,
     SignalFacts,
+    analyze_conviction,
     analyze_signal,
     analyze_signal_deep,
 )
-from swing_screener.notify.body import AlertLine, DigestPick, compose_digest_body
+from swing_screener.notify.body import (
+    AlertLine,
+    DigestPick,
+    OrderIntentLine,
+    compose_digest_body,
+)
 from swing_screener.notify.pdf import PdfPick, build_digest_pdf
 from swing_screener.notify.transport import resolve_sender
 from swing_screener.pipeline.exitcheck import ExitCheckResult, LatestBarsFn, run_exit_check
-from swing_screener.settings import load_settings
+from swing_screener.pipeline.insight import (
+    build_order_intent,
+    conviction_baseline,
+    record_analyst_call,
+)
+from swing_screener.pipeline.regime import MARKET_PROXY, classify_regime
+from swing_screener.pipeline.reflect import load_verdicts
+from swing_screener.settings import load_settings, resolve_risk_unit
 from swing_screener.storage.blob import blob_enabled, download_bytes
 
 log = logging.getLogger(__name__)
@@ -141,6 +156,42 @@ def _load_chart_bytes(chart_path: str | None) -> bytes | None:
         return None
 
 
+def _load_playbook(edge_dir: Path, play_type: str) -> tuple[str, list] | None:
+    """Load ``(playbook_text, verdicts)`` for a play type, or None if either is missing.
+
+    The insight engine needs BOTH the human/LLM-authored playbook prose (``<pt>.md``,
+    fed to the analyst) AND the code-owned verdicts sidecar (``<pt>.verdicts.json``,
+    which the deterministic baseline keys on). A missing/unparseable sidecar -> None,
+    and the caller falls back to the old deep path (today's behavior). Best-effort: any
+    read/parse error degrades to None rather than blocking the digest.
+    """
+    md = edge_dir / f"{play_type}.md"
+    sidecar = edge_dir / f"{play_type}.verdicts.json"
+    if not (md.exists() and sidecar.exists()):
+        return None
+    try:
+        return md.read_text(encoding="utf-8"), load_verdicts(sidecar.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 -- a broken sidecar must not block the digest
+        log.warning("playbook load failed for %s; falling back to deep path", play_type)
+        return None
+
+
+def _default_market_trend() -> str | None:
+    """The live SPY trend for the conviction baseline, or None if SPY is unavailable.
+
+    Fetches SPY daily through the same offline-able fetch seam the pipeline uses and
+    classifies the regime. Any failure (no data, fetch error) yields None -- the baseline
+    simply won't match its market_trend dimension, never raising."""
+    try:
+        cfg = StrategyConfig()
+        cache_dir = load_settings().cache_dir
+        spy_daily = fetch_bars(MARKET_PROXY, "1d", cache_dir=cache_dir)
+        return classify_regime(spy_daily, cfg).trend
+    except Exception:  # noqa: BLE001 -- SPY unavailable -> unknown trend, fail safe
+        log.warning("SPY regime unavailable for the digest; baseline trend dim unmatched")
+        return None
+
+
 def _facts(sig: Signal) -> SignalFacts:
     return SignalFacts(
         ticker=sig.ticker, timeframe=sig.timeframe, trade_type=sig.horizon, score=sig.score,
@@ -163,6 +214,9 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                 chart_bytes_loader: Callable[[str | None], bytes | None] | None = None,
                 fundamentals_fn: Callable[[str], market_context.Fundamentals] | None = None,
                 news_fn: Callable[[str], list[market_context.NewsItem]] | None = None,
+                analyze_conviction_fn: Callable[..., ConvictionResult] | None = None,
+                edge_dir: Path = Path("edge"),
+                market_trend_fn: Callable[[], str | None] | None = None,
                 ) -> DigestResult:
     send = smtp_send or resolve_sender()  # env-driven transport (ACS or SMTP)
     recipient = to or get_secret("DIGEST_TO")
@@ -172,10 +226,12 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
     # the deep path actually runs is gated by settings below, NOT by these.
     cfg = load_settings()
     deep_analyze = deep_analyze_fn or analyze_signal_deep
+    analyze_conv = analyze_conviction_fn or analyze_conviction
     load_chart = chart_bytes_loader or _load_chart_bytes
     get_fundamentals = fundamentals_fn or market_context.get_fundamentals
     get_news = news_fn or market_context.get_recent_news
     deep_on = cfg.deep_analysis_enabled and kind in cfg.deep_analysis_kinds
+    risk_unit, max_sh = resolve_risk_unit(cfg)  # per-trade sizing (0.0 -> R-multiples)
 
     engine = get_engine(db_url)
     with Session(engine) as session:
@@ -198,28 +254,81 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
 
         names = names_by_ticker()  # ticker -> company name, loaded once
 
-        def _build_picks(sigs: list[Signal]) -> tuple[list[DigestPick], list[PdfPick]]:
-            """Build the (DigestPick, PdfPick) lists for a set of signals, running the
-            Opus deep analyst on the top-N when enabled."""
+        # The live SPY trend feeds the deterministic conviction baseline; computed ONCE
+        # per run, lazily (only when the deep path is on, so the off path never fetches
+        # SPY). None when SPY is unavailable -> the baseline just won't match its trend dim.
+        market_trend: str | None = None
+        if deep_on:
+            market_trend = (market_trend_fn or _default_market_trend)()
+        # Playbook + verdicts per play type, loaded once. Present -> the insight engine runs
+        # for that play type's deep picks; absent -> they fall back to the old deep path.
+        playbooks = {pt: _load_playbook(edge_dir, pt) for pt in ("continuation", "reversal")}
+
+        def _deep_one(facts: SignalFacts, sig: Signal, play_type: str) -> tuple[
+                SignalAnalysis, OrderIntentLine | None]:
+            """Run ONE deep Opus call for a top-N pick and return (analysis, order_intent).
+
+            When the pick's play type has a playbook + verdicts sidecar, run the INSIGHT
+            ENGINE: a deterministic conviction baseline, one Opus conviction call (which
+            NUDGES it, clamped +-1), a sized order intent, and a persisted AnalystCall. The
+            analyst's insight becomes the rationale; a short core reason names the
+            conviction + edge. No playbook -> fall back to the old ``deep_analyze`` (one
+            call either way -- never both, so no double-billing)."""
+            context_text = market_context.context_block(
+                get_fundamentals(sig.ticker), get_news(sig.ticker))
+            pb = playbooks.get(play_type)
+            if pb is None:  # no playbook/verdicts -> the existing deep path, unchanged
+                analysis = deep_analyze(
+                    facts, chart_bytes=load_chart(sig.chart_path), context_text=context_text,
+                    client=anthropic_client,  # type: ignore[arg-type]  # test seam may be a fake
+                    model=cfg.analysis_model, reasoning=cfg.analysis_reasoning,
+                    max_searches=cfg.analysis_max_searches)
+                return analysis, None
+            playbook_text, verdicts = pb
+            baseline, edge_label = conviction_baseline(
+                score=sig.score, volatility_tier=sig.volatility_tier,
+                market_trend=market_trend, verdicts=verdicts)
+            cr = analyze_conv(
+                facts, baseline=baseline, playbook_text=playbook_text,
+                context_text=context_text, chart_bytes=load_chart(sig.chart_path),
+                client=anthropic_client,  # type: ignore[arg-type]  # test seam may be a fake
+                model=cfg.analysis_model, reasoning=cfg.analysis_reasoning,
+                max_searches=cfg.analysis_max_searches)
+            intent = build_order_intent(
+                facts, cr, play_type=play_type, edge_played=edge_label,
+                risk_unit_dollars=risk_unit, max_shares=max_sh)
+            record_analyst_call(
+                session, facts=facts, run_date=run_date, created_date=run_date,
+                baseline_conviction=baseline, conviction_result=cr,
+                model=cfg.analysis_model, play_type=play_type)
+            analysis = SignalAnalysis(
+                core_reason=f"{cr.conviction.upper()} conviction — {edge_label}",
+                rationale=cr.insight, is_deep=cr.is_deep)
+            order_intent = OrderIntentLine(
+                conviction=cr.conviction, shares=intent.shares,
+                risk_dollars=intent.risk_dollars, edge_played=edge_label,
+                entry_floor=intent.entry_floor, entry_ceiling=intent.entry_ceiling,
+                stop=intent.stop, target=intent.target)
+            return analysis, order_intent
+
+        def _build_picks(sigs: list[Signal], *, play_type: str) -> tuple[
+                list[DigestPick], list[PdfPick]]:
+            """Build the (DigestPick, PdfPick) lists for a set of signals. The top-N get the
+            deep path (the insight engine when a playbook exists for ``play_type``, else the
+            legacy deep analyst); the rest get the cheap deterministic narration."""
             dps: list[DigestPick] = []
             pps: list[PdfPick] = []
             for i, sig in enumerate(sigs):
                 facts = _facts(sig)
+                order_intent: OrderIntentLine | None = None
                 if deep_on and i < cfg.deep_analysis_top_n:
-                    # Opus analyst: chart image + fundamentals/news + web-searched sentiment.
-                    context_text = market_context.context_block(
-                        get_fundamentals(sig.ticker), get_news(sig.ticker))
-                    analysis = deep_analyze(
-                        facts, chart_bytes=load_chart(sig.chart_path), context_text=context_text,
-                        client=anthropic_client,  # type: ignore[arg-type]  # test seam may be a fake
-                        model=cfg.analysis_model, reasoning=cfg.analysis_reasoning,
-                        max_searches=cfg.analysis_max_searches)
+                    analysis, order_intent = _deep_one(facts, sig, play_type)
                 else:
                     analysis = analyze_signal(facts, client=anthropic_client)  # type: ignore[arg-type]
                 name = names.get(sig.ticker, "")
                 dps.append(DigestPick(sig.ticker, name, sig.horizon, analysis.core_reason,
                                       score=sig.score, strength=sig.strength,
-                                      is_deep=analysis.is_deep))
+                                      is_deep=analysis.is_deep, order_intent=order_intent))
                 pps.append(PdfPick(
                     ticker=sig.ticker, name=name, trade_type=sig.horizon, score=sig.score,
                     chart_path=sig.chart_path, entry_floor=sig.entry_floor,
@@ -227,16 +336,25 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                     risk_reward=facts.risk_reward, quality_tier=sig.quality_tier,
                     volatility_tier=sig.volatility_tier, oversold=sig.oversold,
                     mtf_aligned=sig.mtf_aligned, atr_pct=facts.atr_pct,
-                    rationale=analysis.rationale, is_deep=analysis.is_deep, strength=sig.strength))
+                    rationale=analysis.rationale, is_deep=analysis.is_deep, strength=sig.strength,
+                    conviction=(order_intent.conviction if order_intent else None),
+                    shares=(order_intent.shares if order_intent else 0),
+                    risk_dollars=(order_intent.risk_dollars if order_intent else 0.0),
+                    edge_played=(order_intent.edge_played if order_intent else "")))
             return dps, pps
 
-        digest_picks, pdf_picks = _build_picks(picks)
+        digest_picks, pdf_picks = _build_picks(picks, play_type="continuation")
         # Reversal "Top 5" -- daily digest only for now (weekly/monthly stay continuation).
         reversal_digest: list[DigestPick] | None = None
         reversal_pdf: list[PdfPick] = []
         if kind == "daily":
             reversal_digest, reversal_pdf = _build_picks(
-                sel.reversal_picks(session, run_date, max_age_days=cooldown))
+                sel.reversal_picks(session, run_date, max_age_days=cooldown),
+                play_type="reversal")
+
+        if deep_on:  # close the learning loop: score any now-resolved prior analyst calls
+            n_scored = repo.score_analyst_calls(session)
+            log.info("scored %d resolved analyst call(s)", n_scored)
 
         pdf_path: Path | None = None
         if digest_picks or reversal_pdf:

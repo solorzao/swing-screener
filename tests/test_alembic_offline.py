@@ -24,8 +24,10 @@ from alembic import command  # noqa: E402
 from alembic.config import Config  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_TABLES = {"universe", "signals", "trades", "paper_trades", "exit_events", "email_log"}
-TICKER_INDEXES = {"ix_signals_ticker", "ix_trades_ticker", "ix_paper_trades_ticker"}
+EXPECTED_TABLES = {"universe", "signals", "trades", "paper_trades", "exit_events",
+                   "email_log", "analyst_calls"}
+TICKER_INDEXES = {"ix_signals_ticker", "ix_trades_ticker", "ix_paper_trades_ticker",
+                  "ix_analyst_calls_ticker"}
 
 
 def _config(db_url: str) -> Config:

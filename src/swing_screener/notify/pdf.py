@@ -55,6 +55,12 @@ class PdfPick:
     rationale: str
     is_deep: bool = False  # got the Opus deep analysis -> labelled + structured
     strength: str | None = None  # reversal only: "early" / "confirmed"
+    # Insight engine (Part B): the graded order intent. None for non-insight picks; when
+    # present, an "Order intent" block (conviction + sized shares/risk + edge) is rendered.
+    conviction: str | None = None
+    shares: int = 0
+    risk_dollars: float = 0.0
+    edge_played: str = ""
 
 
 _CHART_WIDTH = 6.5 * inch
@@ -90,6 +96,25 @@ def _rationale_flowables(text: str, styles: dict) -> list:
         else:
             flows.append(Paragraph(_xml_escape(line), styles["BodyText"]))
     return flows
+
+
+def _order_intent_flowables(p: PdfPick, styles: dict) -> list:
+    """The "Order intent" block for an insight-engine pick (conviction + size + edge), or
+    empty when the pick has no conviction (non-insight picks render exactly as before).
+
+    Size shows the conviction-scaled shares + dollar risk when sizing is configured, else
+    "R-multiples (sizing unconfigured)" -- never a guessed dollar."""
+    if p.conviction is None:
+        return []
+    size = (f"{p.shares} shares (${p.risk_dollars:.0f} risk)"
+            if p.shares > 0 else "R-multiples (sizing unconfigured)")
+    body = (
+        f"<b>Order intent:</b> {_xml_escape(p.conviction.upper())} conviction &nbsp; "
+        f"{_xml_escape(size)}"
+    )
+    if p.edge_played:
+        body += f"<br/><b>Edge:</b> {_xml_escape(p.edge_played)}"
+    return [Paragraph(body, styles["BodyText"]), Spacer(1, 0.1 * inch)]
 
 
 def build_story(picks: Sequence[PdfPick]) -> list:
@@ -152,6 +177,8 @@ def build_story(picks: Sequence[PdfPick]) -> list:
         )
         story.append(table)
         story.append(Spacer(1, 0.15 * inch))
+        for flow in _order_intent_flowables(p, styles):
+            story.append(flow)
         if p.is_deep:  # flag the richer Opus output so it's distinguishable at a glance
             story.append(Paragraph(
                 '<font color="#1a5fb4"><b>DEEP ANALYSIS</b></font>', styles["BodyText"]))

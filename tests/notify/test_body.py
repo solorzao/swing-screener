@@ -1,7 +1,43 @@
 from datetime import date, datetime
 
-from swing_screener.notify.body import AlertLine, DigestPick, compose_digest_body
+from swing_screener.notify.body import (
+    AlertLine,
+    DigestPick,
+    OrderIntentLine,
+    compose_digest_body,
+)
 from swing_screener.notify.ticker_report import TickerReport, TimeframeRead
+
+
+def test_order_intent_line_renders_in_body():
+    intent = OrderIntentLine(
+        conviction="high", shares=40, risk_dollars=200.0,
+        edge_played="score=0.80-1.00 (forward_confirmed, +0.50R, n=40)",
+        entry_floor=96.0, entry_ceiling=101.0, stop=95.0, target=110.0)
+    picks = [DigestPick("AMD", "Advanced Micro Devices", "medium", "Deep read.",
+                        score=0.9, is_deep=True, order_intent=intent)]
+    c = compose_digest_body("daily", date(2026, 6, 15), picks, [], has_pdf=True)
+    assert "Order intent: HIGH conviction" in c.text
+    assert "40 shares ($200 risk)" in c.text
+    assert "entry 96-101, stop 95, target 110" in c.text
+    assert "edge: score=0.80-1.00" in c.text
+    assert "Order intent: HIGH conviction" in c.html  # also surfaced in HTML
+
+
+def test_order_intent_unconfigured_sizing_shows_r_multiples():
+    intent = OrderIntentLine(
+        conviction="medium", shares=0, risk_dollars=0.0, edge_played="no matching edge",
+        entry_floor=96.0, entry_ceiling=101.0, stop=95.0, target=110.0)
+    picks = [DigestPick("AMD", "", "medium", "r.", score=0.8, order_intent=intent)]
+    c = compose_digest_body("daily", date(2026, 6, 15), picks, [], has_pdf=False)
+    assert "R-multiples (sizing unconfigured)" in c.text
+    assert "shares" not in c.text.split("R-multiples")[0].split("Order intent")[-1]
+
+
+def test_no_order_intent_renders_as_before():
+    picks = [DigestPick("AMD", "", "medium", "Daily continuation.", score=0.77)]
+    c = compose_digest_body("daily", date(2026, 6, 15), picks, [], has_pdf=False)
+    assert "Order intent" not in c.text   # non-insight picks unchanged
 
 
 def test_daily_body_lists_picks_and_pdf_pointer():

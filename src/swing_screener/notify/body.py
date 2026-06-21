@@ -24,6 +24,34 @@ REVERSAL_TITLE = "Top 5 - Reversal Plays"
 
 
 @dataclass(frozen=True)
+class OrderIntentLine:
+    """The renderer-facing order-intent summary for a pick (insight engine, Part B).
+
+    Conviction + the conviction-scaled size + the deterministic levels + the edge the
+    baseline keyed on. ``shares``/``risk_dollars`` are 0/0.0 when sizing is unconfigured
+    -- the renderer then shows R-multiples (the conviction) rather than a guessed dollar."""
+
+    conviction: str
+    shares: int
+    risk_dollars: float
+    edge_played: str
+    entry_floor: float
+    entry_ceiling: float
+    stop: float
+    target: float
+
+    def text(self) -> str:
+        """One scannable line: conviction, size (or R-multiples), levels, edge."""
+        size = (f"{self.shares} shares (${self.risk_dollars:.0f} risk)"
+                if self.shares > 0 else "R-multiples (sizing unconfigured)")
+        return (
+            f"Order intent: {self.conviction.upper()} conviction · {size} · "
+            f"entry {self.entry_floor:g}-{self.entry_ceiling:g}, stop {self.stop:g}, "
+            f"target {self.target:g} · edge: {self.edge_played}"
+        )
+
+
+@dataclass(frozen=True)
 class DigestPick:
     ticker: str
     name: str
@@ -32,6 +60,7 @@ class DigestPick:
     score: float
     strength: str | None = None  # reversal only: "early" / "confirmed"
     is_deep: bool = False  # got the Opus deep analysis (vs. the standard narration)
+    order_intent: OrderIntentLine | None = None  # insight engine: conviction + sized intent
 
 
 def _tag(p: "DigestPick", *, html: bool = False) -> str:
@@ -68,6 +97,8 @@ def _section_text(title: str, picks: Sequence[DigestPick], run_date: date) -> li
     for i, p in enumerate(picks, start=1):
         label = f"{p.ticker} - {p.name}" if p.name else p.ticker
         rows.append(f"{i}. {label} [{_tag(p)}] · score {p.score:.2f} — {p.core_reason}")
+        if p.order_intent is not None:
+            rows.append(f"   {p.order_intent.text()}")
     return rows
 
 
@@ -78,10 +109,18 @@ def _section_html(title: str, picks: Sequence[DigestPick], run_date: date) -> st
     items = "".join(
         f"<li><b>{escape(p.ticker)}</b>"
         f"{' — ' + escape(p.name) if p.name else ''} "
-        f"· [{_tag(p, html=True)}] · score <b>{p.score:.2f}</b><br>{escape(p.core_reason)}</li>"
+        f"· [{_tag(p, html=True)}] · score <b>{p.score:.2f}</b><br>{escape(p.core_reason)}"
+        f"{_intent_html(p)}</li>"
         for p in picks
     )
     return f"<h3>{escape(title)}</h3><ol>{items}</ol>"
+
+
+def _intent_html(p: "DigestPick") -> str:
+    """The order-intent line for the HTML body, or empty when the pick has none."""
+    if p.order_intent is None:
+        return ""
+    return f"<br><i>{escape(p.order_intent.text())}</i>"
 
 
 def compose_digest_body(

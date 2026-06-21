@@ -45,3 +45,6 @@ htmlcov/
 
 # Bicep build artifact (compiled ARM template; deploy uses the .bicep directly)
 infra/main.json
+
+# Reflection sidecar (machine-readable verdicts; regenerated each run from grade())
+edge/*.verdicts.json

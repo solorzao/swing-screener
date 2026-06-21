@@ -13,9 +13,10 @@ prior claims against the previous edge file lives in a later task, not here.
 """
 
 import argparse
+import json
 import logging
 import statistics
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import date
 from pathlib import Path
 from typing import NamedTuple
@@ -36,7 +37,7 @@ from swing_screener.config import StrategyConfig
 from swing_screener.config_secrets import get_secret
 from swing_screener.data.fetch import fetch_bars
 from swing_screener.db import repo
-from swing_screener.db.models import PaperTrade
+from swing_screener.db.models import AnalystCall, PaperTrade
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.arms import BASELINE
 from swing_screener.pipeline.optimize import fetch_daily
@@ -208,6 +209,29 @@ def grade(
 
 
 # ===========================================================================
+# SERIALIZE -- the machine-readable verdicts sidecar.
+#
+# Phase 2's per-pick insight engine derives a deterministic baseline conviction from these
+# verdicts; it MUST read a code-owned artifact, never parse the LLM-authored ``edge/<pt>.md``
+# prose (which the model rewrites). ``run_reflection`` therefore also emits
+# ``edge/<pt>.verdicts.json`` -- a LOSSLESS round-trip of exactly the ``Verdict`` rows
+# ``grade`` produced, written deterministically regardless of whether the LLM authoring
+# succeeded. (``Verdict`` is a flat frozen dataclass of JSON-native scalars, so
+# ``asdict`` / ``Verdict(**d)`` round-trips every field.)
+# ===========================================================================
+
+
+def verdicts_to_json(verdicts: list[Verdict]) -> str:
+    """Serialize graded ``verdicts`` to the machine-readable sidecar JSON (lossless)."""
+    return json.dumps([asdict(v) for v in verdicts], indent=2)
+
+
+def load_verdicts(text: str) -> list[Verdict]:
+    """Inverse of ``verdicts_to_json``: parse the sidecar JSON back into ``Verdict`` rows."""
+    return [Verdict(**d) for d in json.loads(text)]
+
+
+# ===========================================================================
 # RENDER / PARSE -- the pure (no-I/O) edge-file template.
 #
 # ``render_edge_file`` turns graded verdicts into the markdown playbook; it is ALSO the
@@ -225,6 +249,11 @@ _COST_CAVEAT = "net of cost (optimistic-fill haircut applied)"
 # gold vs candidate unmistakable to the reader.
 _SCREEN_DISCLAIMER = "backtest screen — NOT live-confirmed"
 _NONE_PLACEHOLDER = "_none yet_"
+# The section header for the code-owned analyst-calibration note (Task 6, Part D). The
+# learning loop's report card: does the analyst's judgment prove out on the scored book?
+_CALIBRATION_HEADER = "Analyst calibration"
+# Conviction grades, best-first, for a stable calibration-note ordering.
+_CALIBRATION_ORDER = ("high", "medium", "low", "avoid")
 
 
 @dataclass(frozen=True)
@@ -363,6 +392,97 @@ def _section(header: str, intro: str, body: str) -> str:
     return f"## {header}\n\n_{intro}_\n\n{content}\n"
 
 
+# The italic intro for the code-owned calibration section. Shared by ``render_edge_file`` (via
+# ``_section``) and the post-author re-stitch so BOTH paths emit a byte-identical section.
+_CALIBRATION_INTRO = (
+    "Code-owned report card on the analyst's conviction calls (scored shadow-book "
+    "outcomes): does its judgment prove out?"
+)
+
+
+def _restitch_calibration(text: str, calibration_note: str) -> str:
+    """Force the ``## Analyst calibration`` section to the code-owned ``calibration_note``.
+
+    The calibration numbers are facts the LLM is NEVER trusted to grade (like the frontmatter
+    counter and the ``verdicts.json`` sidecar). After the model authors the body, CODE replaces
+    that section -- whatever the model wrote -- with the deterministic, code-rendered note, so a
+    forgetful/lying author can neither drop nor fabricate the numbers. If the model omitted the
+    section entirely, it is inserted in its canonical position (before ``## Open questions`` when
+    present, else appended). The emitted block is byte-identical to ``render_edge_file``'s, so
+    the LLM-success and deterministic-fallback paths produce the same note for the same inputs.
+    """
+    block = _section(_CALIBRATION_HEADER, _CALIBRATION_INTRO, calibration_note)
+    marker = f"## {_CALIBRATION_HEADER}"
+    start = text.find(marker)
+    if start != -1:
+        rest = text[start + len(marker):]
+        nxt = rest.find("\n## ")
+        end = len(text) if nxt == -1 else start + len(marker) + nxt + 1  # keep the next "## "
+        return text[:start] + block + text[end:]
+    # Section absent: insert before "## Open questions" if present, else append.
+    open_q = text.find("## Open questions")
+    if open_q != -1:
+        return text[:open_q] + block + "\n" + text[open_q:]
+    return text.rstrip("\n") + "\n\n" + block
+
+
+# ===========================================================================
+# ANALYST CALIBRATION -- the code-owned "is the analyst proving out?" note (Part D).
+#
+# Pure, deterministic, and computed from the SCORED ``AnalystCall`` rows -- never an LLM
+# opinion. ``analyst_calibration`` summarizes one play type's scored calls; the reflection
+# passes the rendered note into the edge file the same way it passes verdicts, so the
+# playbook records whether the analyst's judgment (its conviction grades + its nudges) is
+# actually earning R on the live shadow book.
+# ===========================================================================
+
+
+def analyst_calibration(calls: list[AnalystCall]) -> dict:
+    """Summarize a play type's SCORED analyst calls (pure; ignores unscored rows).
+
+    Returns ``{"by_conviction": {grade: (n, mean_r)}, "nudge_vs_baseline_r": (n, mean_r)
+    | None}``: per FINAL conviction grade, how many scored calls and their mean realized
+    R (so you can see if ``high`` out-earns ``low``); and across the NUDGED calls (final !=
+    baseline) the count + mean R (so you can see if the analyst's moves add R vs. simply
+    keeping the baseline). ``nudge_vs_baseline_r`` is None when no scored call was nudged.
+    """
+    scored = [c for c in calls if c.scored_at is not None and c.realized_r is not None]
+    by_conviction: dict[str, tuple[int, float]] = {}
+    for grade in _CALIBRATION_ORDER:
+        rs = [c.realized_r for c in scored
+              if c.final_conviction == grade and c.realized_r is not None]
+        if rs:
+            by_conviction[grade] = (len(rs), sum(rs) / len(rs))
+    nudged = [c.realized_r for c in scored
+              if c.final_conviction != c.baseline_conviction and c.realized_r is not None]
+    nudge = (len(nudged), sum(nudged) / len(nudged)) if nudged else None
+    return {"by_conviction": by_conviction, "nudge_vs_baseline_r": nudge}
+
+
+def render_calibration_note(calib: dict) -> str:
+    """Render an ``analyst_calibration`` summary into the deterministic note body.
+
+    One line per FINAL conviction grade (n + mean realized R) plus a nudge line (how the
+    analyst's nudges fared vs. the baseline). A play type with no scored calls yet renders
+    a clear placeholder so the section is always present and self-explanatory."""
+    by_conviction: dict[str, tuple[int, float]] = calib["by_conviction"]
+    nudge = calib["nudge_vs_baseline_r"]
+    if not by_conviction and nudge is None:
+        return "_No scored analyst calls yet -- calibration pending._"
+    lines = [
+        f"- **{grade}** conviction: mean {mean_r:+.2f}R over n={n} scored call(s)."
+        for grade, (n, mean_r) in by_conviction.items()
+    ]
+    if nudge is not None:
+        n, mean_r = nudge
+        lines.append(
+            f"- Nudges (final != baseline): mean {mean_r:+.2f}R over n={n} nudged call(s)."
+        )
+    else:
+        lines.append("- Nudges (final != baseline): none scored yet.")
+    return "\n".join(lines)
+
+
 def render_edge_file(
     play_type: str,
     thesis: str,
@@ -370,6 +490,7 @@ def render_edge_file(
     *,
     n_closed_now: int,
     prior_falsified: str = "",
+    calibration_note: str = "",
 ) -> str:
     """Render the markdown playbook for ``play_type`` from graded ``verdicts``.
 
@@ -426,6 +547,7 @@ def render_edge_file(
             "Prior claims now contradicted by the evidence, kept for the record.",
             prior_falsified,
         ),
+        _section(_CALIBRATION_HEADER, _CALIBRATION_INTRO, calibration_note),
         _section("Open questions", "Things to investigate next.", ""),
     ]
     return "\n".join(parts)
@@ -461,7 +583,9 @@ _AUTHOR_SYSTEM = (
     "Output the FULL markdown playbook with exactly these sections, in this order: "
     "'## Thesis', '## Confirmed edges' (forward-confirmed gold -- live-confirmed only), "
     "'## Screened candidates' (replay-screened -- a backtest screen, NOT live-confirmed), "
-    "'## Hunches / needs a test', '## Falsified / retired', and '## Open questions'. Every "
+    "'## Hunches / needs a test', '## Falsified / retired', '## Analyst calibration' "
+    "(code-owned scored-call report card -- reproduce it VERBATIM, never alter a number), "
+    "and '## Open questions'. Every "
     "quantitative line must carry n + the clustered 95% CI lower bound + a net-of-cost "
     "caveat -- never a bare base rate. Do NOT emit a frontmatter header; the surrounding "
     "code owns that."
@@ -469,12 +593,17 @@ _AUTHOR_SYSTEM = (
 
 
 def _author_user_content(
-    play_type: str, thesis: str, verdicts: list[Verdict], prior_text: str, n_closed_now: int
+    play_type: str, thesis: str, verdicts: list[Verdict], prior_text: str, n_closed_now: int,
+    calibration_note: str = "",
 ) -> str:
     """The user turn: the thesis, the ground-truth scaffold (the deterministic render handed
     over verbatim so the model SEES the exact tiers/numbers it must preserve), and the prior
-    edge file text (so it can carry/curate the Falsified + Open-questions sections)."""
-    scaffold = render_edge_file(play_type, thesis, verdicts, n_closed_now=n_closed_now)
+    edge file text (so it can carry/curate the Falsified + Open-questions sections). The
+    scaffold already embeds the code-owned Analyst-calibration note the model must preserve."""
+    scaffold = render_edge_file(
+        play_type, thesis, verdicts, n_closed_now=n_closed_now,
+        calibration_note=calibration_note,
+    )
     return (
         f"Play type: {play_type}\n\n"
         f"Thesis:\n{thesis}\n\n"
@@ -502,6 +631,7 @@ def author_edge_file(
     last_reflected: str | None = None,
     client: anthropic.Anthropic | None = None,
     model: str = "claude-opus-4-8",
+    calibration_note: str = "",
 ) -> str:
     """Author the edge-file markdown via Opus, given the GROUND-TRUTH ``verdicts`` + the
     ``prior_text``. The model writes prose + drafts hypotheses but can NEVER change a tier or
@@ -527,7 +657,8 @@ def author_edge_file(
             messages=[{
                 "role": "user",
                 "content": _author_user_content(
-                    play_type, thesis, verdicts, prior_text, n_closed_now
+                    play_type, thesis, verdicts, prior_text, n_closed_now,
+                    calibration_note=calibration_note,
                 ),
             }],
         )
@@ -541,7 +672,11 @@ def author_edge_file(
         )
         if not text.strip():
             raise ValueError("empty model response")
-        # CODE owns the state: strip any header the model emitted, stamp the real one.
+        # CODE owns the facts the model is never trusted to grade: re-stitch the
+        # code-rendered Analyst-calibration note over whatever the model wrote (it may have
+        # dropped or fabricated the numbers), then strip any header it emitted and stamp the
+        # real frontmatter. Same guarantee as the verdicts.json sidecar + frontmatter counter.
+        text = _restitch_calibration(text, calibration_note)
         return _with_frontmatter(text, state)
     except Exception:
         log.warning(
@@ -551,6 +686,7 @@ def author_edge_file(
         return render_edge_file(
             play_type, thesis, verdicts, n_closed_now=n_closed_now,
             prior_falsified=_section_body(prior_text, "Falsified / retired"),
+            calibration_note=calibration_note,
         )
 
 
@@ -650,11 +786,25 @@ def run_reflection(
         replay_pt = [t for t in replay_all if t.play_type == pt]
         verdicts = grade(pt, forward, replay_pt)
 
+        # Emit the machine-readable sidecar FIRST -- it is deterministic + code-owned, so it
+        # is written whether or not the (optional, fallible) LLM authoring below succeeds.
+        (edge_dir / f"{pt}.verdicts.json").write_text(
+            verdicts_to_json(verdicts), encoding="utf-8"
+        )
+
+        # Code-owned analyst-calibration note: summarize this play type's SCORED calls
+        # so the playbook records whether the analyst's judgment is proving out. Like the
+        # verdicts, it is deterministic and authored by code, never the LLM.
+        calibration_note = render_calibration_note(
+            analyst_calibration(repo.load_scored_analyst_calls(session, play_type=pt))
+        )
+
         prior_text = _edge_text(edge_dir, pt)
         thesis = _thesis_for(prior_text, pt)
         content = author_edge_file(
             pt, thesis, verdicts, prior_text,
             n_closed_now=len(forward), last_reflected=today, client=client,
+            calibration_note=calibration_note,
         )
         (edge_dir / f"{pt}.md").write_text(content, encoding="utf-8")
         log.info("reflected %s: %d forward closed, %d replay-screened",

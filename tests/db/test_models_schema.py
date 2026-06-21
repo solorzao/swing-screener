@@ -12,6 +12,7 @@ from sqlalchemy.dialects.mssql.base import MSDialect
 from sqlalchemy.schema import CreateTable
 
 from swing_screener.db.models import (
+    AnalystCall,
     Base,
     EmailLog,
     ExitEvent,
@@ -27,6 +28,18 @@ def test_ticker_columns_bounded_to_16() -> None:
     assert Trade.__table__.c.ticker.type.length == 16
     assert PaperTrade.__table__.c.ticker.type.length == 16
     assert Universe.__table__.c.ticker.type.length == 16
+    # analyst_calls.ticker is indexed, so it must stay bounded (Azure SQL can't
+    # index NVARCHAR(max)).
+    assert AnalystCall.__table__.c.ticker.type.length == 16
+
+
+def test_analyst_call_string_lengths() -> None:
+    assert AnalystCall.__table__.c.timeframe.type.length == 32
+    assert AnalystCall.__table__.c.play_type.type.length == 16
+    assert AnalystCall.__table__.c.baseline_conviction.type.length == 16
+    assert AnalystCall.__table__.c.final_conviction.type.length == 16
+    assert AnalystCall.__table__.c.nudge_reason.type.length == 512
+    assert AnalystCall.__table__.c.model.type.length == 64
 
 
 def test_representative_string_lengths() -> None:
