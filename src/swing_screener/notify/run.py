@@ -51,6 +51,13 @@ from swing_screener.notify.body import (
     compose_digest_body,
 )
 from swing_screener.notify.pdf import PdfPick, build_digest_pdf
+from swing_screener.notify.proposals import (
+    ProposedOrder,
+    build_proposals,
+    proposals_html,
+    proposals_text,
+    write_proposals_artifact,
+)
 from swing_screener.notify.transport import resolve_sender
 from swing_screener.pipeline.broker import BrokerClient
 from swing_screener.pipeline.broker_alpaca import build_broker
@@ -488,6 +495,17 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                 reversal_digest = _attach_digest_tickets(reversal_digest, tickets, "reversal")
                 reversal_pdf = _attach_pdf_tickets(reversal_pdf, tickets, "reversal")
 
+        # The consolidated "Proposed orders — place on Robinhood" shopping list: the human's
+        # actionable copy-list for the manual (approval) posture ONLY. Levels + conviction are
+        # COPIED from the built intents (never recomputed); a skipped/limit-blocked ticket is
+        # dropped from the placeable list. Every other mode -> no proposals, so the body/PDF/
+        # artifact are byte-for-byte unchanged. The JSON artifact write is wrapped so a failure
+        # logs + returns None and NEVER blocks the digest (mirrors the PDF seam).
+        proposals: list[ProposedOrder] = []
+        if exec_mode == "manual" and tickets:
+            proposals = build_proposals(collected_intents, tickets)
+            write_proposals_artifact(proposals, Path(pdf_dir), run_date)
+
         pdf_path: Path | None = None
         if digest_picks or reversal_pdf:
             try:
@@ -495,6 +513,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                     pdf_picks, Path(pdf_dir) / f"{kind}_{run_date:%Y%m%d}.pdf",
                     reversal_picks=reversal_pdf or None,
                     header=f"Swing Screener - {kind.capitalize()} Picks ({run_date:%b %d, %Y})",
+                    proposals=proposals or None,
                 )
             except Exception:  # PDF must never block the email
                 log.warning("PDF build failed for %s %s", kind, run_date, exc_info=True)
@@ -507,7 +526,9 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
             for a in alerts
         ]
         body = compose_digest_body(kind, run_date, digest_picks, alert_lines,
-                                   has_pdf=pdf_attached, reversal_picks=reversal_digest)
+                                   has_pdf=pdf_attached, reversal_picks=reversal_digest,
+                                   proposals_text=proposals_text(proposals),
+                                   proposals_html=proposals_html(proposals))
         send(to=recipient, subject=body.subject, text=body.text, html=body.html,
              attachments=([pdf_path] if pdf_path is not None else []))
 
