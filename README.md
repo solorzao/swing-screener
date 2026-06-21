@@ -52,6 +52,35 @@ Three layers, built in that order, each standing on honest measurement:
 level or grades what ships; nothing arms real money without a human acting on purpose. See
 [Execution & money safety](#execution--money-safety).
 
+## What runs automatically (the daily / weekly cadence)
+
+Deployed, the system runs **six scheduled Azure Container Apps Jobs** (one image, one managed
+identity) behind an **Eastern-time gate** — the UTC crons fire on both EST and EDT, and the gate
+(`ops/eastern_gate.py`) lets each job proceed only at the right ET hour (and, for the monthly
+digest, only on the last business day). Unattended, day to day:
+
+| Job | Cadence (ET) | What it does on its own |
+|---|---|---|
+| `evening-screen` | every weekday, ~4pm (after close) | the full screen → persist + charts → advance the shadow book → (deep on) the insight engine + order intents → execution-adapter dispatch (`off` by default) |
+| `daily-digest` | every weekday, ~8am | emails the daily digest (summary + PDF) + the reversal Top-5 + (deep on) the order intents + the autonomy-gate countdown |
+| `intraday-exit` | weekdays, hourly 9am–4pm | checks open trades for exit triggers → emails exit alerts (deduped per event) |
+| `on-demand-analysis` | every 15 min | drains the dashboard's deep-analysis request queue |
+| `weekly-digest` | Fridays, ~4pm | the weekly digest |
+| `monthly-digest` | last business day of the month, ~4pm | the monthly digest |
+
+Plus two **weekly, human-gated** GitHub Actions that open a PR for you to review — **nothing
+auto-merges**:
+
+| Workflow | Cadence | What it proposes |
+|---|---|---|
+| [`optimize.yml`](.github/workflows/optimize.yml) | Sundays 06:00 UTC | the walk-forward config sweep → a **config-change PR** *only* on a trusted out-of-sample winner |
+| [`reflect.yml`](.github/workflows/reflect.yml) | Sundays 07:00 UTC | re-grades each strategy's recent outcomes → an **edge-file reflection PR** (the playbook update) |
+
+So on its own the system **screens every weekday afternoon, digests every morning, watches exits
+hourly, and proposes its own improvements weekly** — while it **deliberately moves no money**:
+execution stays `off` until a human arms it (see [Execution & money safety](#execution--money-safety)).
+The one-time provisioning + cutover is the [deploy runbook](docs/azure-deploy.md).
+
 ## The strategies
 
 Two independent **long** screeners run per ticker on **4h / Daily / Weekly / Monthly** bars (the
