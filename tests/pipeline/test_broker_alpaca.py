@@ -25,6 +25,7 @@ import httpx
 import pytest
 
 from swing_screener.pipeline.broker import (
+    BrokerAccount,
     BrokerClient,
     BrokerOrder,
     BrokerOrderSpec,
@@ -344,6 +345,47 @@ def test_last_close_price_none_when_no_closing_orders() -> None:
 
     broker = _broker(handler)
     assert broker.last_close_price("AAPL") is None
+
+
+# ---------------------------------------------------------------------------
+# get_account -> GET /v2/account: coerce cash/buying_power from strings + status.
+# ---------------------------------------------------------------------------
+def test_get_account_parses_the_account_json_coercing_string_numbers() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/v2/account"
+        return httpx.Response(
+            200,
+            json={
+                # Alpaca returns the money fields as STRINGS.
+                "cash": "12345.67",
+                "buying_power": "24691.34",
+                "status": "ACTIVE",
+            },
+        )
+
+    broker = _broker(handler)
+    account = broker.get_account()
+
+    assert isinstance(account, BrokerAccount)
+    assert account.cash == 12345.67
+    assert isinstance(account.cash, float)
+    assert account.buying_power == 24691.34
+    assert isinstance(account.buying_power, float)
+    assert account.status == "ACTIVE"
+
+
+def test_get_account_surfaces_a_non_active_status() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"cash": "0", "buying_power": "0", "status": "ACCOUNT_UPDATED"},
+        )
+
+    broker = _broker(handler)
+    account = broker.get_account()
+    assert account.status == "ACCOUNT_UPDATED"
+    assert account.buying_power == 0.0
 
 
 # ---------------------------------------------------------------------------

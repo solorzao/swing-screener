@@ -14,6 +14,7 @@ that implements the ``BrokerClient`` Protocol. The load-bearing properties later
 """
 
 from swing_screener.pipeline.broker import (
+    BrokerAccount,
     BrokerClient,
     BrokerOrder,
     BrokerOrderSpec,
@@ -212,6 +213,24 @@ def test_is_real_money_defaults_false() -> None:
 
 def test_is_real_money_when_flagged() -> None:
     assert FakeBroker(real_money=True).is_real_money() is True
+
+
+# ---------------------------------------------------------------------------
+# get_account: defaults to a funded, ACTIVE account; the knobs override it.
+# ---------------------------------------------------------------------------
+def test_get_account_defaults_funded_and_active() -> None:
+    account = FakeBroker().get_account()
+    assert isinstance(account, BrokerAccount)
+    assert account.status == "ACTIVE"
+    assert account.cash == 100_000.0
+    assert account.buying_power == 100_000.0
+
+
+def test_get_account_honors_the_constructor_knobs() -> None:
+    account = FakeBroker(cash=250.0, buying_power=0.0, status="HALTED").get_account()
+    assert account.cash == 250.0
+    assert account.buying_power == 0.0
+    assert account.status == "HALTED"
 
 
 # ---------------------------------------------------------------------------

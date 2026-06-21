@@ -30,6 +30,8 @@ References (verified against Alpaca's trading API docs):
 - order JSON: ``id``, ``client_order_id``, ``symbol``, ``status``, ``filled_qty`` (string),
   ``filled_avg_price`` (string|null).
 - ``GET /v2/positions`` JSON: ``symbol``, ``qty`` (string), ``avg_entry_price`` (string).
+- ``GET /v2/account`` JSON: ``cash`` (string), ``buying_power`` (string), ``status`` (e.g.
+  ``"ACTIVE"``).
 """
 
 from typing import TYPE_CHECKING, Any
@@ -38,7 +40,13 @@ import httpx
 
 from swing_screener.config_secrets import get_secret, require_secret
 
-from .broker import BrokerClient, BrokerOrder, BrokerOrderSpec, BrokerPosition
+from .broker import (
+    BrokerAccount,
+    BrokerClient,
+    BrokerOrder,
+    BrokerOrderSpec,
+    BrokerPosition,
+)
 
 if TYPE_CHECKING:
     from swing_screener.settings import Settings
@@ -142,6 +150,20 @@ class AlpacaBroker:
             )
             for p in data
         ]
+
+    def get_account(self) -> BrokerAccount:
+        """The account snapshot: ``GET /v2/account``.
+
+        Alpaca returns the money fields (``cash`` / ``buying_power``) as STRINGS -> coerced via
+        ``float(...)``; ``status`` is the venue's account status string (e.g. ``"ACTIVE"``). The
+        read-only preflight check reads this to confirm the broker is reachable + funded before
+        a go-live. Errors surface (``raise_for_status``); preflight catches them, not us."""
+        data = self._request_json("GET", "/v2/account")
+        return BrokerAccount(
+            cash=float(data["cash"]),
+            buying_power=float(data["buying_power"]),
+            status=data["status"],
+        )
 
     def cancel_order(self, broker_order_id: str) -> None:
         """Cancel one resting order: ``DELETE /v2/orders/{id}``."""
