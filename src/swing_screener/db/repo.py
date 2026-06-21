@@ -264,9 +264,10 @@ def count_open_positions(session: Session, *, account: str) -> int:
 
 
 def record_exit_event(session: Session, *, is_paper: bool, trade_id: int | None,
-                      tier: str, reason: str, message: str, created_date: date) -> ExitEvent:
+                      tier: str, reason: str, message: str, created_date: date,
+                      account: str = "research") -> ExitEvent:
     event = ExitEvent(created_date=created_date, is_paper=is_paper, trade_id=trade_id,
-                      tier=tier, reason=reason, message=message)
+                      tier=tier, reason=reason, message=message, account=account)
     session.add(event)
     session.commit()
     session.refresh(event)

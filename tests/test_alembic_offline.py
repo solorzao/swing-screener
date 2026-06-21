@@ -31,6 +31,8 @@ TICKER_INDEXES = {"ix_signals_ticker", "ix_trades_ticker", "ix_paper_trades_tick
 # slicing indexes the shadow book relies on (arm/variant/account A/B + isolation).
 PAPER_TRADE_INDEXES = {"ix_paper_trades_arm", "ix_paper_trades_variant",
                        "ix_paper_trades_account"}
+# the exit log is sliced by account (research grid vs the curated intent book).
+EXIT_EVENT_INDEXES = {"ix_exit_events_account"}
 
 
 def _config(db_url: str) -> Config:
@@ -57,6 +59,7 @@ def test_migration_creates_every_table_and_index(tmp_path, monkeypatch):
     assert "alembic_version" in tables  # migration actually stamped a revision
     assert TICKER_INDEXES <= indexes
     assert PAPER_TRADE_INDEXES <= indexes
+    assert EXIT_EVENT_INDEXES <= indexes
 
 
 def test_migration_enforces_email_log_dedup(tmp_path, monkeypatch):

@@ -15,7 +15,7 @@ from datetime import date
 from sqlalchemy.orm import Session
 
 from swing_screener.config import StrategyConfig
-from swing_screener.db.models import ExecutionLog, PaperTrade
+from swing_screener.db.models import ExecutionLog, ExitEvent, PaperTrade
 from swing_screener.db.repo import load_closed_paper_trades, load_open_paper_trades
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.execution import PaperAdapter
@@ -103,6 +103,11 @@ def test_existing_stepper_closes_paper_trade_on_target() -> None:
         assert closed.realized_r == (110.0 - 101.0) / (101.0 - 94.0)  # +R, set by the stepper
         assert load_open_paper_trades(s) == []
 
+        # the recorded exit event carries the closing trade's account ("paper"), so the
+        # dashboard's account facet can separate intent-book exits from research-grid ones.
+        ev = s.query(ExitEvent).filter_by(trade_id=closed.id).one()
+        assert ev.account == "paper"
+
 
 def test_existing_stepper_closes_paper_trade_on_stop() -> None:
     with _session() as s:
@@ -116,6 +121,27 @@ def test_existing_stepper_closes_paper_trade_on_stop() -> None:
         assert closed.exit_reason == "stop" and closed.exit_price == 94.0
         assert closed.realized_r == (94.0 - 101.0) / (101.0 - 94.0)  # -1R
         assert load_open_paper_trades(s) == []
+
+
+def test_stepper_records_research_account_exit_for_research_grid_trade() -> None:
+    # the COMPLEMENT to the paper-account case above: a research-grid PaperTrade closing
+    # through the SAME stepper records an ExitEvent tagged account="research" -- so the
+    # dashboard facet can split the two books that both record under is_paper=True.
+    with _session() as s:
+        s.add(PaperTrade(
+            ticker="AMD", timeframe="1d", horizon="medium", account="research",
+            signal_score=0.8, rank=1, fill_status="filled", status="open",
+            entry_price=101.0, entry_date=RUN, opened_date=RUN,
+            stop=94.0, target=110.0, risk=7.0, high_water=101.0,
+        ))
+        s.commit()
+        bar = {"low": 100.0, "high": 111.0, "close": 109.0, "shaved_head": False}
+        advance_open(s, {("AMD", "1d"): bar}, CFG, today=NEXT)
+
+        closed = s.query(PaperTrade).filter_by(status="closed").one()
+        assert closed.exit_reason == "target"
+        ev = s.query(ExitEvent).filter_by(trade_id=closed.id).one()
+        assert ev.account == "research"
 
 
 # ---------------------------------------------------------------------------
