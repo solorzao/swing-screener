@@ -32,13 +32,16 @@ References (verified against Alpaca's trading API docs):
 - ``GET /v2/positions`` JSON: ``symbol``, ``qty`` (string), ``avg_entry_price`` (string).
 """
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from swing_screener.config_secrets import get_secret, require_secret
 
-from .broker import BrokerOrder, BrokerOrderSpec, BrokerPosition
+from .broker import BrokerClient, BrokerOrder, BrokerOrderSpec, BrokerPosition
+
+if TYPE_CHECKING:
+    from swing_screener.settings import Settings
 
 #: The default (and only money-safe) host: Alpaca's paper trading sandbox.
 PAPER_HOST = "https://paper-api.alpaca.markets"
@@ -228,3 +231,17 @@ class AlpacaBroker:
     ) -> Any:
         """:meth:`_request` + decode the JSON body."""
         return self._request(method, path, json=json, params=params).json()
+
+
+def build_broker(settings: "Settings") -> BrokerClient | None:
+    """Resolve the configured broker for the live path, or None when none is configured.
+
+    ``settings.broker == "alpaca"`` -> an :class:`AlpacaBroker` (paper sandbox by default; it
+    resolves its own credentials/host through the secret seam). Any other value (the empty
+    default) -> None, so the live adapter / reconcile cadence is never armed without an
+    explicit broker. The single factory both the digest run and the screen run resolve their
+    live broker through; tests inject a ``FakeBroker`` and never reach here.
+    """
+    if settings.broker == "alpaca":
+        return AlpacaBroker()
+    return None
