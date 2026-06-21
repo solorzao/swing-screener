@@ -59,6 +59,7 @@ from swing_screener.notify.proposals import (
     write_proposals_artifact,
 )
 from swing_screener.notify.transport import resolve_sender
+from swing_screener.pipeline.autonomy import autonomy_gate, gate_status_line
 from swing_screener.pipeline.broker import BrokerClient
 from swing_screener.pipeline.broker_alpaca import build_broker
 from swing_screener.pipeline.execution import (
@@ -525,10 +526,18 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                       tier=a.tier, reason=a.reason, message=a.message)
             for a in alerts
         ]
+        # Autonomy-gate countdown footer: surfaced ONLY on the deep path (the digest already
+        # ran the analyst, so the gate's read-only SELECTs over scored calls + the verdicts
+        # sidecars are free). It NEVER writes -- the gate is a pure SELECT (North Star #1) --
+        # and a non-deep digest passes None, so the body is byte-for-byte unchanged there.
+        autonomy_status = (
+            gate_status_line(autonomy_gate(session, edge_dir=edge_dir)) if deep_on else None
+        )
         body = compose_digest_body(kind, run_date, digest_picks, alert_lines,
                                    has_pdf=pdf_attached, reversal_picks=reversal_digest,
                                    proposals_text=proposals_text(proposals),
-                                   proposals_html=proposals_html(proposals))
+                                   proposals_html=proposals_html(proposals),
+                                   autonomy_status=autonomy_status)
         send(to=recipient, subject=body.subject, text=body.text, html=body.html,
              attachments=([pdf_path] if pdf_path is not None else []))
 
