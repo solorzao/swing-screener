@@ -21,8 +21,11 @@ rule that never bends to emotion, under hard limits I can always override.
 
 ## Guiding principles — every decision is checked against these
 
-1. **Evidence over narrative.** A "hunch" becomes a "confirmed edge" only when the hardened
-   statistics say so. The LLM's — or my — confidence is never the grader.
+1. **Evidence gates promotion, not judgment.** A "hunch" becomes a "confirmed edge" — and
+   anything that auto-changes config or moves real money — only when the hardened statistics
+   say so; *there*, the LLM's (or my) confidence is never the grader. This guardrail is scoped
+   to the promotion / execution boundary. It does NOT silence the analyst's judgment in
+   decision-support (see #9) — the stats are the floor it reasons from, not a cage.
 2. **Honest about uncertainty.** Every claim carries its sample size, a confidence interval,
    and is *net of costs*. A biased or optimistic number is never shown as fact.
 3. **The human gate, until proven.** Nothing ships or executes without proof. Autonomy is
@@ -37,6 +40,13 @@ rule that never bends to emotion, under hard limits I can always override.
    forward-tested, so the leaderboard reflects real entries.
 8. **Small, interpretable, reversible.** Prefer the simplest change that closes the loop.
    Widen the search space only behind stronger guards.
+9. **The analyst is a learning participant, not a narrator.** In decision-support (human-gated,
+   no money auto-moves), the LLM analyst has genuine input — it forms and evolves its own
+   per-strategy understanding, *moves* the conviction grade with a stated reason, and draws
+   qualitative connections the stats can't. The discipline is not muzzling it: every call is
+   logged and scored against the realized outcome, so its judgment earns a track record and
+   more influence as it proves out — the way a trader's intuition matures into a validated edge.
+   It's not all about the data.
 
 ## How it works
 
