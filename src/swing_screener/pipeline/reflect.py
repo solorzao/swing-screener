@@ -392,6 +392,40 @@ def _section(header: str, intro: str, body: str) -> str:
     return f"## {header}\n\n_{intro}_\n\n{content}\n"
 
 
+# The italic intro for the code-owned calibration section. Shared by ``render_edge_file`` (via
+# ``_section``) and the post-author re-stitch so BOTH paths emit a byte-identical section.
+_CALIBRATION_INTRO = (
+    "Code-owned report card on the analyst's conviction calls (scored shadow-book "
+    "outcomes): does its judgment prove out?"
+)
+
+
+def _restitch_calibration(text: str, calibration_note: str) -> str:
+    """Force the ``## Analyst calibration`` section to the code-owned ``calibration_note``.
+
+    The calibration numbers are facts the LLM is NEVER trusted to grade (like the frontmatter
+    counter and the ``verdicts.json`` sidecar). After the model authors the body, CODE replaces
+    that section -- whatever the model wrote -- with the deterministic, code-rendered note, so a
+    forgetful/lying author can neither drop nor fabricate the numbers. If the model omitted the
+    section entirely, it is inserted in its canonical position (before ``## Open questions`` when
+    present, else appended). The emitted block is byte-identical to ``render_edge_file``'s, so
+    the LLM-success and deterministic-fallback paths produce the same note for the same inputs.
+    """
+    block = _section(_CALIBRATION_HEADER, _CALIBRATION_INTRO, calibration_note)
+    marker = f"## {_CALIBRATION_HEADER}"
+    start = text.find(marker)
+    if start != -1:
+        rest = text[start + len(marker):]
+        nxt = rest.find("\n## ")
+        end = len(text) if nxt == -1 else start + len(marker) + nxt + 1  # keep the next "## "
+        return text[:start] + block + text[end:]
+    # Section absent: insert before "## Open questions" if present, else append.
+    open_q = text.find("## Open questions")
+    if open_q != -1:
+        return text[:open_q] + block + "\n" + text[open_q:]
+    return text.rstrip("\n") + "\n\n" + block
+
+
 # ===========================================================================
 # ANALYST CALIBRATION -- the code-owned "is the analyst proving out?" note (Part D).
 #
@@ -513,12 +547,7 @@ def render_edge_file(
             "Prior claims now contradicted by the evidence, kept for the record.",
             prior_falsified,
         ),
-        _section(
-            _CALIBRATION_HEADER,
-            "Code-owned report card on the analyst's conviction calls (scored shadow-book "
-            "outcomes): does its judgment prove out?",
-            calibration_note,
-        ),
+        _section(_CALIBRATION_HEADER, _CALIBRATION_INTRO, calibration_note),
         _section("Open questions", "Things to investigate next.", ""),
     ]
     return "\n".join(parts)
@@ -643,7 +672,11 @@ def author_edge_file(
         )
         if not text.strip():
             raise ValueError("empty model response")
-        # CODE owns the state: strip any header the model emitted, stamp the real one.
+        # CODE owns the facts the model is never trusted to grade: re-stitch the
+        # code-rendered Analyst-calibration note over whatever the model wrote (it may have
+        # dropped or fabricated the numbers), then strip any header it emitted and stamp the
+        # real frontmatter. Same guarantee as the verdicts.json sidecar + frontmatter counter.
+        text = _restitch_calibration(text, calibration_note)
         return _with_frontmatter(text, state)
     except Exception:
         log.warning(

@@ -58,7 +58,9 @@ def test_deep_analysis_runs_for_top_n_only_when_enabled(tmp_path, monkeypatch):
 
     res = run.send_digest(**_kwargs(
         tmp_path, url, deep_analyze_fn=fake_deep, chart_bytes_loader=fake_loader,
-        fundamentals_fn=fake_fund, news_fn=lambda t: []))
+        fundamentals_fn=fake_fund, news_fn=lambda t: [],
+        edge_dir=tmp_path))  # pin to an EMPTY edge dir: no .verdicts.json -> deep fallback,
+        # independent of the repo's real edge/ contents (no hidden ambient-state dependency).
 
     assert res.sent is True and res.n_picks == 4
     assert deep_calls == ["AMD", "AEP"]          # only the top-2 picks

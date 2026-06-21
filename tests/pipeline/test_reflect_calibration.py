@@ -161,3 +161,115 @@ def test_run_reflection_surfaces_calibration_note(tmp_path):
     out = (edge_dir / "continuation.md").read_text(encoding="utf-8")
     assert _CALIBRATION_HEADER in out
     assert "high" in out
+
+
+# The fabricated playbook a lying/forgetful Opus author might return: a FULL, plausible
+# markdown body (so the success path is taken -- not the blank fallback) whose calibration
+# section carries FABRICATED numbers the code must overwrite.
+_FABRICATED_LLM_BODY = """\
+## Thesis
+
+Heiken-Ashi pullback-continuation.
+
+## Confirmed edges
+
+_none yet_
+
+## Screened candidates
+
+_none yet_
+
+## Hunches / needs a test
+
+_none yet_
+
+## Falsified / retired
+
+_none yet_
+
+## Analyst calibration
+
+_Code-owned report card._
+
+- **high** conviction: mean +9.99R over n=42 scored call(s).
+- Nudges (final != baseline): mean +9.99R over n=42 nudged call(s).
+
+## Open questions
+
+_none yet_
+"""
+
+# Same body but with the ## Analyst calibration section omitted ENTIRELY -- the code must
+# re-insert it (in its canonical position) with the code-computed numbers.
+_LLM_BODY_NO_CALIBRATION = """\
+## Thesis
+
+Heiken-Ashi pullback-continuation.
+
+## Confirmed edges
+
+_none yet_
+
+## Screened candidates
+
+_none yet_
+
+## Hunches / needs a test
+
+_none yet_
+
+## Falsified / retired
+
+_none yet_
+
+## Open questions
+
+_none yet_
+"""
+
+
+def test_run_reflection_overwrites_fabricated_calibration_on_llm_success(tmp_path):
+    """A NON-BLANK fake LLM (success path) returns FABRICATED calibration numbers
+    (+9.99R, n=42). The code must overwrite them with the deterministic, code-computed
+    numbers (mean +2.50R over n=1) -- the note is code-owned, not LLM-reproduced."""
+    edge_dir = tmp_path / "edge"
+    edge_dir.mkdir()
+    n = _REFLECT_TRIGGER_N
+    with _mem_session() as session:
+        session.add_all([_closed_trade(f"T{i}", 1.0) for i in range(n)])
+        session.add(_call("high", "medium", 2.5))  # one scored high call -> +2.50R, n=1
+        session.commit()
+        run_reflection(
+            session, replay_frames={"S": _synth()}, spy_daily=None,
+            edge_dir=edge_dir, client=_FakeClient(_FABRICATED_LLM_BODY),
+            today="2026-06-20",
+        )
+    out = (edge_dir / "continuation.md").read_text(encoding="utf-8")
+    assert _CALIBRATION_HEADER in out
+    # The FABRICATED numbers must NOT survive.
+    assert "+9.99R" not in out
+    assert "n=42" not in out
+    # The CODE-COMPUTED numbers must be present.
+    assert "+2.50R" in out
+    assert "n=1" in out
+
+
+def test_run_reflection_reinserts_omitted_calibration_on_llm_success(tmp_path):
+    """A NON-BLANK fake LLM (success path) DROPS the ## Analyst calibration section
+    entirely. The code must re-insert it with the code-computed numbers so the section
+    is always present and code-owned."""
+    edge_dir = tmp_path / "edge"
+    edge_dir.mkdir()
+    n = _REFLECT_TRIGGER_N
+    with _mem_session() as session:
+        session.add_all([_closed_trade(f"T{i}", 1.0) for i in range(n)])
+        session.add(_call("high", "medium", 2.5))
+        session.commit()
+        run_reflection(
+            session, replay_frames={"S": _synth()}, spy_daily=None,
+            edge_dir=edge_dir, client=_FakeClient(_LLM_BODY_NO_CALIBRATION),
+            today="2026-06-20",
+        )
+    out = (edge_dir / "continuation.md").read_text(encoding="utf-8")
+    assert _CALIBRATION_HEADER in out          # re-inserted
+    assert "+2.50R" in out and "n=1" in out    # with the code-computed numbers
