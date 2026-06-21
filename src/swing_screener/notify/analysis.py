@@ -15,6 +15,7 @@ import anthropic
 
 from swing_screener.config_secrets import get_secret
 from swing_screener.notify.ticker_report import TickerReport, TimeframeRead
+from swing_screener.pipeline.insight import _CONVICTIONS
 
 log = logging.getLogger(__name__)
 
@@ -484,3 +485,167 @@ def analyze_ticker_deep(
             report.ticker, exc_info=True,
         )
         return _ticker_fallback(report)
+
+
+# --- Conviction nudge: the analyst MOVES the deterministic grade, bounded +-1 ---
+#
+# North Star #9: the analyst is a learning participant, not a narrator. Given the
+# code-owned BASELINE conviction (pipeline.insight.conviction_baseline) it may
+# genuinely move the grade -- but only one step along the ordered _CONVICTIONS
+# scale, and that bound is CLAMPED in code (never trusted to the model). On ANY
+# failure it falls back to the baseline + the deterministic rationale, so the
+# per-pick insight engine never blocks on the LLM.
+
+_CONVICTION_SYSTEM = (
+    "You are a conviction analyst for a swing trader. You receive a DETERMINISTIC "
+    "baseline conviction grade (already computed by a rules engine from the "
+    "strategy playbook), the strategy playbook itself, the signal's deterministic "
+    "facts, and external context. Weigh it all and decide the final conviction.\n\n"
+    "The conviction scale is ordered: avoid < low < medium < high. You may MOVE "
+    "the grade by AT MOST one step (+-1) from the baseline -- never jump further "
+    "(e.g. never go from 'high' to 'avoid'). Give a one-line reason for any change, "
+    "or say 'agree with baseline' if you keep it. NEVER invent or alter price "
+    "levels. Use the web_search tool to check current sentiment / sector trends "
+    "that bear on the thesis; cite sources for external claims.\n\n"
+    "Output ONLY the finished assessment. Do NOT narrate your process or include "
+    "preamble. Format your reply EXACTLY like this:\n"
+    "CONVICTION: <avoid|low|medium|high>\n"
+    "REASON: <one line -- why you moved it, or 'agree with baseline'>\n"
+    "<then the insight prose: where this pick sits vs the playbook, the external "
+    "context that bears on the thesis, and the single biggest risk>"
+)
+
+
+@dataclass(frozen=True)
+class ConvictionResult:
+    conviction: str  # final, AFTER the code clamp -- always within +-1 of baseline
+    nudge_reason: str
+    insight: str
+    is_deep: bool = False  # True only when the Opus path actually produced this
+
+
+def _conviction_prompt(facts: SignalFacts, baseline: str, playbook_text: str,
+                       context_text: str) -> str:
+    return (
+        f"Signal for {facts.ticker} ({facts.timeframe}, {facts.trade_type}). The "
+        "image above (if any) is its annotated chart.\n\n"
+        f"Deterministic BASELINE conviction (the starting point): {baseline}\n\n"
+        f"Strategy playbook (the edge this baseline keys on):\n{playbook_text}\n\n"
+        "Deterministic signal facts (ground truth -- do not change levels):\n"
+        f"{_facts_lines(facts)}\n"
+        f"{context_text}\n\n"
+        "Decide the final conviction (at most +-1 from the baseline), give your "
+        "one-line reason, then write the insight."
+    )
+
+
+def _conviction_user_content(facts: SignalFacts, baseline: str, playbook_text: str,
+                             chart_bytes: bytes | None, context_text: str) -> list[dict]:
+    """User content array: chart image FIRST (best practice), then the text block."""
+    content: list[dict] = []
+    if chart_bytes:
+        content.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": base64.standard_b64encode(chart_bytes).decode("ascii"),
+            },
+        })
+    content.append({
+        "type": "text",
+        "text": _conviction_prompt(facts, baseline, playbook_text, context_text),
+    })
+    return content
+
+
+def _clamp_conviction(parsed: str, baseline: str) -> str:
+    """Clamp the model's grade to +-1 of the baseline, in CODE -- never trusting the
+    model to respect the bound. An unrecognized grade falls back to the baseline.
+    """
+    parsed = parsed.strip().lower()
+    base_idx = _CONVICTIONS.index(baseline)
+    if parsed not in _CONVICTIONS:
+        return baseline
+    idx = _CONVICTIONS.index(parsed)
+    idx = max(base_idx - 1, min(base_idx + 1, idx))
+    return _CONVICTIONS[idx]
+
+
+def _parse_conviction(text: str, baseline: str) -> tuple[str, str, str]:
+    """Split a reply into (clamped_conviction, reason, insight). The first
+    ``CONVICTION:`` and ``REASON:`` lines are the grade + reason; everything else is
+    the insight prose. The grade is clamped to +-1 of the baseline in code."""
+    raw = baseline
+    reason = "agree with baseline"
+    rest: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.upper().startswith("CONVICTION:"):
+            raw = stripped.split(":", 1)[1].strip()
+        elif stripped.upper().startswith("REASON:"):
+            reason = stripped.split(":", 1)[1].strip()
+        else:
+            rest.append(line)
+    insight = "\n".join(rest).strip()
+    return _clamp_conviction(raw, baseline), reason, insight
+
+
+def analyze_conviction(
+    facts: SignalFacts, *, baseline: str, playbook_text: str, context_text: str = "",
+    chart_bytes: bytes | None = None, client: anthropic.Anthropic | None = None,
+    model: str = "claude-opus-4-8", reasoning: str = "high", max_searches: int = 4,
+    web_search: bool = True,
+) -> ConvictionResult:
+    """Let the Opus analyst MOVE the deterministic baseline conviction (bounded +-1,
+    clamped in code) and write the per-pick insight. Falls back to the baseline +
+    the deterministic rationale on ANY failure (missing key, API/tool error, empty
+    reply, unparseable) so the insight engine never blocks on the LLM.
+
+    web_search is wired in (optional, default-on) so the analyst can pull live
+    sentiment/sector context that genuinely bears on the thesis -- the point of the
+    "learning participant" seam; citations get appended to the insight.
+    """
+    try:
+        client = client or anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
+        kwargs: dict = {
+            "model": model,
+            "max_tokens": _REASONING_MAX_TOKENS.get(reasoning, 16000),
+            "system": _CONVICTION_SYSTEM,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": _conviction_user_content(
+                        facts, baseline, playbook_text, chart_bytes, context_text
+                    ),
+                }
+            ],
+        }
+        effort = _REASONING_EFFORT.get(reasoning)
+        if effort is not None:  # opus-4.8+ adaptive thinking; "none"/unknown omits it
+            kwargs["thinking"] = {"type": "adaptive"}
+            kwargs["output_config"] = {"effort": effort}
+        if web_search:
+            kwargs["tools"] = [
+                {"type": "web_search_20250305", "name": "web_search", "max_uses": max_searches}
+            ]
+        resp = _create_message(client, kwargs)
+        text, sources = _extract_text_and_citations(resp)
+        if not text.strip():
+            raise ValueError("empty model response")
+        conviction, reason, insight = _parse_conviction(text, baseline)
+        insight += _format_sources(sources) if sources else ""
+        return ConvictionResult(
+            conviction=conviction, nudge_reason=reason, insight=insight, is_deep=True
+        )
+    except Exception:
+        log.warning(
+            "conviction analysis failed for %s %s; using baseline + deterministic rationale",
+            facts.ticker, facts.timeframe, exc_info=True,
+        )
+        return ConvictionResult(
+            conviction=baseline,
+            nudge_reason="(baseline; analyst unavailable)",
+            insight=_deterministic_rationale(facts),
+            is_deep=False,
+        )
