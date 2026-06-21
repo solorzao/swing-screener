@@ -226,9 +226,10 @@ def execution_logs_for_day(
     """ExecutionLog rows for ``run_date`` + ``account`` that COUNT against the hard limits.
 
     The source for the per-day notional / loss sums: only rows whose order actually
-    submitted (``status`` in ``recorded`` / ``filled_paper``) load against the limits;
-    ``skipped`` / ``rejected`` are excluded. ``==`` / ``.in_(...)`` render portably to
-    SQL Server (no boolean ``.is_()``)."""
+    submitted (``status`` in ``recorded`` / ``filled_paper`` / ``submitted_live`` /
+    ``filled_live``) load against the limits; ``skipped`` / ``canceled`` / ``rejected_live`` /
+    ``rejected`` are excluded. ``==`` / ``.in_(...)`` render portably to SQL Server (no
+    boolean ``.is_()``)."""
     stmt = select(ExecutionLog).where(
         ExecutionLog.run_date == run_date,
         ExecutionLog.account == account,
