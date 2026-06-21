@@ -93,6 +93,11 @@ def _materialize_fills(session: Session, broker: BrokerClient, *, today: date) -
         order = broker.get_order(log.broker_order_id)
 
         if order.status in _FILLED_STATUSES and order.filled_qty > 0:
+            # NOTE (Phase-4 scope): a `partially_filled` order is materialized as-if-complete
+            # at its filled_avg_price and the log is flipped out of submitted_live, so the
+            # residual (unfilled) shares are NOT later reconciled. Harmless here -- PaperTrade
+            # is size-agnostic for realized_r, and whole-share Alpaca-paper fills are
+            # effectively atomic -- but a Phase-5 partial/fractional model should track qty.
             if order.filled_avg_price is None:
                 continue  # filled but no price yet -> re-poll next cycle, never guess.
             entry_price = order.filled_avg_price
@@ -109,7 +114,9 @@ def _materialize_fills(session: Session, broker: BrokerClient, *, today: date) -
                 continue
             session.add(_materialized_trade(log, entry_price=entry_price, risk=risk, today=today))
             # The idempotency guard: flip the log out of `submitted_live` so a re-poll never
-            # re-materializes this fill.
+            # re-materializes this fill. `broker_status` is stamped once here (a point-in-time
+            # submit/fill record); the live PaperTrade -- not this log -- tracks the position
+            # from here, so later broker status changes short of a close aren't re-written.
             log.status = "filled_live"
             log.broker_status = order.status
             changed += 1
