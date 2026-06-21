@@ -32,6 +32,12 @@ def test_execution_settings_default_to_off_and_no_caps(monkeypatch):
     assert s.max_concurrent is None
 
 
+def test_execution_mode_manual(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("SWING_EXECUTION_MODE", "manual")
+    assert load_settings().execution_mode == "manual"  # a valid mode, not coerced to off
+
+
 def test_execution_mode_paper(monkeypatch):
     _clear(monkeypatch)
     monkeypatch.setenv("SWING_EXECUTION_MODE", "paper")

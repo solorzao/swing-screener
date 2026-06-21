@@ -57,6 +57,7 @@ from swing_screener.pipeline.broker_alpaca import build_broker
 from swing_screener.pipeline.execution import (
     ExecutionAdapter,
     LiveAdapter,
+    ManualAdapter,
     NoOpAdapter,
     OrderResult,
     PaperAdapter,
@@ -221,12 +222,15 @@ def _already_sent(session: Session, kind: str, run_date: date) -> bool:
 def _adapter_for_mode(mode: str, *, broker: BrokerClient | None = None) -> ExecutionAdapter:
     """Resolve the configured execution mode to its adapter (prod path; tests inject one).
 
-    ``"paper"`` opens simulated fills; ``"live"`` submits one order to a real broker through
-    the injected ``broker`` -- but ONLY when a broker is configured: a stray ``live`` config
-    with NO broker can never place an order, so it falls back to the NoOp with a loud warning.
-    Everything else -- ``"off"`` (the default) -- resolves to the NoOp adapter, which writes
-    nothing (exactly today's behavior).
+    ``"manual"`` RECORDS an order ticket for the human to place by hand (no broker, no
+    position -- money never moves); ``"paper"`` opens simulated fills; ``"live"`` submits one
+    order to a real broker through the injected ``broker`` -- but ONLY when a broker is
+    configured: a stray ``live`` config with NO broker can never place an order, so it falls
+    back to the NoOp with a loud warning. Everything else -- ``"off"`` (the default) --
+    resolves to the NoOp adapter, which writes nothing (exactly today's behavior).
     """
+    if mode == "manual":
+        return ManualAdapter()  # needs no broker -- it only records a ticket
     if mode == "paper":
         return PaperAdapter()
     if mode == "live":

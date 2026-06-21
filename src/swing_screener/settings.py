@@ -50,7 +50,7 @@ class Settings:
     # Execution master switch + hard-limit caps (for the execution adapter). The switch
     # FAILS SAFE: default "off" and any unknown value coerces back to "off" -- the screener
     # never accidentally arms. The caps are optional (None -> the adapter applies no cap).
-    execution_mode: str  # one of off/paper/live
+    execution_mode: str  # one of off/manual/paper/live
     max_daily_notional: float | None
     max_daily_loss: float | None
     max_concurrent: int | None
@@ -64,7 +64,7 @@ class Settings:
 
 _TRUE = {"1", "true", "yes", "on"}
 _REASONING = {"none", "low", "medium", "high"}
-_EXECUTION_MODES = {"off", "paper", "live"}
+_EXECUTION_MODES = {"off", "manual", "paper", "live"}
 
 
 @dataclass(frozen=True)
