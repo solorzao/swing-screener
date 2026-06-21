@@ -75,10 +75,26 @@ class SignalFacts:
 
 
 @dataclass(frozen=True)
+class Usage:
+    """Token + web-search spend captured from one model call.
+
+    ``est_cost_usd`` is an APPROXIMATE list-price estimate (see ``_MODEL_PRICES``)
+    used only for a safety cap and cost visibility -- not billing-accurate. None on
+    the deterministic/fallback paths, where no model call was made.
+    """
+
+    input_tokens: int
+    output_tokens: int
+    web_searches: int
+    est_cost_usd: float
+
+
+@dataclass(frozen=True)
 class SignalAnalysis:
     core_reason: str
     rationale: str
     is_deep: bool = False  # True only when the Opus deep path actually produced this
+    usage: Usage | None = None  # token spend; None on the deterministic/fallback path
 
 
 def _deterministic_core(facts: SignalFacts) -> str:
@@ -283,6 +299,61 @@ def _format_sources(sources: list[tuple[str, str]]) -> str:
     return "\n\nSources:\n" + "\n".join(f"- {title}: {url}" for url, title in rows)
 
 
+# --- Token-spend capture: APPROXIMATE list-price estimate for the safety cap ----
+#
+# Per-model (input_$/MTok, output_$/MTok). Source: Anthropic published list prices
+# (claude-api skill model table, cached 2026-06-04; matches the public pricing page).
+# This is an APPROXIMATE estimate -- it ignores prompt-cache discounts and image
+# tokens -- used only for cost visibility and the Task-2 safety cap, never billing.
+_MODEL_PRICES: dict[str, tuple[float, float]] = {
+    "claude-opus-4-8": (5.0, 25.0),
+    "claude-opus-4-7": (5.0, 25.0),
+    "claude-sonnet-4-6": (3.0, 15.0),
+}
+# Web search list price: $10 per 1,000 searches == $0.01 per search (Anthropic docs,
+# web-search tool "Usage and pricing"). Also approximate.
+_WEB_SEARCH_COST_USD = 0.01
+
+
+def _count_web_searches(usage: object) -> int:
+    """Web searches the API reports for this call, best-effort -> 0.
+
+    The Messages API surfaces the count at ``usage.server_tool_use.web_search_requests``
+    (an int). Anything missing/None/non-int yields 0 rather than crashing the analyst.
+    """
+    stu = getattr(usage, "server_tool_use", None)
+    n = getattr(stu, "web_search_requests", None)
+    return n if isinstance(n, int) and n >= 0 else 0
+
+
+def _capture_usage(resp: object, model: str) -> Usage | None:
+    """Build a ``Usage`` from ``resp.usage``, or None if it's missing/None.
+
+    GUARDED: a response with no ``usage`` (or ``usage is None``) returns None so the
+    capture never crashes the analyst. ``est_cost_usd`` is the approximate list-price
+    estimate (unknown model -> token term 0); web searches always add their per-call
+    cost so a search-heavy unpriced model still shows nonzero spend.
+    """
+    usage = getattr(resp, "usage", None)
+    if usage is None:
+        return None
+    in_tok = getattr(usage, "input_tokens", None) or 0
+    out_tok = getattr(usage, "output_tokens", None) or 0
+    searches = _count_web_searches(usage)
+    in_price, out_price = _MODEL_PRICES.get(model, (0.0, 0.0))
+    est = (
+        in_tok / 1_000_000 * in_price
+        + out_tok / 1_000_000 * out_price
+        + searches * _WEB_SEARCH_COST_USD
+    )
+    return Usage(
+        input_tokens=int(in_tok),
+        output_tokens=int(out_tok),
+        web_searches=searches,
+        est_cost_usd=est,
+    )
+
+
 def _create_message(client: anthropic.Anthropic, kwargs: dict) -> object:
     """messages.create, retrying once WITHOUT the reasoning params if the model
     rejects them. Models differ on the thinking API (opus-4.8 wants adaptive +
@@ -334,7 +405,10 @@ def analyze_signal_deep(
             raise ValueError("empty model response")
         analysis = _parse(text, facts)
         rationale = analysis.rationale + (_format_sources(sources) if sources else "")
-        return SignalAnalysis(core_reason=analysis.core_reason, rationale=rationale, is_deep=True)
+        return SignalAnalysis(
+            core_reason=analysis.core_reason, rationale=rationale, is_deep=True,
+            usage=_capture_usage(resp, model),
+        )
     except Exception:
         log.warning(
             "deep analysis failed for %s %s; using deterministic fallback",
@@ -522,6 +596,7 @@ class ConvictionResult:
     nudge_reason: str
     insight: str
     is_deep: bool = False  # True only when the Opus path actually produced this
+    usage: Usage | None = None  # token spend; None on the deterministic/fallback path
 
 
 def _conviction_prompt(facts: SignalFacts, baseline: str, playbook_text: str,
@@ -636,7 +711,8 @@ def analyze_conviction(
         conviction, reason, insight = _parse_conviction(text, baseline)
         insight += _format_sources(sources) if sources else ""
         return ConvictionResult(
-            conviction=conviction, nudge_reason=reason, insight=insight, is_deep=True
+            conviction=conviction, nudge_reason=reason, insight=insight, is_deep=True,
+            usage=_capture_usage(resp, model),
         )
     except Exception:
         log.warning(
