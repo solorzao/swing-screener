@@ -15,6 +15,7 @@ from swing_screener.db.models import (
     AnalystCall,
     Base,
     EmailLog,
+    ExecutionLog,
     ExitEvent,
     PaperTrade,
     Signal,
@@ -31,6 +32,8 @@ def test_ticker_columns_bounded_to_16() -> None:
     # analyst_calls.ticker is indexed, so it must stay bounded (Azure SQL can't
     # index NVARCHAR(max)).
     assert AnalystCall.__table__.c.ticker.type.length == 16
+    # execution_logs.ticker is indexed too -- same constraint.
+    assert ExecutionLog.__table__.c.ticker.type.length == 16
 
 
 def test_analyst_call_string_lengths() -> None:
@@ -40,6 +43,28 @@ def test_analyst_call_string_lengths() -> None:
     assert AnalystCall.__table__.c.final_conviction.type.length == 16
     assert AnalystCall.__table__.c.nudge_reason.type.length == 512
     assert AnalystCall.__table__.c.model.type.length == 64
+
+
+def test_execution_log_string_lengths() -> None:
+    assert ExecutionLog.__table__.c.timeframe.type.length == 32
+    assert ExecutionLog.__table__.c.play_type.type.length == 16
+    assert ExecutionLog.__table__.c.account.type.length == 16
+    assert ExecutionLog.__table__.c.mode.type.length == 16
+    assert ExecutionLog.__table__.c.side.type.length == 8
+    assert ExecutionLog.__table__.c.status.type.length == 16
+    assert ExecutionLog.__table__.c.detail.type.length == 512
+    assert ExecutionLog.__table__.c.idempotency_key.type.length == 64
+
+
+def test_execution_log_idempotency_unique_constraint() -> None:
+    matches = [
+        c
+        for c in ExecutionLog.__table__.constraints
+        if isinstance(c, UniqueConstraint)
+        and c.name == "uq_execution_logs_idempotency_key"
+    ]
+    assert len(matches) == 1
+    assert {c.name for c in matches[0].columns} == {"idempotency_key"}
 
 
 def test_representative_string_lengths() -> None:

@@ -4,13 +4,15 @@ from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import CursorResult, delete, select, update
+from sqlalchemy import CursorResult, delete, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from swing_screener.db.models import (
     AnalysisRequest,
     AnalystCall,
     EmailLog,
+    ExecutionLog,
     ExitEvent,
     PaperTrade,
     Signal,
@@ -184,6 +186,63 @@ def score_analyst_calls(session: Session) -> int:
         scored += 1
     session.commit()
     return scored
+
+
+# the statuses that COUNT against the per-day hard limits: a row only loads against the
+# notional/loss sums if the order actually submitted. ``skipped`` / ``rejected`` never did.
+_LIMIT_COUNTING_STATUSES = ("recorded", "filled_paper")
+
+
+def add_execution_log(session: Session, **fields: object) -> ExecutionLog:
+    """Append one ExecutionLog row; the unique ``idempotency_key`` makes it idempotent.
+
+    The Phase 3 idempotency guard: every adapter call carries an ``idempotency_key``
+    unique per intent x run, so a force-resent or hourly-digest re-run that tries to log
+    the SAME order hits the unique constraint. On that ``IntegrityError`` we roll back and
+    return the EXISTING row for that key -- a no-op that hands back the first record rather
+    than double-submitting. add -> commit -> refresh on the happy path.
+    """
+    row = ExecutionLog(**fields)
+    session.add(row)
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        key = fields["idempotency_key"]
+        existing = session.scalars(
+            select(ExecutionLog).where(ExecutionLog.idempotency_key == key)
+        ).one()
+        return existing
+    session.refresh(row)
+    return row
+
+
+def execution_logs_for_day(
+    session: Session, *, run_date: date, account: str
+) -> list[ExecutionLog]:
+    """ExecutionLog rows for ``run_date`` + ``account`` that COUNT against the hard limits.
+
+    The source for the per-day notional / loss sums: only rows whose order actually
+    submitted (``status`` in ``recorded`` / ``filled_paper``) load against the limits;
+    ``skipped`` / ``rejected`` are excluded. ``==`` / ``.in_(...)`` render portably to
+    SQL Server (no boolean ``.is_()``)."""
+    stmt = select(ExecutionLog).where(
+        ExecutionLog.run_date == run_date,
+        ExecutionLog.account == account,
+        ExecutionLog.status.in_(_LIMIT_COUNTING_STATUSES),
+    )
+    return list(session.scalars(stmt))
+
+
+def count_open_positions(session: Session, *, account: str) -> int:
+    """Count of OPEN ``PaperTrade`` rows for ``account`` (the per-account position cap).
+
+    ``== "open"`` / ``== account`` render ``col = 'x'`` (portable to SQL Server), not a
+    boolean ``.is_()``."""
+    stmt = select(func.count()).select_from(PaperTrade).where(
+        PaperTrade.status == "open", PaperTrade.account == account
+    )
+    return session.scalar(stmt) or 0
 
 
 def record_exit_event(session: Session, *, is_paper: bool, trade_id: int | None,

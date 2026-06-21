@@ -25,9 +25,9 @@ from alembic.config import Config  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_TABLES = {"universe", "signals", "trades", "paper_trades", "exit_events",
-                   "email_log", "analyst_calls"}
+                   "email_log", "analyst_calls", "execution_logs"}
 TICKER_INDEXES = {"ix_signals_ticker", "ix_trades_ticker", "ix_paper_trades_ticker",
-                  "ix_analyst_calls_ticker"}
+                  "ix_analyst_calls_ticker", "ix_execution_logs_ticker"}
 # slicing indexes the shadow book relies on (arm/variant/account A/B + isolation).
 PAPER_TRADE_INDEXES = {"ix_paper_trades_arm", "ix_paper_trades_variant",
                        "ix_paper_trades_account"}

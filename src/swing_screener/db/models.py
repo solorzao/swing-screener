@@ -202,6 +202,49 @@ class AnalystCall(Base):
     scored_at: Mapped[date | None] = mapped_column(default=None)
 
 
+class ExecutionLog(Base):
+    """One append-only execution record, shared by all Phase 3 execution adapters.
+
+    This single table does quadruple duty: (1) the IDEMPOTENCY guard -- a unique
+    ``idempotency_key`` per intent x run so a force-resent or hourly-digest re-run
+    never double-submits the same order; (2) the AUDIT trail of every adapter
+    decision; (3) the SOURCE for the hard-limit sums (per-day notional / loss),
+    which read the rows whose ``status`` counts against the limits; and (4) the
+    order ticket the ``manual`` adapter records. ``ticker`` is indexed for per-name
+    lookups; every string column is bounded so Azure SQL can index it
+    (NVARCHAR(max) is un-indexable).
+    """
+
+    __tablename__ = "execution_logs"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_execution_logs_idempotency_key"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_date: Mapped[date]
+    # pick keys: which signal/intent this execution record belongs to.
+    ticker: Mapped[str] = mapped_column(String(16), index=True)
+    timeframe: Mapped[str] = mapped_column(String(32))
+    play_type: Mapped[str] = mapped_column(String(16))
+    run_date: Mapped[date]
+    # which book + adapter mode produced the record.
+    account: Mapped[str] = mapped_column(String(16))
+    mode: Mapped[str] = mapped_column(String(16))
+    # the order spec (the ticket).
+    side: Mapped[str] = mapped_column(String(8))
+    limit_price: Mapped[float]
+    shares: Mapped[int]
+    stop: Mapped[float]
+    target: Mapped[float]
+    risk_dollars: Mapped[float]
+    notional: Mapped[float]
+    # the outcome: recorded / filled_paper / skipped / rejected, plus a human detail.
+    status: Mapped[str] = mapped_column(String(16))
+    detail: Mapped[str] = mapped_column(String(512))
+    # the idempotency guard: unique per intent x run (see uq above).
+    idempotency_key: Mapped[str] = mapped_column(String(64))
+
+
 class AnalysisRequest(Base):
     """Queue row for an on-demand single-ticker deep-analysis report."""
 
