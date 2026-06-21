@@ -9,6 +9,11 @@ pluggable adapters behind a single :class:`ExecutionAdapter` protocol:
 * :class:`ManualAdapter` (``name="manual"``) -- RECORDS an order ticket to the
   ``execution_logs`` audit table for the human to place by hand. Money never moves
   here: no paper position is opened, no broker is called.
+* :class:`PaperAdapter` (``name="paper"``) -- OPENS one FILLED ``PaperTrade`` tagged
+  ``account="paper"`` from the intent's fixed levels. No new lifecycle code: the
+  EXISTING shadow stepper (``advance_open`` / ``evaluate_exit``) then fills, trails, and
+  closes it. The ``account="paper"`` tag keeps the curated intent book out of every
+  research aggregate; still real-money-free (no broker is called).
 
 The load-bearing safety lives in two places, both INSIDE ``submit`` (never trusting
 the caller):
@@ -45,17 +50,28 @@ from typing import Protocol
 
 from sqlalchemy.orm import Session
 
+from sqlalchemy import select
+
+from swing_screener.db.models import ExecutionLog, PaperTrade
 from swing_screener.db.repo import (
     add_execution_log,
     count_open_positions,
     execution_logs_for_day,
     realized_r_on,
+    save_paper_trades,
 )
+from swing_screener.pipeline.arms import BASELINE
 from swing_screener.pipeline.insight import OrderIntent
+from swing_screener.pipeline.variants import DEFAULT_VARIANT
 from swing_screener.settings import Limits
 
 # the account the manual adapter books tickets under -- NOT "paper" / "research".
 MANUAL_ACCOUNT = "manual"
+# the curated intent book: the paper adapter opens simulated fills here. Deliberately
+# NOT "research" (the auto-booked grid) -- the account tag fences these out of every
+# research aggregate (leaderboards + analyst calibration) while still letting the shared
+# stepper advance them (load_open_paper_trades is account-inclusive).
+PAPER_ACCOUNT = "paper"
 # the NoOp adapter touches no book; it reports the research account purely as a label.
 OFF_ACCOUNT = "research"
 
@@ -205,4 +221,129 @@ class ManualAdapter:
         return OrderResult(
             status="recorded", account=MANUAL_ACCOUNT, detail="order ticket recorded",
             trade_id=None,
+        )
+
+
+class PaperAdapter:
+    """The ("paper") adapter: OPENS a simulated position from an ``OrderIntent``.
+
+    ``submit`` opens ONE filled ``PaperTrade`` (``account="paper"``) at the intent's
+    fixed levels, then returns -- the EXISTING shadow stepper (``advance_open`` /
+    ``evaluate_exit``) does all the fill/trail/close lifecycle, so no new lifecycle code
+    lives here. The opened row mirrors the shadow book's freshly-filled open trade
+    (concrete ``entry_price`` + strictly-positive ``risk``, ``high_water=entry_price``,
+    ``hold_bars=0``, ``remaining_frac=1.0``, ``partial_done=False``) so the stepper's
+    invariants (it asserts a concrete entry + risk) hold and its realized-R division
+    never hits a zero divisor.
+
+    Safety, all INSIDE ``submit`` (never trusting the caller): the hard limits are
+    re-checked first (a breach CLAMPS to a logged ``skipped`` row, opening nothing); a
+    non-positive risk (``limit_price <= stop``) is ``rejected`` (logged, opens nothing)
+    rather than booked as a degenerate fill; and it is idempotent per ``(pick, run,
+    side)`` -- a duplicate submit hands back the prior fill WITHOUT opening a second
+    position (guarded on the existing ``filled_paper`` log for the key, belt-and-braces
+    with the ExecutionLog unique constraint)."""
+
+    name = "paper"
+
+    def submit(
+        self, intent: OrderIntent, *, session: Session, run_date: date, limits: Limits
+    ) -> OrderResult:
+        key = idempotency_key(intent, run_date)
+
+        # No-double-open guard: if this intent x run already opened a paper position
+        # (a `filled_paper` log row for `key`), hand the prior fill back rather than
+        # opening a second one. The ExecutionLog unique key alone would dedupe the LOG,
+        # but the PaperTrade has no such constraint -- so we must short-circuit here.
+        prior = session.scalars(
+            select(ExecutionLog).where(
+                ExecutionLog.idempotency_key == key,
+                ExecutionLog.status == "filled_paper",
+            )
+        ).first()
+        if prior is not None:
+            existing_open = session.scalars(
+                select(PaperTrade).where(
+                    PaperTrade.account == PAPER_ACCOUNT,
+                    PaperTrade.ticker == intent.ticker,
+                    PaperTrade.timeframe == intent.timeframe,
+                    PaperTrade.play_type == intent.play_type,
+                    PaperTrade.opened_date == run_date,
+                )
+            ).first()
+            return OrderResult(
+                status="filled_paper", account=PAPER_ACCOUNT,
+                detail="paper position already open",
+                trade_id=existing_open.id if existing_open is not None else None,
+            )
+
+        reason = _limit_block(
+            session, intent, run_date=run_date, account=PAPER_ACCOUNT, limits=limits)
+        if reason is not None:
+            # CLAMP: log the breach for audit; open NOTHING. The skipped status is
+            # excluded from the limit-counting sums, so it never feeds back into the caps.
+            self._log(session, intent, run_date=run_date, key=key,
+                      status="skipped", detail=reason)
+            return OrderResult(status="skipped", account=PAPER_ACCOUNT, detail=reason)
+
+        risk = intent.limit_price - intent.stop
+        if risk <= 0:
+            # A non-positive risk can't be honestly traded (the stepper would divide by
+            # it for realized R) -> reject; log for audit, open nothing.
+            detail = "non-positive risk"
+            self._log(session, intent, run_date=run_date, key=key,
+                      status="rejected", detail=detail)
+            return OrderResult(status="rejected", account=PAPER_ACCOUNT, detail=detail)
+
+        # Open ONE filled paper trade, mirroring the shadow book's freshly-filled open
+        # row (shadow.open_from_signals): concrete entry + positive risk, status="open",
+        # hold_bars=0; the runner-state defaults (high_water, remaining_frac=1.0,
+        # partial_done=False) are seeded so the stepper reads concrete state from bar 1.
+        pt = PaperTrade(
+            account=PAPER_ACCOUNT,
+            arm=BASELINE,
+            variant=DEFAULT_VARIANT,
+            ticker=intent.ticker,
+            timeframe=intent.timeframe,
+            horizon="",
+            play_type=intent.play_type,
+            signal_id=None,  # intents aren't 1:1 with a persisted signal (Phase-2 convention)
+            signal_score=0.0,
+            rank=0,
+            fill_status="filled",
+            status="open",
+            entry_price=intent.limit_price,
+            entry_date=run_date,
+            opened_date=run_date,
+            stop=intent.stop,
+            target=intent.target,
+            risk=risk,
+            hold_bars=0,
+            remaining_frac=1.0,
+            partial_done=False,
+            high_water=intent.limit_price,
+        )
+        save_paper_trades(session, [pt])  # add + commit -> pt.id is populated
+
+        self._log(session, intent, run_date=run_date, key=key,
+                  status="filled_paper", detail="paper position opened")
+        return OrderResult(
+            status="filled_paper", account=PAPER_ACCOUNT,
+            detail="paper position opened", trade_id=pt.id,
+        )
+
+    @staticmethod
+    def _log(
+        session: Session, intent: OrderIntent, *, run_date: date, key: str,
+        status: str, detail: str,
+    ) -> None:
+        """Append one paper ExecutionLog row (idempotent via the unique ``key``)."""
+        add_execution_log(
+            session, created_date=run_date, ticker=intent.ticker,
+            timeframe=intent.timeframe, play_type=intent.play_type, run_date=run_date,
+            account=PAPER_ACCOUNT, mode="paper", side=intent.side,
+            limit_price=intent.limit_price, shares=intent.shares, stop=intent.stop,
+            target=intent.target, risk_dollars=intent.risk_dollars,
+            notional=notional(intent), status=status, detail=detail,
+            idempotency_key=key,
         )
