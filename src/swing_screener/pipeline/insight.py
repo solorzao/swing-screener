@@ -61,6 +61,8 @@ class OrderIntent:
     # it's computed where needed rather than stored.
     side: str = "long"
     limit_price: float = 0.0
+    # Reserved for the Phase-4 live broker order: the manual ticket + paper adapter execute at
+    # ``limit_price`` regardless, so these are carried-but-unused until a real broker reads them.
     order_type: str = "market"
     time_in_force: str = "day"
 
