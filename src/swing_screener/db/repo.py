@@ -82,7 +82,22 @@ def save_paper_trades(session: Session, trades: Sequence[PaperTrade]) -> None:
 
 
 def load_open_paper_trades(session: Session) -> list[PaperTrade]:
+    """Every OPEN paper trade, ACROSS ALL accounts. Intentionally NOT filtered by
+    ``account`` -- ``advance_open`` must keep stepping the curated intent book's open
+    trades alongside the research grid; only the CLOSED-trade aggregates are pinned to
+    ``account == "research"``."""
     stmt = select(PaperTrade).where(PaperTrade.status == "open")
+    return list(session.scalars(stmt))
+
+
+def load_research_paper_trades(session: Session) -> list[PaperTrade]:
+    """Every paper trade in the RESEARCH grid (``account == "research"``), open or closed.
+
+    The performance/leaderboard loader: ``summarize`` / ``breakdown`` filter to
+    closed-filled internally, so this only needs to fence off the curated intent book
+    (``account == "paper"``) from the research leaderboards. ``== "research"`` renders
+    ``account = 'x'`` (portable to SQL Server), not a boolean ``.is_()``."""
+    stmt = select(PaperTrade).where(PaperTrade.account == "research")
     return list(session.scalars(stmt))
 
 
@@ -92,10 +107,15 @@ def load_closed_paper_trades(
 ) -> list[PaperTrade]:
     """Filled trades that have closed with a realized result, optionally faceted by
     play_type / arm / variant. The reflection grades the LIVE forward book at
-    (arm=BASELINE, variant=DEFAULT_VARIANT) per play type."""
+    (arm=BASELINE, variant=DEFAULT_VARIANT) per play type.
+
+    Pinned to the research grid (``account == "research"``) so a future curated intent
+    book (paper-executed OrderIntents under ``account == "paper"``) never inflates the
+    leaderboard or the analyst calibration. ``== "research"`` renders ``account = 'x'``
+    (portable to SQL Server), not a boolean ``.is_()``."""
     stmt = select(PaperTrade).where(
         PaperTrade.status == "closed", PaperTrade.fill_status == "filled",
-        PaperTrade.realized_r.is_not(None),
+        PaperTrade.realized_r.is_not(None), PaperTrade.account == "research",
     )
     if play_type is not None:
         stmt = stmt.where(PaperTrade.play_type == play_type)
@@ -148,6 +168,7 @@ def score_analyst_calls(session: Session) -> int:
                 PaperTrade.ticker == call.ticker,
                 PaperTrade.timeframe == call.timeframe,
                 PaperTrade.play_type == call.play_type,
+                PaperTrade.account == "research",
                 PaperTrade.arm == BASELINE,
                 PaperTrade.variant == DEFAULT_VARIANT,
                 PaperTrade.status == "closed",

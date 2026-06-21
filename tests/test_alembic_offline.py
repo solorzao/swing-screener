@@ -28,6 +28,9 @@ EXPECTED_TABLES = {"universe", "signals", "trades", "paper_trades", "exit_events
                    "email_log", "analyst_calls"}
 TICKER_INDEXES = {"ix_signals_ticker", "ix_trades_ticker", "ix_paper_trades_ticker",
                   "ix_analyst_calls_ticker"}
+# slicing indexes the shadow book relies on (arm/variant/account A/B + isolation).
+PAPER_TRADE_INDEXES = {"ix_paper_trades_arm", "ix_paper_trades_variant",
+                       "ix_paper_trades_account"}
 
 
 def _config(db_url: str) -> Config:
@@ -53,6 +56,7 @@ def test_migration_creates_every_table_and_index(tmp_path, monkeypatch):
     assert EXPECTED_TABLES <= tables
     assert "alembic_version" in tables  # migration actually stamped a revision
     assert TICKER_INDEXES <= indexes
+    assert PAPER_TRADE_INDEXES <= indexes
 
 
 def test_migration_enforces_email_log_dedup(tmp_path, monkeypatch):

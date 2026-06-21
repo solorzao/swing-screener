@@ -481,7 +481,9 @@ def _render_closed(session: Session) -> None:
 
 def _render_performance(session: Session) -> None:
     ui.page_header("Screener Performance")
-    paper_trades = list(session.scalars(select(PaperTrade)))
+    # research grid only -- the curated intent book (account="paper") must never inflate
+    # the leaderboards.
+    paper_trades = repo.load_research_paper_trades(session)
     if not paper_trades:
         ui.empty_state("No shadow-book data yet.")
         return
@@ -754,8 +756,10 @@ def _render_overview(session: Session) -> None:
     candidates = len(repo.latest_signals(session, run_date)) if run_date else 0
     # headline win rate is the live screen (default variant) on the baseline exit arm, so
     # neither the extra exit arms nor the screen-variant books move the landing-page number.
+    # Pinned to the research grid so the curated intent book never moves the headline.
     baseline_trades = list(session.scalars(
-        select(PaperTrade).where(PaperTrade.arm == BASELINE,
+        select(PaperTrade).where(PaperTrade.account == "research",
+                                 PaperTrade.arm == BASELINE,
                                  PaperTrade.variant == DEFAULT_VARIANT)))
     win_rate = performance.summarize(baseline_trades).win_rate
 

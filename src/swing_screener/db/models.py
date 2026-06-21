@@ -95,6 +95,12 @@ class PaperTrade(Base):
     # (continuation vs reversal) in QC without a join.
     play_type: Mapped[str] = mapped_column(String(16), default="continuation", index=True)
     strength: Mapped[str | None] = mapped_column(String(16), default=None)
+    # which book this fill belongs to. "research" is the shadow grid (every screened
+    # signal x arm x variant, auto-booked); a future curated "intent" book paper-executes
+    # OrderIntents under "paper". The closed-trade research aggregates (leaderboards +
+    # analyst calibration) are pinned to "research" so the intent book never inflates
+    # them; open-trade stepping stays inclusive so paper trades still advance.
+    account: Mapped[str] = mapped_column(String(16), default="research", index=True)
     signal_id: Mapped[int | None] = mapped_column(ForeignKey("signals.id"), default=None)
     signal_score: Mapped[float]
     rank: Mapped[int]
