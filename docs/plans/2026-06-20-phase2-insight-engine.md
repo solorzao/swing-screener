@@ -158,7 +158,7 @@ def size_order(*, conviction, entry_ceiling, stop, risk_unit_dollars, max_shares
 - Conviction is a deterministic baseline (from the verdicts sidecar) the analyst can move **±1 with a logged reason** (clamp is code); on any LLM failure the baseline holds.
 - Every analyst call is persisted and **scored against the pick's shadow outcome**; the reflection surfaces the analyst's own conviction calibration (its judgment earns a track record — North Star #9).
 - Sizing is concrete + conviction-scaled off a configured risk unit (R-multiples when unconfigured); **levels are never set here; money never auto-moves** (decision-support; manual execution).
-- The `signal_id` join is fixed (paper trades link to their source signal).
+- Analyst calls are joined to their shadow outcome by a **convention join** (`(ticker, timeframe, play_type)` + the earliest fill `opened_date > run_date`), not a `signal_id` FK. *(Resolution: the shadow book fills the re-screened prior-bar signal, which has no persisted DB id, so a 1:1 FK isn't clean. `PaperTrade.signal_id` stays NULL by design; the convention join is robust and tested. Threading a persisted prior-run `signal_id` remains an optional future nicety — see Out of scope.)*
 
-## Out of scope (later phases)
-Execution adapters (manual/paper/robinhood) + autonomy + the kill switch (Phase 3); the analyst proposing its own variants / commissioned tests (Phase 4); auto-widening the ±1 nudge bound from the calibration.
+## Out of scope (later phases) / deferred
+Execution adapters (manual/paper/robinhood) + autonomy + the kill switch (Phase 3); the analyst proposing its own variants / commissioned tests (Phase 4); auto-widening the ±1 nudge bound from the calibration. **Deferred during build:** the on-demand ticker path (`notify/ondemand.py`) keeps the existing whole-ticker deep analysis (no single signal/levels to grade per pick); threading a persisted prior-run `signal_id` onto shadow fills (the convention join covers the learning loop without it).
