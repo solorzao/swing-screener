@@ -61,6 +61,12 @@ class PdfPick:
     shares: int = 0
     risk_dollars: float = 0.0
     edge_played: str = ""
+    # Execution (Task 6): the order ticket the adapter produced, when execution is armed.
+    # None for the "off" default -> the "Order ticket" block isn't rendered (today's output).
+    ticket_status: str | None = None
+    ticket_detail: str = ""
+    ticket_side: str = ""
+    ticket_limit_price: float = 0.0
 
 
 _CHART_WIDTH = 6.5 * inch
@@ -114,6 +120,23 @@ def _order_intent_flowables(p: PdfPick, styles: dict) -> list:
     )
     if p.edge_played:
         body += f"<br/><b>Edge:</b> {_xml_escape(p.edge_played)}"
+    return [Paragraph(body, styles["BodyText"]), Spacer(1, 0.1 * inch)]
+
+
+def _order_ticket_flowables(p: PdfPick, styles: dict) -> list:
+    """The "Order ticket" block for a pick whose intent the adapter dispatched, or empty
+    when execution is off (``ticket_status is None``) -- so the default PDF is unchanged.
+
+    Shows the deterministic order spec (side/limit/shares/stop/target, COPIED from the
+    intent) and the adapter's status (a skip carries its reason)."""
+    if p.ticket_status is None:
+        return []
+    spec = (
+        f"{p.ticket_side} {p.shares} {p.ticker} @&le; {p.ticket_limit_price:g}, "
+        f"stop {p.stop:g}, target {p.target:g}"
+    )
+    tail = f"skipped: {p.ticket_detail}" if p.ticket_status == "skipped" else p.ticket_status
+    body = f"<b>Order ticket:</b> {_xml_escape(spec)} &nbsp; {_xml_escape(tail)}"
     return [Paragraph(body, styles["BodyText"]), Spacer(1, 0.1 * inch)]
 
 
@@ -178,6 +201,8 @@ def build_story(picks: Sequence[PdfPick]) -> list:
         story.append(table)
         story.append(Spacer(1, 0.15 * inch))
         for flow in _order_intent_flowables(p, styles):
+            story.append(flow)
+        for flow in _order_ticket_flowables(p, styles):
             story.append(flow)
         if p.is_deep:  # flag the richer Opus output so it's distinguishable at a glance
             story.append(Paragraph(

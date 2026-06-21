@@ -103,6 +103,37 @@ def _clustered_ci_low(
     return min(iid_low, clustered_low), n_clusters, False
 
 
+def clustered_two_sample_delta_low(
+    a_by_ticker: Mapping[str, Sequence[float]],
+    b_by_ticker: Mapping[str, Sequence[float]],
+    *,
+    seed: int = _BOOT_SEED,
+    n_boot: int = _N_BOOT,
+    lower_pct: float = 2.5,
+) -> float:
+    """Lower ``lower_pct``-percentile bound on ``mean(a) - mean(b)``, resampling TICKERS
+    with replacement INDEPENDENTLY in each book (a two-sample clustered bootstrap, NOT
+    paired -- the two books are not the same sample).
+
+    The repo's honest two-sample primitive: it respects within-ticker correlation by
+    resampling whole clusters, so an edge concentrated on a couple of correlated names
+    cannot read as significant. Returns ``-inf`` if either book is empty (cannot certify).
+    Seeded -> deterministic. Shared by ``propose`` (config deltas, ticker-keyed R per
+    variant) and the conviction-calibration test (high vs low R per ticker)."""
+    a = {k: list(v) for k, v in a_by_ticker.items() if v}
+    b = {k: list(v) for k, v in b_by_ticker.items() if v}
+    if not a or not b:
+        return float("-inf")
+    rng = np.random.default_rng(seed)
+    at, bt = list(a), list(b)
+    deltas = np.empty(n_boot)
+    for i in range(n_boot):
+        am = np.concatenate([a[at[k]] for k in rng.integers(0, len(at), len(at))]).mean()
+        bm = np.concatenate([b[bt[k]] for k in rng.integers(0, len(bt), len(bt))]).mean()
+        deltas[i] = am - bm
+    return float(np.percentile(deltas, lower_pct))
+
+
 def summarize(trades: Iterable[PaperTrade]) -> PerformanceSummary:
     """Compute aggregate stats over ``trades``. Empty input yields all zeros."""
     trades = list(trades)

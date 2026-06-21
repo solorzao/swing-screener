@@ -4,9 +4,39 @@ from swing_screener.notify.body import (
     AlertLine,
     DigestPick,
     OrderIntentLine,
+    OrderTicketLine,
     compose_digest_body,
 )
 from swing_screener.notify.ticker_report import TickerReport, TimeframeRead
+
+
+def _ticket(**over):
+    base = dict(side="long", shares=40, ticker="AMD", limit_price=101.0,
+                stop=95.0, target=110.0, status="recorded", detail="order ticket recorded")
+    base.update(over)
+    return OrderTicketLine(**base)
+
+
+def test_order_ticket_renders_spec_and_status_in_body():
+    picks = [DigestPick("AMD", "", "medium", "r.", score=0.9, order_ticket=_ticket())]
+    c = compose_digest_body("daily", date(2026, 6, 15), picks, [], has_pdf=False)
+    assert "Order ticket: long 40 AMD @<= 101, stop 95, target 110 — recorded" in c.text
+    assert "Order ticket" in c.html  # surfaced in HTML too
+
+
+def test_order_ticket_skip_renders_reason():
+    picks = [DigestPick("AMD", "", "medium", "r.", score=0.9,
+                        order_ticket=_ticket(status="skipped",
+                                             detail="per-day notional cap: 5000 > 1000"))]
+    c = compose_digest_body("daily", date(2026, 6, 15), picks, [], has_pdf=False)
+    assert "skipped: per-day notional cap: 5000 > 1000" in c.text
+
+
+def test_no_order_ticket_renders_as_before():
+    picks = [DigestPick("AMD", "", "medium", "Daily continuation.", score=0.77)]
+    c = compose_digest_body("daily", date(2026, 6, 15), picks, [], has_pdf=False)
+    assert "Order ticket" not in c.text   # off picks unchanged
+    assert "Order ticket" not in c.html
 
 
 def test_order_intent_line_renders_in_body():

@@ -17,7 +17,7 @@ import hashlib
 import logging
 import os
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -47,19 +47,27 @@ from swing_screener.notify.body import (
     AlertLine,
     DigestPick,
     OrderIntentLine,
+    OrderTicketLine,
     compose_digest_body,
 )
 from swing_screener.notify.pdf import PdfPick, build_digest_pdf
 from swing_screener.notify.transport import resolve_sender
+from swing_screener.pipeline.execution import (
+    ExecutionAdapter,
+    NoOpAdapter,
+    OrderResult,
+    PaperAdapter,
+)
 from swing_screener.pipeline.exitcheck import ExitCheckResult, LatestBarsFn, run_exit_check
 from swing_screener.pipeline.insight import (
+    OrderIntent,
     build_order_intent,
     conviction_baseline,
     record_analyst_call,
 )
 from swing_screener.pipeline.regime import MARKET_PROXY, classify_regime
 from swing_screener.pipeline.reflect import load_verdicts
-from swing_screener.settings import load_settings, resolve_risk_unit
+from swing_screener.settings import load_settings, resolve_execution, resolve_risk_unit
 from swing_screener.storage.blob import blob_enabled, download_bytes
 
 log = logging.getLogger(__name__)
@@ -207,6 +215,50 @@ def _already_sent(session: Session, kind: str, run_date: date) -> bool:
     return session.scalars(stmt).first() is not None
 
 
+def _adapter_for_mode(mode: str) -> ExecutionAdapter:
+    """Resolve the configured execution mode to its adapter (prod path; tests inject one).
+
+    ``"paper"`` opens simulated fills; everything else -- ``"off"`` (the default) AND
+    ``"live"`` -- resolves to the NoOp adapter, which writes nothing. ``"live"`` is Phase 4:
+    until then it is deliberately NOT armed (a warning makes that explicit), so a stray
+    ``live`` config can never place a real order.
+    """
+    if mode == "paper":
+        return PaperAdapter()
+    if mode == "live":
+        log.warning("execution_mode=live is Phase 4; not executing")
+    return NoOpAdapter()
+
+
+def _ticket_line(intent: OrderIntent, result: OrderResult) -> OrderTicketLine:
+    """The renderer-facing ticket: the intent's deterministic order spec + the result."""
+    return OrderTicketLine(
+        side=intent.side, shares=intent.shares, ticker=intent.ticker,
+        limit_price=intent.limit_price, stop=intent.stop, target=intent.target,
+        status=result.status, detail=result.detail)
+
+
+def _attach_digest_tickets(
+    picks: list[DigestPick], tickets: dict[tuple[str, str], OrderTicketLine], play_type: str
+) -> list[DigestPick]:
+    """Re-stamp the dispatched picks with their order ticket (frozen -> ``replace``)."""
+    return [replace(p, order_ticket=tickets[(p.ticker, play_type)])
+            if (p.ticker, play_type) in tickets else p for p in picks]
+
+
+def _attach_pdf_tickets(
+    picks: list[PdfPick], tickets: dict[tuple[str, str], OrderTicketLine], play_type: str
+) -> list[PdfPick]:
+    """Re-stamp the dispatched PDF picks with their order ticket (frozen -> ``replace``)."""
+    out: list[PdfPick] = []
+    for p in picks:
+        t = tickets.get((p.ticker, play_type))
+        out.append(p if t is None else replace(
+            p, ticket_status=t.status, ticket_detail=t.detail,
+            ticket_side=t.side, ticket_limit_price=t.limit_price))
+    return out
+
+
 def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str | None = None,
                 pdf_dir: Path = Path(".digests"), anthropic_client: object | None = None,
                 smtp_send: SmtpSend | None = None, force: bool = False,
@@ -217,6 +269,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                 analyze_conviction_fn: Callable[..., ConvictionResult] | None = None,
                 edge_dir: Path = Path("edge"),
                 market_trend_fn: Callable[[], str | None] | None = None,
+                execution_adapter: ExecutionAdapter | None = None,
                 ) -> DigestResult:
     send = smtp_send or resolve_sender()  # env-driven transport (ACS or SMTP)
     recipient = to or get_secret("DIGEST_TO")
@@ -232,6 +285,11 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
     get_news = news_fn or market_context.get_recent_news
     deep_on = cfg.deep_analysis_enabled and kind in cfg.deep_analysis_kinds
     risk_unit, max_sh = resolve_risk_unit(cfg)  # per-trade sizing (0.0 -> R-multiples)
+    # Execution seam: tests inject a fake adapter; prod resolves it from the configured
+    # mode. The default mode is "off" -> NoOpAdapter (writes nothing, dispatches nothing),
+    # so the digest stays byte-for-byte today's behavior until execution is armed.
+    exec_mode, limits = resolve_execution(cfg)
+    adapter = execution_adapter or _adapter_for_mode(exec_mode)
 
     engine = get_engine(db_url)
     with Session(engine) as session:
@@ -265,8 +323,8 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         playbooks = {pt: _load_playbook(edge_dir, pt) for pt in ("continuation", "reversal")}
 
         def _deep_one(facts: SignalFacts, sig: Signal, play_type: str) -> tuple[
-                SignalAnalysis, OrderIntentLine | None]:
-            """Run ONE deep Opus call for a top-N pick and return (analysis, order_intent).
+                SignalAnalysis, OrderIntentLine | None, OrderIntent | None]:
+            """Run ONE deep Opus call for a top-N pick; return (analysis, line, intent).
 
             When the pick's play type has a playbook + verdicts sidecar, run the INSIGHT
             ENGINE: a deterministic conviction baseline, one Opus conviction call (which
@@ -283,7 +341,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                     client=anthropic_client,  # type: ignore[arg-type]  # test seam may be a fake
                     model=cfg.analysis_model, reasoning=cfg.analysis_reasoning,
                     max_searches=cfg.analysis_max_searches)
-                return analysis, None
+                return analysis, None, None
             playbook_text, verdicts = pb
             baseline, edge_label = conviction_baseline(
                 score=sig.score, volatility_tier=sig.volatility_tier,
@@ -309,20 +367,25 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                 risk_dollars=intent.risk_dollars, edge_played=edge_label,
                 entry_floor=intent.entry_floor, entry_ceiling=intent.entry_ceiling,
                 stop=intent.stop, target=intent.target)
-            return analysis, order_intent
+            return analysis, order_intent, intent
 
-        def _build_picks(sigs: list[Signal], *, play_type: str) -> tuple[
+        def _build_picks(sigs: list[Signal], *, play_type: str,
+                         collect_intents: list[OrderIntent]) -> tuple[
                 list[DigestPick], list[PdfPick]]:
             """Build the (DigestPick, PdfPick) lists for a set of signals. The top-N get the
             deep path (the insight engine when a playbook exists for ``play_type``, else the
-            legacy deep analyst); the rest get the cheap deterministic narration."""
+            legacy deep analyst); the rest get the cheap deterministic narration. Each built
+            ``OrderIntent`` is appended to ``collect_intents`` for the post-build dispatch --
+            rendering is unchanged here; nothing is dispatched inline."""
             dps: list[DigestPick] = []
             pps: list[PdfPick] = []
             for i, sig in enumerate(sigs):
                 facts = _facts(sig)
                 order_intent: OrderIntentLine | None = None
                 if deep_on and i < cfg.deep_analysis_top_n:
-                    analysis, order_intent = _deep_one(facts, sig, play_type)
+                    analysis, order_intent, built_intent = _deep_one(facts, sig, play_type)
+                    if built_intent is not None:
+                        collect_intents.append(built_intent)
                 else:
                     analysis = analyze_signal(facts, client=anthropic_client)  # type: ignore[arg-type]
                 name = names.get(sig.ticker, "")
@@ -343,18 +406,42 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                     edge_played=(order_intent.edge_played if order_intent else "")))
             return dps, pps
 
-        digest_picks, pdf_picks = _build_picks(picks, play_type="continuation")
+        collected_intents: list[OrderIntent] = []  # the run's built intents, for dispatch
+        digest_picks, pdf_picks = _build_picks(
+            picks, play_type="continuation", collect_intents=collected_intents)
         # Reversal "Top 5" -- daily digest only for now (weekly/monthly stay continuation).
         reversal_digest: list[DigestPick] | None = None
         reversal_pdf: list[PdfPick] = []
         if kind == "daily":
             reversal_digest, reversal_pdf = _build_picks(
                 sel.reversal_picks(session, run_date, max_age_days=cooldown),
-                play_type="reversal")
+                play_type="reversal", collect_intents=collected_intents)
 
         if deep_on:  # close the learning loop: score any now-resolved prior analyst calls
             n_scored = repo.score_analyst_calls(session)
             log.info("scored %d resolved analyst call(s)", n_scored)
+
+        # Batch-dispatch the run's order intents through the adapter in ONE try/except.
+        # GATED: the "off" NoOp adapter writes nothing and produces no ticket, so the
+        # digest stays byte-for-byte today's behavior; we skip the loop entirely for it.
+        # GRACEFUL: ANY adapter failure is swallowed + logged and NEVER blocks the email
+        # (mirrors the PDF/deep-analysis seam pattern) -- the run still sends.
+        tickets: dict[tuple[str, str], OrderTicketLine] = {}
+        if collected_intents and not isinstance(adapter, NoOpAdapter):
+            try:
+                for intent in collected_intents:
+                    result = adapter.submit(
+                        intent, session=session, run_date=run_date, limits=limits)
+                    tickets[(intent.ticker, intent.play_type)] = _ticket_line(intent, result)
+            except Exception:  # execution must never block the digest
+                log.warning("execution dispatch failed for %s %s", kind, run_date,
+                            exc_info=True)
+        if tickets:  # attach each ticket to its pick (only when execution is armed)
+            digest_picks = _attach_digest_tickets(digest_picks, tickets, "continuation")
+            pdf_picks = _attach_pdf_tickets(pdf_picks, tickets, "continuation")
+            if reversal_digest is not None:
+                reversal_digest = _attach_digest_tickets(reversal_digest, tickets, "reversal")
+                reversal_pdf = _attach_pdf_tickets(reversal_pdf, tickets, "reversal")
 
         pdf_path: Path | None = None
         if digest_picks or reversal_pdf:

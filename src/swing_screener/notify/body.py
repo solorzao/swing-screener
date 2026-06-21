@@ -52,6 +52,36 @@ class OrderIntentLine:
 
 
 @dataclass(frozen=True)
+class OrderTicketLine:
+    """The renderer-facing order ticket: what the execution adapter DID with an intent.
+
+    Rendered only for picks whose intent was actually dispatched (execution armed); the
+    "off" default never produces one, so the digest is byte-for-byte unchanged there. It
+    pairs the deterministic order spec (side/limit/shares/stop/target -- all COPIED from
+    the intent, never recomputed) with the adapter's ``OrderResult.status`` + detail (e.g.
+    "recorded" / "filled_paper" / "skipped: <reason>")."""
+
+    side: str
+    shares: int
+    ticker: str
+    limit_price: float
+    stop: float
+    target: float
+    status: str
+    detail: str
+
+    def text(self) -> str:
+        """One scannable line: the order spec, then the adapter status (+ skip reason)."""
+        spec = (
+            f"{self.side} {self.shares} {self.ticker} @<= {self.limit_price:g}, "
+            f"stop {self.stop:g}, target {self.target:g}"
+        )
+        # A skip carries its reason; every other status is shown bare ("recorded" etc.).
+        tail = f"skipped: {self.detail}" if self.status == "skipped" else self.status
+        return f"Order ticket: {spec} — {tail}"
+
+
+@dataclass(frozen=True)
 class DigestPick:
     ticker: str
     name: str
@@ -61,6 +91,7 @@ class DigestPick:
     strength: str | None = None  # reversal only: "early" / "confirmed"
     is_deep: bool = False  # got the Opus deep analysis (vs. the standard narration)
     order_intent: OrderIntentLine | None = None  # insight engine: conviction + sized intent
+    order_ticket: OrderTicketLine | None = None  # execution: what the adapter did (armed only)
 
 
 def _tag(p: "DigestPick", *, html: bool = False) -> str:
@@ -99,6 +130,8 @@ def _section_text(title: str, picks: Sequence[DigestPick], run_date: date) -> li
         rows.append(f"{i}. {label} [{_tag(p)}] · score {p.score:.2f} — {p.core_reason}")
         if p.order_intent is not None:
             rows.append(f"   {p.order_intent.text()}")
+        if p.order_ticket is not None:
+            rows.append(f"   {p.order_ticket.text()}")
     return rows
 
 
@@ -110,7 +143,7 @@ def _section_html(title: str, picks: Sequence[DigestPick], run_date: date) -> st
         f"<li><b>{escape(p.ticker)}</b>"
         f"{' — ' + escape(p.name) if p.name else ''} "
         f"· [{_tag(p, html=True)}] · score <b>{p.score:.2f}</b><br>{escape(p.core_reason)}"
-        f"{_intent_html(p)}</li>"
+        f"{_intent_html(p)}{_ticket_html(p)}</li>"
         for p in picks
     )
     return f"<h3>{escape(title)}</h3><ol>{items}</ol>"
@@ -121,6 +154,13 @@ def _intent_html(p: "DigestPick") -> str:
     if p.order_intent is None:
         return ""
     return f"<br><i>{escape(p.order_intent.text())}</i>"
+
+
+def _ticket_html(p: "DigestPick") -> str:
+    """The order-ticket line for the HTML body, or empty when the pick wasn't dispatched."""
+    if p.order_ticket is None:
+        return ""
+    return f"<br><i>{escape(p.order_ticket.text())}</i>"
 
 
 def compose_digest_body(

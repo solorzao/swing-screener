@@ -47,6 +47,47 @@ def test_order_intent_block_absent_for_non_insight_picks():
     assert "Order intent:" not in rendered
 
 
+def test_order_ticket_block_renders_when_dispatched():
+    from swing_screener.notify.pdf import build_story
+
+    pick = PdfPick(
+        ticker="AMD", name="Advanced Micro Devices", trade_type="medium", score=0.9,
+        chart_path=None, entry_floor=96.0, entry_ceiling=101.0, stop=95.0, target=110.0,
+        risk_reward=1.5, quality_tier="reputable", volatility_tier="high", oversold=False,
+        mtf_aligned=True, atr_pct=0.04, rationale="Strong continuation.",
+        ticket_status="recorded", ticket_detail="order ticket recorded",
+        ticket_side="long", ticket_limit_price=101.0, shares=40)
+    story = build_story([pick])
+    rendered = " ".join(getattr(f, "text", "") for f in story)
+    assert "Order ticket:" in rendered
+    assert "long 40 AMD" in rendered
+    assert "recorded" in rendered
+
+
+def test_order_ticket_block_skip_renders_reason():
+    from swing_screener.notify.pdf import build_story
+
+    pick = PdfPick(
+        ticker="AMD", name="", trade_type="medium", score=0.9, chart_path=None,
+        entry_floor=96.0, entry_ceiling=101.0, stop=95.0, target=110.0, risk_reward=1.5,
+        quality_tier="reputable", volatility_tier="high", oversold=False, mtf_aligned=True,
+        atr_pct=0.04, rationale="r.", ticket_status="skipped",
+        ticket_detail="per-day notional cap: 5000 > 1000", ticket_side="long",
+        ticket_limit_price=101.0, shares=40)
+    story = build_story([pick])
+    rendered = " ".join(getattr(f, "text", "") for f in story)
+    # reportlab xml-escapes the detail (the ">" -> "&gt;"); the skip prefix is verbatim.
+    assert "skipped: per-day notional cap: 5000" in rendered
+
+
+def test_order_ticket_block_absent_when_execution_off():
+    from swing_screener.notify.pdf import build_story
+
+    story = build_story([_pick("AMD", None)])   # ticket_status None -> no ticket block
+    rendered = " ".join(getattr(f, "text", "") for f in story)
+    assert "Order ticket:" not in rendered
+
+
 def test_atr_percent_row_in_levels_table():
     # ATR is surfaced as a percentage of price (not dollars) so it reads
     # consistently across high- and low-priced names.

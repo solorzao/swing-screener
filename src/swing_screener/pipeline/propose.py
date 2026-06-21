@@ -23,6 +23,7 @@ from swing_screener.analytics.performance import (
     MIN_LEADERBOARD_N,
     _CLUSTER_FLOOR,
     _is_closed_filled,
+    clustered_two_sample_delta_low,
 )
 from swing_screener.config import StrategyConfig
 from swing_screener.db.models import PaperTrade
@@ -62,22 +63,15 @@ def _closed_by_ticker(trades: list[PaperTrade]) -> dict[str, list[float]]:
 
 
 def _clustered_two_sample_delta_low(
-    winner: list[PaperTrade], incumbent: list[PaperTrade], *, seed: int = 12345, n_boot: int = 1000,
+    winner: list[PaperTrade], incumbent: list[PaperTrade],
 ) -> float:
     """Lower 2.5% bound on (mean winner R - mean incumbent R), resampling TICKERS with
     replacement INDEPENDENTLY in each book (two-sample clustered bootstrap, NOT paired --
-    variants are not same-sample, D1). -inf if either book is empty (cannot certify)."""
-    w, i = _closed_by_ticker(winner), _closed_by_ticker(incumbent)
-    if not w or not i:
-        return float("-inf")
-    rng = np.random.default_rng(seed)
-    wt, it = list(w), list(i)
-    deltas = np.empty(n_boot)
-    for b in range(n_boot):
-        wm = np.concatenate([w[wt[k]] for k in rng.integers(0, len(wt), len(wt))]).mean()
-        im = np.concatenate([i[it[k]] for k in rng.integers(0, len(it), len(it))]).mean()
-        deltas[b] = wm - im
-    return float(np.percentile(deltas, 2.5))
+    variants are not same-sample, D1). Delegates to the shared
+    ``clustered_two_sample_delta_low`` primitive over each book's per-ticker R."""
+    return clustered_two_sample_delta_low(
+        _closed_by_ticker(winner), _closed_by_ticker(incumbent)
+    )
 
 
 def _placebo_cleared(

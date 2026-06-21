@@ -4,13 +4,15 @@ from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import CursorResult, delete, select, update
+from sqlalchemy import CursorResult, delete, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from swing_screener.db.models import (
     AnalysisRequest,
     AnalystCall,
     EmailLog,
+    ExecutionLog,
     ExitEvent,
     PaperTrade,
     Signal,
@@ -82,7 +84,22 @@ def save_paper_trades(session: Session, trades: Sequence[PaperTrade]) -> None:
 
 
 def load_open_paper_trades(session: Session) -> list[PaperTrade]:
+    """Every OPEN paper trade, ACROSS ALL accounts. Intentionally NOT filtered by
+    ``account`` -- ``advance_open`` must keep stepping the curated intent book's open
+    trades alongside the research grid; only the CLOSED-trade aggregates are pinned to
+    ``account == "research"``."""
     stmt = select(PaperTrade).where(PaperTrade.status == "open")
+    return list(session.scalars(stmt))
+
+
+def load_research_paper_trades(session: Session) -> list[PaperTrade]:
+    """Every paper trade in the RESEARCH grid (``account == "research"``), open or closed.
+
+    The performance/leaderboard loader: ``summarize`` / ``breakdown`` filter to
+    closed-filled internally, so this only needs to fence off the curated intent book
+    (``account == "paper"``) from the research leaderboards. ``== "research"`` renders
+    ``account = 'x'`` (portable to SQL Server), not a boolean ``.is_()``."""
+    stmt = select(PaperTrade).where(PaperTrade.account == "research")
     return list(session.scalars(stmt))
 
 
@@ -92,10 +109,15 @@ def load_closed_paper_trades(
 ) -> list[PaperTrade]:
     """Filled trades that have closed with a realized result, optionally faceted by
     play_type / arm / variant. The reflection grades the LIVE forward book at
-    (arm=BASELINE, variant=DEFAULT_VARIANT) per play type."""
+    (arm=BASELINE, variant=DEFAULT_VARIANT) per play type.
+
+    Pinned to the research grid (``account == "research"``) so a future curated intent
+    book (paper-executed OrderIntents under ``account == "paper"``) never inflates the
+    leaderboard or the analyst calibration. ``== "research"`` renders ``account = 'x'``
+    (portable to SQL Server), not a boolean ``.is_()``."""
     stmt = select(PaperTrade).where(
         PaperTrade.status == "closed", PaperTrade.fill_status == "filled",
-        PaperTrade.realized_r.is_not(None),
+        PaperTrade.realized_r.is_not(None), PaperTrade.account == "research",
     )
     if play_type is not None:
         stmt = stmt.where(PaperTrade.play_type == play_type)
@@ -148,6 +170,7 @@ def score_analyst_calls(session: Session) -> int:
                 PaperTrade.ticker == call.ticker,
                 PaperTrade.timeframe == call.timeframe,
                 PaperTrade.play_type == call.play_type,
+                PaperTrade.account == "research",
                 PaperTrade.arm == BASELINE,
                 PaperTrade.variant == DEFAULT_VARIANT,
                 PaperTrade.status == "closed",
@@ -163,6 +186,81 @@ def score_analyst_calls(session: Session) -> int:
         scored += 1
     session.commit()
     return scored
+
+
+# the statuses that COUNT against the per-day hard limits: a row only loads against the
+# notional/loss sums if the order actually submitted. ``skipped`` / ``rejected`` never did.
+_LIMIT_COUNTING_STATUSES = ("recorded", "filled_paper")
+
+
+def add_execution_log(session: Session, **fields: object) -> ExecutionLog:
+    """Append one ExecutionLog row; the unique ``idempotency_key`` makes it idempotent.
+
+    The Phase 3 idempotency guard: every adapter call carries an ``idempotency_key``
+    unique per intent x run, so a force-resent or hourly-digest re-run that tries to log
+    the SAME order hits the unique constraint. On that ``IntegrityError`` we roll back and
+    return the EXISTING row for that key -- a no-op that hands back the first record rather
+    than double-submitting. add -> commit -> refresh on the happy path.
+    """
+    row = ExecutionLog(**fields)
+    session.add(row)
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        key = fields["idempotency_key"]
+        existing = session.scalars(
+            select(ExecutionLog).where(ExecutionLog.idempotency_key == key)
+        ).one()
+        return existing
+    session.refresh(row)
+    return row
+
+
+def execution_logs_for_day(
+    session: Session, *, run_date: date, account: str
+) -> list[ExecutionLog]:
+    """ExecutionLog rows for ``run_date`` + ``account`` that COUNT against the hard limits.
+
+    The source for the per-day notional / loss sums: only rows whose order actually
+    submitted (``status`` in ``recorded`` / ``filled_paper``) load against the limits;
+    ``skipped`` / ``rejected`` are excluded. ``==`` / ``.in_(...)`` render portably to
+    SQL Server (no boolean ``.is_()``)."""
+    stmt = select(ExecutionLog).where(
+        ExecutionLog.run_date == run_date,
+        ExecutionLog.account == account,
+        ExecutionLog.status.in_(_LIMIT_COUNTING_STATUSES),
+    )
+    return list(session.scalars(stmt))
+
+
+def realized_r_on(session: Session, *, run_date: date, account: str) -> float:
+    """Sum of ``realized_r`` over CLOSED ``account`` trades whose ``exit_date == run_date``.
+
+    The day's realized R for one account -- the input to the execution adapter's
+    per-day-loss circuit breaker (a PRE-trade gate on how much the book has already
+    given back today). Only closed trades with a realized result count; an open or
+    unfilled trade contributes nothing. ``func.coalesce(..., 0.0)`` makes an empty
+    day return 0.0 rather than NULL, and ``== "closed"`` / ``== account`` render
+    ``col = 'x'`` (portable to SQL Server), not a boolean ``.is_()``."""
+    stmt = select(func.coalesce(func.sum(PaperTrade.realized_r), 0.0)).where(
+        PaperTrade.status == "closed",
+        PaperTrade.account == account,
+        PaperTrade.exit_date == run_date,
+        PaperTrade.realized_r.is_not(None),
+    )
+    return float(session.scalar(stmt) or 0.0)
+
+
+def count_open_positions(session: Session, *, account: str) -> int:
+    """Count of OPEN ``PaperTrade`` rows for ``account`` (the per-account position cap).
+
+    ``== "open"`` / ``== account`` render ``col = 'x'`` (portable to SQL Server), not a
+    boolean ``.is_()``."""
+    stmt = select(func.count()).select_from(PaperTrade).where(
+        PaperTrade.status == "open", PaperTrade.account == account
+    )
+    return session.scalar(stmt) or 0
 
 
 def record_exit_event(session: Session, *, is_paper: bool, trade_id: int | None,
