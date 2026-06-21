@@ -7,7 +7,9 @@ assert the EmailLog dedup uniqueness constraint. All checks are pure metadata
 inspection -- no engine, no network.
 """
 
-from sqlalchemy import UniqueConstraint, select
+from typing import Any
+
+from sqlalchemy import String, Table, UniqueConstraint, select
 from sqlalchemy.dialects.mssql.base import MSDialect
 from sqlalchemy.schema import CreateTable
 
@@ -24,73 +26,98 @@ from swing_screener.db.models import (
 )
 
 
+def _len(col: Any) -> int | None:
+    """Bounded length of a String column.
+
+    SQLAlchemy types ``column.type`` as ``TypeEngine[Any]`` (which has no
+    ``.length``), so a direct ``col.type.length`` is a mypy attr-defined error
+    though correct at runtime. The isinstance narrows it to ``String`` for a
+    clean, checked access -- keeping these introspection tests mypy-clean.
+    """
+    t = col.type
+    assert isinstance(t, String), f"expected a String column, got {type(t).__name__}"
+    return t.length
+
+
+def _unique_constraints(table: Any, name: str) -> list[UniqueConstraint]:
+    """Named ``UniqueConstraint``s on a table.
+
+    ``Model.__table__`` is typed as ``FromClause`` (no ``.constraints``); accept
+    it as ``Any`` here so the runtime-correct introspection stays mypy-clean.
+    """
+    return [
+        c
+        for c in table.constraints
+        if isinstance(c, UniqueConstraint) and c.name == name
+    ]
+
+
+def _table(model: Any) -> Table:
+    """A model's ``Table`` (``Model.__table__`` is typed ``FromClause`` -- narrow it
+    so ``CreateTable`` and other ``Table``-typed APIs stay mypy-clean)."""
+    return model.__table__
+
+
 def test_ticker_columns_bounded_to_16() -> None:
-    assert Signal.__table__.c.ticker.type.length == 16
-    assert Trade.__table__.c.ticker.type.length == 16
-    assert PaperTrade.__table__.c.ticker.type.length == 16
-    assert Universe.__table__.c.ticker.type.length == 16
+    assert _len(Signal.__table__.c.ticker) == 16
+    assert _len(Trade.__table__.c.ticker) == 16
+    assert _len(PaperTrade.__table__.c.ticker) == 16
+    assert _len(Universe.__table__.c.ticker) == 16
     # analyst_calls.ticker is indexed, so it must stay bounded (Azure SQL can't
     # index NVARCHAR(max)).
-    assert AnalystCall.__table__.c.ticker.type.length == 16
+    assert _len(AnalystCall.__table__.c.ticker) == 16
     # execution_logs.ticker is indexed too -- same constraint.
-    assert ExecutionLog.__table__.c.ticker.type.length == 16
+    assert _len(ExecutionLog.__table__.c.ticker) == 16
 
 
 def test_analyst_call_string_lengths() -> None:
-    assert AnalystCall.__table__.c.timeframe.type.length == 32
-    assert AnalystCall.__table__.c.play_type.type.length == 16
-    assert AnalystCall.__table__.c.baseline_conviction.type.length == 16
-    assert AnalystCall.__table__.c.final_conviction.type.length == 16
-    assert AnalystCall.__table__.c.nudge_reason.type.length == 512
-    assert AnalystCall.__table__.c.model.type.length == 64
+    assert _len(AnalystCall.__table__.c.timeframe) == 32
+    assert _len(AnalystCall.__table__.c.play_type) == 16
+    assert _len(AnalystCall.__table__.c.baseline_conviction) == 16
+    assert _len(AnalystCall.__table__.c.final_conviction) == 16
+    assert _len(AnalystCall.__table__.c.nudge_reason) == 512
+    assert _len(AnalystCall.__table__.c.model) == 64
 
 
 def test_execution_log_string_lengths() -> None:
-    assert ExecutionLog.__table__.c.timeframe.type.length == 32
-    assert ExecutionLog.__table__.c.play_type.type.length == 16
-    assert ExecutionLog.__table__.c.account.type.length == 16
-    assert ExecutionLog.__table__.c.mode.type.length == 16
-    assert ExecutionLog.__table__.c.side.type.length == 8
-    assert ExecutionLog.__table__.c.status.type.length == 16
-    assert ExecutionLog.__table__.c.detail.type.length == 512
-    assert ExecutionLog.__table__.c.idempotency_key.type.length == 64
+    assert _len(ExecutionLog.__table__.c.timeframe) == 32
+    assert _len(ExecutionLog.__table__.c.play_type) == 16
+    assert _len(ExecutionLog.__table__.c.account) == 16
+    assert _len(ExecutionLog.__table__.c.mode) == 16
+    assert _len(ExecutionLog.__table__.c.side) == 8
+    assert _len(ExecutionLog.__table__.c.status) == 16
+    assert _len(ExecutionLog.__table__.c.detail) == 512
+    assert _len(ExecutionLog.__table__.c.idempotency_key) == 64
     # Phase 4 live-broker columns: broker + broker_order_id are indexed, so they
     # must stay bounded (Azure SQL can't index NVARCHAR(max)).
-    assert ExecutionLog.__table__.c.broker.type.length == 16
-    assert ExecutionLog.__table__.c.broker_order_id.type.length == 64
-    assert ExecutionLog.__table__.c.broker_status.type.length == 32
+    assert _len(ExecutionLog.__table__.c.broker) == 16
+    assert _len(ExecutionLog.__table__.c.broker_order_id) == 64
+    assert _len(ExecutionLog.__table__.c.broker_status) == 32
 
 
 def test_execution_log_idempotency_unique_constraint() -> None:
-    matches = [
-        c
-        for c in ExecutionLog.__table__.constraints
-        if isinstance(c, UniqueConstraint)
-        and c.name == "uq_execution_logs_idempotency_key"
-    ]
+    matches = _unique_constraints(
+        ExecutionLog.__table__, "uq_execution_logs_idempotency_key"
+    )
     assert len(matches) == 1
     assert {c.name for c in matches[0].columns} == {"idempotency_key"}
 
 
 def test_representative_string_lengths() -> None:
-    assert Signal.__table__.c.timeframe.type.length == 32
-    assert Signal.__table__.c.chart_path.type.length == 512
-    assert ExitEvent.__table__.c.message.type.length == 256
-    assert EmailLog.__table__.c.kind.type.length == 32
+    assert _len(Signal.__table__.c.timeframe) == 32
+    assert _len(Signal.__table__.c.chart_path) == 512
+    assert _len(ExitEvent.__table__.c.message) == 256
+    assert _len(EmailLog.__table__.c.kind) == 32
     # arm is indexed, so it must stay bounded (Azure SQL can't index NVARCHAR(max))
-    assert PaperTrade.__table__.c.arm.type.length == 32
+    assert _len(PaperTrade.__table__.c.arm) == 32
 
 
 def test_email_log_has_alert_key_length_64() -> None:
-    assert EmailLog.__table__.c.alert_key.type.length == 64
+    assert _len(EmailLog.__table__.c.alert_key) == 64
 
 
 def test_email_log_dedup_unique_constraint() -> None:
-    matches = [
-        c
-        for c in EmailLog.__table__.constraints
-        if isinstance(c, UniqueConstraint) and c.name == "uq_email_log_dedup"
-    ]
+    matches = _unique_constraints(EmailLog.__table__, "uq_email_log_dedup")
     assert len(matches) == 1
     uc = matches[0]
     assert {c.name for c in uc.columns} == {"kind", "run_date", "alert_key"}
@@ -105,7 +132,7 @@ def test_mssql_ddl_is_bounded_and_uses_bit() -> None:
     for table in Base.metadata.sorted_tables:
         ddl = str(CreateTable(table).compile(dialect=dialect)).lower()
         assert "(max)" not in ddl, f"{table.name} renders an unbounded string on mssql"
-    signals_ddl = str(CreateTable(Signal.__table__).compile(dialect=MSDialect()))
+    signals_ddl = str(CreateTable(_table(Signal)).compile(dialect=MSDialect()))
     assert "BIT" in signals_ddl  # Boolean -> BIT
 
 

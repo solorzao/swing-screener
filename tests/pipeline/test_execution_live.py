@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from swing_screener.db.models import ExecutionLog, PaperTrade
 from swing_screener.db.session import get_engine
-from swing_screener.pipeline.broker import BrokerOrderSpec, FakeBroker
+from swing_screener.pipeline.broker import BrokerOrder, BrokerOrderSpec, FakeBroker
 from swing_screener.pipeline.execution import LiveAdapter
 from swing_screener.pipeline.insight import OrderIntent
 from swing_screener.settings import Limits, Settings
@@ -223,7 +223,7 @@ def test_real_money_with_unset_cap_is_rejected() -> None:
 # ---------------------------------------------------------------------------
 def test_broker_raise_on_submit_is_graceful() -> None:
     class _RaisingBroker(FakeBroker):
-        def submit_order(self, spec: BrokerOrderSpec) -> object:  # type: ignore[override]
+        def submit_order(self, spec: BrokerOrderSpec) -> BrokerOrder:
             raise RuntimeError("connection refused")
 
     with _session() as s:
@@ -244,7 +244,7 @@ def test_broker_raise_on_submit_is_graceful() -> None:
 # ---------------------------------------------------------------------------
 def test_broker_returns_rejected_order() -> None:
     class _RejectingBroker(FakeBroker):
-        def submit_order(self, spec: BrokerOrderSpec) -> object:  # type: ignore[override]
+        def submit_order(self, spec: BrokerOrderSpec) -> BrokerOrder:
             order = super().submit_order(spec)
             self.reject(order.broker_order_id)
             return self.get_order(order.broker_order_id)

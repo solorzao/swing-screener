@@ -11,7 +11,9 @@ In-memory SQLite, no network.
 """
 
 from datetime import date
+from typing import Any
 
+from sqlalchemy import String
 from sqlalchemy.orm import Session
 
 from swing_screener.db import repo
@@ -21,6 +23,15 @@ from swing_screener.db.session import get_engine
 
 def _session() -> Session:
     return Session(get_engine("sqlite:///:memory:"))
+
+
+def _len(col: Any) -> int | None:
+    """Bounded length of a String column (typed accessor: ``column.type`` is
+    ``TypeEngine[Any]`` to mypy, so a direct ``.length`` is an attr-defined error
+    though correct at runtime)."""
+    t = col.type
+    assert isinstance(t, String), f"expected a String column, got {type(t).__name__}"
+    return t.length
 
 
 def test_record_exit_event_defaults_account_to_research() -> None:
@@ -49,4 +60,4 @@ def test_record_exit_event_persists_explicit_paper_account() -> None:
 def test_exit_event_account_column_is_bounded_for_azure_sql() -> None:
     # bounded String(16) (un-indexable NVARCHAR(max) would break Azure SQL),
     # mirroring PaperTrade.account.
-    assert ExitEvent.__table__.c.account.type.length == 16
+    assert _len(ExitEvent.__table__.c.account) == 16
