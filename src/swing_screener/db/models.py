@@ -169,6 +169,33 @@ class EmailLog(Base):
     alert_key: Mapped[str] = mapped_column(String(64), default="")
 
 
+class AnalystCall(Base):
+    """One persisted analyst conviction call, for the learning/calibration loop.
+
+    Every time the Opus analyst nudges the deterministic baseline conviction we
+    record the call: the pick keys, both convictions, the nudge reason, and the
+    model. ``realized_r`` / ``scored_at`` start NULL -- a later pass grades how the
+    nudge actually played out, closing the calibration loop. ``ticker`` is indexed
+    for per-name lookups; strings stay bounded so Azure SQL can index them.
+    """
+
+    __tablename__ = "analyst_calls"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_date: Mapped[date]
+    ticker: Mapped[str] = mapped_column(String(16), index=True)
+    timeframe: Mapped[str] = mapped_column(String(32))
+    play_type: Mapped[str] = mapped_column(String(16))
+    run_date: Mapped[date]
+    baseline_conviction: Mapped[str] = mapped_column(String(16))
+    final_conviction: Mapped[str] = mapped_column(String(16))
+    nudge_reason: Mapped[str] = mapped_column(String(512))
+    model: Mapped[str] = mapped_column(String(64))
+    # to-be-scored by the calibration loop: NULL until the outcome is graded.
+    realized_r: Mapped[float | None] = mapped_column(default=None)
+    scored_at: Mapped[date | None] = mapped_column(default=None)
+
+
 class AnalysisRequest(Base):
     """Queue row for an on-demand single-ticker deep-analysis report."""
 

@@ -14,9 +14,17 @@ never re-derived here -- so a calibration-table change can't silently desync the
 """
 
 from dataclasses import dataclass
+from datetime import date
+from typing import TYPE_CHECKING
 
 from swing_screener.analytics.performance import _score_labels
+from swing_screener.db.models import AnalystCall
 from swing_screener.pipeline.reflect import Verdict, _SCORE_EDGES
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
+
+    from swing_screener.notify.analysis import ConvictionResult, SignalFacts
 
 # Ordered conviction scale; the index is used for the Task-3 +-1 clamp (the LLM may
 # nudge one step along this list, never jump from "avoid" to "high").
@@ -102,3 +110,66 @@ def size_order(*, conviction: str, entry_ceiling: float, stop: float,
     if max_shares is not None:
         shares = min(shares, max_shares)
     return shares, shares * per_share
+
+
+def build_order_intent(
+    facts: "SignalFacts", conviction_result: "ConvictionResult", *, play_type: str,
+    edge_played: str, risk_unit_dollars: float, max_shares: int | None = None,
+) -> OrderIntent:
+    """Assemble the renderer-ready ``OrderIntent`` for one pick.
+
+    The price levels (entry band, stop, target) are copied VERBATIM from the
+    deterministic ``facts`` -- never recomputed here, so the analyst can never move
+    a level. The FINAL (already +-1-clamped) conviction and the insight prose come
+    from ``conviction_result``; the conviction-scaled R-based size comes from
+    ``size_order`` (0/0.0 when sizing is unconfigured -> renderer shows R-multiples).
+    ``key_risk`` is left empty: the single biggest risk already lives inside the
+    analyst's ``insight`` prose, so we don't try to re-parse it into a short field.
+    """
+    shares, risk_dollars = size_order(
+        conviction=conviction_result.conviction, entry_ceiling=facts.entry_ceiling,
+        stop=facts.stop, risk_unit_dollars=risk_unit_dollars, max_shares=max_shares,
+    )
+    return OrderIntent(
+        ticker=facts.ticker,
+        timeframe=facts.timeframe,
+        play_type=play_type,
+        entry_floor=facts.entry_floor,
+        entry_ceiling=facts.entry_ceiling,
+        stop=facts.stop,
+        target=facts.target,
+        conviction=conviction_result.conviction,
+        shares=shares,
+        risk_dollars=risk_dollars,
+        edge_played=edge_played,
+        key_risk="",
+        insight=conviction_result.insight,
+    )
+
+
+def record_analyst_call(
+    session: "Session", *, facts: "SignalFacts", run_date: date, created_date: date,
+    baseline_conviction: str, conviction_result: "ConvictionResult", model: str,
+    play_type: str,
+) -> AnalystCall:
+    """Persist one analyst conviction call for the learning/calibration loop.
+
+    Records the pick keys, the deterministic BASELINE and the analyst's FINAL
+    conviction, the nudge reason, and the model. The call is saved UNSCORED
+    (``realized_r`` / ``scored_at`` left None); a later pass grades how the nudge
+    played out. Mirrors the repo's ``save_*`` helpers (add -> commit -> refresh)."""
+    call = AnalystCall(
+        created_date=created_date,
+        ticker=facts.ticker,
+        timeframe=facts.timeframe,
+        play_type=play_type,
+        run_date=run_date,
+        baseline_conviction=baseline_conviction,
+        final_conviction=conviction_result.conviction,
+        nudge_reason=conviction_result.nudge_reason,
+        model=model,
+    )
+    session.add(call)
+    session.commit()
+    session.refresh(call)
+    return call
