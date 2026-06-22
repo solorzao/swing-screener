@@ -174,6 +174,7 @@ def compose_digest_body(
     proposals_text: Sequence[str] | None = None,
     proposals_html: str | None = None,
     autonomy_status: str | None = None,
+    health_status: str | None = None,
 ) -> EmailContent:
     """Render a digest into subject, plain-text, and HTML bodies.
 
@@ -190,6 +191,10 @@ def compose_digest_body(
 
     ``autonomy_status`` (the one-line autonomy-gate countdown) is appended as a footer when
     present -- the deep path only; a non-deep digest passes None, so the body is unchanged.
+
+    ``health_status`` (the one-line "is the cron alive" footer: freshness + money posture +
+    gate verdict) is appended when present -- pushed on every digest so a silently-dead cron
+    is visible in the inbox. Mirrors ``autonomy_status``: None -> the body is unchanged.
     """
     subject = f"Swing Screener - {_KIND_TITLE[kind]} Picks ({run_date})"
 
@@ -207,6 +212,8 @@ def compose_digest_body(
         lines += ["", "Full analysis attached (PDF)."]
     if autonomy_status:
         lines += ["", autonomy_status]
+    if health_status:
+        lines += ["", health_status]
     text = "\n".join(lines)
 
     # --- html ---
@@ -226,6 +233,8 @@ def compose_digest_body(
         html_parts.append("<p>Full analysis attached (PDF).</p>")
     if autonomy_status:
         html_parts.append(f"<p><i>{escape(autonomy_status)}</i></p>")
+    if health_status:
+        html_parts.append(f"<p><i>{escape(health_status)}</i></p>")
     html = "".join(html_parts)
 
     return EmailContent(subject=subject, text=text, html=html)

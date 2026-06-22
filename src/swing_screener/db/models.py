@@ -204,6 +204,14 @@ class AnalystCall(Base):
     final_conviction: Mapped[str] = mapped_column(String(16))
     nudge_reason: Mapped[str] = mapped_column(String(512))
     model: Mapped[str] = mapped_column(String(64))
+    # APPROXIMATE token spend captured from the Opus call (see notify.analysis.Usage):
+    # the raw token counts, the web-search count, and the list-price cost estimate that
+    # feeds the run-cost safety cap. All NULL on the deterministic/fallback path (no model
+    # call was made) and on legacy rows -- nullable, no server_default needed.
+    input_tokens: Mapped[int | None] = mapped_column(default=None)
+    output_tokens: Mapped[int | None] = mapped_column(default=None)
+    web_searches: Mapped[int | None] = mapped_column(default=None)
+    est_cost_usd: Mapped[float | None] = mapped_column(default=None)
     # to-be-scored by the calibration loop: NULL until the outcome is graded.
     realized_r: Mapped[float | None] = mapped_column(default=None)
     scored_at: Mapped[date | None] = mapped_column(default=None)

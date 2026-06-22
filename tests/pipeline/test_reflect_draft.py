@@ -1,0 +1,268 @@
+"""Tests for the OPTIONAL Opus variant-DRAFTING seam of ``pipeline.reflect`` (Task 6).
+
+North Star #9: on a "needs a test" hunch the reflection's Opus author may DRAFT candidate
+SCREEN VARIANTS -- a small NON-indicator ``StrategyConfig`` delta keyed to a hunch -- which it
+QUEUES into ``edge/<pt>.proposed.json`` for the optimizer to sweep. The LLM only PROPOSES;
+code owns the schema, the validation, and the human gate:
+
+  * ``to_config`` is the HARD gate: a drafted candidate whose delta is illegal (a frozen
+    indicator field) or malformed (an unknown key) is DROPPED with a warning -- never persisted,
+    never swept.
+  * On ANY failure (client error / empty / unparseable) -> draft NOTHING (the store is simply
+    not updated), exactly like the author's deterministic fallback.
+  * A surviving valid candidate is written ``status="queued"`` and then merges into the
+    optimizer grid (``build_config_grid`` with ``load_proposed_for``) -- it is SWEPT, namespaced.
+
+No network: the drafter is an injectable seam and every test passes a fake (a function that
+returns canned drafts), mirroring ``author_edge_file``'s injectable client.
+"""
+
+import logging
+
+import pytest
+
+from swing_screener.config import StrategyConfig
+from swing_screener.pipeline.optimize import build_config_grid
+from swing_screener.pipeline.proposed import (
+    QUEUED,
+    load_proposed_for,
+    to_config,
+)
+from swing_screener.pipeline.reflect import (
+    Verdict,
+    draft_variants,
+)
+
+
+def _hunch(
+    *, play_type: str = "continuation", dimension: str = "market_trend", bucket: str = "bull"
+) -> Verdict:
+    return Verdict(
+        play_type=play_type, dimension=dimension, bucket=bucket, tier="hunch",
+        n=12, expectancy_r=0.1, ci_low=-0.2, n_clusters=4, source="none",
+    )
+
+
+# A fake drafter returns a list of (delta, rationale, hunch_ref) tuples for the play type's
+# hunches -- the structured-output the model would produce, with NO network. The seam takes
+# the play type, the hunch verdicts, and the base config; the fake ignores them and replays
+# canned drafts (or raises, to exercise the fail-safe path).
+def _fake_drafter(drafts):
+    def _fn(play_type, hunches, base):
+        return list(drafts)
+    return _fn
+
+
+def _raising_drafter():
+    def _fn(play_type, hunches, base):
+        raise RuntimeError("model unavailable")
+    return _fn
+
+
+# =====================================================================================
+# A valid drafted candidate -> a queued ProposedVariant written to edge/<pt>.proposed.json
+# =====================================================================================
+def test_valid_candidate_is_written_queued(tmp_path):
+    base = StrategyConfig()
+    drafter = _fake_drafter([
+        {
+            "delta": {"max_extension_atr": 1.5},
+            "rationale": "A tighter freshness gate may avoid late chases in bull regimes.",
+            "hunch_ref": "continuation:market_trend=bull",
+        }
+    ])
+    written = draft_variants(
+        "continuation", [_hunch()], base, edge_dir=tmp_path,
+        today="2026-06-20", drafter=drafter,
+    )
+    assert len(written) == 1
+    # Persisted + parseable via load_proposed.
+    queued = load_proposed_for("continuation", tmp_path)
+    assert len(queued) == 1
+    pv = queued[0]
+    assert pv.status == QUEUED
+    assert pv.drafted_at == "2026-06-20"
+    assert pv.play_type == "continuation"
+    assert pv.delta == {"max_extension_atr": 1.5}
+    assert pv.provenance  # stamped (e.g. "reflection-opus")
+    # Legal via the gatekeeper (it survived because to_config accepted it).
+    cfg = to_config(pv, base)
+    assert cfg.max_extension_atr == 1.5
+
+
+def test_valid_candidate_merges_into_the_optimizer_grid(tmp_path):
+    # Integration: a drafted valid candidate, once queued, is SWEPT by build_config_grid
+    # (Task 5) under its namespaced key.
+    base = StrategyConfig()
+    drafter = _fake_drafter([
+        {
+            "delta": {"min_pullback_bars": 2},
+            "rationale": "Require a slightly deeper pullback.",
+            "hunch_ref": "continuation:market_trend=bull",
+        }
+    ])
+    draft_variants(
+        "continuation", [_hunch()], base, edge_dir=tmp_path,
+        today="2026-06-20", drafter=drafter,
+    )
+    queued = load_proposed_for("continuation", tmp_path)
+    grid = build_config_grid(base, proposed=queued)
+    # the drafted candidate is swept (namespaced), with its delta applied
+    swept = [c for k, c in grid.items() if k.startswith("proposed:")]
+    assert len(swept) == 1
+    assert swept[0].min_pullback_bars == 2
+
+
+# =====================================================================================
+# An illegal / malformed candidate -> DROPPED (not written), warned, no failure
+# =====================================================================================
+def test_illegal_indicator_delta_is_dropped_and_warned(tmp_path, caplog):
+    base = StrategyConfig()
+    drafter = _fake_drafter([
+        {
+            "delta": {"ema_fast": 10},  # frozen indicator field -> to_config raises
+            "rationale": "Faster EMA.",
+            "hunch_ref": "continuation:market_trend=bull",
+        }
+    ])
+    with caplog.at_level(logging.WARNING):
+        written = draft_variants(
+            "continuation", [_hunch()], base, edge_dir=tmp_path,
+            today="2026-06-20", drafter=drafter,
+        )
+    assert written == []
+    # Nothing persisted.
+    assert load_proposed_for("continuation", tmp_path) == []
+    assert not (tmp_path / "continuation.proposed.json").exists()
+    assert any("ema_fast" in r.message or "drop" in r.message.lower()
+               for r in caplog.records)
+
+
+def test_unknown_key_delta_is_dropped_and_warned(tmp_path, caplog):
+    base = StrategyConfig()
+    drafter = _fake_drafter([
+        {
+            "delta": {"not_a_knob": 1.0},
+            "rationale": "Tweak.",
+            "hunch_ref": "continuation:market_trend=bull",
+        }
+    ])
+    with caplog.at_level(logging.WARNING):
+        written = draft_variants(
+            "continuation", [_hunch()], base, edge_dir=tmp_path,
+            today="2026-06-20", drafter=drafter,
+        )
+    assert written == []
+    assert load_proposed_for("continuation", tmp_path) == []
+
+
+def test_one_illegal_among_valid_drops_only_the_illegal(tmp_path):
+    base = StrategyConfig()
+    drafter = _fake_drafter([
+        {"delta": {"min_pullback_bars": 2}, "rationale": "ok", "hunch_ref": "h1"},
+        {"delta": {"atr_period": 20}, "rationale": "bad", "hunch_ref": "h2"},  # frozen
+    ])
+    written = draft_variants(
+        "continuation", [_hunch()], base, edge_dir=tmp_path,
+        today="2026-06-20", drafter=drafter,
+    )
+    assert len(written) == 1
+    queued = load_proposed_for("continuation", tmp_path)
+    assert len(queued) == 1
+    assert queued[0].delta == {"min_pullback_bars": 2}
+
+
+# =====================================================================================
+# fail-safe: a drafter that raises / returns empty -> NO draft, store unchanged
+# =====================================================================================
+def test_drafter_that_raises_writes_nothing(tmp_path):
+    base = StrategyConfig()
+    written = draft_variants(
+        "continuation", [_hunch()], base, edge_dir=tmp_path,
+        today="2026-06-20", drafter=_raising_drafter(),
+    )
+    assert written == []
+    assert not (tmp_path / "continuation.proposed.json").exists()
+
+
+def test_drafter_returning_empty_writes_nothing(tmp_path):
+    base = StrategyConfig()
+    written = draft_variants(
+        "continuation", [_hunch()], base, edge_dir=tmp_path,
+        today="2026-06-20", drafter=_fake_drafter([]),
+    )
+    assert written == []
+    assert not (tmp_path / "continuation.proposed.json").exists()
+
+
+def test_existing_queued_store_untouched_on_failure(tmp_path):
+    # A prior valid queued draft must survive a later failed/empty draft run (no clobber).
+    base = StrategyConfig()
+    draft_variants(
+        "continuation", [_hunch()], base, edge_dir=tmp_path, today="2026-06-20",
+        drafter=_fake_drafter([
+            {"delta": {"max_extension_atr": 1.5}, "rationale": "r", "hunch_ref": "h"}
+        ]),
+    )
+    before = (tmp_path / "continuation.proposed.json").read_text(encoding="utf-8")
+    # A later run that fails must NOT touch the store.
+    draft_variants(
+        "continuation", [_hunch()], base, edge_dir=tmp_path, today="2026-06-21",
+        drafter=_raising_drafter(),
+    )
+    after = (tmp_path / "continuation.proposed.json").read_text(encoding="utf-8")
+    assert after == before
+
+
+def test_no_hunches_writes_nothing(tmp_path):
+    # A play type with no hunch verdicts -> the drafter is never asked -> no store.
+    base = StrategyConfig()
+    sentinel = {"called": False}
+
+    def _drafter(play_type, hunches, base):
+        sentinel["called"] = True
+        return []
+
+    written = draft_variants(
+        "continuation", [], base, edge_dir=tmp_path, today="2026-06-20", drafter=_drafter,
+    )
+    assert written == []
+    assert sentinel["called"] is False
+    assert not (tmp_path / "continuation.proposed.json").exists()
+
+
+def test_rewrites_the_queued_set_each_run(tmp_path):
+    # Queued drafts are machine-owned: a fresh successful draft REPLACES the prior queued set
+    # (documented behavior), so a stale candidate doesn't accumulate forever.
+    base = StrategyConfig()
+    draft_variants(
+        "continuation", [_hunch()], base, edge_dir=tmp_path, today="2026-06-20",
+        drafter=_fake_drafter([
+            {"delta": {"max_extension_atr": 1.5}, "rationale": "r1", "hunch_ref": "h1"}
+        ]),
+    )
+    draft_variants(
+        "continuation", [_hunch()], base, edge_dir=tmp_path, today="2026-06-21",
+        drafter=_fake_drafter([
+            {"delta": {"min_pullback_bars": 3}, "rationale": "r2", "hunch_ref": "h2"}
+        ]),
+    )
+    queued = load_proposed_for("continuation", tmp_path)
+    assert len(queued) == 1
+    assert queued[0].delta == {"min_pullback_bars": 3}
+
+
+@pytest.mark.parametrize("bad_draft", [
+    {"rationale": "no delta", "hunch_ref": "h"},          # missing delta
+    {"delta": "not-a-dict", "rationale": "r", "hunch_ref": "h"},  # delta wrong type
+    {"delta": {"min_pullback_bars": 2}},                  # missing rationale/hunch_ref
+])
+def test_structurally_malformed_draft_is_dropped(tmp_path, bad_draft):
+    # A draft missing required fields or with a non-dict delta is dropped, not crashed on.
+    base = StrategyConfig()
+    written = draft_variants(
+        "continuation", [_hunch()], base, edge_dir=tmp_path, today="2026-06-20",
+        drafter=_fake_drafter([bad_draft]),
+    )
+    assert written == []
+    assert load_proposed_for("continuation", tmp_path) == []

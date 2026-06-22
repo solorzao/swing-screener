@@ -169,9 +169,12 @@ def record_analyst_call(
     """Persist one analyst conviction call for the learning/calibration loop.
 
     Records the pick keys, the deterministic BASELINE and the analyst's FINAL
-    conviction, the nudge reason, and the model. The call is saved UNSCORED
-    (``realized_r`` / ``scored_at`` left None); a later pass grades how the nudge
-    played out. Mirrors the repo's ``save_*`` helpers (add -> commit -> refresh)."""
+    conviction, the nudge reason, the model, and the APPROXIMATE token spend captured
+    from the call (``conviction_result.usage`` -- None on the fallback path leaves all
+    four cost columns NULL). The call is saved UNSCORED (``realized_r`` / ``scored_at``
+    left None); a later pass grades how the nudge played out. Mirrors the repo's
+    ``save_*`` helpers (add -> commit -> refresh)."""
+    usage = conviction_result.usage
     call = AnalystCall(
         created_date=created_date,
         ticker=facts.ticker,
@@ -182,6 +185,10 @@ def record_analyst_call(
         final_conviction=conviction_result.conviction,
         nudge_reason=conviction_result.nudge_reason,
         model=model,
+        input_tokens=usage.input_tokens if usage else None,
+        output_tokens=usage.output_tokens if usage else None,
+        web_searches=usage.web_searches if usage else None,
+        est_cost_usd=usage.est_cost_usd if usage else None,
     )
     session.add(call)
     session.commit()

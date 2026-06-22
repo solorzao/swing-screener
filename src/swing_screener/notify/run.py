@@ -25,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from swing_screener.analytics.calibration import max_conviction_step
 from swing_screener.config import StrategyConfig
 from swing_screener.config_secrets import get_secret
 from swing_screener.data.fetch import fetch_bars
@@ -60,6 +61,7 @@ from swing_screener.notify.proposals import (
 )
 from swing_screener.notify.transport import resolve_sender
 from swing_screener.pipeline.autonomy import autonomy_gate, gate_status_line
+from swing_screener.pipeline.health import health_line
 from swing_screener.pipeline.broker import BrokerClient
 from swing_screener.pipeline.broker_alpaca import build_broker
 from swing_screener.pipeline.execution import (
@@ -364,16 +366,34 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # for that play type's deep picks; absent -> they fall back to the old deep path.
         playbooks = {pt: _load_playbook(edge_dir, pt) for pt in ("continuation", "reversal")}
 
+        # The EARNED conviction-nudge bound per play type. The advisory autonomy gate already
+        # runs ``conviction_calibrated`` PER play type over the scored book, so we reuse its
+        # ``CalibrationVerdict`` to derive ``max_step`` -- no separate calibration query. We
+        # read the gate ONCE here, BEFORE the picks are built/scored, so the bound is the track
+        # record EARNED prior to grading this run's picks. ``max_conviction_step`` returns 2 for
+        # a CALIBRATED play type (capped at the ``_NUDGE_CEILING`` constant) and 1 otherwise.
+        # RECOMPUTED every run -> reversible: a play type that stops calibrating drops back to
+        # the hard ±1. Off path -> no gate, no map, bound defaults to 1 (byte-identical today).
+        nudge_steps: dict[str, int] = {}
+        if deep_on:
+            gate = autonomy_gate(session, edge_dir=edge_dir)
+            nudge_steps = {
+                pt: max_conviction_step(v["calibration"])
+                for pt, v in gate.per_play_type.items()
+            }
+
         def _deep_one(facts: SignalFacts, sig: Signal, play_type: str) -> tuple[
-                SignalAnalysis, OrderIntentLine | None, OrderIntent | None]:
-            """Run ONE deep Opus call for a top-N pick; return (analysis, line, intent).
+                SignalAnalysis, OrderIntentLine | None, OrderIntent | None, float]:
+            """Run ONE deep Opus call for a top-N pick; return (analysis, line, intent, cost).
 
             When the pick's play type has a playbook + verdicts sidecar, run the INSIGHT
             ENGINE: a deterministic conviction baseline, one Opus conviction call (which
             NUDGES it, clamped +-1), a sized order intent, and a persisted AnalystCall. The
             analyst's insight becomes the rationale; a short core reason names the
             conviction + edge. No playbook -> fall back to the old ``deep_analyze`` (one
-            call either way -- never both, so no double-billing)."""
+            call either way -- never both, so no double-billing). The 4th return is the
+            call's estimated spend (``usage.est_cost_usd``, 0.0 when usage is absent) so the
+            caller can accumulate it against the per-run ceiling."""
             context_text = market_context.context_block(
                 get_fundamentals(sig.ticker), get_news(sig.ticker))
             pb = playbooks.get(play_type)
@@ -383,7 +403,8 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                     client=anthropic_client,  # type: ignore[arg-type]  # test seam may be a fake
                     model=cfg.analysis_model, reasoning=cfg.analysis_reasoning,
                     max_searches=cfg.analysis_max_searches)
-                return analysis, None, None
+                cost = analysis.usage.est_cost_usd if analysis.usage is not None else 0.0
+                return analysis, None, None, cost
             playbook_text, verdicts = pb
             baseline, edge_label = conviction_baseline(
                 score=sig.score, volatility_tier=sig.volatility_tier,
@@ -393,7 +414,8 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                 context_text=context_text, chart_bytes=load_chart(sig.chart_path),
                 client=anthropic_client,  # type: ignore[arg-type]  # test seam may be a fake
                 model=cfg.analysis_model, reasoning=cfg.analysis_reasoning,
-                max_searches=cfg.analysis_max_searches)
+                max_searches=cfg.analysis_max_searches,
+                max_step=nudge_steps.get(play_type, 1))  # earned ±2 ONLY if THIS play type calibrates
             intent = build_order_intent(
                 facts, cr, play_type=play_type, edge_played=edge_label,
                 risk_unit_dollars=risk_unit, max_shares=max_sh)
@@ -409,7 +431,16 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                 risk_dollars=intent.risk_dollars, edge_played=edge_label,
                 entry_floor=intent.entry_floor, entry_ceiling=intent.entry_ceiling,
                 stop=intent.stop, target=intent.target)
-            return analysis, order_intent, intent
+            cost = cr.usage.est_cost_usd if cr.usage is not None else 0.0
+            return analysis, order_intent, intent, cost
+
+        # Per-RUN deep-analysis spend ceiling. ``spend[0]`` accumulates every deep insight
+        # call's est_cost across BOTH _build_picks calls (continuation + reversal share one
+        # budget), and ``ceiling_logged`` ensures the cutoff is warned ONCE per run. None
+        # ceiling -> the check never fires, so the loop is byte-identical to today.
+        max_usd = cfg.deep_analysis_max_usd
+        spend = [0.0]
+        ceiling_logged = [False]
 
         def _build_picks(sigs: list[Signal], *, play_type: str,
                          collect_intents: list[OrderIntent]) -> tuple[
@@ -418,14 +449,26 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
             deep path (the insight engine when a playbook exists for ``play_type``, else the
             legacy deep analyst); the rest get the cheap deterministic narration. Each built
             ``OrderIntent`` is appended to ``collect_intents`` for the post-build dispatch --
-            rendering is unchanged here; nothing is dispatched inline."""
+            rendering is unchanged here; nothing is dispatched inline.
+
+            SPEND CEILING: a pick that WOULD get the deep path skips it for the deterministic
+            narrator once the per-run accumulator (``spend``) has reached ``max_usd`` -- the
+            pick still renders, just without the Opus insight/conviction nudge. Else it runs
+            deep and adds its est_cost to the accumulator. ``max_usd is None`` -> no ceiling."""
             dps: list[DigestPick] = []
             pps: list[PdfPick] = []
             for i, sig in enumerate(sigs):
                 facts = _facts(sig)
                 order_intent: OrderIntentLine | None = None
-                if deep_on and i < cfg.deep_analysis_top_n:
-                    analysis, order_intent, built_intent = _deep_one(facts, sig, play_type)
+                want_deep = deep_on and i < cfg.deep_analysis_top_n
+                over_ceiling = max_usd is not None and spend[0] >= max_usd
+                if want_deep and over_ceiling and not ceiling_logged[0]:
+                    log.warning("deep-analysis spend ceiling $%.2f reached; remaining picks "
+                                "use deterministic text", max_usd)
+                    ceiling_logged[0] = True
+                if want_deep and not over_ceiling:
+                    analysis, order_intent, built_intent, cost = _deep_one(facts, sig, play_type)
+                    spend[0] += cost
                     if built_intent is not None:
                         collect_intents.append(built_intent)
                 else:
@@ -530,14 +573,30 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # ran the analyst, so the gate's read-only SELECTs over scored calls + the verdicts
         # sidecars are free). It NEVER writes -- the gate is a pure SELECT (North Star #1) --
         # and a non-deep digest passes None, so the body is byte-for-byte unchanged there.
+        # Recomputed here (AFTER scoring) so the countdown reflects this run's freshly-scored
+        # calls -- distinct from the pre-build snapshot that sets the earned nudge bound, which
+        # is the track record EARNED before this run's picks were graded.
         autonomy_status = (
             gate_status_line(autonomy_gate(session, edge_dir=edge_dir)) if deep_on else None
+        )
+        # The always-on health footer: the "is the cron alive" push. Unlike the gate
+        # countdown it is NOT gated on deep -- a silently-dead screen/digest cron must show on
+        # EVERY digest. READ-ONLY: the latest run_date + the gate's pure SELECTs (the gate
+        # never writes). ``latest_run_date`` is re-read here rather than reusing the local
+        # ``run_date`` (which may be a backfill/explicit date) so the freshness reflects the
+        # store's true newest screen.
+        health_status = health_line(
+            latest_run_date=repo.latest_run_date(session),
+            today=date.today(),
+            execution_mode=exec_mode,
+            gate_ready=autonomy_gate(session, edge_dir=edge_dir).ready,
         )
         body = compose_digest_body(kind, run_date, digest_picks, alert_lines,
                                    has_pdf=pdf_attached, reversal_picks=reversal_digest,
                                    proposals_text=proposals_text(proposals),
                                    proposals_html=proposals_html(proposals),
-                                   autonomy_status=autonomy_status)
+                                   autonomy_status=autonomy_status,
+                                   health_status=health_status)
         send(to=recipient, subject=body.subject, text=body.text, html=body.html,
              attachments=([pdf_path] if pdf_path is not None else []))
 

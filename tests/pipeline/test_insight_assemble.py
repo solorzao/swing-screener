@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from swing_screener.db.models import AnalystCall
 from swing_screener.db.session import get_engine
-from swing_screener.notify.analysis import ConvictionResult, SignalFacts
+from swing_screener.notify.analysis import ConvictionResult, SignalFacts, Usage
 from swing_screener.pipeline.insight import (
     OrderIntent,
     build_order_intent,
@@ -137,3 +137,46 @@ def test_record_analyst_call_persists_unscored() -> None:
         # persisted UNSCORED -- the calibration loop fills these in later.
         assert row.realized_r is None
         assert row.scored_at is None
+        # no usage on this conviction result -> cost columns NULL.
+        assert row.input_tokens is None
+        assert row.output_tokens is None
+        assert row.web_searches is None
+        assert row.est_cost_usd is None
+
+
+def test_record_analyst_call_persists_token_spend() -> None:
+    # When the conviction result carries Usage, the four cost columns are written.
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        record_analyst_call(
+            s, facts=_facts(), run_date=date(2026, 6, 19),
+            created_date=date(2026, 6, 20), baseline_conviction="medium",
+            conviction_result=_conv(
+                conviction="high",
+                usage=Usage(input_tokens=1000, output_tokens=500, web_searches=2,
+                            est_cost_usd=0.0375),
+            ),
+            model="claude-opus-4-8", play_type="continuation",
+        )
+        row = s.query(AnalystCall).one()
+        assert row.input_tokens == 1000
+        assert row.output_tokens == 500
+        assert row.web_searches == 2
+        assert row.est_cost_usd == 0.0375
+
+
+def test_record_analyst_call_fallback_usage_none_leaves_cost_null() -> None:
+    # The deterministic-fallback ConvictionResult has usage=None -> all NULL.
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        record_analyst_call(
+            s, facts=_facts(), run_date=date(2026, 6, 19),
+            created_date=date(2026, 6, 20), baseline_conviction="low",
+            conviction_result=_conv(conviction="low", is_deep=False, usage=None),
+            model="claude-opus-4-8", play_type="continuation",
+        )
+        row = s.query(AnalystCall).one()
+        assert row.input_tokens is None
+        assert row.output_tokens is None
+        assert row.web_searches is None
+        assert row.est_cost_usd is None

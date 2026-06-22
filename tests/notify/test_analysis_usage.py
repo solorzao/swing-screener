@@ -1,0 +1,207 @@
+"""Tests for the token-spend capture seam (Phase 6 Task 1).
+
+The Opus call already returns ``resp.usage``; these tests prove we CAPTURE it onto
+a frozen ``Usage`` and attach it to the result dataclass, compute an approximate
+``est_cost_usd`` from a documented price table, and count web searches when the
+usage object reports them. The capture MUST guard a missing/None ``resp.usage`` so
+the analyst never crashes -- and the deterministic-fallback path leaves ``usage``
+None (no model call was made).
+
+No network: a recording fake client returns a canned response with a ``usage``
+attribute; a boom client proves the None-usage fallback.
+"""
+
+from swing_screener.notify.analysis import (
+    ConvictionResult,
+    SignalAnalysis,
+    SignalFacts,
+    Usage,
+    _MODEL_PRICES,
+    analyze_conviction,
+    analyze_signal_deep,
+)
+
+
+def _facts(ticker="AMD"):
+    return SignalFacts(
+        ticker=ticker, timeframe="1d", trade_type="medium", score=0.92, mtf_aligned=True,
+        quality_tier="reputable", volatility_tier="high", oversold=False,
+        trigger_close=100.0, atr=4.0, rsi=55.0, entry_floor=96.0, entry_ceiling=101.0,
+        stop=95.0, target=110.0,
+    )
+
+
+_PLAYBOOK = "score=high (forward_confirmed, +0.40R, n=50)"
+
+
+class _TextBlock:
+    type = "text"
+
+    def __init__(self, text):
+        self.text = text
+
+
+class _ServerToolUse:
+    """The usage.server_tool_use sub-object the API returns for web search."""
+
+    def __init__(self, web_search_requests):
+        self.web_search_requests = web_search_requests
+
+
+class _Usage:
+    def __init__(self, input_tokens, output_tokens, web_search_requests=None):
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.server_tool_use = (
+            _ServerToolUse(web_search_requests) if web_search_requests is not None else None
+        )
+
+
+class _Resp:
+    def __init__(self, blocks, usage=None):
+        self.content = blocks
+        if usage is not None:
+            self.usage = usage
+
+
+class _RecordingClient:
+    def __init__(self, resp):
+        self._resp = resp
+
+    @property
+    def messages(self):
+        outer = self
+
+        class _M:
+            def create(self, **kw):
+                return outer._resp
+
+        return _M()
+
+
+class _BoomClient:
+    @property
+    def messages(self):
+        class _M:
+            def create(self, **kw):
+                raise RuntimeError("api down")
+
+        return _M()
+
+
+# ---------------------------------------------------------------------------
+# Price table: documented + approximate. claude-opus-4-8 is keyed.
+# ---------------------------------------------------------------------------
+def test_price_table_has_opus_4_8():
+    # (input_$/MTok, output_$/MTok) -- documented Anthropic list price, approximate.
+    assert _MODEL_PRICES["claude-opus-4-8"] == (5.0, 25.0)
+
+
+# ---------------------------------------------------------------------------
+# analyze_conviction: usage captured + est_cost computed.
+# ---------------------------------------------------------------------------
+def test_conviction_captures_usage_tokens_and_cost():
+    resp = _Resp(
+        [_TextBlock("CONVICTION: medium\nREASON: agree\nok")],
+        usage=_Usage(input_tokens=1000, output_tokens=500),
+    )
+    out = analyze_conviction(
+        _facts(), baseline="medium", playbook_text=_PLAYBOOK,
+        client=_RecordingClient(resp), model="claude-opus-4-8",
+    )
+    assert isinstance(out, ConvictionResult)
+    assert out.usage is not None
+    assert isinstance(out.usage, Usage)
+    assert out.usage.input_tokens == 1000
+    assert out.usage.output_tokens == 500
+    assert out.usage.web_searches == 0  # usage had no server_tool_use
+    # 1000/1e6*5 + 500/1e6*25 == 0.005 + 0.0125 == 0.0175 (+ 0 search cost)
+    assert out.usage.est_cost_usd > 0
+    assert abs(out.usage.est_cost_usd - 0.0175) < 1e-9
+
+
+def test_conviction_counts_web_searches_and_adds_their_cost():
+    resp = _Resp(
+        [_TextBlock("CONVICTION: medium\nREASON: agree\nok")],
+        usage=_Usage(input_tokens=1000, output_tokens=500, web_search_requests=3),
+    )
+    out = analyze_conviction(
+        _facts(), baseline="medium", playbook_text=_PLAYBOOK,
+        client=_RecordingClient(resp), model="claude-opus-4-8",
+    )
+    assert out.usage is not None
+    assert out.usage.web_searches == 3
+    # token cost 0.0175 + 3 * $0.01/search == 0.0475
+    assert abs(out.usage.est_cost_usd - 0.0475) < 1e-9
+
+
+def test_conviction_unknown_model_costs_tokens_at_zero_but_still_captures():
+    # An unpriced model still captures tokens; only the token cost term is 0.
+    resp = _Resp(
+        [_TextBlock("CONVICTION: medium\nREASON: agree\nok")],
+        usage=_Usage(input_tokens=1000, output_tokens=500, web_search_requests=2),
+    )
+    out = analyze_conviction(
+        _facts(), baseline="medium", playbook_text=_PLAYBOOK,
+        client=_RecordingClient(resp), model="some-unpriced-model",
+    )
+    assert out.usage is not None
+    assert out.usage.input_tokens == 1000
+    # token term unpriced (0) but the 2 web searches still cost 2 * $0.01.
+    assert abs(out.usage.est_cost_usd - 0.02) < 1e-9
+
+
+def test_conviction_missing_usage_attr_is_guarded_to_none():
+    # A response with NO .usage at all (the existing fakes) must not crash and
+    # must leave usage None -- the capture is best-effort.
+    resp = _Resp([_TextBlock("CONVICTION: medium\nREASON: agree\nok")])  # no usage
+    out = analyze_conviction(
+        _facts(), baseline="medium", playbook_text=_PLAYBOOK,
+        client=_RecordingClient(resp),
+    )
+    assert out.is_deep is True
+    assert out.usage is None
+
+
+def test_conviction_none_usage_is_guarded():
+    resp = _Resp([_TextBlock("CONVICTION: medium\nREASON: agree\nok")], usage=None)
+    # _Resp only sets .usage when not None, so this is the missing-attr case again;
+    # belt-and-suspenders: explicitly set usage = None on the object.
+    resp.usage = None
+    out = analyze_conviction(
+        _facts(), baseline="medium", playbook_text=_PLAYBOOK,
+        client=_RecordingClient(resp),
+    )
+    assert out.usage is None
+
+
+def test_conviction_fallback_path_leaves_usage_none():
+    out = analyze_conviction(
+        _facts(), baseline="low", playbook_text=_PLAYBOOK, client=_BoomClient(),
+    )
+    assert out.is_deep is False
+    assert out.usage is None  # no model call was made on the fallback path
+
+
+# ---------------------------------------------------------------------------
+# analyze_signal_deep: same capture seam.
+# ---------------------------------------------------------------------------
+def test_signal_deep_captures_usage():
+    resp = _Resp(
+        [_TextBlock("CORE: x\nRead: y")],
+        usage=_Usage(input_tokens=2000, output_tokens=1000, web_search_requests=1),
+    )
+    out = analyze_signal_deep(_facts(), client=_RecordingClient(resp), model="claude-opus-4-8")
+    assert isinstance(out, SignalAnalysis)
+    assert out.usage is not None
+    assert out.usage.input_tokens == 2000
+    assert out.usage.output_tokens == 1000
+    assert out.usage.web_searches == 1
+    # 2000/1e6*5 + 1000/1e6*25 + 1*0.01 == 0.01 + 0.025 + 0.01 == 0.045
+    assert abs(out.usage.est_cost_usd - 0.045) < 1e-9
+
+
+def test_signal_deep_fallback_leaves_usage_none():
+    out = analyze_signal_deep(_facts(), client=_BoomClient())
+    assert out.is_deep is False
+    assert out.usage is None

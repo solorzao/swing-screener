@@ -148,6 +148,88 @@ def test_insight_engine_scores_resolved_prior_calls(tmp_path, monkeypatch):
         assert old.scored_at == date(2026, 6, 9)
 
 
+def _seed_calibrated_continuation_calls(url):
+    """Seed deep, well-clustered SCORED continuation calls where high CLEARLY out-earns low,
+    so ``conviction_calibrated(play_type='continuation')`` certifies -> max_step=2. Reversal
+    gets none, so it stays uncalibrated -> max_step=1."""
+    with Session(get_engine(url)) as s:
+        for i in range(8):  # 8 distinct tickers per bucket, 5 calls each (n=40, clusters=8)
+            for r in (1.2, 1.4, 1.3, 1.2, 1.4):
+                s.add(AnalystCall(
+                    created_date=date(2026, 6, 1), ticker=f"H{i}", timeframe="1d",
+                    play_type="continuation", run_date=date(2026, 6, 1),
+                    baseline_conviction="medium", final_conviction="high",
+                    nudge_reason="x", model="claude-opus-4-8",
+                    realized_r=r, scored_at=date(2026, 6, 5)))
+            for r in (-0.1, 0.0, -0.2, 0.1, -0.1):
+                s.add(AnalystCall(
+                    created_date=date(2026, 6, 1), ticker=f"L{i}", timeframe="1d",
+                    play_type="continuation", run_date=date(2026, 6, 1),
+                    baseline_conviction="medium", final_conviction="low",
+                    nudge_reason="x", model="claude-opus-4-8",
+                    realized_r=r, scored_at=date(2026, 6, 5)))
+        s.commit()
+
+
+def test_calibrated_play_type_earns_max_step_two_uncalibrated_stays_one(tmp_path, monkeypatch):
+    # A play type whose scored calls calibrate gets max_step=2 (the analyst's +2 nudge
+    # survives); an uncalibrated play type gets max_step=1. The gate's calib is computed
+    # per play type and recomputed every run (reversible).
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS", "1")
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS_TOP_N", "1")
+    monkeypatch.delenv("SWING_DEEP_ANALYSIS_KINDS", raising=False)
+    url = f"sqlite:///{tmp_path / 'earned.sqlite'}"
+    _seed(url, n=1)
+    _seed_calibrated_continuation_calls(url)
+    edge = _edge_dir(tmp_path)
+
+    seen = {}  # ticker -> max_step passed to the conviction analyst
+
+    def fake_conv(facts, *, baseline, max_step=1, **kw):
+        seen[facts.ticker] = max_step
+        return ConvictionResult(
+            conviction="high", nudge_reason="r", insight="i", is_deep=True)
+
+    res = run.send_digest(**_kwargs(
+        tmp_path, url, analyze_conviction_fn=fake_conv,
+        chart_bytes_loader=lambda p: None, edge_dir=edge,
+        fundamentals_fn=lambda t: Fundamentals(ticker=t, ok=False), news_fn=lambda t: [],
+        market_trend_fn=lambda: "bull"))
+
+    assert res.sent is True
+    # The continuation pick (AMD) calibrates -> max_step=2.
+    assert seen["AMD"] == 2
+    # The reversal Top-5 (daily) has NO scored reversal calls -> uncalibrated -> max_step=1.
+    # Reversal picks may be empty (no reversal signals seeded); if any ran, they saw step 1.
+    reversal_steps = [v for k, v in seen.items() if k != "AMD"]
+    assert all(v == 1 for v in reversal_steps)
+
+
+def test_uncalibrated_continuation_keeps_max_step_one(tmp_path, monkeypatch):
+    # With NO scored calls, continuation cannot calibrate -> max_step stays 1 (byte-identical
+    # to today's hard ±1 clamp). The earned bound never widens without a certified track record.
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS", "1")
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS_TOP_N", "1")
+    monkeypatch.delenv("SWING_DEEP_ANALYSIS_KINDS", raising=False)
+    url = f"sqlite:///{tmp_path / 'uncal.sqlite'}"
+    _seed(url, n=1)
+    edge = _edge_dir(tmp_path)
+
+    seen = []
+
+    def fake_conv(facts, *, baseline, max_step=1, **kw):
+        seen.append(max_step)
+        return ConvictionResult(conviction="high", nudge_reason="r", insight="i", is_deep=True)
+
+    run.send_digest(**_kwargs(
+        tmp_path, url, analyze_conviction_fn=fake_conv,
+        chart_bytes_loader=lambda p: None, edge_dir=edge,
+        fundamentals_fn=lambda t: Fundamentals(ticker=t, ok=False), news_fn=lambda t: [],
+        market_trend_fn=lambda: "bull"))
+
+    assert seen and all(v == 1 for v in seen)  # no track record -> hard ±1
+
+
 def test_falls_back_to_deep_path_when_no_playbook(tmp_path, monkeypatch):
     monkeypatch.setenv("SWING_DEEP_ANALYSIS", "1")
     monkeypatch.setenv("SWING_DEEP_ANALYSIS_TOP_N", "1")

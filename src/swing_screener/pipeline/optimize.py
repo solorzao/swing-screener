@@ -28,6 +28,7 @@ from swing_screener.analytics.performance import (
 from swing_screener.config import StrategyConfig
 from swing_screener.data.fetch import fetch_bars
 from swing_screener.db.models import PaperTrade
+from swing_screener.pipeline.proposed import QUEUED, ProposedVariant, to_config
 from swing_screener.pipeline.replay import _warmup, format_leaderboard, replay, replay_book
 from swing_screener.pipeline.variants import _assert_shared_indicators
 
@@ -36,6 +37,13 @@ log = logging.getLogger(__name__)
 # The 1-D sweep: the freshness gate threshold (the knob this whole effort introduced). Includes
 # the shipped default (2.0) so the incumbent is in the bake-off. Keep grids small + interpretable.
 _EXT_GRID = (1.0, 1.5, 2.0, 2.5)
+
+# Namespace for analyst-queued proposed-variant grid keys. The deterministic sweep points are
+# named ``ext_<x>`` (see ``build_config_grid`` / ``propose._incumbent_name``); prefixing a
+# proposed variant's key with this makes a collision with those -- or with the incumbent the
+# propose() gate looks up by exact name -- STRUCTURALLY impossible, so a queued variant can
+# never silently overwrite a deterministic/incumbent arm.
+_PROPOSED_PREFIX = "proposed:"
 
 
 @dataclass(frozen=True)
@@ -48,14 +56,58 @@ class OptimizeResult:
     # the two never disagree. Defaults empty so summary-only callers (format_report tests) need
     # not supply it; propose() treats a missing winner book as "cannot certify" (returns None).
     out_of_sample_trades: dict[str, list[PaperTrade]] = field(default_factory=dict)
+    # Search-cost accounting (North Star #2, honest evidence): the number of configs the sweep
+    # actually TESTED -- the full swept-grid size, INCLUDING analyst-queued variants -- NOT just
+    # the configs that happened to trade (``len(in_sample)`` undercounts: a swept arm that drew
+    # no trades is absent from ``in_sample`` yet still widened the search). ``propose()``'s
+    # provenance reports this so a winner can't be cherry-picked from a silently-widened search.
+    # 0 means "unknown" (a summary-only caller did not record the swept size); provenance then
+    # falls back to the in-sample size.
+    n_variants_tested: int = 0
 
 
-def build_config_grid(base: StrategyConfig) -> dict[str, StrategyConfig]:
+def build_config_grid(
+    base: StrategyConfig,
+    proposed: list[ProposedVariant] | None = None,
+) -> dict[str, StrategyConfig]:
     """Sweep ``max_extension_atr``; every grid point shares the base's indicator periods
-    (replay reuses the base frames), enforced by the variants guard."""
+    (replay reuses the base frames), enforced by the variants guard.
+
+    Analyst-QUEUED ``ProposedVariant``s (Task 6) are MERGED in via ``to_config``: a
+    ``status == QUEUED`` variant joins the swept grid; a non-queued one is skipped; and one
+    whose delta fails ``to_config`` validation (a frozen-indicator or unknown-key delta) is
+    skipped with a logged warning -- never poisoning the grid. Widening the search here is what
+    the ``OptimizeResult.n_variants_tested`` search-cost accounting then pays for.
+
+    Collision safety (honesty invariant): a proposed variant's grid key is NAMESPACED as
+    ``f"{_PROPOSED_PREFIX}{pv.name}"`` so it can NEVER collide with -- and therefore never
+    silently overwrite -- a deterministic ``ext_*`` sweep point (the baseline ``propose()``'s
+    incumbent gate relies on by exact name). Among queued variants, a name clash (two mapping to
+    the same namespaced key) keeps the FIRST and SKIPS the rest with a ``log.warning`` -- a
+    duplicate analyst name is dropped, never silently collapsed. The net effect: ``len(grid)``
+    (the source of ``n_variants_tested``) honestly counts every DISTINCT arm actually swept.
+    """
     grid = {f"ext_{e:.1f}": replace(base, max_extension_atr=e) for e in _EXT_GRID}
     for name, cfg in grid.items():
         _assert_shared_indicators(base, name, cfg)
+    for pv in proposed or []:
+        if pv.status != QUEUED:
+            continue
+        key = f"{_PROPOSED_PREFIX}{pv.name}"
+        if key in grid:
+            log.warning(
+                "skipping duplicate proposed variant %r: grid key %r already swept "
+                "(keeping the first; a duplicate analyst name is dropped, not overwritten)",
+                pv.name, key,
+            )
+            continue
+        try:
+            grid[key] = to_config(pv, base)
+        except ValueError:
+            log.warning(
+                "skipping invalid proposed variant %r (delta %r): failed validation",
+                pv.name, pv.delta, exc_info=True,
+            )
     return grid
 
 
@@ -110,6 +162,9 @@ def optimize(
         out_of_sample=out_of_sample,
         winner=winner,
         out_of_sample_trades=dict(out_of_sample_trades),
+        # The honest search width: how many configs were SWEPT (incl. analyst-queued ones),
+        # not how many traded. propose()'s provenance surfaces this.
+        n_variants_tested=len(grid),
     )
 
 

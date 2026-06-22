@@ -40,6 +40,10 @@ class Settings:
     deep_analysis_top_n: int
     deep_analysis_kinds: frozenset[str]
     analysis_max_searches: int
+    # Per-RUN deep-analysis spend ceiling (USD). None -> NO ceiling (today's behavior); once a
+    # run's accumulated deep insight spend reaches it, the remaining picks fall back to the
+    # deterministic narrator. Fail-safe: missing/garbage -> None, never an accidental cap.
+    deep_analysis_max_usd: float | None
     # Per-trade risk sizing (for the insight engine's order intent). All optional:
     # with none set the resolver yields 0.0 -> the sizer renders R-multiples, never
     # a guessed dollar.
@@ -153,6 +157,7 @@ def load_settings() -> Settings:
         deep_analysis_top_n=_int(env.get("SWING_DEEP_ANALYSIS_TOP_N"), 5),
         deep_analysis_kinds=kinds,
         analysis_max_searches=_int(env.get("SWING_ANALYSIS_MAX_SEARCHES"), 4),
+        deep_analysis_max_usd=_opt_float(env.get("SWING_DEEP_ANALYSIS_MAX_USD")),
         account_equity=_opt_float(env.get("SWING_ACCOUNT_EQUITY")),
         risk_per_trade_dollars=_opt_float(env.get("SWING_RISK_PER_TRADE_DOLLARS")),
         risk_pct=_float(env.get("SWING_RISK_PCT"), 0.01),

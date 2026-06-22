@@ -66,6 +66,23 @@ def test_migration_creates_every_table_and_index(tmp_path, monkeypatch):
     assert EXECUTION_LOG_BROKER_INDEXES <= indexes
 
 
+def test_migration_adds_analyst_call_token_spend_columns(tmp_path, monkeypatch):
+    # The Phase-6 cost-capture migration adds four nullable token-spend columns to
+    # analyst_calls; assert the upgraded schema actually carries them.
+    db = tmp_path / "t.db"
+    url = f"sqlite:///{db}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    command.upgrade(_config(url), "head")
+
+    con = sqlite3.connect(db)
+    try:
+        cols = {r[1] for r in con.execute("PRAGMA table_info(analyst_calls)")}
+    finally:
+        con.close()
+
+    assert {"input_tokens", "output_tokens", "web_searches", "est_cost_usd"} <= cols
+
+
 def test_migration_enforces_email_log_dedup(tmp_path, monkeypatch):
     db = tmp_path / "u.db"
     url = f"sqlite:///{db}"
