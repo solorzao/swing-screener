@@ -38,6 +38,13 @@ log = logging.getLogger(__name__)
 # the shipped default (2.0) so the incumbent is in the bake-off. Keep grids small + interpretable.
 _EXT_GRID = (1.0, 1.5, 2.0, 2.5)
 
+# Namespace for analyst-queued proposed-variant grid keys. The deterministic sweep points are
+# named ``ext_<x>`` (see ``build_config_grid`` / ``propose._incumbent_name``); prefixing a
+# proposed variant's key with this makes a collision with those -- or with the incumbent the
+# propose() gate looks up by exact name -- STRUCTURALLY impossible, so a queued variant can
+# never silently overwrite a deterministic/incumbent arm.
+_PROPOSED_PREFIX = "proposed:"
+
 
 @dataclass(frozen=True)
 class OptimizeResult:
@@ -71,6 +78,14 @@ def build_config_grid(
     whose delta fails ``to_config`` validation (a frozen-indicator or unknown-key delta) is
     skipped with a logged warning -- never poisoning the grid. Widening the search here is what
     the ``OptimizeResult.n_variants_tested`` search-cost accounting then pays for.
+
+    Collision safety (honesty invariant): a proposed variant's grid key is NAMESPACED as
+    ``f"{_PROPOSED_PREFIX}{pv.name}"`` so it can NEVER collide with -- and therefore never
+    silently overwrite -- a deterministic ``ext_*`` sweep point (the baseline ``propose()``'s
+    incumbent gate relies on by exact name). Among queued variants, a name clash (two mapping to
+    the same namespaced key) keeps the FIRST and SKIPS the rest with a ``log.warning`` -- a
+    duplicate analyst name is dropped, never silently collapsed. The net effect: ``len(grid)``
+    (the source of ``n_variants_tested``) honestly counts every DISTINCT arm actually swept.
     """
     grid = {f"ext_{e:.1f}": replace(base, max_extension_atr=e) for e in _EXT_GRID}
     for name, cfg in grid.items():
@@ -78,8 +93,16 @@ def build_config_grid(
     for pv in proposed or []:
         if pv.status != QUEUED:
             continue
+        key = f"{_PROPOSED_PREFIX}{pv.name}"
+        if key in grid:
+            log.warning(
+                "skipping duplicate proposed variant %r: grid key %r already swept "
+                "(keeping the first; a duplicate analyst name is dropped, not overwritten)",
+                pv.name, key,
+            )
+            continue
         try:
-            grid[pv.name] = to_config(pv, base)
+            grid[key] = to_config(pv, base)
         except ValueError:
             log.warning(
                 "skipping invalid proposed variant %r (delta %r): failed validation",
