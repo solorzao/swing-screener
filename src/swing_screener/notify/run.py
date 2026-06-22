@@ -365,15 +365,17 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         playbooks = {pt: _load_playbook(edge_dir, pt) for pt in ("continuation", "reversal")}
 
         def _deep_one(facts: SignalFacts, sig: Signal, play_type: str) -> tuple[
-                SignalAnalysis, OrderIntentLine | None, OrderIntent | None]:
-            """Run ONE deep Opus call for a top-N pick; return (analysis, line, intent).
+                SignalAnalysis, OrderIntentLine | None, OrderIntent | None, float]:
+            """Run ONE deep Opus call for a top-N pick; return (analysis, line, intent, cost).
 
             When the pick's play type has a playbook + verdicts sidecar, run the INSIGHT
             ENGINE: a deterministic conviction baseline, one Opus conviction call (which
             NUDGES it, clamped +-1), a sized order intent, and a persisted AnalystCall. The
             analyst's insight becomes the rationale; a short core reason names the
             conviction + edge. No playbook -> fall back to the old ``deep_analyze`` (one
-            call either way -- never both, so no double-billing)."""
+            call either way -- never both, so no double-billing). The 4th return is the
+            call's estimated spend (``usage.est_cost_usd``, 0.0 when usage is absent) so the
+            caller can accumulate it against the per-run ceiling."""
             context_text = market_context.context_block(
                 get_fundamentals(sig.ticker), get_news(sig.ticker))
             pb = playbooks.get(play_type)
@@ -383,7 +385,8 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                     client=anthropic_client,  # type: ignore[arg-type]  # test seam may be a fake
                     model=cfg.analysis_model, reasoning=cfg.analysis_reasoning,
                     max_searches=cfg.analysis_max_searches)
-                return analysis, None, None
+                cost = analysis.usage.est_cost_usd if analysis.usage is not None else 0.0
+                return analysis, None, None, cost
             playbook_text, verdicts = pb
             baseline, edge_label = conviction_baseline(
                 score=sig.score, volatility_tier=sig.volatility_tier,
@@ -409,7 +412,16 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                 risk_dollars=intent.risk_dollars, edge_played=edge_label,
                 entry_floor=intent.entry_floor, entry_ceiling=intent.entry_ceiling,
                 stop=intent.stop, target=intent.target)
-            return analysis, order_intent, intent
+            cost = cr.usage.est_cost_usd if cr.usage is not None else 0.0
+            return analysis, order_intent, intent, cost
+
+        # Per-RUN deep-analysis spend ceiling. ``spend[0]`` accumulates every deep insight
+        # call's est_cost across BOTH _build_picks calls (continuation + reversal share one
+        # budget), and ``ceiling_logged`` ensures the cutoff is warned ONCE per run. None
+        # ceiling -> the check never fires, so the loop is byte-identical to today.
+        max_usd = cfg.deep_analysis_max_usd
+        spend = [0.0]
+        ceiling_logged = [False]
 
         def _build_picks(sigs: list[Signal], *, play_type: str,
                          collect_intents: list[OrderIntent]) -> tuple[
@@ -418,14 +430,26 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
             deep path (the insight engine when a playbook exists for ``play_type``, else the
             legacy deep analyst); the rest get the cheap deterministic narration. Each built
             ``OrderIntent`` is appended to ``collect_intents`` for the post-build dispatch --
-            rendering is unchanged here; nothing is dispatched inline."""
+            rendering is unchanged here; nothing is dispatched inline.
+
+            SPEND CEILING: a pick that WOULD get the deep path skips it for the deterministic
+            narrator once the per-run accumulator (``spend``) has reached ``max_usd`` -- the
+            pick still renders, just without the Opus insight/conviction nudge. Else it runs
+            deep and adds its est_cost to the accumulator. ``max_usd is None`` -> no ceiling."""
             dps: list[DigestPick] = []
             pps: list[PdfPick] = []
             for i, sig in enumerate(sigs):
                 facts = _facts(sig)
                 order_intent: OrderIntentLine | None = None
-                if deep_on and i < cfg.deep_analysis_top_n:
-                    analysis, order_intent, built_intent = _deep_one(facts, sig, play_type)
+                want_deep = deep_on and i < cfg.deep_analysis_top_n
+                over_ceiling = max_usd is not None and spend[0] >= max_usd
+                if want_deep and over_ceiling and not ceiling_logged[0]:
+                    log.warning("deep-analysis spend ceiling $%.2f reached; remaining picks "
+                                "use deterministic text", max_usd)
+                    ceiling_logged[0] = True
+                if want_deep and not over_ceiling:
+                    analysis, order_intent, built_intent, cost = _deep_one(facts, sig, play_type)
+                    spend[0] += cost
                     if built_intent is not None:
                         collect_intents.append(built_intent)
                 else:
