@@ -30,6 +30,8 @@ from swing_screener.db import repo
 from swing_screener.db.models import AnalystCall, ExitEvent, PaperTrade, Signal, Trade
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.arms import BASELINE
+from swing_screener.pipeline.autonomy import autonomy_gate, gate_countdown
+from swing_screener.pipeline.health import _freshness
 from swing_screener.pipeline.reflect import analyst_calibration
 from swing_screener.pipeline.variants import DEFAULT_VARIANT
 from swing_screener.settings import load_settings
@@ -982,6 +984,71 @@ def _render_calibration(session: Session) -> None:
             st.caption("Nudges (final != baseline): none scored yet.")
 
 
+_FRESH_BADGE = {"fresh": "🟢", "stale": "🔴", "no-data": "⚪"}
+
+
+def _render_health(session: Session) -> None:
+    """The at-a-glance ops surface: is the cron alive, and what's the money posture?
+
+    Three read-only panels: (i) FRESHNESS -- the latest screen run + the latest digest send
+    per kind, each with a red/green stale badge (the load-bearing "is the cron dead" signal,
+    via the pure :func:`_freshness`); (ii) the autonomy-gate COUNTDOWN (progress toward the
+    calibration floors); (iii) the EXECUTION-MODE chip (the money posture, always visible).
+    Plus today's analyst spend as a metric. Degrades gracefully: no runs -> a clear no-data
+    state, never a crash. READ-ONLY: it only SELECTs."""
+    ui.page_header(
+        "System Health",
+        caption="Is the screener alive? Freshness, the autonomy gate, and the money posture.",
+    )
+    today = date.today()
+
+    # --- (iii) Execution-mode chip: the money posture, always visible -----------------
+    mode = load_settings().execution_mode
+    c1, c2 = st.columns(2)
+    c1.metric("Execution mode", mode)
+    # --- (iv) Today's analyst spend (sum of est_cost_usd over today's calls) -----------
+    today_calls = list(
+        session.scalars(select(AnalystCall).where(AnalystCall.created_date == today))
+    )
+    spend = sum(c.est_cost_usd or 0.0 for c in today_calls)
+    c2.metric("Analyst spend (today)", ui.fmt_money(spend))
+
+    # --- (i) Freshness / last-run table: latest screen + latest digest per kind --------
+    st.subheader("Freshness")
+    run_date = repo.latest_run_date(session)
+    rows = [_freshness_row("Screen run", run_date, today)]
+    emails = repo.list_email_log(session)
+    # The latest send per kind (list_email_log is newest-first, so the first seen per kind
+    # is its latest). A kind that has never sent simply doesn't appear -- the screen-run row
+    # is always present so the table is never empty.
+    seen: set[str] = set()
+    for e in emails:
+        if e.kind in seen:
+            continue
+        seen.add(e.kind)
+        last_send = e.sent_at.date() if e.sent_at is not None else None
+        rows.append(_freshness_row(f"Digest: {e.kind}", last_send, today))
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    if run_date is None:
+        ui.empty_state("No screener runs recorded yet — the screen hasn't run.")
+
+    # --- (ii) Gate countdown: per-play-type progress toward the calibration floors -----
+    st.subheader("Autonomy gate")
+    report = autonomy_gate(session)
+    st.caption("READY (advisory)" if report.ready else "NOT READY")
+    st.code(gate_countdown(report))
+
+
+def _freshness_row(label: str, latest: date | None, today: date) -> dict[str, object]:
+    """One freshness-table row: the source, its last-seen date, and a badged state."""
+    badge_label, state = _freshness(latest, today)
+    return {
+        "source": label,
+        "last_seen": latest,
+        "status": f"{_FRESH_BADGE[state]} {state}",
+    }
+
+
 # label -> renderer. Order defines sidebar order; first entry is the default
 # landing page. Radio nav (not st.navigation) so AppTest can drive page switches.
 PAGES: dict[str, Callable[[Session], None]] = {
@@ -996,6 +1063,7 @@ PAGES: dict[str, Callable[[Session], None]] = {
     "Exit Log": _render_exits,
     "Universe": _render_universe,
     "Digest Log": _render_digests,
+    "System Health": _render_health,
 }
 
 

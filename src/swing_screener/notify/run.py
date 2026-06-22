@@ -61,6 +61,7 @@ from swing_screener.notify.proposals import (
 )
 from swing_screener.notify.transport import resolve_sender
 from swing_screener.pipeline.autonomy import autonomy_gate, gate_status_line
+from swing_screener.pipeline.health import health_line
 from swing_screener.pipeline.broker import BrokerClient
 from swing_screener.pipeline.broker_alpaca import build_broker
 from swing_screener.pipeline.execution import (
@@ -578,11 +579,24 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         autonomy_status = (
             gate_status_line(autonomy_gate(session, edge_dir=edge_dir)) if deep_on else None
         )
+        # The always-on health footer: the "is the cron alive" push. Unlike the gate
+        # countdown it is NOT gated on deep -- a silently-dead screen/digest cron must show on
+        # EVERY digest. READ-ONLY: the latest run_date + the gate's pure SELECTs (the gate
+        # never writes). ``latest_run_date`` is re-read here rather than reusing the local
+        # ``run_date`` (which may be a backfill/explicit date) so the freshness reflects the
+        # store's true newest screen.
+        health_status = health_line(
+            latest_run_date=repo.latest_run_date(session),
+            today=date.today(),
+            execution_mode=exec_mode,
+            gate_ready=autonomy_gate(session, edge_dir=edge_dir).ready,
+        )
         body = compose_digest_body(kind, run_date, digest_picks, alert_lines,
                                    has_pdf=pdf_attached, reversal_picks=reversal_digest,
                                    proposals_text=proposals_text(proposals),
                                    proposals_html=proposals_html(proposals),
-                                   autonomy_status=autonomy_status)
+                                   autonomy_status=autonomy_status,
+                                   health_status=health_status)
         send(to=recipient, subject=body.subject, text=body.text, html=body.html,
              attachments=([pdf_path] if pdf_path is not None else []))
 
