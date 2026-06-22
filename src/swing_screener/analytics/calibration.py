@@ -28,6 +28,14 @@ from swing_screener.db.models import AnalystCall
 _HIGH = "high"
 _LOW = "low"
 
+# The HARD ceiling on the analyst's earned conviction nudge (North Star #9: the analyst's
+# influence GROWS as it earns a track record -- but bounded, git-visible, in code). A play
+# type that CERTIFIES (``conviction_calibrated``) earns a ±2 nudge; everything else stays at
+# the default ±1. The ceiling is pinned here at 2 -- the bound can never silently widen past
+# it -- and the earned step is RECOMPUTED every run from the live scored book, so it is fully
+# reversible: a play type that stops calibrating drops back to ±1 on the next run.
+_NUDGE_CEILING = 2
+
 
 @dataclass(frozen=True)
 class CalibrationVerdict:
@@ -130,3 +138,15 @@ def conviction_calibrated(
         n_high=n_high, n_low=n_low, n_clusters_high=nc_high, n_clusters_low=nc_low,
         reason="high out-earns low: clustered two-sample CI lower bound > 0",
     )
+
+
+def max_conviction_step(calib: CalibrationVerdict, *, ceiling: int = _NUDGE_CEILING) -> int:
+    """The EARNED conviction-nudge bound for one play type (North Star #9). PURE.
+
+    Returns ``min(ceiling, _NUDGE_CEILING)`` (i.e. 2) when the play type's conviction is
+    CALIBRATED -- the analyst has earned the wider ±2 nudge -- else ``1`` (today's hard clamp).
+    The ``min`` with ``_NUDGE_CEILING`` is the discipline: even if a caller passes a larger
+    ``ceiling``, the earned bound can never exceed the git-visible constant. Recomputed every
+    run from the live ``CalibrationVerdict``, so it is reversible: lose calibration -> back to 1.
+    """
+    return min(ceiling, _NUDGE_CEILING) if calib.calibrated else 1

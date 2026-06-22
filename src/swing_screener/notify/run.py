@@ -25,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from swing_screener.analytics.calibration import max_conviction_step
 from swing_screener.config import StrategyConfig
 from swing_screener.config_secrets import get_secret
 from swing_screener.data.fetch import fetch_bars
@@ -364,6 +365,22 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # for that play type's deep picks; absent -> they fall back to the old deep path.
         playbooks = {pt: _load_playbook(edge_dir, pt) for pt in ("continuation", "reversal")}
 
+        # The EARNED conviction-nudge bound per play type. The advisory autonomy gate already
+        # runs ``conviction_calibrated`` PER play type over the scored book, so we reuse its
+        # ``CalibrationVerdict`` to derive ``max_step`` -- no separate calibration query. We
+        # read the gate ONCE here, BEFORE the picks are built/scored, so the bound is the track
+        # record EARNED prior to grading this run's picks. ``max_conviction_step`` returns 2 for
+        # a CALIBRATED play type (capped at the ``_NUDGE_CEILING`` constant) and 1 otherwise.
+        # RECOMPUTED every run -> reversible: a play type that stops calibrating drops back to
+        # the hard ±1. Off path -> no gate, no map, bound defaults to 1 (byte-identical today).
+        nudge_steps: dict[str, int] = {}
+        if deep_on:
+            gate = autonomy_gate(session, edge_dir=edge_dir)
+            nudge_steps = {
+                pt: max_conviction_step(v["calibration"])
+                for pt, v in gate.per_play_type.items()
+            }
+
         def _deep_one(facts: SignalFacts, sig: Signal, play_type: str) -> tuple[
                 SignalAnalysis, OrderIntentLine | None, OrderIntent | None, float]:
             """Run ONE deep Opus call for a top-N pick; return (analysis, line, intent, cost).
@@ -396,7 +413,8 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                 context_text=context_text, chart_bytes=load_chart(sig.chart_path),
                 client=anthropic_client,  # type: ignore[arg-type]  # test seam may be a fake
                 model=cfg.analysis_model, reasoning=cfg.analysis_reasoning,
-                max_searches=cfg.analysis_max_searches)
+                max_searches=cfg.analysis_max_searches,
+                max_step=nudge_steps.get(play_type, 1))  # earned ±2 ONLY if THIS play type calibrates
             intent = build_order_intent(
                 facts, cr, play_type=play_type, edge_played=edge_label,
                 risk_unit_dollars=risk_unit, max_shares=max_sh)
@@ -554,6 +572,9 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # ran the analyst, so the gate's read-only SELECTs over scored calls + the verdicts
         # sidecars are free). It NEVER writes -- the gate is a pure SELECT (North Star #1) --
         # and a non-deep digest passes None, so the body is byte-for-byte unchanged there.
+        # Recomputed here (AFTER scoring) so the countdown reflects this run's freshly-scored
+        # calls -- distinct from the pre-build snapshot that sets the earned nudge bound, which
+        # is the track record EARNED before this run's picks were graded.
         autonomy_status = (
             gate_status_line(autonomy_gate(session, edge_dir=edge_dir)) if deep_on else None
         )

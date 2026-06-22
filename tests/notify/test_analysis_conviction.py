@@ -11,6 +11,7 @@ returns a grade beyond +-1 of the baseline MUST be clamped, never trusted.
 from swing_screener.notify.analysis import (
     ConvictionResult,
     SignalFacts,
+    _clamp_conviction,
     analyze_conviction,
 )
 
@@ -164,6 +165,58 @@ def test_conviction_prompt_includes_baseline_playbook_and_pm1_rule():
     assert _PLAYBOOK in text  # the playbook text
     assert "AMD" in text  # the facts
     assert "Sentiment: mixed" in text  # external context
+
+
+# --- The parameterized clamp: default ±1 (byte-identical), earned ±2 when calibrated ---
+
+def test_clamp_default_max_step_one_is_byte_identical():
+    # Default max_step=1: a 2-step UP jump (avoid -> medium) clamps to baseline+1 == "low",
+    # exactly as the hard ±1 clamp does today.
+    assert _clamp_conviction("medium", "avoid") == "low"
+    # And a 2-step DOWN jump (high -> low) clamps to baseline-1 == "medium".
+    assert _clamp_conviction("low", "high") == "medium"
+
+
+def test_clamp_max_step_two_permits_a_two_step_move():
+    # max_step=2: a 2-step UP jump (avoid -> medium) is now ALLOWED, not clamped.
+    assert _clamp_conviction("medium", "avoid", max_step=2) == "medium"
+    # A 2-step DOWN jump (high -> low) is allowed too.
+    assert _clamp_conviction("low", "high", max_step=2) == "low"
+
+
+def test_clamp_max_step_two_still_clamps_a_three_step_jump():
+    # max_step=2: a 3-step UP jump (avoid -> high) still clamps to baseline+2 == "medium".
+    assert _clamp_conviction("high", "avoid", max_step=2) == "medium"
+    # A 3-step DOWN jump (high -> avoid) clamps to baseline-2 == "low".
+    assert _clamp_conviction("avoid", "high", max_step=2) == "low"
+
+
+def test_clamp_unrecognized_grade_falls_back_to_baseline_regardless_of_step():
+    # An unrecognized grade -> baseline, whatever the bound.
+    assert _clamp_conviction("stellar", "medium", max_step=1) == "medium"
+    assert _clamp_conviction("stellar", "medium", max_step=2) == "medium"
+
+
+def test_analyze_conviction_max_step_two_permits_plus_two_nudge():
+    # A fake analyst returns a +2 grade (medium baseline -> high is +1; but baseline LOW ->
+    # high is +2). With max_step=2 the move survives; the default would clamp it to +1.
+    resp = _Resp([_TextBlock("CONVICTION: high\nREASON: earned conviction\nStrong.")])
+    out = analyze_conviction(
+        _facts(), baseline="low", playbook_text=_PLAYBOOK,
+        client=_RecordingClient(resp), max_step=2,
+    )
+    assert out.conviction == "high"  # low -> high is +2, ALLOWED at max_step=2
+    assert out.is_deep is True
+
+
+def test_analyze_conviction_default_step_clamps_plus_two_to_plus_one():
+    # The SAME +2 reply, but default max_step=1 -> clamped to baseline+1 == "medium".
+    resp = _Resp([_TextBlock("CONVICTION: high\nREASON: too eager\nStrong.")])
+    out = analyze_conviction(
+        _facts(), baseline="low", playbook_text=_PLAYBOOK,
+        client=_RecordingClient(resp),
+    )
+    assert out.conviction == "medium"  # clamped to +1 by the default bound
 
 
 def test_conviction_agree_with_baseline_keeps_baseline():

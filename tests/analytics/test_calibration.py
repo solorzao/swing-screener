@@ -12,10 +12,20 @@ keeps a coin-flip relabel from minting an edge.
 import random
 
 from swing_screener.analytics.calibration import (
+    _NUDGE_CEILING,
     CalibrationVerdict,
     conviction_calibrated,
+    max_conviction_step,
 )
 from swing_screener.db.models import AnalystCall
+
+
+def _verdict(*, calibrated: bool) -> CalibrationVerdict:
+    """A minimal CalibrationVerdict carrying only the ``calibrated`` flag the bound reads."""
+    return CalibrationVerdict(
+        calibrated=calibrated, high_minus_low=0.4, ci_low=0.1,
+        n_high=40, n_low=40, n_clusters_high=8, n_clusters_low=8, reason="x",
+    )
 
 
 def _call(ticker: str, conviction: str, r: float) -> AnalystCall:
@@ -149,3 +159,29 @@ def test_deterministic_same_input_same_verdict() -> None:
     a = conviction_calibrated(calls)
     b = conviction_calibrated(calls)
     assert a == b   # frozen dataclass + seeded bootstrap -> identical
+
+
+# --- The earned nudge bound: ±2 ONLY when the play type certifies, capped at the ceiling ---
+
+def test_max_conviction_step_calibrated_earns_two() -> None:
+    # A certified play type earns the ±2 bound -- the analyst's influence GROWS (North Star #9).
+    assert max_conviction_step(_verdict(calibrated=True)) == 2
+
+
+def test_max_conviction_step_uncalibrated_stays_one() -> None:
+    # An uncertified play type keeps today's hard ±1 clamp -- no earned bound yet.
+    assert max_conviction_step(_verdict(calibrated=False)) == 1
+
+
+def test_nudge_ceiling_constant_is_two() -> None:
+    # The git-visible, bounded discipline: the ceiling is a named constant pinned at 2.
+    assert _NUDGE_CEILING == 2
+
+
+def test_max_conviction_step_never_exceeds_ceiling() -> None:
+    # Even if a future caller passes a larger ceiling, min(ceiling, 2) caps the earned bound
+    # at 2 -- the bound can never silently widen past the hard discipline constant.
+    assert max_conviction_step(_verdict(calibrated=True), ceiling=5) == 2
+    assert max_conviction_step(_verdict(calibrated=True), ceiling=2) == 2
+    # An uncertified play type is always 1 regardless of the ceiling.
+    assert max_conviction_step(_verdict(calibrated=False), ceiling=5) == 1

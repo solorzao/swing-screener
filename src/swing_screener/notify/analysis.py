@@ -634,23 +634,27 @@ def _conviction_user_content(facts: SignalFacts, baseline: str, playbook_text: s
     return content
 
 
-def _clamp_conviction(parsed: str, baseline: str) -> str:
-    """Clamp the model's grade to +-1 of the baseline, in CODE -- never trusting the
-    model to respect the bound. An unrecognized grade falls back to the baseline.
+def _clamp_conviction(parsed: str, baseline: str, *, max_step: int = 1) -> str:
+    """Clamp the model's grade to +-``max_step`` of the baseline, in CODE -- never trusting
+    the model to respect the bound. An unrecognized grade falls back to the baseline.
+
+    ``max_step`` defaults to 1 (today's hard ±1 clamp -- byte-identical). A CALIBRATED play
+    type earns ``max_step=2`` (``analytics.calibration.max_conviction_step``); the bound moves
+    SIZING only, never a price level, and is recomputed every run (reversible).
     """
     parsed = parsed.strip().lower()
     base_idx = _CONVICTIONS.index(baseline)
     if parsed not in _CONVICTIONS:
         return baseline
     idx = _CONVICTIONS.index(parsed)
-    idx = max(base_idx - 1, min(base_idx + 1, idx))
+    idx = max(base_idx - max_step, min(base_idx + max_step, idx))
     return _CONVICTIONS[idx]
 
 
-def _parse_conviction(text: str, baseline: str) -> tuple[str, str, str]:
+def _parse_conviction(text: str, baseline: str, *, max_step: int = 1) -> tuple[str, str, str]:
     """Split a reply into (clamped_conviction, reason, insight). The first
     ``CONVICTION:`` and ``REASON:`` lines are the grade + reason; everything else is
-    the insight prose. The grade is clamped to +-1 of the baseline in code."""
+    the insight prose. The grade is clamped to +-``max_step`` of the baseline in code."""
     raw = baseline
     reason = "agree with baseline"
     rest: list[str] = []
@@ -663,19 +667,24 @@ def _parse_conviction(text: str, baseline: str) -> tuple[str, str, str]:
         else:
             rest.append(line)
     insight = "\n".join(rest).strip()
-    return _clamp_conviction(raw, baseline), reason, insight
+    return _clamp_conviction(raw, baseline, max_step=max_step), reason, insight
 
 
 def analyze_conviction(
     facts: SignalFacts, *, baseline: str, playbook_text: str, context_text: str = "",
     chart_bytes: bytes | None = None, client: anthropic.Anthropic | None = None,
     model: str = "claude-opus-4-8", reasoning: str = "high", max_searches: int = 4,
-    web_search: bool = True,
+    web_search: bool = True, max_step: int = 1,
 ) -> ConvictionResult:
-    """Let the Opus analyst MOVE the deterministic baseline conviction (bounded +-1,
+    """Let the Opus analyst MOVE the deterministic baseline conviction (bounded +-``max_step``,
     clamped in code) and write the per-pick insight. Falls back to the baseline +
     the deterministic rationale on ANY failure (missing key, API/tool error, empty
     reply, unparseable) so the insight engine never blocks on the LLM.
+
+    ``max_step`` defaults to 1 (the hard ±1 clamp -- byte-identical to today). A play type
+    whose conviction CALIBRATES earns ``max_step=2`` (``calibration.max_conviction_step``):
+    the analyst's influence GROWS with its track record (North Star #9), but only over SIZING
+    -- it still cannot touch a price level -- and the bound is recomputed every run (reversible).
 
     web_search is wired in (optional, default-on) so the analyst can pull live
     sentiment/sector context that genuinely bears on the thesis -- the point of the
@@ -708,7 +717,7 @@ def analyze_conviction(
         text, sources = _extract_text_and_citations(resp)
         if not text.strip():
             raise ValueError("empty model response")
-        conviction, reason, insight = _parse_conviction(text, baseline)
+        conviction, reason, insight = _parse_conviction(text, baseline, max_step=max_step)
         insight += _format_sources(sources) if sources else ""
         return ConvictionResult(
             conviction=conviction, nudge_reason=reason, insight=insight, is_deep=True,
