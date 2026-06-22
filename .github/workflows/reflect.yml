@@ -3,8 +3,10 @@ name: Reflection (update edge files)
 # Event-triggered reflection, run weekly. For each play type whose live forward shadow book
 # has grown by a meaningful batch of new closed trades, it grades the book against a haircut
 # 1d replay screen and rewrites edge/<play_type>.md (an Opus seam authors the prose; code
-# owns every tier + number). When an edge file actually changed, it opens a PR for a human to
-# review + merge -- nothing here is auto-merged. See pipeline/reflect.py for the trigger rules.
+# owns every tier + number). On a "needs a test" hunch the seam may also queue validated
+# candidate screen variants into edge/<play_type>.proposed.json (the LLM only proposes;
+# to_config gates + promotion stays human-gated). When an edge/ file actually changed, it opens
+# a PR for a human to review + merge -- nothing here is auto-merged. See pipeline/reflect.py.
 # Note: PRs opened by GITHUB_TOKEN don't auto-trigger CI; push or reopen to run it.
 
 on:
@@ -65,8 +67,17 @@ jobs:
             For each play type whose live forward shadow book has advanced by a batch of new
             closed trades, the deterministic grader re-tiered every pre-registered condition
             (forward-confirmed / replay-screened / hunch) and an Opus seam re-authored the
-            prose. Code owns every tier and number; the LLM only writes the narrative.
+            prose. On a "needs a test" hunch the seam may also QUEUE candidate screen variants
+            into `edge/<play_type>.proposed.json` — a `StrategyConfig` delta + rationale the
+            optimizer will sweep. **The LLM only proposes**: code validates every delta and
+            promotion stays human-gated. Review the queued candidates here.
+            Code owns every tier and number; the LLM only writes the narrative + proposes tests.
           commit-message: "reflection: update edge playbooks from the forward book"
-          add-paths: edge/
+          # edge/ covers both the playbooks (edge/*.md) and the queued candidate variants
+          # (edge/*.proposed.json) the drafting seam writes, so both are surfaced for review.
+          add-paths: |
+            edge/*.md
+            edge/*.proposed.json
+            edge/*.verdicts.json
           labels: reflection
           delete-branch: true

@@ -262,6 +262,54 @@ def test_run_reflection_nothing_due_writes_nothing(tmp_path):
 
 
 # =====================================================================================
+# run_reflection -- the variant-drafting seam is wired in (Task 6)
+# =====================================================================================
+def test_run_reflection_drafts_a_queued_variant_when_drafter_returns_valid(tmp_path):
+    # An injectable drafter that returns a legal NON-indicator delta -> a queued
+    # ProposedVariant is written to edge/<pt>.proposed.json for the due play type.
+    from swing_screener.pipeline.proposed import QUEUED, load_proposed_for
+
+    edge_dir = _seed_edge_dir(tmp_path)
+    n = _REFLECT_TRIGGER_N + 5
+
+    def _drafter(play_type, hunches, base):
+        return [{
+            "delta": {"max_extension_atr": 1.5},
+            "rationale": "tighter freshness gate",
+            "hunch_ref": f"{play_type}:hunch",
+        }]
+
+    with _mem_session() as session:
+        _seed(session, [_closed_trade(f"T{i}", 1.0, "continuation") for i in range(n)])
+        run_reflection(
+            session, replay_frames={"S": _synth()}, spy_daily=None,
+            edge_dir=edge_dir, client=_FakeClient("## Thesis\n\nprose\n"),
+            today="2026-06-20", drafter=_drafter,
+        )
+
+    queued = load_proposed_for("continuation", edge_dir)
+    assert len(queued) == 1
+    assert queued[0].status == QUEUED
+    assert queued[0].delta == {"max_extension_atr": 1.5}
+    # the non-due play type got no proposed file
+    assert not (edge_dir / "reversal.proposed.json").exists()
+
+
+def test_run_reflection_without_drafter_writes_no_proposed_file(tmp_path):
+    # The drafting is ADDITIVE: with no drafter (the default), reflection behaves exactly as
+    # before and writes no .proposed.json (existing reflection tests stay green).
+    edge_dir = _seed_edge_dir(tmp_path)
+    n = _REFLECT_TRIGGER_N
+    with _mem_session() as session:
+        _seed(session, [_closed_trade(f"T{i}", 1.0, "continuation") for i in range(n)])
+        run_reflection(
+            session, replay_frames={"S": _synth()}, spy_daily=None,
+            edge_dir=edge_dir, client=_FakeClient("## Thesis\n\nprose\n"), today="2026-06-20",
+        )
+    assert not (edge_dir / "continuation.proposed.json").exists()
+
+
+# =====================================================================================
 # main -- thin glue smoke (no network, no real LLM)
 # =====================================================================================
 def test_main_smoke(monkeypatch, tmp_path):

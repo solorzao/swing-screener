@@ -16,6 +16,7 @@ import argparse
 import json
 import logging
 import statistics
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from datetime import date
 from pathlib import Path
@@ -41,6 +42,12 @@ from swing_screener.db.models import AnalystCall, PaperTrade
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.arms import BASELINE
 from swing_screener.pipeline.optimize import fetch_daily
+from swing_screener.pipeline.proposed import (
+    QUEUED,
+    ProposedVariant,
+    proposed_to_json,
+    to_config,
+)
 from swing_screener.pipeline.replay import replay_book
 from swing_screener.pipeline.variants import DEFAULT_VARIANT
 from swing_screener.settings import load_settings
@@ -691,6 +698,229 @@ def author_edge_file(
 
 
 # ===========================================================================
+# DRAFT -- the OPTIONAL Opus variant-DRAFTING seam (North Star #9).
+#
+# On a "needs a test" hunch the author may also DRAFT candidate SCREEN VARIANTS: a small
+# NON-indicator ``StrategyConfig`` delta keyed to a hunch, which it QUEUES into the validated
+# store (``edge/<pt>.proposed.json``) for the optimizer to sweep. The LLM only PROPOSES --
+# code owns the schema, the validation, and the human gate:
+#   * ``to_config`` is the HARD gate: an illegal (frozen-indicator) or malformed (unknown-key /
+#     wrong-shape) draft is DROPPED with a warning -- never persisted, never swept.
+#   * On ANY failure (client error / empty / unparseable) -> draft NOTHING (the store is simply
+#     not updated), exactly like ``author_edge_file``'s deterministic fallback.
+#   * Promotion stays human-gated: a surviving candidate is only QUEUED; the existing
+#     ``propose()`` PR gate (and the human reflection PR) still owns promotion to ``config.py``.
+# The drafter is an injectable seam (``DrafterFn``): tests pass a fake (no network); prod uses
+# ``_opus_drafter`` (a structured tool-use call), mirroring ``author_edge_file``'s client seam.
+# ===========================================================================
+
+# A drafter is given (play_type, hunch verdicts, base config) and returns 0+ raw candidate
+# dicts -- each ideally ``{"delta": {...}, "rationale": str, "hunch_ref": str}``. It may RAISE
+# (client/parse failure); ``draft_variants`` treats that, an empty list, and a malformed item
+# identically: the bad item (or the whole run) yields no queued variant. The dict shape (not a
+# typed object) is deliberate -- it is untrusted model output; ``draft_variants`` + ``to_config``
+# are what validate it.
+DrafterFn = Callable[[str, list[Verdict], StrategyConfig], list[dict]]
+
+# The tool the model fills in to PROPOSE variants (structured output). Code owns this schema;
+# the model only supplies values, and ``to_config`` still re-validates every delta.
+_DRAFT_TOOL = {
+    "name": "propose_screen_variants",
+    "description": (
+        "Propose 0 or more candidate screen variants to walk-forward test. Each variant is a "
+        "SMALL delta of non-indicator StrategyConfig detection/zone/scoring knobs (e.g. "
+        "max_extension_atr, min_pullback_bars, oversold_rsi_max), a one-line rationale, and the "
+        "hunch it is meant to test. Propose nothing if no hunch warrants a test."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "variants": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "delta": {
+                            "type": "object",
+                            "description": (
+                                "A flat map of StrategyConfig field -> scalar value. NON-indicator "
+                                "fields only (never an EMA/ATR/RSI/MACD/HA period)."
+                            ),
+                        },
+                        "rationale": {"type": "string"},
+                        "hunch_ref": {"type": "string"},
+                    },
+                    "required": ["delta", "rationale", "hunch_ref"],
+                },
+            },
+        },
+        "required": ["variants"],
+    },
+}
+
+_DRAFT_SYSTEM = (
+    "You are the AUTHOR of a swing-trading edge playbook. Some pre-registered conditions are "
+    "HUNCHES -- watched ideas that have NOT cleared the evidence bound on either book. For a "
+    "hunch you believe is worth a controlled test, you may PROPOSE a candidate screen variant: "
+    "a SMALL delta of NON-indicator StrategyConfig knobs (detection / zone / scoring -- e.g. "
+    "max_extension_atr, min_pullback_bars, oversold_rsi_max). NEVER propose a change to a frozen "
+    "indicator period (EMA/ATR/RSI/MACD/HA classification): the shadow book reuses shared frames, "
+    "so such a variant is illegal and will be dropped. You ONLY propose; a human + the optimizer's "
+    "evidence gate decide whether anything is promoted. Propose nothing if no hunch warrants a "
+    "test. Use the propose_screen_variants tool."
+)
+
+
+def _draft_user_content(play_type: str, hunches: list[Verdict]) -> str:
+    """The user turn for the drafter: the play type and its hunch conditions (the watched
+    ideas the model may propose a test for). Pure -- no numbers the model could regrade."""
+    lines = "\n".join(f"- {_condition(h)} ({_stats_suffix(h)})" for h in hunches)
+    return (
+        f"Play type: {play_type}\n\n"
+        "These pre-registered conditions are HUNCHES (not yet edges on either book). Propose "
+        "0+ candidate screen variants to test the ones you think warrant a controlled test "
+        "(non-indicator knobs only):\n"
+        f"{lines}\n"
+    )
+
+
+def _opus_drafter(
+    *, client: anthropic.Anthropic | None = None, model: str = "claude-opus-4-8",
+) -> DrafterFn:
+    """Build the prod drafter: a structured tool-use call that asks Opus to fill in the
+    ``propose_screen_variants`` tool. Returns a ``DrafterFn`` closing over the client/model.
+
+    ``client`` is an injectable seam (prod constructs ``anthropic.Anthropic`` via ``get_secret``,
+    like ``author_edge_file``). The returned function extracts the ``variants`` array from the
+    model's ``tool_use`` block; it may RAISE on any failure (missing key, API error, no tool
+    block) -- ``draft_variants`` catches that and drafts nothing.
+    """
+    def _fn(play_type: str, hunches: list[Verdict], base: StrategyConfig) -> list[dict]:
+        c = client or anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
+        # Build kwargs as a plain dict (like notify/analysis.py): the SDK's create() overloads
+        # don't reconcile with the heterogeneous tool/tool_choice literals, and this is the
+        # untrusted-output seam to_config re-validates anyway.
+        kwargs: dict = {
+            "model": model,
+            "max_tokens": 2000,
+            "system": _DRAFT_SYSTEM,
+            "tools": [_DRAFT_TOOL],
+            "tool_choice": {"type": "tool", "name": _DRAFT_TOOL["name"]},
+            "messages": [
+                {"role": "user", "content": _draft_user_content(play_type, hunches)}
+            ],
+        }
+        resp = c.messages.create(**kwargs)
+        tool_input = next(
+            (
+                b.input
+                for b in resp.content
+                if getattr(b, "type", None) == "tool_use"
+                and getattr(b, "name", None) == _DRAFT_TOOL["name"]
+            ),
+            None,
+        )
+        if not isinstance(tool_input, dict):
+            raise ValueError("no propose_screen_variants tool_use block in response")
+        variants = tool_input.get("variants", [])
+        if not isinstance(variants, list):
+            raise ValueError("propose_screen_variants 'variants' is not a list")
+        return variants
+
+    return _fn
+
+
+def _draft_name(play_type: str, hunch_ref: str, index: int) -> str:
+    """A stable, reasonable grid name for a drafted candidate, derived from the play type and
+    the hunch it tests. The optimizer NAMESPACES + dedupes grid keys, so this need only be
+    readable, not globally unique."""
+    slug = "".join(ch if ch.isalnum() else "_" for ch in hunch_ref).strip("_") or "hunch"
+    return f"{play_type}_{slug}_{index}_q"
+
+
+def _candidate(
+    raw: dict, *, play_type: str, base: StrategyConfig, today: str, index: int,
+) -> ProposedVariant | None:
+    """Turn one untrusted raw draft dict into a VALIDATED queued ``ProposedVariant``, or return
+    ``None`` (with a warning) if it is malformed or illegal.
+
+    Two gates: (1) structural -- the dict must carry a ``dict`` ``delta`` plus string
+    ``rationale`` / ``hunch_ref``; (2) semantic -- ``to_config`` must accept the delta (it
+    rejects a frozen-indicator or unknown-key delta). A failure DROPS the candidate; it is never
+    persisted and never reaches the sweep.
+    """
+    delta = raw.get("delta")
+    rationale = raw.get("rationale")
+    hunch_ref = raw.get("hunch_ref")
+    if not (isinstance(delta, dict) and isinstance(rationale, str) and isinstance(hunch_ref, str)):
+        log.warning(
+            "dropping malformed drafted variant for %s (raw=%r): "
+            "expected dict 'delta' + str 'rationale'/'hunch_ref'",
+            play_type, raw,
+        )
+        return None
+    pv = ProposedVariant(
+        name=_draft_name(play_type, hunch_ref, index),
+        play_type=play_type, delta=delta, rationale=rationale, hunch_ref=hunch_ref,
+        status=QUEUED, drafted_at=today, provenance="reflection-opus",
+    )
+    try:
+        to_config(pv, base)   # THE GATE: drop an illegal/unknown/malformed delta.
+    except ValueError:
+        log.warning(
+            "dropping illegal drafted variant %r for %s (delta %r): failed to_config validation",
+            pv.name, play_type, delta, exc_info=True,
+        )
+        return None
+    return pv
+
+
+def draft_variants(
+    play_type: str,
+    hunches: list[Verdict],
+    base: StrategyConfig,
+    *,
+    edge_dir: Path,
+    today: str,
+    drafter: DrafterFn,
+) -> list[ProposedVariant]:
+    """Draft + validate + QUEUE candidate screen variants for one play type's hunches.
+
+    The flow: ask the (injectable, fallible) ``drafter`` for raw candidate dicts; validate each
+    via ``_candidate`` (``to_config`` is the hard gate -- illegal/malformed drafts are DROPPED +
+    warned); and, IF any survive, REWRITE ``edge/<pt>.proposed.json`` with the new queued set
+    (queued drafts are machine-owned, so a fresh successful run replaces the prior set).
+
+    Fail-safe like ``author_edge_file``: with no hunches the drafter is not even asked; and on
+    ANY failure (drafter raises, returns empty, or every candidate is dropped) the store is left
+    UNTOUCHED -- a prior valid queued set survives. Returns the list of variants written ([] if
+    nothing was queued).
+    """
+    if not hunches:
+        return []
+    try:
+        raw = drafter(play_type, hunches, base)
+    except Exception:
+        log.warning(
+            "variant drafting failed for %s; queueing nothing (store untouched)",
+            play_type, exc_info=True,
+        )
+        return []
+    valid = [
+        pv for i, item in enumerate(raw or [])
+        if (pv := _candidate(item, play_type=play_type, base=base, today=today, index=i))
+        is not None
+    ]
+    if not valid:
+        return []
+    (edge_dir / f"{play_type}.proposed.json").write_text(
+        proposed_to_json(valid), encoding="utf-8"
+    )
+    log.info("drafted %d queued variant(s) for %s", len(valid), play_type)
+    return valid
+
+
+# ===========================================================================
 # ORCHESTRATION -- the event trigger, the run, and the CLI.
 #
 # The reflection is EVENT-driven, not time-driven: a play type is reflected only once its
@@ -753,6 +983,7 @@ def run_reflection(
     edge_dir: Path = _EDGE_DIR,
     client: anthropic.Anthropic | None = None,
     today: str | None = None,
+    drafter: DrafterFn | None = None,
 ) -> list[str]:
     """Reflect every DUE play type and rewrite its ``edge/<pt>.md``; return the list reflected.
 
@@ -763,10 +994,17 @@ def run_reflection(
     ``author_edge_file`` the markdown (carrying the prior thesis + Falsified items, stamping the
     code-owned FORWARD counter). Writing the file is the ONLY side effect -- no DB writes.
 
+    When a ``drafter`` is supplied (North Star #9), the play type's ``hunch`` verdicts are also
+    handed to the Opus variant-drafting seam, which may QUEUE validated candidate screen variants
+    into ``edge/<pt>.proposed.json`` for the optimizer to sweep. The drafting is ADDITIVE and
+    fail-safe: with no drafter (the default) reflection behaves exactly as before, and any drafter
+    failure / illegal draft simply queues nothing (the LLM only proposes; ``to_config`` gates).
+
     Known Phase-1 approximation: the forward book pools ALL timeframes while the replay screen
     is 1d only; acceptable here (the screened tier is a directional candidate, not gold).
     """
     cfg = replace(StrategyConfig(), fill_slippage_atr=_REPLAY_HAIRCUT_ATR)
+    base = StrategyConfig()
     due = due_play_types(session, edge_dir=edge_dir)
     if not due:
         return []
@@ -809,6 +1047,15 @@ def run_reflection(
         (edge_dir / f"{pt}.md").write_text(content, encoding="utf-8")
         log.info("reflected %s: %d forward closed, %d replay-screened",
                  pt, len(forward), len(replay_pt))
+
+        # North Star #9: on the "needs a test" hunches, let the (optional, fail-safe) drafter
+        # QUEUE validated candidate screen variants for the optimizer to sweep. The LLM only
+        # proposes; ``to_config`` gates and promotion stays human-gated (queue-only).
+        if drafter is not None and today is not None:
+            hunches = [v for v in verdicts if v.tier == "hunch"]
+            draft_variants(
+                pt, hunches, base, edge_dir=edge_dir, today=today, drafter=drafter,
+            )
     return due
 
 
@@ -839,6 +1086,7 @@ def main() -> None:
         reflected = run_reflection(
             session, replay_frames=replay_frames, spy_daily=spy_daily,
             edge_dir=args.edge_dir, today=date.today().isoformat(),
+            drafter=_opus_drafter(),
         )
     if reflected:
         log.info("reflected play types: %s", ", ".join(reflected))
