@@ -48,3 +48,6 @@ infra/main.json
 
 # Reflection sidecar (machine-readable verdicts; regenerated each run from grade())
 edge/*.verdicts.json
+# NOTE: edge/*.proposed.json (analyst-queued screen variants, Phase-6) is deliberately NOT
+# ignored -- unlike verdicts.json it is durable INPUT (the queue the optimizer sweeps), so it
+# is committed as the auditable record of what was queued and when.

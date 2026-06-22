@@ -97,9 +97,17 @@ def _placebo_cleared(
 
 def _provenance(result: OptimizeResult) -> str:
     """A reproducibility footer for the PR body: a stable hash of the swept grid, the current
-    git SHA, and the configuration count -- so the researcher degrees-of-freedom behind a
-    proposal are auditable after the fact."""
+    git SHA, and the search-cost counts -- so the researcher degrees-of-freedom behind a
+    proposal are auditable after the fact.
+
+    ``n_variants_tested`` is the SWEPT-grid size (the true search width, INCLUDING any
+    analyst-queued variants) -- the honest multiple-comparisons denominator. It is reported
+    distinctly from ``n_configs`` (the count that actually traded in-sample): a widened search
+    is visible even when the extra arms drew no trades. When a summary-only caller did not
+    record the swept size (``n_variants_tested == 0``), it falls back to the in-sample size so
+    the footer is never silently empty."""
     grid_hash = hashlib.sha1(",".join(sorted(result.in_sample)).encode()).hexdigest()[:12]
+    n_tested = result.n_variants_tested or len(result.in_sample)
     try:
         sha = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -109,7 +117,8 @@ def _provenance(result: OptimizeResult) -> str:
     except (OSError, subprocess.SubprocessError):
         sha = "unknown"
     return (f"\n### Provenance\n"
-            f"grid: `{grid_hash}` · sha: `{sha}` · n_configs={len(result.in_sample)}\n")
+            f"grid: `{grid_hash}` · sha: `{sha}` · n_configs={len(result.in_sample)} · "
+            f"n_variants_tested={n_tested}\n")
 
 
 def propose(
