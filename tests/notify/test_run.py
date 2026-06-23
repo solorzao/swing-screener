@@ -76,6 +76,40 @@ def test_send_digest_emails_with_pdf_and_is_idempotent(tmp_path):
     assert len(sent) == 1  # recorder not called again
 
 
+def test_send_digest_drops_already_ran_picks(tmp_path):
+    """A pick whose live price has run past its entry ceiling (or broken its stop) by
+    digest time is dropped: the screen ran the prior evening, so a pick can leave its
+    entry zone overnight. Mirrors the dashboard's 'hide already ran' filter so the email
+    surfaces only what is still tradable."""
+    url = f"sqlite:///{tmp_path / 'ran.sqlite'}"
+    _seed(url)  # AMD (rank 1) + AEP (rank 2), entry zone 96-101, stop 95
+    sent = []
+
+    # AMD has run to 130 (well past the 101 ceiling -> extended); AEP sits at 100 (in zone).
+    prices = {"AMD": 130.0, "AEP": 100.0}
+    res = run.send_digest(kind="daily", db_url=url, run_date=RUN, to="me@example.com",
+                          pdf_dir=tmp_path / "digests", anthropic_client=_FakeClient(),
+                          smtp_send=lambda **k: sent.append(k),
+                          latest_closes_fn=lambda tickers: prices)
+    assert res.sent is True and res.n_picks == 1
+    body = sent[-1]["text"]
+    assert "American Electric Power" in body          # AEP still actionable -> kept
+    assert "Advanced Micro Devices" not in body       # AMD already ran -> dropped
+
+
+def test_send_digest_keeps_picks_when_quotes_unavailable(tmp_path):
+    """Fail-open: when live quotes can't be fetched, no pick is dropped -- a quote outage
+    must never silence the digest."""
+    url = f"sqlite:///{tmp_path / 'noq.sqlite'}"
+    _seed(url)
+    sent = []
+    res = run.send_digest(kind="daily", db_url=url, run_date=RUN, to="me@example.com",
+                          pdf_dir=tmp_path / "digests", anthropic_client=_FakeClient(),
+                          smtp_send=lambda **k: sent.append(k),
+                          latest_closes_fn=lambda tickers: {})  # no quotes available
+    assert res.n_picks == 2  # both picks kept
+
+
 def test_send_digest_force_resends_without_duplicate_log(tmp_path):
     # force=True re-sends a digest that already went out today (a manual override
     # for ad-hoc verification), but it must NOT add a second EmailLog marker -- on
