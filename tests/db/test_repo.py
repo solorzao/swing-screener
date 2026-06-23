@@ -3,7 +3,7 @@ from datetime import date
 from sqlalchemy.orm import Session
 
 from swing_screener.db import repo
-from swing_screener.db.models import PaperTrade, Signal
+from swing_screener.db.models import PaperTrade, Signal, Universe
 from swing_screener.db.session import get_engine
 
 
@@ -63,6 +63,23 @@ def test_prior_first_seen_resets_after_absence_beyond_lookback():
         s.commit()
         seen = repo.prior_first_seen(s, date(2024, 4, 4), lookback_runs=2)
     assert ("AAPL", "1d", "continuation") not in seen
+
+
+def test_apply_universe_metrics_writes_sector_and_skips_none():
+    """sector is written when present and SKIPPED when None, so a transient yfinance
+    failure (None) preserves the prior value rather than wiping it."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add(Universe(ticker="AAPL", name="Apple", sector="Information Technology"))
+        s.commit()
+        # None sector must NOT overwrite the existing value (sticky on fetch failure).
+        repo.apply_universe_metrics(s, {"AAPL": {"sector": None, "market_cap": 5.0}})
+        row = s.get(Universe, "AAPL")
+        assert row is not None
+        assert row.sector == "Information Technology" and row.market_cap == 5.0
+        # a real sector updates it.
+        repo.apply_universe_metrics(s, {"AAPL": {"sector": "Energy"}})
+        assert s.get(Universe, "AAPL").sector == "Energy"
 
 
 def test_open_paper_trades_and_record_exit():

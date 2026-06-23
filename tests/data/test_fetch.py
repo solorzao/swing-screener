@@ -132,3 +132,45 @@ def test_fast_info_market_cap_rejects_nan_zero_and_negative(monkeypatch):
         assert fetch._fast_info_market_cap("X") is None
     monkeypatch.setattr(fetch.yf, "Ticker", lambda t: _FakeTicker({"market_cap": 1000.0}))
     assert fetch._fast_info_market_cap("X") == 1000.0
+
+
+def test_fetch_sector_caches(tmp_path, monkeypatch):
+    from swing_screener.data import fetch
+    calls = {"n": 0}
+
+    def fake(t):
+        calls["n"] += 1
+        return "Information Technology"
+
+    monkeypatch.setattr(fetch, "_info_sector", fake)
+    a = fetch.fetch_sector("AAPL", cache_dir=tmp_path)
+    b = fetch.fetch_sector("AAPL", cache_dir=tmp_path)
+    assert a == b == "Information Technology"
+    assert calls["n"] == 1  # second call served from the per-day cache
+
+
+def test_fetch_sector_none_on_failure(tmp_path, monkeypatch):
+    from swing_screener.data import fetch
+    monkeypatch.setattr(fetch, "_info_sector",
+                        lambda t: (_ for _ in ()).throw(RuntimeError("down")))
+    assert fetch.fetch_sector("AAPL", cache_dir=tmp_path, retries=2) is None
+
+
+def test_fetch_sector_missing_value_returns_none_no_cache(tmp_path, monkeypatch):
+    from swing_screener.data import fetch
+    monkeypatch.setattr(fetch, "_info_sector", lambda t: None)
+    assert fetch.fetch_sector("ETF", cache_dir=tmp_path) is None
+    assert not (tmp_path / "sector").exists()  # a clean None is not cached
+
+
+def test_info_sector_reads_info_dict(monkeypatch):
+    from swing_screener.data import fetch
+
+    class _FakeTicker:
+        def __init__(self, info):
+            self.info = info
+
+    monkeypatch.setattr(fetch.yf, "Ticker", lambda t: _FakeTicker({"sector": " Energy "}))
+    assert fetch._info_sector("XOM") == "Energy"  # trimmed
+    monkeypatch.setattr(fetch.yf, "Ticker", lambda t: _FakeTicker({}))
+    assert fetch._info_sector("X") is None  # no sector key

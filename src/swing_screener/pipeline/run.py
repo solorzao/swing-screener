@@ -12,7 +12,12 @@ from sqlalchemy.orm import Session
 
 from swing_screener.charts.render import render_chart
 from swing_screener.config import StrategyConfig
-from swing_screener.data.fetch import avg_dollar_volume, fetch_bars, fetch_market_cap
+from swing_screener.data.fetch import (
+    avg_dollar_volume,
+    fetch_bars,
+    fetch_market_cap,
+    fetch_sector,
+)
 from swing_screener.data.resample import resample_ohlcv
 from swing_screener.data.universe import load_universe
 from swing_screener.db import repo
@@ -25,6 +30,7 @@ from swing_screener.pipeline.analyze import (
     build_frames,
 )
 from swing_screener.pipeline.arms import BASELINE, build_arms
+from swing_screener.pipeline.diversity import cap_by_sector
 from swing_screener.pipeline.broker import BrokerClient
 from swing_screener.pipeline.broker_alpaca import build_broker
 from swing_screener.pipeline.reconcile import reconcile_live
@@ -123,7 +129,11 @@ class RunResult:
 _DIGEST_TIMEFRAMES = ("1wk", "1mo")
 
 
-def _digest_chart_indices(results: list[SignalResult], top_n: int) -> list[int]:
+def _digest_chart_indices(
+    results: list[SignalResult], top_n: int, *,
+    sector_of: "Callable[[SignalResult], str | None] | None" = None,
+    max_per_sector: int | None = None,
+) -> list[int]:
     """Indices into score-sorted ``results`` for every signal a digest can pick.
 
     Charts are rendered for the UNION of the global top-N (the daily digest) and
@@ -132,8 +142,17 @@ def _digest_chart_indices(results: list[SignalResult], top_n: int) -> list[int]:
     would reach the digest with no chart. ``results`` is sorted by score
     descending, so a timeframe's first ``top_n`` entries are exactly its picks.
     Kept in sync with notify.select, whose pickers all default to top_n=5.
+
+    When ``max_per_sector``/``sector_of`` are given the daily slice mirrors
+    notify.select.daily_picks' sector cap, so a pick promoted into the daily list by
+    the cap is charted (and one capped OUT isn't needlessly rendered).
     """
-    idx = set(range(min(top_n, len(results))))  # global top-N (daily digest)
+    if max_per_sector is not None and sector_of is not None:
+        capped = cap_by_sector(list(enumerate(results)), lambda p: sector_of(p[1]),
+                               max_per_sector=max_per_sector, limit=top_n)
+        idx = {i for i, _ in capped}
+    else:
+        idx = set(range(min(top_n, len(results))))  # global top-N (daily digest)
     for tf in _DIGEST_TIMEFRAMES:
         tf_indices = [i for i, r in enumerate(results) if r.timeframe == tf]
         idx.update(tf_indices[:top_n])
@@ -252,7 +271,7 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         repo.sync_universe(s, full_universe)
     universe = full_universe[:max_tickers] if max_tickers is not None else full_universe
 
-    universe_metrics: dict[str, dict[str, float | None]] = {}
+    universe_metrics: dict[str, dict[str, float | str | None]] = {}
     today_results: list[SignalResult] = []      # continuation
     today_reversals: list[SignalResult] = []     # reversal
     prior: list[tuple[SignalResult, float, float]] = []  # (prior signal, next_high, next_low)
@@ -278,6 +297,7 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
             universe_metrics[entry.ticker] = {
                 "avg_dollar_volume": avg_dollar_volume(daily) if daily is not None else None,
                 "market_cap": fetch_market_cap(entry.ticker, cache_dir=cache_dir, today=today),
+                "sector": fetch_sector(entry.ticker, cache_dir=cache_dir, today=today),
             }
             frames = build_frames(bars_by_tf, cfg)
             for tf, f in frames.items():
@@ -338,9 +358,14 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
                        for rank, r in enumerate(today_reversals, start=1)]
         repo.save_signals(s, cont_signals + rev_signals)
 
-        # Continuation: chart the global top-N plus each per-timeframe cadence's top-N
-        # (daily/weekly/monthly). Reversal: a single daily top-N list, so chart its top-N.
-        for i in _digest_chart_indices(today_results, top_charts):
+        # Continuation: chart the global top-N (sector-capped, mirroring the daily digest)
+        # plus each per-timeframe cadence's top-N. Reversal: a single daily top-N list.
+        def _sector_of(r: SignalResult) -> str | None:
+            v = universe_metrics.get(r.ticker, {}).get("sector")
+            return v if isinstance(v, str) else None
+
+        for i in _digest_chart_indices(today_results, top_charts, sector_of=_sector_of,
+                                       max_per_sector=cfg.daily_max_per_sector):
             _render_and_attach(today_results[i], cont_signals[i], chart_dir, today)
             n_charts += 1
         for i in range(min(top_charts, len(today_reversals))):
