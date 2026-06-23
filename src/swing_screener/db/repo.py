@@ -43,29 +43,43 @@ def latest_run_date(session: Session) -> date | None:
 
 
 def prior_first_seen(
-    session: Session, before_date: date
+    session: Session, before_date: date, *, lookback_runs: int = 5
 ) -> dict[tuple[str, str, str], date]:
-    """Map ``(ticker, timeframe, play_type) -> first_seen_date`` for the most recent
-    run STRICTLY BEFORE ``before_date``.
+    """Map ``(ticker, timeframe, play_type) -> first_seen_date`` carried forward from each
+    setup's most recent prior appearance within the last ``lookback_runs`` runs.
 
-    Used to carry a setup's streak-start forward: if the same setup fired in the
-    immediately-prior run, today's signal inherits that run's ``first_seen_date``;
-    otherwise today's run starts a fresh streak. Querying ``run_date < before_date``
-    keeps a same-day re-run (delete + reinsert of today) from disturbing the result.
-    A prior row whose ``first_seen_date`` is NULL (legacy) falls back to its run_date.
+    Used to carry a setup's streak-start forward so the repeat cooldown can age it out:
+    today's signal inherits the ``first_seen_date`` of its most recent prior appearance
+    among the last ``lookback_runs`` distinct run dates strictly before ``before_date``.
+    Looking back over several runs -- not just the immediately-prior one -- means a setup
+    that FLICKERS (fires, skips a run, fires again) keeps its streak instead of resetting to
+    a fresh ``first_seen``; a fresh reset would defeat the cooldown and let the same play
+    resurface indefinitely. A setup absent for the whole window starts a fresh streak.
+    Querying ``run_date < before_date`` keeps a same-day re-run (delete + reinsert of today)
+    from disturbing the result. A prior row whose ``first_seen_date`` is NULL (legacy) falls
+    back to its own ``run_date``.
     """
-    prev = session.scalars(
+    prev_dates = list(session.scalars(
         select(Signal.run_date)
         .where(Signal.run_date < before_date)
+        .distinct()
         .order_by(Signal.run_date.desc())
-        .limit(1)
-    ).first()
-    if prev is None:
+        .limit(lookback_runs)
+    ))
+    if not prev_dates:
         return {}
-    rows = session.scalars(select(Signal).where(Signal.run_date == prev))
-    return {
-        (r.ticker, r.timeframe, r.play_type): (r.first_seen_date or prev) for r in rows
-    }
+    out: dict[tuple[str, str, str], date] = {}
+    # Newest run first: the first row seen for a key is its most recent prior appearance.
+    rows = session.scalars(
+        select(Signal)
+        .where(Signal.run_date.in_(prev_dates))
+        .order_by(Signal.run_date.desc())
+    )
+    for r in rows:
+        key = (r.ticker, r.timeframe, r.play_type)
+        if key not in out:
+            out[key] = r.first_seen_date or r.run_date
+    return out
 
 
 def delete_signals_for(session: Session, run_date: date) -> None:
