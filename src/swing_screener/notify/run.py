@@ -378,7 +378,13 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # Staleness cooldown: drop picks whose setup has been on the list too long so the
         # same play isn't re-pitched daily (legacy NULL-first_seen rows always pass).
         cooldown = StrategyConfig().digest_repeat_cooldown_days
-        picks = _PICKERS[kind](session, run_date, max_age_days=cooldown)
+        # Sector-diversity cap on the DAILY list only (weekly/monthly stay pure rank), so one
+        # hot sector can't fill every slot. Fail-open on unknown sectors; None disables it.
+        if kind == "daily":
+            picks = sel.daily_picks(session, run_date, max_age_days=cooldown,
+                                    max_per_sector=StrategyConfig().daily_max_per_sector)
+        else:
+            picks = _PICKERS[kind](session, run_date, max_age_days=cooldown)
         # Already-ran filter: re-check live actionability so the email never pitches a pick
         # that ran past its entry (or broke its stop) overnight. Done BEFORE the (billable)
         # deep analysis so stale picks never cost an Opus call. No-op when the seam is off.

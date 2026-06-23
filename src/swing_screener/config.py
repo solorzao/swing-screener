@@ -43,6 +43,11 @@ class StrategyConfig:
     # "hide already ran" filter). True = on; fail-open if live quotes are unavailable.
     digest_drop_already_ran: bool = True
 
+    # diversity cap: in the DAILY digest keep at most this many picks per GICS sector, so one
+    # hot sector can't fill every slot. Reads Universe.sector (yfinance-populated); a pick
+    # with no known sector is never capped (fail-open). None disables the cap.
+    daily_max_per_sector: int | None = 2
+
     # structure-aware continuation target (Step A)
     target_lookback: int = 30        # bars to search for overhead resistance
     target_pivot_width: int = 2      # a swing high tops this many bars on each side

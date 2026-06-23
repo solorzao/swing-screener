@@ -23,6 +23,8 @@ class Universe(Base):
     exchange: Mapped[str] = mapped_column(String(32), default="")
     market_cap: Mapped[float | None] = mapped_column(default=None)
     avg_dollar_volume: Mapped[float | None] = mapped_column(default=None)
+    # GICS sector (yfinance-populated), for the daily diversity cap. None = unknown.
+    sector: Mapped[str | None] = mapped_column(String(64), default=None)
 
 
 class Signal(Base):

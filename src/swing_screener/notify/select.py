@@ -9,7 +9,8 @@ from datetime import date, timedelta
 from sqlalchemy import ColumnElement, or_, select
 from sqlalchemy.orm import Session
 
-from swing_screener.db.models import ExitEvent, Signal
+from swing_screener.db.models import ExitEvent, Signal, Universe
+from swing_screener.pipeline.diversity import cap_by_sector
 
 
 def _fresh_enough(run_date: date, max_age_days: int | None) -> list[ColumnElement[bool]]:
@@ -28,22 +29,36 @@ def _fresh_enough(run_date: date, max_age_days: int | None) -> list[ColumnElemen
 
 
 def daily_picks(session: Session, run_date: date, *, top_n: int = 5,
-                max_age_days: int | None = None) -> list[Signal]:
+                max_age_days: int | None = None,
+                max_per_sector: int | None = None) -> list[Signal]:
     """Top-N CONTINUATION signals overall for the run date (any timeframe).
 
     The daily digest is the day's best continuation picks across all timeframes;
     weekly_picks/monthly_picks are the timeframe-specific cadences, and
     reversal_picks is the separate oversold-bounce list. ``max_age_days`` applies the
     staleness cooldown (see ``_fresh_enough``).
+
+    ``max_per_sector`` (when set) caps how many picks may share a GICS sector (joined
+    from ``Universe.sector``), promoting lower-ranked picks from other sectors so one hot
+    sector can't fill the list. Picks whose ticker has no sector are never capped
+    (fail-open). None leaves the result a pure rank-ordered top-N.
     """
-    stmt = (
-        select(Signal)
-        .where(Signal.run_date == run_date, Signal.play_type == "continuation",
-               *_fresh_enough(run_date, max_age_days))
+    where = (Signal.run_date == run_date, Signal.play_type == "continuation",
+             *_fresh_enough(run_date, max_age_days))
+    if max_per_sector is None:
+        stmt = select(Signal).where(*where).order_by(Signal.rank).limit(top_n)
+        return list(session.scalars(stmt))
+    # Join each candidate to its sector and cap in rank order (no SQL LIMIT: the cap may
+    # need to reach past top_n to fill the list once a sector saturates).
+    joined = (
+        select(Signal, Universe.sector)
+        .join(Universe, Universe.ticker == Signal.ticker, isouter=True)
+        .where(*where)
         .order_by(Signal.rank)
-        .limit(top_n)
     )
-    return list(session.scalars(stmt))
+    rows = session.execute(joined).all()
+    capped = cap_by_sector(rows, lambda r: r[1], max_per_sector=max_per_sector, limit=top_n)
+    return [r[0] for r in capped]
 
 
 def reversal_picks(session: Session, run_date: date, *, top_n: int = 5,

@@ -2,7 +2,7 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
-from swing_screener.db.models import ExitEvent, Signal
+from swing_screener.db.models import ExitEvent, Signal, Universe
 from swing_screener.db.session import get_engine
 from swing_screener.notify import select as sel
 
@@ -40,6 +40,49 @@ def test_daily_top_n_is_overall_rank_across_timeframes():
     picks = sel.daily_picks(s, RUN, top_n=5)
     # top 5 by global rank — includes the rank-3 weekly signal (MSFT), capped at 5
     assert [p.ticker for p in picks] == ["AMD", "AEP", "MSFT", "A", "AAPL"]
+
+
+def test_daily_picks_caps_per_sector():
+    """With a sector cap, no more than max_per_sector picks share a sector; lower-ranked
+    picks from other sectors are promoted to fill the list."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        # ranks 1-3 are all Tech; cap=2 bumps the 3rd Tech (NVDA) for the next non-Tech pick.
+        s.add_all([
+            _sig("AAPL", "1d", 1), _sig("MSFT", "1d", 2), _sig("NVDA", "1d", 3),
+            _sig("JPM", "1d", 4), _sig("XOM", "1d", 5),
+        ])
+        s.add_all([
+            Universe(ticker="AAPL", sector="Information Technology"),
+            Universe(ticker="MSFT", sector="Information Technology"),
+            Universe(ticker="NVDA", sector="Information Technology"),
+            Universe(ticker="JPM", sector="Financials"),
+            Universe(ticker="XOM", sector="Energy"),
+        ])
+        s.commit()
+        picks = sel.daily_picks(s, RUN, top_n=3, max_per_sector=2)
+    assert [p.ticker for p in picks] == ["AAPL", "MSFT", "JPM"]  # NVDA capped out
+
+
+def test_daily_picks_without_cap_is_pure_rank():
+    """max_per_sector=None (default) -> unchanged rank-ordered behavior, sectors ignored."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add_all([_sig("AAPL", "1d", 1), _sig("MSFT", "1d", 2), _sig("NVDA", "1d", 3)])
+        s.add_all([Universe(ticker=t, sector="Information Technology")
+                   for t in ("AAPL", "MSFT", "NVDA")])
+        s.commit()
+        assert [p.ticker for p in sel.daily_picks(s, RUN, top_n=3)] == ["AAPL", "MSFT", "NVDA"]
+
+
+def test_daily_picks_unknown_sector_is_never_capped():
+    """Picks with no Universe row / NULL sector are fail-open: the cap never hides them."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add_all([_sig("AAA", "1d", 1), _sig("BBB", "1d", 2), _sig("CCC", "1d", 3)])
+        s.commit()  # no Universe rows -> sector unknown for all
+        picks = sel.daily_picks(s, RUN, top_n=3, max_per_sector=1)
+    assert [p.ticker for p in picks] == ["AAA", "BBB", "CCC"]  # all kept despite cap=1
 
 
 def test_weekly_and_monthly_filter_by_timeframe():

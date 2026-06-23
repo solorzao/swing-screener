@@ -399,10 +399,11 @@ def sync_universe(session: Session, entries: "Sequence[UniverseEntry]") -> None:
 
 
 def apply_universe_metrics(
-    session: Session, metrics: "Mapping[str, Mapping[str, float | None]]"
+    session: Session, metrics: "Mapping[str, Mapping[str, float | str | None]]"
 ) -> None:
-    """Update market_cap / avg_dollar_volume for known tickers; skip None values and
-    unknown tickers. Single commit."""
+    """Update market_cap / avg_dollar_volume / sector for known tickers; skip None values
+    and unknown tickers (so a transient fetch failure preserves the prior value). Single
+    commit."""
     if not metrics:
         return
     rows = {u.ticker: u for u in session.scalars(
@@ -411,10 +412,15 @@ def apply_universe_metrics(
         row = rows.get(ticker)
         if row is None:
             continue
-        if vals.get("market_cap") is not None:
-            row.market_cap = vals["market_cap"]
-        if vals.get("avg_dollar_volume") is not None:
-            row.avg_dollar_volume = vals["avg_dollar_volume"]
+        mc = vals.get("market_cap")
+        if mc is not None:
+            row.market_cap = float(mc)
+        adv = vals.get("avg_dollar_volume")
+        if adv is not None:
+            row.avg_dollar_volume = float(adv)
+        sector = vals.get("sector")
+        if sector is not None:
+            row.sector = str(sector)
     session.commit()
 
 

@@ -116,6 +116,44 @@ def fetch_market_cap(ticker: str, *, cache_dir: Path, today: date | None = None,
     return None
 
 
+def _info_sector(ticker: str) -> str | None:
+    """Mockable wrapper: GICS sector via yfinance ``.info``, or None if unavailable."""
+    info = yf.Ticker(ticker).info
+    sector = info.get("sector") if isinstance(info, dict) else None
+    if not sector:
+        return None
+    return str(sector).strip() or None
+
+
+def fetch_sector(ticker: str, *, cache_dir: Path, today: date | None = None,
+                 retries: int = 3, backoff: float = 0.5,
+                 jitter: float = 0.5) -> str | None:
+    """GICS sector for one ticker, cached per (ticker, day). None on persistent failure or
+    when ``.info`` has no sector. Never raises (per-ticker isolation). Sector is sticky in
+    the DB (apply_universe_metrics skips None), so a transient failure keeps the prior value."""
+    today = today or date.today()
+    cache_file = Path(cache_dir) / "sector" / f"{ticker}_{today:%Y%m%d}.json"
+    if cache_file.exists():
+        try:
+            return json.loads(cache_file.read_text())["sector"]  # type: ignore[no-any-return]
+        except Exception as err:  # noqa: BLE001 -- a corrupt cache file must not abort the run
+            log.warning("sector cache read failed for %s: %s", ticker, err)
+    last_err: Exception | None = None
+    for attempt in range(retries):
+        try:
+            sector = _info_sector(ticker)
+            if sector is not None:
+                cache_file.parent.mkdir(parents=True, exist_ok=True)
+                cache_file.write_text(json.dumps({"sector": sector}))
+            return sector  # a clean None (no sector) is returned but not cached
+        except Exception as err:  # noqa: BLE001 -- per-ticker isolation, never raise
+            last_err = err
+            if attempt < retries - 1:
+                time.sleep(backoff * (2 ** attempt) + random.uniform(0, jitter))
+    log.warning("sector fetch failed for %s after %d tries: %s", ticker, retries, last_err)
+    return None
+
+
 def fetch_universe(tickers: list[str], interval: str, *, cache_dir: Path,
                    **kwargs: object) -> dict[str, pd.DataFrame]:
     """Fetch many tickers; silently skip those that fail (isolation).
