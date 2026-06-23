@@ -15,12 +15,54 @@ def _signal(ticker="AAPL", rank=1, score=0.8):
     )
 
 
+def _sig_on(ticker, run_date, first_seen):
+    return Signal(
+        run_date=run_date, ticker=ticker, timeframe="1d", horizon="medium",
+        play_type="continuation", score=0.8, rank=1, trigger_close=100.0, atr=4.0,
+        rsi=55.0, entry_floor=96.0, entry_ceiling=101.0, stop=95.0, target=110.0,
+        first_seen_date=first_seen,
+    )
+
+
 def test_save_and_latest_signals_ordered_by_rank():
     engine = get_engine("sqlite:///:memory:")
     with Session(engine) as s:
         repo.save_signals(s, [_signal("MSFT", rank=2, score=0.6), _signal("AAPL", rank=1, score=0.9)])
         got = repo.latest_signals(s, date(2024, 1, 2))
         assert [x.ticker for x in got] == ["AAPL", "MSFT"]  # ascending rank
+
+
+def test_prior_first_seen_survives_a_one_run_gap():
+    """A setup that flickers (fires, skips a run, fires again) keeps its streak start:
+    prior_first_seen looks back over recent runs, not just the immediately-prior one, so a
+    one-run gap does not reset first_seen (which would defeat the repeat cooldown)."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        # Apr 1: AAPL's streak starts. Apr 2: AAPL absent (only MSFT fires) -- the gap.
+        s.add_all([
+            _sig_on("AAPL", date(2024, 4, 1), date(2024, 4, 1)),
+            _sig_on("MSFT", date(2024, 4, 2), date(2024, 4, 2)),
+        ])
+        s.commit()
+        seen = repo.prior_first_seen(s, date(2024, 4, 3))
+    assert seen[("AAPL", "1d", "continuation")] == date(2024, 4, 1)
+
+
+def test_prior_first_seen_resets_after_absence_beyond_lookback():
+    """Outside the lookback window a setup is a fresh streak: a name absent for more runs
+    than the window does not inherit a stale first_seen."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        # AAPL last fired Apr 1, then two runs without it. With lookback_runs=2 the Apr 1
+        # run is outside the window, so AAPL is not carried forward.
+        s.add_all([
+            _sig_on("AAPL", date(2024, 4, 1), date(2024, 4, 1)),
+            _sig_on("MSFT", date(2024, 4, 2), date(2024, 4, 2)),
+            _sig_on("MSFT", date(2024, 4, 3), date(2024, 4, 2)),
+        ])
+        s.commit()
+        seen = repo.prior_first_seen(s, date(2024, 4, 4), lookback_runs=2)
+    assert ("AAPL", "1d", "continuation") not in seen
 
 
 def test_open_paper_trades_and_record_exit():
