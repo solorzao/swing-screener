@@ -26,11 +26,13 @@ def test_replay_book_is_stable_golden_master():
     # Snapshot frozen on first green run: the exact trade-level book over the AMD 2018
     # fixture. Any drift (different fills, exits, or R) breaks this -- the load-bearing
     # guarantee Tasks 3-4 build on (they perturb numbers; this proves the substrate).
+    # Targets are anchored on the entry ceiling (the fill): each target sits exactly
+    # min_target_r (1.5) R above the entry, so a target exit realizes 1.5R.
     expected = [
-        ("AMD", "default", "2018-07-05", 15.2354, 14.5719, 15.76, "target", 0.7907),
-        ("AMD", "default", "2018-07-06", 15.7311, 14.575, 16.3089, "target", 0.4998),
-        ("AMD", "extguard_tight", "2018-07-05", 15.2354, 14.5719, 15.76, "target", 0.7907),
-        ("AMD", "extguard_tight", "2018-07-06", 15.7311, 14.575, 16.3089, "target", 0.4998),
+        ("AMD", "default", "2018-07-05", 15.2354, 14.5719, 16.2306, "target", 1.5),
+        ("AMD", "default", "2018-07-06", 15.7311, 14.575, 17.4652, "time_stop", 0.6651),
+        ("AMD", "extguard_tight", "2018-07-05", 15.2354, 14.5719, 16.2306, "target", 1.5),
+        ("AMD", "extguard_tight", "2018-07-06", 15.7311, 14.575, 17.4652, "time_stop", 0.6651),
     ]
     assert book == expected
 

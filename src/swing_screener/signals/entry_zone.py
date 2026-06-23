@@ -11,7 +11,7 @@ class EntryZone:
     stop: float
     target: float
     risk: float       # reference_entry - stop (per share)
-    reference: float  # midpoint used for R math
+    reference: float  # entry anchor for R math == the buy-at-or-below ceiling (the fill)
 
 
 def nearest_resistance(highs: Sequence[float], above: float, width: int) -> float | None:
@@ -47,7 +47,7 @@ def compute_zone(trigger_close: float, atr: float, swing_low: float,
     either degenerate case there is no tradable zone, so return None.
 
     The continuation target is structure-aware (Step A), a cascade anchored on
-    ``reference``:
+    ``reference`` (== the entry ``ceiling``, the price the order fills at):
       1. the nearest standard-candle swing-high resistance strictly above the
          zone ceiling, within ``recent_highs`` (when provided);
       2. else a measured-move fallback ``reference + target_atr_mult * atr``;
@@ -58,7 +58,12 @@ def compute_zone(trigger_close: float, atr: float, swing_low: float,
     floor = swing_low + cfg.floor_buffer_atr * atr
     ceiling = trigger_close + cfg.ceiling_atr_mult * atr
     stop = swing_low - cfg.stop_buffer_atr * atr
-    reference = (floor + ceiling) / 2.0
+    # R is measured from the price the order actually fills at -- the entry CEILING (the
+    # buy-at-or-below limit). Sizing (insight.size_order), the shadow-book fill
+    # (fill.resolve_fill) and live actionability all anchor 1R on ``ceiling - stop``;
+    # anchoring the target floor here too makes the advertised ``min_target_r`` the R:R you
+    # actually realize, not an R measured from a midpoint you never trade.
+    reference = ceiling
     risk = reference - stop
     if floor >= ceiling or risk <= 0:
         return None
