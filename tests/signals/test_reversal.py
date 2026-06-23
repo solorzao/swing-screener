@@ -162,6 +162,42 @@ def test_reversal_pullback_entry_gives_sane_rr():
     assert reward_to_risk > 1.0                # sane geometry, not the old wide-stop 0.14
 
 
+def _rev_ctx(**over):
+    base = dict(
+        trigger_ts=pd.Timestamp("2026-06-15"), trigger_close=110.0, atr=2.0,
+        reversal_low=100.0, bounce_high=110.0, rsi=42.0, min_rsi=22.0,
+        strength=CONFIRMED, body_frac=0.5, shaved_bottom=True, red_run=4, decline_bars=6,
+        volume_ratio=1.5, ema_slow=108.0, decline_high=118.0,
+    )
+    base.update(over)
+    return ReversalContext(**base)
+
+
+def test_reversal_fallback_target_meets_r_multiple_from_ceiling():
+    """When the structural retrace sits below the entry, the measured-move fallback must
+    deliver reversal_target_r_multiple R measured from the entry CEILING (the fill/size
+    anchor), not from the midpoint reference."""
+    cfg = StrategyConfig()
+    # decline_high 105 puts the 0.786 retrace (~103.9) below the ceiling (~106.2), so the
+    # measured-move fallback governs the target.
+    ctx = _rev_ctx(reversal_low=100.0, bounce_high=110.0, atr=4.0, decline_high=105.0)
+    z = compute_reversal_zone(ctx, cfg)
+    assert z is not None
+    assert z.target > z.ceiling  # fallback used
+    realized_r = (z.target - z.ceiling) / (z.ceiling - z.stop)
+    assert abs(realized_r - cfg.reversal_target_r_multiple) < 1e-9
+
+
+def test_reversal_risk_is_anchored_on_the_ceiling():
+    """zone.risk -- the shadow book's 1R denominator -- must be ceiling - stop, the same
+    anchor the fill, sizing and actionability use, so realized_r is measured honestly."""
+    cfg = StrategyConfig()
+    ctx = _rev_ctx(reversal_low=100.0, bounce_high=110.0, atr=2.0, decline_high=118.0)
+    z = compute_reversal_zone(ctx, cfg)
+    assert z is not None
+    assert z.risk == z.ceiling - z.stop
+
+
 def _score_inputs(**over):
     base = dict(body_frac=0.4, shaved_bottom=False, red_run=3, decline_bars=6,
                 volume_ratio=1.0, confirmed=False, min_rsi=20.0, rsi_floor=25.0)
