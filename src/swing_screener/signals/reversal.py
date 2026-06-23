@@ -129,7 +129,13 @@ def compute_reversal_zone(ctx: ReversalContext, cfg: StrategyConfig) -> EntryZon
     ceiling = ctx.bounce_high - cfg.reversal_pullback_shallow * bounce_range
     floor = ctx.bounce_high - cfg.reversal_pullback_deep * bounce_range
     stop = ctx.reversal_low - cfg.stop_buffer_atr * ctx.atr
-    reference = (floor + ceiling) / 2.0
+    # R is measured from the price the order actually fills at -- the entry CEILING (the
+    # buy-at-or-below limit; for a reversal pullback this is the shallow-pullback / highest
+    # price in the band). Sizing (insight.size_order), the shadow-book fill
+    # (fill.resolve_fill) and live actionability all anchor 1R on ``ceiling - stop``, so
+    # anchoring here keeps realized_r and the measured-move fallback honest -- not measured
+    # from a midpoint that is never traded.
+    reference = ceiling
     risk = reference - stop
     if floor >= ceiling or risk <= 0:
         return None
