@@ -82,6 +82,7 @@ from swing_screener.pipeline.insight import (
 from swing_screener.pipeline.regime import MARKET_PROXY, classify_regime
 from swing_screener.pipeline.reflect import load_verdicts
 from swing_screener.settings import load_settings, resolve_execution, resolve_risk_unit
+from swing_screener.signals.actionability import classify
 from swing_screener.storage.blob import blob_enabled, download_bytes
 
 log = logging.getLogger(__name__)
@@ -224,6 +225,33 @@ def _facts(sig: Signal) -> SignalFacts:
     )
 
 
+def _drop_already_ran(
+    signals: list[Signal],
+    latest_closes_fn: Callable[[list[str]], dict[str, float]],
+) -> list[Signal]:
+    """Drop picks that already ran past their entry ceiling (``extended``) or broke their
+    stop (``broken``) by digest time.
+
+    The screen runs the prior evening, so a pick can leave its entry zone overnight; this
+    re-checks each pick's stored zone against the latest close (the same live actionability
+    the dashboard shows) and keeps only ``actionable``/``unknown`` picks. Fail-open: a pick
+    with no live quote -- or ANY fetch error -- is KEPT, so a quote outage never silences the
+    digest. Caller passes ``latest_closes_fn=None`` to skip the filter entirely."""
+    if not signals:
+        return signals
+    try:
+        prices = latest_closes_fn([s.ticker for s in signals])
+    except Exception:  # noqa: BLE001 -- a quote outage must never block/empty the digest
+        log.warning("live-quote fetch failed; keeping all picks (already-ran filter skipped)")
+        return signals
+    return [
+        s for s in signals
+        if classify(entry_floor=s.entry_floor, entry_ceiling=s.entry_ceiling,
+                    stop=s.stop, price=prices.get(s.ticker)).status
+        in ("actionable", "unknown")
+    ]
+
+
 def _already_sent(session: Session, kind: str, run_date: date) -> bool:
     stmt = select(EmailLog).where(EmailLog.kind == kind, EmailLog.run_date == run_date)
     return session.scalars(stmt).first() is not None
@@ -306,6 +334,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                 execution_adapter: ExecutionAdapter | None = None,
                 broker: BrokerClient | None = None,
                 mode_reader: Callable[[], str] | None = None,
+                latest_closes_fn: Callable[[list[str]], dict[str, float]] | None = None,
                 ) -> DigestResult:
     send = smtp_send or resolve_sender()  # env-driven transport (ACS or SMTP)
     recipient = to or get_secret("DIGEST_TO")
@@ -350,6 +379,11 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # same play isn't re-pitched daily (legacy NULL-first_seen rows always pass).
         cooldown = StrategyConfig().digest_repeat_cooldown_days
         picks = _PICKERS[kind](session, run_date, max_age_days=cooldown)
+        # Already-ran filter: re-check live actionability so the email never pitches a pick
+        # that ran past its entry (or broke its stop) overnight. Done BEFORE the (billable)
+        # deep analysis so stale picks never cost an Opus call. No-op when the seam is off.
+        if latest_closes_fn is not None:
+            picks = _drop_already_ran(picks, latest_closes_fn)
         already = _already_sent(session, kind, run_date)
         if already and not force:  # don't re-send the same digest (force overrides for ad-hoc resends)
             return DigestResult(n_picks=len(picks), pdf_attached=False, sent=False)
@@ -498,9 +532,11 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         reversal_digest: list[DigestPick] | None = None
         reversal_pdf: list[PdfPick] = []
         if kind == "daily":
+            reversal_sigs = sel.reversal_picks(session, run_date, max_age_days=cooldown)
+            if latest_closes_fn is not None:
+                reversal_sigs = _drop_already_ran(reversal_sigs, latest_closes_fn)
             reversal_digest, reversal_pdf = _build_picks(
-                sel.reversal_picks(session, run_date, max_age_days=cooldown),
-                play_type="reversal", collect_intents=collected_intents)
+                reversal_sigs, play_type="reversal", collect_intents=collected_intents)
 
         if deep_on:  # close the learning loop: score any now-resolved prior analyst calls
             n_scored = repo.score_analyst_calls(session)
@@ -652,7 +688,17 @@ def main() -> None:
     # SWING_FORCE_RESEND lets a scheduled container force a resend without changing
     # its args -- toggle the env, run once, untoggle (used for ad-hoc verification).
     force = args.force or os.environ.get("SWING_FORCE_RESEND", "").lower() in {"1", "true", "yes"}
-    result = send_digest(kind=args.kind, db_url=args.db, pdf_dir=args.pdf_dir, force=force)
+    # Already-ran filter: re-check each pick against the latest close at send time and drop
+    # the ones that ran past entry / broke the stop overnight (mirrors the dashboard).
+    # Config-gated + fail-open; off -> None, so the digest is byte-for-byte today's behavior.
+    latest_closes_fn: Callable[[list[str]], dict[str, float]] | None = None
+    if StrategyConfig().digest_drop_already_ran:
+        from swing_screener.dashboard.quotes import latest_closes
+
+        def latest_closes_fn(tickers: list[str]) -> dict[str, float]:  # noqa: E731
+            return latest_closes(tickers, cache_dir=settings.cache_dir)
+    result = send_digest(kind=args.kind, db_url=args.db, pdf_dir=args.pdf_dir, force=force,
+                         latest_closes_fn=latest_closes_fn)
     log.info("digest %s: picks=%d reversals=%d pdf=%s sent=%s",
              args.kind, result.n_picks, result.n_reversals, result.pdf_attached, result.sent)
 

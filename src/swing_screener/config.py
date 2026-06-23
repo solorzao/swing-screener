@@ -36,6 +36,13 @@ class StrategyConfig:
     # None disables the cooldown; legacy rows with no first_seen_date are never dropped.
     digest_repeat_cooldown_days: int | None = 1
 
+    # already-ran filter: re-check each digest pick's entry zone against the latest close
+    # at send time and drop picks that have run past the entry ceiling ("extended") or broken
+    # the stop ("broken"). The screen runs the prior evening, so a pick can leave its zone
+    # overnight; this keeps the email to what is still tradable (mirrors the dashboard's
+    # "hide already ran" filter). True = on; fail-open if live quotes are unavailable.
+    digest_drop_already_ran: bool = True
+
     # structure-aware continuation target (Step A)
     target_lookback: int = 30        # bars to search for overhead resistance
     target_pivot_width: int = 2      # a swing high tops this many bars on each side
