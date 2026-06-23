@@ -38,6 +38,26 @@ def test_config_grid_sweeps_the_freshness_gate_including_the_incumbent():
                for c in grid.values())
 
 
+def test_config_grid_optionally_sweeps_min_target_r():
+    base = StrategyConfig(max_extension_atr=2.0, min_target_r=1.5)
+    grid = build_config_grid(base, include_min_target_r=True)
+    assert "ext_2.0" in grid                          # gate sweep still present (incumbent)
+    # min_target_r sweep added, EXCLUDING the incumbent value (1.5 == base, not duplicated).
+    assert {"mtr_1.0", "mtr_2.0", "mtr_2.5"} <= set(grid)
+    assert "mtr_1.5" not in grid
+    # each mtr_* varies ONLY min_target_r, holding the gate at the base.
+    assert grid["mtr_1.0"].min_target_r == 1.0
+    assert grid["mtr_1.0"].max_extension_atr == base.max_extension_atr
+    assert grid["ext_1.0"].min_target_r == base.min_target_r   # ext_* keep the base target floor
+    assert all(c.ema_fast == base.ema_fast for c in grid.values())  # shared indicators
+
+
+def test_config_grid_default_does_not_sweep_min_target_r():
+    # propose() calls build_config_grid WITHOUT the flag and parses the winner as ext_<float>,
+    # so an mtr_* name must never appear in the default grid it uses.
+    assert not any(name.startswith("mtr_") for name in build_config_grid(StrategyConfig()))
+
+
 def test_optimize_returns_walk_forward_result_over_amd():
     # AMD's fresh setups sit late in this short fixture; a small OOS slice keeps them
     # in-sample so a winner is chosen. replay only reports configs that actually traded.

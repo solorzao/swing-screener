@@ -38,6 +38,13 @@ log = logging.getLogger(__name__)
 # the shipped default (2.0) so the incumbent is in the bake-off. Keep grids small + interpretable.
 _EXT_GRID = (1.0, 1.5, 2.0, 2.5)
 
+# A second 1-D sweep over the continuation target floor (min_target_r), enabled only for the
+# manual `optimize` CLI (NOT the auto-propose path, which is deliberately gate-only). Brackets
+# the shipped 1.5 on both sides so we can measure whether the ceiling-anchored target geometry
+# wants a closer or further floor. The base's own value is skipped (it IS the ext_<gate>
+# incumbent, so it never appears twice).
+_MTR_GRID = (1.0, 1.5, 2.0, 2.5)
+
 # Namespace for analyst-queued proposed-variant grid keys. The deterministic sweep points are
 # named ``ext_<x>`` (see ``build_config_grid`` / ``propose._incumbent_name``); prefixing a
 # proposed variant's key with this makes a collision with those -- or with the incumbent the
@@ -69,9 +76,17 @@ class OptimizeResult:
 def build_config_grid(
     base: StrategyConfig,
     proposed: list[ProposedVariant] | None = None,
+    *,
+    include_min_target_r: bool = False,
 ) -> dict[str, StrategyConfig]:
     """Sweep ``max_extension_atr``; every grid point shares the base's indicator periods
     (replay reuses the base frames), enforced by the variants guard.
+
+    ``include_min_target_r`` (manual ``optimize`` CLI only) ALSO sweeps the continuation
+    target floor, adding ``mtr_<m>`` points for each ``_MTR_GRID`` value except the base's own
+    (which is already the ``ext_<gate>`` incumbent). The auto-propose path leaves it False:
+    ``propose()`` parses the winner name as ``ext_<float>`` and only ever edits the gate, so an
+    ``mtr_*`` name must never reach it.
 
     Analyst-QUEUED ``ProposedVariant``s (Task 6) are MERGED in via ``to_config``: a
     ``status == QUEUED`` variant joins the swept grid; a non-queued one is skipped; and one
@@ -88,6 +103,11 @@ def build_config_grid(
     (the source of ``n_variants_tested``) honestly counts every DISTINCT arm actually swept.
     """
     grid = {f"ext_{e:.1f}": replace(base, max_extension_atr=e) for e in _EXT_GRID}
+    if include_min_target_r:
+        for m in _MTR_GRID:
+            if m == base.min_target_r:
+                continue  # == the ext_<gate> incumbent; don't sweep the same config twice
+            grid[f"mtr_{m:.1f}"] = replace(base, min_target_r=m)
     for name, cfg in grid.items():
         _assert_shared_indicators(base, name, cfg)
     for pv in proposed or []:
@@ -220,7 +240,11 @@ def main() -> None:
     if not frames:
         log.error("no data to optimize for %s (fetch failed?)", tickers)
         return
-    print(format_report(optimize(frames, timeframe="1d", oos_frac=args.oos_frac)))  # noqa: T201
+    # The manual sweep also tests the target floor (min_target_r); the scheduled propose path
+    # stays gate-only (it parses the winner as ext_<float> and edits only the gate).
+    grid = build_config_grid(StrategyConfig(), include_min_target_r=True)
+    print(format_report(  # noqa: T201
+        optimize(frames, timeframe="1d", grid=grid, oos_frac=args.oos_frac)))
 
 
 if __name__ == "__main__":
