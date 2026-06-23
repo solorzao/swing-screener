@@ -11,11 +11,25 @@ def test_zone_ordering_and_risk():
     assert z.ceiling == 100.0 + cfg.ceiling_atr_mult * 4.0
     assert z.target > z.ceiling
     assert z.risk > 0
-    # No recent_highs -> measured-move ATR fallback: reference + target_atr_mult * atr.
-    # reference = (96.4 + 101.4)/2 = 98.9; target = 98.9 + 2.0*4.0 = 106.9.
-    assert z.reference == 98.9
-    assert z.risk == 98.9 - 95.0
-    assert z.target == 98.9 + cfg.target_atr_mult * 4.0
+    # R is anchored on the entry ceiling (the fill): reference == ceiling and
+    # risk == ceiling - stop. Here the measured-move fallback (ceiling + 2*atr) is only
+    # 1.25R, below the 1.5R floor, so the target is pushed to ceiling + min_target_r*risk.
+    assert z.reference == z.ceiling
+    assert z.risk == z.ceiling - z.stop
+    assert z.target == z.ceiling + cfg.min_target_r * z.risk
+
+
+def test_target_floor_anchors_on_ceiling_the_real_fill():
+    """The min_target_r floor must hold measured from the CEILING -- the price the
+    order fills and sizes at (insight.size_order, fill.resolve_fill, actionability) --
+    not from the midpoint reference. Before the fix the floor was anchored on the
+    midpoint, so the realized R:R at the actual fill fell well below min_target_r
+    (~0.86R for this setup advertised as >=1.5R)."""
+    cfg = StrategyConfig()
+    z = compute_zone(trigger_close=100.0, atr=4.0, swing_low=96.0, cfg=cfg)
+    assert z is not None
+    realized_rr = (z.target - z.ceiling) / (z.ceiling - z.stop)
+    assert realized_rr >= cfg.min_target_r
 
 
 def test_inverted_zone_returns_none():
@@ -27,10 +41,11 @@ def test_inverted_zone_returns_none():
 
 
 def test_non_positive_risk_returns_none():
-    # Stop placed above the zone reference yields risk <= 0 while floor < ceiling,
-    # isolating the risk guard from the inversion guard.
-    cfg = StrategyConfig(stop_buffer_atr=-0.5)
-    z = compute_zone(trigger_close=104.0, atr=10.0, swing_low=100.0, cfg=cfg)
+    # Stop placed above the entry ceiling yields risk = ceiling - stop <= 0 while
+    # floor < ceiling, isolating the risk guard from the inversion guard. A strongly
+    # negative stop buffer lifts the stop (116.0) above the ceiling (103.5).
+    cfg = StrategyConfig(stop_buffer_atr=-2.0)
+    z = compute_zone(trigger_close=100.0, atr=10.0, swing_low=96.0, cfg=cfg)
     assert z is None
 
 
@@ -67,41 +82,43 @@ def test_nearest_resistance_ignores_pivot_not_tall_enough():
 
 def test_target_uses_nearest_resistance_when_overhead():
     cfg = StrategyConfig()
-    # zone at defaults: ceiling = 100 + 0.35*4 = 101.4, reference = 98.9, risk = 3.9.
-    # A pivot at 104.0 (index 3) sits just above the ceiling; 104.0 is the target.
-    # R:R = (104.0 - 98.9)/3.9 = 5.1/3.9 = 1.31 ... that's BELOW the 1.5R floor,
-    # so push the resistance higher to keep this case on the resistance path.
-    highs = [99.0, 100.0, 101.0, 108.0, 102.0, 101.5, 100.0]
+    # zone at defaults: ceiling = 100 + 0.35*4 = 101.4, reference == ceiling, risk = 6.4.
+    # A pivot must clear the 1.5R floor (ceiling + 1.5*6.4 = 111.0) to be used directly,
+    # so the qualifying pivot sits at 112.0 (index 3).
+    highs = [99.0, 100.0, 101.0, 112.0, 102.0, 101.5, 100.0]
     z = compute_zone(100.0, 4.0, 96.0, cfg, recent_highs=highs)
     assert z is not None
-    # (108.0 - 98.9)/3.9 = 9.1/3.9 = 2.33 >= 1.5 -> resistance used directly.
-    assert z.target == 108.0
+    # (112.0 - 101.4)/6.4 = 10.6/6.4 = 1.66 >= 1.5 -> resistance used directly.
+    assert z.target == 112.0
 
 
 def test_target_atr_fallback_when_no_resistance():
     cfg = StrategyConfig()
-    # No qualifying pivot above the ceiling -> measured-move fallback.
+    # No qualifying pivot above the ceiling -> measured-move fallback. A shallow pullback
+    # (swing_low 98) keeps risk small (4.4) so the fallback (ceiling + 2*atr) is 1.82R,
+    # above the 1.5R floor, so the fallback governs.
     highs = [99.0, 100.0, 100.5, 100.2, 100.0, 99.5, 99.0]
-    z = compute_zone(100.0, 4.0, 96.0, cfg, recent_highs=highs)
+    z = compute_zone(100.0, 4.0, 98.0, cfg, recent_highs=highs)
     assert z is not None
-    # reference + target_atr_mult * atr = 98.9 + 2.0*4.0 = 106.9.
-    assert z.target == 98.9 + cfg.target_atr_mult * 4.0
+    # ceiling + target_atr_mult * atr = 101.4 + 2.0*4.0 = 109.4.
+    assert z.target == z.ceiling + cfg.target_atr_mult * 4.0
 
 
 def test_target_pushed_to_min_r_floor_when_resistance_too_close():
     cfg = StrategyConfig()
-    # A pivot at 102.0 sits just above the ceiling (101.4) but its R:R is only
-    # (102.0 - 98.9)/3.9 = 0.79 < 1.5, so the target is pushed to the 1.5R floor.
+    # A pivot at 102.0 sits just above the ceiling (101.4) but its R:R from the ceiling
+    # is only (102.0 - 101.4)/6.4 = 0.09 < 1.5, so the target is pushed to the 1.5R floor.
     highs = [99.0, 100.0, 101.0, 102.0, 101.2, 100.5, 100.0]
     z = compute_zone(100.0, 4.0, 96.0, cfg, recent_highs=highs)
     assert z is not None
-    # reference + min_target_r * risk = 98.9 + 1.5*3.9 = 104.75.
-    assert z.target == 98.9 + cfg.min_target_r * z.risk
+    # ceiling + min_target_r * risk = 101.4 + 1.5*6.4 = 111.0.
+    assert z.target == z.ceiling + cfg.min_target_r * z.risk
 
 
 def test_compute_zone_without_recent_highs_still_valid():
     cfg = StrategyConfig()
-    # Backward-compatible: omitting recent_highs takes the ATR-fallback path.
-    z = compute_zone(100.0, 4.0, 96.0, cfg)
+    # Backward-compatible: omitting recent_highs takes the ATR-fallback path (which here,
+    # with a shallow pullback, governs above the 1.5R floor).
+    z = compute_zone(100.0, 4.0, 98.0, cfg)
     assert z is not None
-    assert z.target == 98.9 + cfg.target_atr_mult * 4.0
+    assert z.target == z.ceiling + cfg.target_atr_mult * 4.0
