@@ -31,8 +31,9 @@ def evaluate_exit(
     # 1) hard stop: absolute override
     if bar["low"] <= trade.stop:
         return ExitDecision("EXIT", "hard", "stop")
-    # 2) strong: HA momentum flip (bearish shaved head)
-    if bool(bar.get("shaved_head")):
+    # 2) strong: HA momentum flip (bearish shaved head) -- gated so the `no_flip` arm can
+    #    A/B it. When off, the trade rides to stop/target/time instead of cutting on the flip.
+    if cfg.momentum_flip_exit and bool(bar.get("shaved_head")):
         return ExitDecision("EXIT", "strong", "momentum_flip")
     # 3) advisory: target reached
     if bar["high"] >= trade.target:

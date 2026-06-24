@@ -29,9 +29,15 @@ def build_arms(base: StrategyConfig) -> dict[str, StrategyConfig]:
     ``partial33_chand`` is the same partial but runs the post-partial remainder under
     a Chandelier trail instead of a static breakeven stop -- the Step D bake-off pits
     these two against each other (same partial, different runner management).
+
+    ``no_flip`` mirrors ``baseline`` exactly except it disables the momentum-flip exit
+    (``momentum_flip_exit=False``), so ``breakdown(trades, "arm")`` is a clean same-sample
+    A/B of the flip -- letting the live book decide whether to retire it (the offline study
+    found it a mild drag but couldn't confirm it out-of-sample).
     """
     return {
         BASELINE: replace(base, partial_frac=0.0),
+        "no_flip": replace(base, partial_frac=0.0, momentum_flip_exit=False),
         "partial33_cond": replace(base, partial_frac=0.33, partial_require_softening=True),
         "partial33_chand": replace(base, partial_frac=0.33, partial_require_softening=True,
                                    trail_mode="chandelier", chandelier_atr_mult=3.0),

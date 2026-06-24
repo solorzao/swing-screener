@@ -27,6 +27,25 @@ def test_momentum_flip_strong():
     assert d.action == "EXIT" and d.tier == "strong" and d.reason == "momentum_flip"
 
 
+def test_momentum_flip_disabled_by_config_holds():
+    """With momentum_flip_exit=False the bearish HA flip no longer exits; the trade holds
+    (only stop/target/time can close it). The no_flip experiment arm uses this."""
+    cfg = StrategyConfig(momentum_flip_exit=False)
+    bar = _bar(close=104, high=105, low=103, bearish=True, shaved_head=True)
+    assert evaluate_exit(TRADE, bar, cfg).action == "HOLD"
+
+
+def test_momentum_flip_disabled_still_stops_and_targets():
+    """Disabling the flip must not disable the hard stop or the target. With the flip ON a
+    shaved_head bar that also hit the target would exit as momentum_flip; with it OFF the
+    same bar exits as target."""
+    cfg = StrategyConfig(momentum_flip_exit=False)
+    assert evaluate_exit(
+        TRADE, _bar(close=96, high=97, low=94, shaved_head=True), cfg).reason == "stop"
+    assert evaluate_exit(
+        TRADE, _bar(close=111, high=111, low=108, shaved_head=True), cfg).reason == "target"
+
+
 def test_target_advisory():
     bar = _bar(close=111, high=111, low=108)
     d = evaluate_exit(TRADE, bar, CFG)

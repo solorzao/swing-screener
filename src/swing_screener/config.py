@@ -79,6 +79,11 @@ class StrategyConfig:
     reversal_target_r_multiple: float = 1.0   # measured-move fallback if the target sits below entry
 
     # exits
+    # momentum-flip exit: close a trade when the HA candle flips bearish (a shaved head).
+    # True = on (the historical behavior). False powers the `no_flip` experiment arm, which
+    # the offline edge study found is a mild, consistent drag (it cuts trades at ~-0.3R that
+    # average ~-0.13R if held) -- so it's A/B'd in the live shadow book rather than switched.
+    momentum_flip_exit: bool = True
     partial_frac: float = 0.0   # fraction scaled out at the first target (0.0 = feature OFF; Step C turns it on)
     # When True, scale out at the target ONLY if HA momentum is softening
     # (not shaved_bottom, or a shrinking HA body); a strong target-touch holds the
