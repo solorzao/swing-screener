@@ -31,11 +31,17 @@ def detect_last_bar(f: pd.DataFrame, cfg: StrategyConfig) -> PullbackContext | N
         return None
 
     last = f.iloc[-1]
+    prev = f.iloc[-2]
     # 1) uptrend context at the trigger bar
     if not (last["ema_fast"] > last["ema_slow"] and last["close"] > last["ema_slow"]):
         return None
-    # trigger must be a bullish HA candle
-    if not bool(last["bullish"]):
+    # trigger: the incumbent bullish HA flip, or (experiment) a raw bullish outside bar
+    # whose range engulfs the prior bar on BOTH sides and closes up.
+    if cfg.trigger_kind == "outside_bar":
+        is_outside = last["high"] > prev["high"] and last["low"] < prev["low"]
+        if not (is_outside and last["close"] > last["open"]):
+            return None
+    elif not bool(last["bullish"]):
         return None
 
     # 2) walk back over the immediately preceding bars looking for the pullback
@@ -59,6 +65,11 @@ def detect_last_bar(f: pd.DataFrame, cfg: StrategyConfig) -> PullbackContext | N
     swing_low = min(b["low"] for b in pullback)
     # 3) shallow pullback: stayed above ema_slow (continuation, not reversal)
     if swing_low <= last["ema_slow"]:
+        return None
+    # 3b) entry-depth gate (experiment): require the pullback to have actually reached into
+    # the EMA20-EMA50 band, i.e. price pulled back to value rather than barely dipping while
+    # still extended above the fast EMA.
+    if cfg.require_band_touch and swing_low > last["ema_fast"]:
         return None
 
     atr = float(last["atr"])

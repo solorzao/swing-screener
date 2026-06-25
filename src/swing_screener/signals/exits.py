@@ -16,6 +16,7 @@ class OpenTrade:
     target: float
     timeframe: str
     bars_held: int
+    play_type: str = "continuation"  # selects the momentum-flip policy in evaluate_exit
 
 
 @dataclass(frozen=True)
@@ -33,7 +34,10 @@ def evaluate_exit(
         return ExitDecision("EXIT", "hard", "stop")
     # 2) strong: HA momentum flip (bearish shaved head) -- gated so the `no_flip` arm can
     #    A/B it. When off, the trade rides to stop/target/time instead of cutting on the flip.
-    if cfg.momentum_flip_exit and bool(bar.get("shaved_head")):
+    #    Reversal uses its own policy (default OFF: the flip is a net drag on reversals).
+    flip_on = (cfg.reversal_momentum_flip_exit if trade.play_type == "reversal"
+               else cfg.momentum_flip_exit)
+    if flip_on and bool(bar.get("shaved_head")):
         return ExitDecision("EXIT", "strong", "momentum_flip")
     # 3) advisory: target reached
     if bar["high"] >= trade.target:

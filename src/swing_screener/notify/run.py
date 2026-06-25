@@ -538,7 +538,9 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         reversal_digest: list[DigestPick] | None = None
         reversal_pdf: list[PdfPick] = []
         if kind == "daily":
-            reversal_sigs = sel.reversal_picks(session, run_date, max_age_days=cooldown)
+            reversal_sigs = sel.reversal_picks(
+                session, run_date, max_age_days=cooldown,
+                confirmed_only=StrategyConfig().reversal_surface_confirmed_only)
             if latest_closes_fn is not None:
                 reversal_sigs = _drop_already_ran(reversal_sigs, latest_closes_fn)
             reversal_digest, reversal_pdf = _build_picks(

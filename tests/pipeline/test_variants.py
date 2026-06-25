@@ -37,3 +37,15 @@ def test_rejects_a_variant_that_changes_an_indicator():
     base = StrategyConfig()
     with pytest.raises(ValueError, match="indicator field"):
         _assert_shared_indicators(base, "bad", replace(base, ema_fast=10))
+
+
+def test_detection_only_fields_are_allowed_in_variants():
+    # the outside-bar trigger and entry-depth gate are DETECTION fields (computed from the
+    # shared frame), not indicator periods -- a variant may set them without rebuilding frames.
+    from dataclasses import replace
+
+    from swing_screener.pipeline.variants import _assert_shared_indicators
+
+    base = StrategyConfig()
+    _assert_shared_indicators(base, "outside_bar", replace(base, trigger_kind="outside_bar"))
+    _assert_shared_indicators(base, "band_touch", replace(base, require_band_touch=True))

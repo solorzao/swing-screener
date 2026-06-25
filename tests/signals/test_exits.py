@@ -46,6 +46,29 @@ def test_momentum_flip_disabled_still_stops_and_targets():
         TRADE, _bar(close=111, high=111, low=108, shaved_head=True), cfg).reason == "target"
 
 
+def test_momentum_flip_suppressed_for_reversal_by_default():
+    """A reversal trade uses reversal_momentum_flip_exit (default False): the bearish HA flip
+    no longer cuts the trade, so it holds. Continuation (default flip ON) is unaffected."""
+    cfg = StrategyConfig()  # momentum_flip_exit=True, reversal_momentum_flip_exit=False
+    bar = _bar(close=104, high=105, low=103, bearish=True, shaved_head=True)
+    rev = OpenTrade(entry=100, stop=95, target=110, timeframe="1d", bars_held=3,
+                    play_type="reversal")
+    assert evaluate_exit(rev, bar, cfg).action == "HOLD"
+    cont = OpenTrade(entry=100, stop=95, target=110, timeframe="1d", bars_held=3,
+                     play_type="continuation")
+    assert evaluate_exit(cont, bar, cfg).reason == "momentum_flip"
+
+
+def test_reversal_momentum_flip_can_be_re_enabled():
+    """The reversal flip is reversible: with reversal_momentum_flip_exit=True a reversal trade
+    cuts on the flip again."""
+    cfg = StrategyConfig(reversal_momentum_flip_exit=True)
+    bar = _bar(close=104, high=105, low=103, bearish=True, shaved_head=True)
+    rev = OpenTrade(entry=100, stop=95, target=110, timeframe="1d", bars_held=3,
+                    play_type="reversal")
+    assert evaluate_exit(rev, bar, cfg).reason == "momentum_flip"
+
+
 def test_target_advisory():
     bar = _bar(close=111, high=111, low=108)
     d = evaluate_exit(TRADE, bar, CFG)

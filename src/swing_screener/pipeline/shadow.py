@@ -205,6 +205,7 @@ def advance_open(
             target=effective_target,
             timeframe=pt.timeframe,
             bars_held=held,
+            play_type=pt.play_type,
         )
         decision = evaluate_exit(trade, bar, cfg)
 
