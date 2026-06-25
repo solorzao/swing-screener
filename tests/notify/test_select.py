@@ -130,6 +130,22 @@ def test_cooldown_applies_to_reversal_picks():
         assert [p.ticker for p in sel.reversal_picks(s, RUN, max_age_days=1)] == ["GME"]
 
 
+def test_reversal_picks_confirmed_only_drops_early():
+    """confirmed_only=True keeps only CONFIRMED-strength reversals (the cost-robust edge);
+    EARLY is still in the DB (shadow-tracked) but hidden from the digest. Default keeps all."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add_all([_rev("GME", 1, "confirmed"), _rev("BBBY", 2, "early"),
+                   _rev("AMC", 3, "confirmed")])
+        s.commit()
+        # default: all strengths, by rank
+        assert [p.ticker for p in sel.reversal_picks(s, RUN)] == ["GME", "BBBY", "AMC"]
+        # confirmed_only: EARLY (BBBY) dropped, rank order preserved
+        conf = sel.reversal_picks(s, RUN, confirmed_only=True)
+        assert [p.ticker for p in conf] == ["GME", "AMC"]
+        assert all(p.strength == "confirmed" for p in conf)
+
+
 def test_reversal_picks_are_separate_from_continuation():
     engine = get_engine("sqlite:///:memory:")
     with Session(engine) as s:

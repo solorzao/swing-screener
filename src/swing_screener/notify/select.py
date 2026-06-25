@@ -62,16 +62,18 @@ def daily_picks(session: Session, run_date: date, *, top_n: int = 5,
 
 
 def reversal_picks(session: Session, run_date: date, *, top_n: int = 5,
-                   max_age_days: int | None = None) -> list[Signal]:
+                   max_age_days: int | None = None,
+                   confirmed_only: bool = False) -> list[Signal]:
     """Top-N REVERSAL signals overall for the run date (any timeframe) -- the
-    oversold-bounce / relief-rally list, ranked best first."""
-    stmt = (
-        select(Signal)
-        .where(Signal.run_date == run_date, Signal.play_type == "reversal",
-               *_fresh_enough(run_date, max_age_days))
-        .order_by(Signal.rank)
-        .limit(top_n)
-    )
+    oversold-bounce / relief-rally list, ranked best first.
+
+    ``confirmed_only`` keeps only CONFIRMED-strength reversals (the cost-robust subset; EARLY
+    reversals are still stored/shadow-tracked, just hidden from the digest)."""
+    where = [Signal.run_date == run_date, Signal.play_type == "reversal",
+             *_fresh_enough(run_date, max_age_days)]
+    if confirmed_only:
+        where.append(Signal.strength == "confirmed")
+    stmt = select(Signal).where(*where).order_by(Signal.rank).limit(top_n)
     return list(session.scalars(stmt))
 
 

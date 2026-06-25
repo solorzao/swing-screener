@@ -89,6 +89,12 @@ class StrategyConfig:
     reversal_pullback_deep: float = 0.618     # deep end of the pullback entry zone
     reversal_retrace_frac: float = 0.786      # target = this retracement of the decline (toward breakdown)
     reversal_target_r_multiple: float = 1.0   # measured-move fallback if the target sits below entry
+    # surface only CONFIRMED-strength reversals in the digest (drop EARLY). A 503-name replay
+    # found the cost-robust edge concentrates entirely in CONFIRMED reversals (+0.125R net of
+    # 0.05 ATR slippage, 95%low >0) while EARLY is breakeven-to-negative and ~92% of the book.
+    # EARLY is still detected, scored, and shadow-booked (learning loop intact) -- just hidden.
+    # False restores the full list. See docs/plans/2026-06-25-reversal-confirmed-noflip-design.md.
+    reversal_surface_confirmed_only: bool = True
 
     # exits
     # momentum-flip exit: close a trade when the HA candle flips bearish (a shaved head).
@@ -96,6 +102,11 @@ class StrategyConfig:
     # the offline edge study found is a mild, consistent drag (it cuts trades at ~-0.3R that
     # average ~-0.13R if held) -- so it's A/B'd in the live shadow book rather than switched.
     momentum_flip_exit: bool = True
+    # per-play-type override for the REVERSAL book: the same 503-name replay found the eager
+    # momentum-flip exit is a net drag on reversals (it converts +0.77R time-stops and target
+    # runs into ~-0.19R early cuts). Default OFF for reversal; continuation keeps the flip via
+    # momentum_flip_exit above. evaluate_exit picks by trade.play_type. True re-enables it.
+    reversal_momentum_flip_exit: bool = False
     partial_frac: float = 0.0   # fraction scaled out at the first target (0.0 = feature OFF; Step C turns it on)
     # When True, scale out at the target ONLY if HA momentum is softening
     # (not shaved_bottom, or a shrinking HA body); a strong target-touch holds the
