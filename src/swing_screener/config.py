@@ -30,6 +30,18 @@ class StrategyConfig:
     # < 1 ATR of extension while a late chase fires at ~2.7 ATR. 0 disables the gate.
     max_extension_atr: float = 2.0
 
+    # entry-trigger kind (experiment). "ha_flip" = the incumbent bullish Heiken-Ashi flip;
+    # "outside_bar" = a raw-candle bullish outside/engulfing bar at the trigger (its range
+    # breaks BOTH the prior bar's high and low AND it closes up). A raw-price commitment
+    # signal vs the smoothed HA flip. DETECTION-only (computed from the shared frame, no new
+    # indicator), so it is a legal screen variant.
+    trigger_kind: str = "ha_flip"
+    # entry-depth gate (experiment). When True, require the pullback to have reached into the
+    # EMA20-EMA50 band (swing_low <= ema_fast), not merely stayed above ema_slow -- i.e. price
+    # actually pulled back to value rather than barely dipping while still extended. Off = the
+    # incumbent behavior. DETECTION-only, so it is a legal screen variant.
+    require_band_touch: bool = False
+
     # staleness / cooldown: drop a digest pick once its setup has been on the list for
     # more than this many days (by first_seen_date) so the same play isn't re-pitched
     # day after day. A freshly-appearing setup (first_seen == run_date) always shows.
