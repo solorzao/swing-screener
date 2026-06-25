@@ -78,11 +78,14 @@ def main() -> None:
     variants = build_experiment_variants(base)
     trades = replay_book(frames, timeframe="1d", base_cfg=base, variants=variants)
 
-    board = breakdown([t for t in trades if t.arm == "baseline"], "variant")
-    print("\n" + format_leaderboard(board))  # noqa: T201 -- CLI output is the point
+    # CONTINUATION-ONLY: the outside_bar/band levers change only the continuation entry;
+    # reversal trades are identical across variants and would dilute the comparison if mixed in.
+    cont = [t for t in trades if t.arm == "baseline" and t.play_type == "continuation"]
+    board = breakdown(cont, "variant")
+    print("\n[continuation-only]\n" + format_leaderboard(board))  # noqa: T201
 
-    print("\nexit-reason mix (closed trades, baseline exit):")  # noqa: T201
-    mix = _exit_mix([t for t in trades if t.arm == "baseline"])
+    print("\nexit-reason mix (continuation, closed, baseline exit):")  # noqa: T201
+    mix = _exit_mix(cont)
     for vname in variants:
         reasons = mix.get(vname, {})
         total = sum(len(v) for v in reasons.values())
