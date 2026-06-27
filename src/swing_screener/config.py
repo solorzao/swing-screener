@@ -42,6 +42,26 @@ class StrategyConfig:
     # incumbent behavior. DETECTION-only, so it is a legal screen variant.
     require_band_touch: bool = False
 
+    # --- continuation edge tournament, round 1 (Tier-A quality gates) -------------------
+    # All DETECTION-only screen-variant levers, default no-op (0/False). Each targets the
+    # diagnosed entry-fade leak by rejecting a low-quality slice of triggers. Computed from
+    # the existing enriched frame (no new indicator periods). See
+    # docs/plans/2026-06-25-continuation-edge-tournament-design.md.
+    vol_thrust_min: float = 0.0        # reject if trigger volume / mean(volume, vol_avg_window) < this
+    vol_avg_window: int = 20           # rolling window for the volume baseline (excludes the trigger bar)
+    min_ema_sep_atr: float = 0.0       # reject if (ema_fast - ema_slow) / atr < this (flat-trend filter)
+    require_macd_hook: bool = False    # reject unless macd_hist > 0 AND macd_hist_rising
+    rsi_min_trigger: float = 0.0       # reject if trigger rsi < this (bull-range floor)
+    min_atr_pct: float = 0.0           # reject if atr / close < this (drops low-vol names -- worst cohort)
+    min_trigger_body_frac: float = 0.0   # reject if trigger HA body_frac < this (weak-flip filter)
+    max_trigger_lower_wick_frac: float = 0.15  # ... unless shaved_bottom or lower wick <= this
+    require_value_band: bool = False   # pullback low must reach the EMA20 band (tol) AND hold above EMA50 (buf)
+    band_touch_tol_atr: float = 0.10   # low may sit up to this many ATR above EMA20 and still count as a touch
+    band_floor_buf_atr: float = 0.25   # low must stay at least this many ATR above EMA50
+    require_orderly_pullback: bool = False  # reject violent pullbacks (a big single bar or a deep total drop)
+    max_pullback_bar_atr: float = 1.5  # no single pullback bar's range may exceed this many ATR
+    max_pullback_drop_atr: float = 2.5  # the whole pullback drop may not exceed this many ATR
+
     # staleness / cooldown: drop a digest pick once its setup has been on the list for
     # more than this many days (by first_seen_date) so the same play isn't re-pitched
     # day after day. A freshly-appearing setup (first_seen == run_date) always shows.

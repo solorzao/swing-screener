@@ -39,6 +39,16 @@ def test_rejects_a_variant_that_changes_an_indicator():
         _assert_shared_indicators(base, "bad", replace(base, ema_fast=10))
 
 
+def test_shadow_tracks_continuation_volband_combo():
+    # the volume+depth+body continuation combo (edge-tournament best) is shadow-tracked
+    # forward as a screen variant: booked under the baseline exit, measured, never surfaced.
+    base = StrategyConfig()
+    variants = build_screen_variants(base)
+    assert "cont_volband" in variants
+    v = variants["cont_volband"]
+    assert v.vol_thrust_min >= 1.3 and v.require_value_band and v.min_trigger_body_frac >= 0.5
+
+
 def test_detection_only_fields_are_allowed_in_variants():
     # the outside-bar trigger and entry-depth gate are DETECTION fields (computed from the
     # shared frame), not indicator periods -- a variant may set them without rebuilding frames.

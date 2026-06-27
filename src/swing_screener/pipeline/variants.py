@@ -49,6 +49,13 @@ def build_screen_variants(base: StrategyConfig) -> dict[str, StrategyConfig]:
     variants = {
         DEFAULT_VARIANT: base,
         "extguard_tight": replace(base, max_extension_atr=1.5),
+        # Forward shadow-track the edge-tournament's best continuation combo (volume thrust +
+        # pullback-to-band + strong body). Offline it was +0.07R/cost-resilient at the full
+        # universe but NOT significance-confirmed (95%low <0, thin) -- so it is measured here,
+        # never surfaced/traded, to accumulate out-of-sample evidence before any promotion.
+        # See docs/plans/2026-06-25-continuation-edge-tournament-design.md.
+        "cont_volband": replace(base, vol_thrust_min=1.3, require_value_band=True,
+                                min_trigger_body_frac=0.5, max_trigger_lower_wick_frac=1.0),
     }
     for name, cfg in variants.items():
         if name != DEFAULT_VARIANT:

@@ -20,6 +20,60 @@ class PullbackContext:
     extension_atr: float = 0.0
 
 
+def _quality_gates_pass(f: pd.DataFrame, last, pullback: list, swing_low: float,
+                        atr: float, cfg: StrategyConfig) -> bool:
+    """Tier-A continuation quality gates (edge tournament round 1). Each is a detection-only
+    lever, default no-op; returns False to reject the trigger. Computed from the enriched
+    frame only -- no new indicators."""
+    # volume thrust: the resumption bar prints on above-average volume (real demand)
+    if cfg.vol_thrust_min > 0:
+        n = cfg.vol_avg_window
+        base_vol = f["volume"].iloc[-(n + 1):-1].mean()
+        rvol = float(last["volume"]) / base_vol if base_vol and base_vol > 0 else 1.0
+        if rvol < cfg.vol_thrust_min:
+            return False
+    # trend strength: EMA20 must sit a meaningful (ATR-normalized) distance above EMA50
+    if cfg.min_ema_sep_atr > 0 and atr:
+        if (float(last["ema_fast"]) - float(last["ema_slow"])) / atr < cfg.min_ema_sep_atr:
+            return False
+    # momentum re-acceleration: MACD histogram positive AND turning up
+    if cfg.require_macd_hook and not (float(last["macd_hist"]) > 0 and bool(last["macd_hist_rising"])):
+        return False
+    # bull-range floor: RSI must still hold the uptrend pullback zone
+    if cfg.rsi_min_trigger > 0 and float(last["rsi"]) < cfg.rsi_min_trigger:
+        return False
+    # per-name volatility floor: low-ATR% names can't travel to target (the worst cohort)
+    if cfg.min_atr_pct > 0:
+        close = float(last["close"])
+        if close and atr / close < cfg.min_atr_pct:
+            return False
+    # trigger conviction: a strong HA body, plus a shaved bottom or small lower wick
+    if cfg.min_trigger_body_frac > 0:
+        if float(last["body_frac"]) < cfg.min_trigger_body_frac:
+            return False
+        rng = float(last["ha_high"]) - float(last["ha_low"])
+        lower_wick = min(float(last["ha_open"]), float(last["ha_close"])) - float(last["ha_low"])
+        lower_wick_frac = lower_wick / rng if rng > 0 else 0.0
+        if not (bool(last["shaved_bottom"]) or lower_wick_frac <= cfg.max_trigger_lower_wick_frac):
+            return False
+    # depth-to-value: the pullback reached the EMA20 band (within tol) AND held above EMA50
+    if cfg.require_value_band and atr:
+        ema_fast = float(last["ema_fast"])
+        ema_slow = float(last["ema_slow"])
+        reached = swing_low <= ema_fast + cfg.band_touch_tol_atr * atr
+        held = swing_low >= ema_slow + cfg.band_floor_buf_atr * atr
+        if not (reached and held):
+            return False
+    # orderly shape: no single violent pullback bar and a controlled total drop
+    if cfg.require_orderly_pullback and atr:
+        max_bar_atr = max(float(b["high"]) - float(b["low"]) for b in pullback) / atr
+        pull_high = max(float(b["high"]) for b in pullback)
+        drop_atr = (pull_high - swing_low) / atr
+        if max_bar_atr > cfg.max_pullback_bar_atr or drop_atr > cfg.max_pullback_drop_atr:
+            return False
+    return True
+
+
 def detect_last_bar(f: pd.DataFrame, cfg: StrategyConfig) -> PullbackContext | None:
     """Return a PullbackContext if the last closed bar of ``f`` is a valid
     pullback-continuation long trigger, else None.
@@ -73,6 +127,10 @@ def detect_last_bar(f: pd.DataFrame, cfg: StrategyConfig) -> PullbackContext | N
         return None
 
     atr = float(last["atr"])
+    # 3c) Tier-A quality gates (edge tournament round 1) -- all default no-op.
+    if not _quality_gates_pass(f, last, pullback, swing_low, atr, cfg):
+        return None
+
     # Extension above the fast EMA in ATR units -- the anti-chase/freshness measure.
     # The gate itself lives in analyze_frames (policy); detect only reports the metric.
     extension_atr = (float(last["close"]) - float(last["ema_fast"])) / atr if atr else 0.0
