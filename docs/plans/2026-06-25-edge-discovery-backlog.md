@@ -77,4 +77,11 @@ the book). Confirm promising subsets at the FULL universe (bounded baskets flatt
   bucket) — the research claim *inverts* on our data (our CONFIRMED+no-flip reversals thrive in
   panic, unlike naive RSI(2) oversold). **Keep `max_vix_rank` OFF**; the `vix_bucket` stamp stays
   useful for attribution. Lesson: validate external research on our own data.
-- #2/#3 (volume dry-up, pocket pivot) + #5 (reversal volume-sign): races pending.
+- **#2/#3 volume dry-up + pocket pivot — NEGATIVE.** Continuation (250): dry-up −0.21R (worse
+  than default −0.14 — the top NEW idea is a dud on our data), pocket-pivot −0.10R (no help).
+  `vol_thrust` stays the only continuation lever; none clears 95%-low > 0.
+- **#5 reversal volume-sign — POSITIVE (the wave's win).** Requiring HIGH bounce volume
+  (`reversal_min_flip_rvol=1.3`) = **+0.14R, 95%-low +0.06, win 55%, n=823** on the full reversal
+  book (best of three; default +0.03, low-vol −0.04). HIGH flip volume is *right* — the "wrong-sign
+  bug" was an overclaim. Broader than the CONFIRMED-strength edge (823 vs 346 trades). Pending:
+  0.05-ATR slippage + full-503 confirm, then ship as a reversal conviction gate / shadow variant.
