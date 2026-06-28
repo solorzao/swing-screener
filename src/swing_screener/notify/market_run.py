@@ -28,6 +28,7 @@ from swing_screener.notify.market_analysis import (
 from swing_screener.notify.market_body import compose_market_body
 from swing_screener.notify.transport import resolve_sender
 from swing_screener.pipeline.market import MarketFacts, gather_market_facts
+from swing_screener.pipeline.run import _migrate_with_retry
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +77,7 @@ def run_market_report(
     *, db_url: str, cache_dir: Path = Path(".cache"), to: str | None = None,
     smtp_send: Callable[..., None] | None = None, client: anthropic.Anthropic | None = None,
     fetch: Callable[[str], pd.DataFrame | None] | None = None,
+    migrate_fn: Callable[[str], None] | None = None,
     cfg: StrategyConfig | None = None, run_date: date | None = None,
 ) -> MarketFacts | None:
     """Fetch -> gather facts -> analyze -> email -> persist. Returns the MarketFacts, or None if
@@ -112,6 +114,9 @@ def run_market_report(
     else:
         log.warning("market report: no recipient; persisting without emailing")
 
+    # Alembic owns the Azure SQL schema (get_engine does NOT create_all there), so self-migrate --
+    # the Sunday run can precede a fresh migration and must not assume another job seeded the table.
+    (migrate_fn or _migrate_with_retry)(db_url)
     engine = get_engine(db_url)
     try:
         with Session(engine) as s:

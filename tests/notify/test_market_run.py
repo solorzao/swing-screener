@@ -68,7 +68,8 @@ def test_run_market_report_uses_llm_when_enabled(tmp_path):
     db = f"sqlite:///{tmp_path / 'm.db'}"
     client = _FakeClient("CORE: Risk-on tape.\nRegime: SPY aligned bull.\nRisk: complacency.")
     facts = run_market_report(db_url=db, to="me@example.com", fetch=_fake_fetch({"SPY": _rising()}),
-                              smtp_send=lambda **kw: sent.append(kw), client=client, cfg=CFG)
+                              smtp_send=lambda **kw: sent.append(kw), client=client,
+                              migrate_fn=lambda _u: None, cfg=CFG)
     assert facts is not None
     assert sent and sent[0]["subject"].startswith("Market Weather")
     assert sent[0]["to"] == "me@example.com"
@@ -87,7 +88,7 @@ def test_run_market_report_deterministic_when_disabled(tmp_path):
     db = f"sqlite:///{tmp_path / 'm.db'}"
     cfg = replace(CFG, market_report_enabled=False)
     facts = run_market_report(db_url=db, to="me@example.com", fetch=_fake_fetch({"SPY": _rising()}),
-                              smtp_send=lambda **kw: None, cfg=cfg)
+                              smtp_send=lambda **kw: None, migrate_fn=lambda _u: None, cfg=cfg)
     assert facts is not None
     eng = get_engine(db)
     try:
