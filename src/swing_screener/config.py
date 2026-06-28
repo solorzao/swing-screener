@@ -155,6 +155,17 @@ class StrategyConfig:
     conviction_weight_premium: float = 2.0
     conviction_weight_strong: float = 1.0
     conviction_weight_base: float = 0.5
+
+    # --- market screener (weekly macro "Market Weather" report) ------------------------
+    vix_spike_rank: float = 80.0   # VIX percentile rank at/above this = a panic spike (flag it)
+    # LLM deep analysis for the weekly market report. ON by default -- it is a ONCE-A-WEEK report,
+    # so one Opus call + a few web searches is trivially cheap, and the full macro read is the
+    # point. Falls back to the deterministic facts read if the LLM is unavailable (never blocks).
+    # Set False to force the deterministic read.
+    market_report_enabled: bool = True
+    market_model: str = "claude-opus-4-8"
+    market_reasoning: str = "high"
+    market_max_searches: int = 6
     # surface only CONFIRMED-strength reversals in the digest (drop EARLY). A 503-name replay
     # found the cost-robust edge concentrates entirely in CONFIRMED reversals (+0.125R net of
     # 0.05 ATR slippage, 95%low >0) while EARLY is breakeven-to-negative and ~92% of the book.
