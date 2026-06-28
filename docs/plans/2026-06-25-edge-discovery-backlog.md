@@ -94,3 +94,13 @@ the book). Confirm promising subsets at the FULL universe (bounded baskets flatt
   (+0.15→+0.08R). "Buy oversold names out-leading SPY" doesn't translate. Third agent-top idea
   refuted (after dry-up and the VIX gate) — pattern: **simple volume conviction wins; sophisticated
   filters don't add.**
+- **Wyckoff spring (exp 11) — POSITIVE, a SECOND reversal edge (no-op prediction refuted).**
+  `require_spring` (undercut a prior support ≥`spring_gap` bars back, then reclaim). Full 503,
+  net 0.05 ATR: **+0.141R, 95%-low +0.059, 427 clusters** (stable from +0.18R/250). Selective
+  (the gap forces undercutting a *genuine* prior level, not the immediate bottom).
+- **Additivity — volume + structure STACK.** highvol + spring = **+0.25R, 95%-low +0.08,
+  win 60%, n=169, 129 clusters** (250, net) vs spring +0.15 / highvol +0.11. The strongest
+  reversal config; the two filters catch different quality dimensions.
+- **Refined pattern:** structure/volume *conviction* filters DO add for reversal; what failed
+  was cross-sectional/regime (RS, VIX) and the entire continuation gate family. Promotion design:
+  a TIERED reversal book — surface the premium highvol+spring tier, shadow-track the rest.
