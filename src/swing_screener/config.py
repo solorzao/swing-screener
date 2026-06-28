@@ -155,6 +155,9 @@ class StrategyConfig:
     conviction_weight_premium: float = 2.0
     conviction_weight_strong: float = 1.0
     conviction_weight_base: float = 0.5
+
+    # --- market screener (weekly macro "Market Weather" report) ------------------------
+    vix_spike_rank: float = 80.0   # VIX percentile rank at/above this = a panic spike (flag it)
     # surface only CONFIRMED-strength reversals in the digest (drop EARLY). A 503-name replay
     # found the cost-robust edge concentrates entirely in CONFIRMED reversals (+0.125R net of
     # 0.05 ATR slippage, 95%low >0) while EARLY is breakeven-to-negative and ~92% of the book.
