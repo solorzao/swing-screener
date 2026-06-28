@@ -158,6 +158,12 @@ class StrategyConfig:
 
     # --- market screener (weekly macro "Market Weather" report) ------------------------
     vix_spike_rank: float = 80.0   # VIX percentile rank at/above this = a panic spike (flag it)
+    # opt-in LLM deep analysis for the weekly market report (mirrors deep_analysis). When off,
+    # the report is the deterministic facts read (no LLM call).
+    market_report_enabled: bool = False
+    market_model: str = "claude-opus-4-8"
+    market_reasoning: str = "high"
+    market_max_searches: int = 6
     # surface only CONFIRMED-strength reversals in the digest (drop EARLY). A 503-name replay
     # found the cost-robust edge concentrates entirely in CONFIRMED reversals (+0.125R net of
     # 0.05 ATR slippage, 95%low >0) while EARLY is breakeven-to-negative and ~92% of the book.

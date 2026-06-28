@@ -7,7 +7,7 @@ with ``default=None``.
 
 from datetime import date, datetime
 
-from sqlalchemy import ForeignKey, String, UniqueConstraint
+from sqlalchemy import ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -293,3 +293,28 @@ class AnalysisRequest(Base):
     pdf_blob_key: Mapped[str | None] = mapped_column(String(512), default=None)
     chart_blob_keys: Mapped[str] = mapped_column(String(2048), default="")
     error: Mapped[str | None] = mapped_column(String(1024), default=None)
+
+
+class MarketReport(Base):
+    """One weekly macro "Market Weather" snapshot: the deterministic market facts + the analyst's
+    read. A history of how the market moved (and a flip log) over time."""
+
+    __tablename__ = "market_reports"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_date: Mapped[date] = mapped_column(index=True)
+    ha_alignment: Mapped[str] = mapped_column(String(16))  # aligned_bull / aligned_bear / mixed
+    flipped: Mapped[bool] = mapped_column(default=False)   # any SPY timeframe flipped this run
+    spy_vs_200dma: Mapped[str | None] = mapped_column(String(8), default=None)
+    vol_bucket: Mapped[str | None] = mapped_column(String(16), default=None)
+    vix: Mapped[float | None] = mapped_column(default=None)
+    vix_rank: Mapped[float | None] = mapped_column(default=None)
+    vix_spike: Mapped[bool] = mapped_column(default=False)
+    ten_year: Mapped[float | None] = mapped_column(default=None)
+    three_month: Mapped[float | None] = mapped_column(default=None)
+    yield_inverted: Mapped[bool | None] = mapped_column(default=None)
+    bond_trend: Mapped[str | None] = mapped_column(String(8), default=None)
+    is_deep: Mapped[bool] = mapped_column(default=False)   # True when the LLM analyst produced it
+    core: Mapped[str] = mapped_column(String(512), default="")
+    report: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime | None] = mapped_column(default=None)

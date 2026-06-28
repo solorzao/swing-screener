@@ -109,6 +109,12 @@ def _market_prompt(f: MarketFacts) -> str:
             "yield curve, and the week's major economic news, then write the market read.")
 
 
+def deterministic_market_analysis(facts: MarketFacts) -> MarketAnalysis:
+    """The no-LLM market read (used when the report is not LLM-enabled)."""
+    det = _deterministic_report(facts)
+    return MarketAnalysis(core=_core_line(det), report=det, is_deep=False)
+
+
 def _core_line(text: str) -> str:
     return next((ln.split("CORE:", 1)[1].strip()
                  for ln in text.splitlines() if ln.strip().startswith("CORE:")), "Market read")
