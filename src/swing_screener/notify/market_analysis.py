@@ -84,6 +84,21 @@ def facts_block(f: MarketFacts) -> str:
         rows.append(f"- Treasury yields: 10y {_fmt(f.ten_year)}, 3m {_fmt(f.three_month)} -> {inv}")
     if f.bond_trend:
         rows.append(f"- Bonds (TLT weekly HA): {f.bond_trend}")
+    if f.recession_prob is not None:
+        rows.append(f"- Recession probability (NY-Fed 10y-3m probit): {f.recession_prob:.0f}%")
+    if f.vix_term_ratio is not None:
+        shape = "BACKWARDATION (acute stress)" if f.vix_backwardation else "contango (normal)"
+        rows.append(f"- VIX term structure (VIX/VIX3M): {f.vix_term_ratio:.2f} -> {shape}")
+    if f.credit_pctile is not None:
+        chg = f", {f.credit_chg_4w:+.1f}% 4wk" if f.credit_chg_4w is not None else ""
+        state = "spreads WIDENING" if (f.credit_chg_4w or 0.0) < 0 else "spreads stable/tightening"
+        rows.append(f"- HY credit (HYG/LQD): percentile {f.credit_pctile:.0f}{chg} -> {state}")
+    if f.cyc_def_trend:
+        chg = f" ({f.cyc_def_chg_4w:+.1f}% 4wk)" if f.cyc_def_chg_4w is not None else ""
+        rows.append(f"- Rotation cyclicals vs defensives (XLY/XLP weekly HA): {f.cyc_def_trend}{chg}")
+    if f.breadth_trend:
+        chg = f" ({f.breadth_chg_4w:+.1f}% 4wk)" if f.breadth_chg_4w is not None else ""
+        rows.append(f"- Breadth participation (RSP/SPY equal-weight, weekly HA): {f.breadth_trend}{chg}")
     return f"Deterministic market facts (as of {f.as_of}):\n" + "\n".join(rows)
 
 

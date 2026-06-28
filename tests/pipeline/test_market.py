@@ -70,3 +70,36 @@ def test_none_safe_when_series_missing():
     assert facts.vix is None and facts.vix_rank is None and facts.vix_spike is False
     assert facts.ten_year is None and facts.yield_inverted is None and facts.bond_trend is None
     assert facts.ha_alignment == "aligned_bull"  # SPY-only still produces the HA read
+    # v2 fields all degrade to None/False when their series are absent
+    assert facts.vix_term_ratio is None and facts.vix_backwardation is False
+    assert facts.credit_chg_4w is None and facts.credit_pctile is None
+    assert facts.cyc_def_trend is None and facts.breadth_trend is None
+    assert facts.recession_prob is None
+
+
+def test_recession_probability_probit():
+    from swing_screener.pipeline.market import _recession_prob
+    steep = _recession_prob(4.0, 1.0)      # +3.0pt spread -> low recession odds
+    inverted = _recession_prob(3.0, 5.0)   # -2.0pt spread -> high recession odds
+    assert steep is not None and inverted is not None
+    assert 0.0 <= steep <= 100.0 and 0.0 <= inverted <= 100.0
+    assert inverted > steep                # inversion => higher 12m recession probability
+    assert _recession_prob(None, 1.0) is None
+
+
+def test_v2_cross_asset_signals():
+    vix = _ohlcv([20.0] * 200 + [35.0])      # spot VIX spikes above the 3-month
+    vix3m = _ohlcv([22.0] * 201)
+    hyg = _ohlcv([80.0 - 0.05 * i for i in range(120)])   # HY falling vs IG flat -> spreads widen
+    lqd = _ohlcv([110.0] * 120)
+    xly = _ohlcv([100.0 + 0.2 * i for i in range(120)])   # cyclicals leading defensives
+    xlp = _ohlcv([80.0] * 120)
+    rsp = _ohlcv([200.0 + 0.6 * i for i in range(120)])   # equal-weight broadening
+    facts = gather_market_facts(spy_daily=_rising(), vix_daily=vix, vix3m_daily=vix3m,
+                                hyg_daily=hyg, lqd_daily=lqd, xly_daily=xly, xlp_daily=xlp,
+                                rsp_daily=rsp, cfg=CFG)
+    assert facts.vix_term_ratio is not None and facts.vix_backwardation is True
+    assert facts.credit_chg_4w is not None and facts.credit_chg_4w < 0      # spreads widening
+    assert facts.credit_pctile is not None
+    assert facts.cyc_def_trend == "bull" and facts.cyc_def_chg_4w > 0
+    assert facts.breadth_trend in {"bull", "bear", "neutral"}

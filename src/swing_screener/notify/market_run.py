@@ -59,6 +59,11 @@ def _persist(session: Session, facts: MarketFacts, analysis: MarketAnalysis) -> 
         vix=facts.vix, vix_rank=facts.vix_rank, vix_spike=facts.vix_spike,
         ten_year=facts.ten_year, three_month=facts.three_month,
         yield_inverted=facts.yield_inverted, bond_trend=facts.bond_trend,
+        vix_term_ratio=facts.vix_term_ratio, vix_backwardation=facts.vix_backwardation,
+        credit_chg_4w=facts.credit_chg_4w, credit_pctile=facts.credit_pctile,
+        cyc_def_trend=facts.cyc_def_trend, cyc_def_chg_4w=facts.cyc_def_chg_4w,
+        breadth_trend=facts.breadth_trend, breadth_chg_4w=facts.breadth_chg_4w,
+        recession_prob=facts.recession_prob,
         is_deep=analysis.is_deep, core=analysis.core[:512], report=analysis.report,
         created_at=datetime.now(UTC),
     ))
@@ -83,7 +88,10 @@ def run_market_report(
         return None
     facts = gather_market_facts(
         spy_daily=spy, vix_daily=fetch("^VIX"), tlt_daily=fetch("TLT"),
-        tnx_daily=fetch("^TNX"), irx_daily=fetch("^IRX"), cfg=cfg, as_of=run_date,
+        tnx_daily=fetch("^TNX"), irx_daily=fetch("^IRX"),
+        vix3m_daily=fetch("^VIX3M"), hyg_daily=fetch("HYG"), lqd_daily=fetch("LQD"),
+        xly_daily=fetch("XLY"), xlp_daily=fetch("XLP"), rsp_daily=fetch("RSP"),
+        cfg=cfg, as_of=run_date,
     )
 
     if cfg.market_report_enabled:
