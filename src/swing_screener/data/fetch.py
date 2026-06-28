@@ -64,6 +64,17 @@ def fetch_bars(ticker: str, interval: str, *, cache_dir: Path, period: str = "2y
     return None
 
 
+def fetch_vix(*, cache_dir: Path, period: str = "2y", today: date | None = None,
+              **kwargs: object) -> pd.DataFrame | None:
+    """^VIX daily bars (the CBOE volatility index), cached per day like any other ticker.
+
+    Routed through the same ``fetch_bars`` -> ``_download`` seam as the universe and SPY, so
+    it is mockable and tests stay offline. Only ``close`` is used downstream (the VIX rank);
+    ^VIX has no real volume. Returns None on persistent failure (per-ticker isolation)."""
+    return fetch_bars("^VIX", "1d", cache_dir=cache_dir, period=period,
+                      today=today, **kwargs)  # type: ignore[arg-type]
+
+
 def avg_dollar_volume(frame: pd.DataFrame, window: int = 20) -> float | None:
     """Mean of close*volume over the last `window` bars; None if the frame is empty."""
     if frame is None or frame.empty:

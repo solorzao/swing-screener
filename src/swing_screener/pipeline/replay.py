@@ -33,7 +33,12 @@ from swing_screener.db.models import PaperTrade
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.analyze import analyze_frames, analyze_reversals
 from swing_screener.pipeline.arms import BASELINE
-from swing_screener.pipeline.regime import MarketRegime, classify_regime
+from swing_screener.pipeline.regime import (
+    MarketRegime,
+    classify_regime,
+    vix_bucket,
+    vix_percentile_rank,
+)
 from swing_screener.pipeline.run import _bar_row, _shadow_candidates
 from swing_screener.pipeline.shadow import advance_open, open_from_signals
 from swing_screener.pipeline.variants import build_screen_variants
@@ -57,6 +62,16 @@ def _regime_by_date(spy_daily: pd.DataFrame, cfg: StrategyConfig) -> dict[date, 
     return out
 
 
+def _vix_rank_by_date(vix_daily: pd.DataFrame) -> dict[date, float | None]:
+    """Point-in-time VIX percentile rank as-of each date (trailing 252, no lookahead),
+    mirroring ``_regime_by_date``. Caller treats absent dates as unknown (no gate)."""
+    out: dict[date, float | None] = {}
+    close = vix_daily["close"]
+    for i in range(len(vix_daily)):
+        out[vix_daily.index[i].date()] = vix_percentile_rank(close.iloc[: i + 1])
+    return out
+
+
 def replay_book(
     frames: Mapping[str, pd.DataFrame],
     *,
@@ -64,6 +79,7 @@ def replay_book(
     base_cfg: StrategyConfig | None = None,
     variants: Mapping[str, StrategyConfig] | None = None,
     spy_daily: pd.DataFrame | None = None,
+    vix_daily: pd.DataFrame | None = None,
 ) -> list[PaperTrade]:
     """Walk each ticker forward and return the raw shadow-book PaperTrades (detached).
 
@@ -82,6 +98,7 @@ def replay_book(
     variants = variants or build_screen_variants(base_cfg)
     warmup = _warmup(base_cfg)
     regime_by_date = _regime_by_date(spy_daily, base_cfg) if spy_daily is not None else {}
+    vix_rank_by_date = _vix_rank_by_date(vix_daily) if vix_daily is not None else {}
 
     # One throwaway file db for the whole replay (in-memory sqlite would not survive the
     # per-bar session churn); a single Session streams every write through one connection.
@@ -94,7 +111,7 @@ def replay_book(
                         continue
                     enriched = build_frame(raw, base_cfg)
                     _replay_one(s, ticker, timeframe, enriched, base_cfg, variants, warmup,
-                                regime_by_date)
+                                regime_by_date, vix_rank_by_date)
                 trades = list(s.scalars(select(PaperTrade)))
                 for t in trades:
                     s.expunge(t)
@@ -112,6 +129,7 @@ def replay(
     base_cfg: StrategyConfig | None = None,
     variants: Mapping[str, StrategyConfig] | None = None,
     spy_daily: pd.DataFrame | None = None,
+    vix_daily: pd.DataFrame | None = None,
 ) -> dict[str, PerformanceSummary]:
     """Walk each ticker's raw OHLCV frame forward and rank the screen variants.
 
@@ -124,7 +142,7 @@ def replay(
     """
     return breakdown(
         replay_book(frames, timeframe=timeframe, base_cfg=base_cfg, variants=variants,
-                    spy_daily=spy_daily),
+                    spy_daily=spy_daily, vix_daily=vix_daily),
         "variant",
     )
 
@@ -138,11 +156,14 @@ def _replay_one(
     variants: Mapping[str, StrategyConfig],
     warmup: int,
     regime_by_date: Mapping[date, MarketRegime] = {},
+    vix_rank_by_date: Mapping[date, float | None] = {},
 ) -> None:
     """Walk one enriched frame forward, booking each variant's fills under baseline exit.
 
     ``regime_by_date`` maps a fill date to its point-in-time SPY regime; absent dates (and
-    the empty default) stamp the trade with an unknown regime (None/None).
+    the empty default) stamp the trade with an unknown regime (None/None). ``vix_rank_by_date``
+    maps a fill date to its point-in-time VIX percentile rank; it stamps ``vix_bucket`` and,
+    when a variant sets ``max_vix_rank``, suppresses REVERSAL fills in high-VIX states.
     """
     for i in range(warmup, len(enriched)):
         through = enriched.iloc[: i + 1]            # data known at decision time i
@@ -151,10 +172,16 @@ def _replay_one(
         fill_date = through.index[-1].date()
         bar_hl = (float(bar["high"]), float(bar["low"]))
         reg = regime_by_date.get(fill_date)
+        vrank = vix_rank_by_date.get(fill_date)
+        vbucket = vix_bucket(vrank)
 
         for vname, vcfg in variants.items():
             sigs = (analyze_frames(ticker, {timeframe: prior}, vcfg)
                     + analyze_reversals(ticker, {timeframe: prior}, vcfg))
+            # VIX-rank regime gate: in high-VIX states, drop the reversal book's fills
+            # (oversold keeps falling) while leaving continuation untouched. 0 = off.
+            if vcfg.max_vix_rank > 0 and vrank is not None and vrank > vcfg.max_vix_rank:
+                sigs = [s for s in sigs if s.play_type != "reversal"]
             if not sigs:
                 continue
             prior_list = [(sig, *bar_hl) for sig in sigs]
@@ -162,7 +189,8 @@ def _replay_one(
             open_from_signals(session, cands, next_bars, fill_date=fill_date,
                               arms=(BASELINE,), variant=vname,
                               market_trend=reg.trend if reg else None,
-                              market_vol=reg.vol if reg else None)
+                              market_vol=reg.vol if reg else None,
+                              vix_bucket=vbucket)
 
         # Advance every open trade one bar under the baseline exit (arm-keyed downstream).
         latest = {(ticker, timeframe): _bar_row(through)}

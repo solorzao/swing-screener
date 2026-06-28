@@ -124,6 +124,10 @@ class StrategyConfig:
     # These gates isolate each cohort to settle it empirically (0 = off).
     reversal_max_flip_rvol: float = 0.0   # low-vol confirmation: reject if flip volume_ratio > this
     reversal_min_flip_rvol: float = 0.0   # high-vol confirmation: reject if flip volume_ratio < this
+    # VIX-rank regime gate (edge-discovery exp 15): suppress REVERSAL fills when the
+    # point-in-time VIX percentile-rank (trailing 252d) exceeds this (panic states where
+    # oversold keeps falling). 0 = off. Needs ^VIX daily threaded into the replay (vix_daily).
+    max_vix_rank: float = 0.0
     # surface only CONFIRMED-strength reversals in the digest (drop EARLY). A 503-name replay
     # found the cost-robust edge concentrates entirely in CONFIRMED reversals (+0.125R net of
     # 0.05 ATR slippage, 95%low >0) while EARLY is breakeven-to-negative and ~92% of the book.

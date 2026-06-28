@@ -127,6 +127,9 @@ class PaperTrade(Base):
     # None = unknown (SPY data unavailable) or a legacy row.
     market_trend: Mapped[str | None] = mapped_column(String(16), default=None)
     market_vol: Mapped[str | None] = mapped_column(String(16), default=None)
+    # VIX percentile-rank bucket at fill time (trailing 252d): low/<40, mid/40-70, high/>70.
+    # None = unknown (^VIX unavailable) or a legacy row. Used by breakdown(trades,"vix_bucket").
+    vix_bucket: Mapped[str | None] = mapped_column(String(16), default=None)
     fill_status: Mapped[str] = mapped_column(String(32))  # filled / missed / invalidated
     entry_date: Mapped[date | None] = mapped_column(default=None)
     entry_price: Mapped[float | None] = mapped_column(default=None)
