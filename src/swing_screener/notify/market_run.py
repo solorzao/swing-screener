@@ -41,7 +41,9 @@ def _default_fetch(cache_dir: Path) -> Callable[[str], pd.DataFrame | None]:
 def _resolve_recipient(to: str | None) -> str | None:
     if to:
         return to
-    for key in ("DIGEST_RECIPIENT", "GMAIL_ADDRESS"):
+    # DIGEST_TO is the Key-Vault-backed recipient the rest of the system uses (notify.run,
+    # notify.ondemand); GMAIL_ADDRESS is the local-dev fallback.
+    for key in ("DIGEST_TO", "GMAIL_ADDRESS"):
         try:
             val = get_secret(key)
         except Exception:  # noqa: BLE001 -- a missing secret must not crash the report

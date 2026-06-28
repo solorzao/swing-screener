@@ -1,6 +1,6 @@
 // =============================================================================
 // jobs.bicep
-// SIX scheduled Container Apps Jobs, all sharing ONE image and ONE UAMI.
+// SEVEN scheduled Container Apps Jobs, all sharing ONE image and ONE UAMI.
 //
 // Each job keeps the image ENTRYPOINT (the US-Eastern gate,
 // `python -m swing_screener.ops.eastern_gate`) and sets container `args` to the
@@ -298,6 +298,27 @@ var jobSpecs = [
       {
         name: 'RUN_IF_LAST_BUSINESS_DAY'
         value: '1'
+      }
+    ]
+    timeout: digestTimeoutSeconds
+  }
+  {
+    // Weekly macro "Market Weather" report -- a market-broad regime/risk read (SPY MTF Heiken-Ashi
+    // + VIX term structure, HY credit, rotation, breadth, recession odds), NOT a stock pick. Runs
+    // Sunday ~09:00 ET off the completed weekly candle (a calm weekend macro review). The Opus
+    // analyst is ON by default (StrategyConfig.market_report_enabled); the recipient comes from
+    // DIGEST_TO and email is sent via ACS, same as the digests. The ET gate makes the Sunday UTC
+    // cron pair fire exactly once, so no DST double-send.
+    name: 'market-weather'
+    cron: '0 13,14 * * 0'
+    args: [
+      '-m'
+      'swing_screener.notify.market_run'
+    ]
+    gateEnv: [
+      {
+        name: 'RUN_IF_ET_HOUR'
+        value: '9'
       }
     ]
     timeout: digestTimeoutSeconds
