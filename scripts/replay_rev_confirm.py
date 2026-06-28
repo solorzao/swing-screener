@@ -31,6 +31,7 @@ def main() -> None:
     ap.add_argument("--cache-dir", type=Path, default=Path(".cache"))
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--slippage", default="0.0,0.05")
+    ap.add_argument("--gate", choices=["highvol", "spring"], default="highvol")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -50,8 +51,10 @@ def main() -> None:
     print("\n" + hdr + "\n" + "-" * len(hdr), flush=True)  # noqa: T201
     for s in levels:
         base = StrategyConfig(fill_slippage_atr=s)
+        gate = (replace(base, reversal_min_flip_rvol=1.3) if args.gate == "highvol"
+                else replace(base, require_spring=True))
         trades = [t for t in replay_book(frames, timeframe="1d", base_cfg=base,
-                                         variants={"rev_highvol": replace(base, reversal_min_flip_rvol=1.3)})
+                                         variants={args.gate: gate})
                   if t.arm == "baseline" and t.play_type == "reversal"]
         for label, group in (("rev_all", trades),
                              ("rev_confirmed", [t for t in trades if t.strength == "confirmed"])):
