@@ -33,9 +33,10 @@ _MARKET_SYSTEM = (
     "bond trend) -- treat these numbers as ground truth and NEVER alter them. Use the web_search "
     "tool to fill in the CURRENT Shiller CAPE, the CNN Fear & Greed index, the 2y / fuller yield "
     "curve, and the week's major economic news.\n\n"
-    "Output ONLY the finished analysis. Do NOT narrate your process or include preamble. Cite "
-    "sources for external claims. Be concise and balanced. This is informational market analysis, "
-    "NOT financial advice and NOT a stock recommendation.\n\n"
+    "Output ONLY the finished analysis. Begin your reply IMMEDIATELY with \"CORE:\" -- no preamble, "
+    "no search/tool narration (NEVER write things like \"I'll search for...\"), no commentary before "
+    "or after the labelled lines. Cite sources for external claims. Be concise and balanced. This is "
+    "informational market analysis, NOT financial advice and NOT a stock recommendation.\n\n"
     "Format your reply EXACTLY as these labelled lines (one per line, each 1-2 sentences, no "
     "bullet characters, no extra sections):\n"
     "CORE: <one sentence -- the overall market stance right now>\n"
@@ -46,7 +47,12 @@ _MARKET_SYSTEM = (
     "Sentiment: <Fear & Greed + the week's economic news; cite>\n"
     "Rotation: <any sector / style / risk-on-off rotation>\n"
     "Risk: <the single biggest risk to watch>\n"
-    "Watch: <key levels / events for the week ahead>"
+    "Watch: <key levels / events for the week ahead>\n"
+    "Bottom line: <2-4 sentences that SYNTHESIZE everything above into your overall read and the "
+    "practical market-level posture it argues for -- how defensive vs aggressive to lean, what to "
+    "favor or avoid, and what single development would change your mind. This is your genuine "
+    "analytical view; keep it at the MARKET level (no individual-security buy/sell calls or price "
+    "targets).>"
 )
 
 
@@ -130,9 +136,19 @@ def deterministic_market_analysis(facts: MarketFacts) -> MarketAnalysis:
     return MarketAnalysis(core=_core_line(det), report=det, is_deep=False)
 
 
+def _strip_preamble(text: str) -> str:
+    """Drop any leading narration before the first 'CORE:' (models with web_search sometimes emit
+    'I'll search...' -- occasionally on the SAME line as CORE -- before the labelled output)."""
+    idx = text.find("CORE:")
+    return text[idx:].lstrip() if idx > 0 else text
+
+
 def _core_line(text: str) -> str:
-    return next((ln.split("CORE:", 1)[1].strip()
-                 for ln in text.splitlines() if ln.strip().startswith("CORE:")), "Market read")
+    """The CORE sentence -- found anywhere (it can be glued to a leaked preamble), to end of line."""
+    idx = text.find("CORE:")
+    if idx < 0:
+        return "Market read"
+    return text[idx + len("CORE:"):].split("\n", 1)[0].strip()
 
 
 def analyze_market_deep(
@@ -162,6 +178,7 @@ def analyze_market_deep(
         text, sources = _extract_text_and_citations(resp)
         if not text.strip():
             raise ValueError("empty model response")
+        text = _strip_preamble(text)
         report = text.strip() + (_format_sources(sources) if sources else "")
         return MarketAnalysis(core=_core_line(text), report=report, is_deep=True,
                               usage=_capture_usage(resp, model))

@@ -87,6 +87,17 @@ def test_analyze_market_deep_parses_labelled_report():
     assert "Regime:" in out.report
 
 
+def test_analyze_market_deep_strips_search_preamble():
+    # the real failure mode: web-search narration glued to the SAME line as CORE
+    reply = ("I'll search for the current external data points needed to complete this analysis."
+             "CORE: A tiring tape.\nRegime: weekly flip bear.\nBottom line: lean defensive.")
+    out = analyze_market_deep(_facts(), client=_FakeClient(reply), web_search=False)
+    assert out.report.startswith("CORE:")
+    assert "I'll search" not in out.report
+    assert out.core == "A tiring tape."          # parsed despite the glued preamble
+    assert "Bottom line:" in out.report
+
+
 def test_analyze_market_deep_falls_back_deterministically():
     out = analyze_market_deep(_facts(alignment="aligned_bear"), client=_BoomClient(), web_search=False)
     assert out.is_deep is False
