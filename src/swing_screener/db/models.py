@@ -314,6 +314,16 @@ class MarketReport(Base):
     three_month: Mapped[float | None] = mapped_column(default=None)
     yield_inverted: Mapped[bool | None] = mapped_column(default=None)
     bond_trend: Mapped[str | None] = mapped_column(String(8), default=None)
+    # v2 cross-asset signals
+    vix_term_ratio: Mapped[float | None] = mapped_column(default=None)
+    vix_backwardation: Mapped[bool] = mapped_column(default=False)
+    credit_chg_4w: Mapped[float | None] = mapped_column(default=None)
+    credit_pctile: Mapped[float | None] = mapped_column(default=None)
+    cyc_def_trend: Mapped[str | None] = mapped_column(String(8), default=None)
+    cyc_def_chg_4w: Mapped[float | None] = mapped_column(default=None)
+    breadth_trend: Mapped[str | None] = mapped_column(String(8), default=None)
+    breadth_chg_4w: Mapped[float | None] = mapped_column(default=None)
+    recession_prob: Mapped[float | None] = mapped_column(default=None)
     is_deep: Mapped[bool] = mapped_column(default=False)   # True when the LLM analyst produced it
     core: Mapped[str] = mapped_column(String(512), default="")
     report: Mapped[str] = mapped_column(Text, default="")

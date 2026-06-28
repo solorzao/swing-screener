@@ -9,6 +9,7 @@ Pure over injected daily frames (no I/O): the entrypoint fetches via ``data.fetc
 is None-safe so a missing series degrades that field rather than failing the report.
 """
 
+import math
 from dataclasses import dataclass
 from datetime import date
 
@@ -48,6 +49,67 @@ class MarketFacts:
     three_month: float | None       # ^IRX last close (Yahoo %-quote)
     yield_inverted: bool | None     # 3m > 10y (recession-watch inversion)
     bond_trend: str | None          # TLT weekly HA color
+    # --- v2 cross-asset signals (None-safe; each fills a distinct macro dimension) ---
+    vix_term_ratio: float | None = None    # ^VIX / ^VIX3M (>1 = backwardation = acute stress)
+    vix_backwardation: bool = False
+    credit_chg_4w: float | None = None     # HYG/LQD 4wk % change (negative = HY spreads widening)
+    credit_pctile: float | None = None     # HYG/LQD trailing-252 percentile (low = stressed)
+    cyc_def_trend: str | None = None       # XLY/XLP weekly HA color (bull = risk-on rotation)
+    cyc_def_chg_4w: float | None = None
+    breadth_trend: str | None = None       # RSP/SPY weekly HA color (bull = broadening participation)
+    breadth_chg_4w: float | None = None
+    recession_prob: float | None = None    # NY-Fed-style probit on the 10y-3m spread (0-100 %)
+
+
+def _ratio_series(a: pd.DataFrame | None, b: pd.DataFrame | None) -> pd.Series | None:
+    """Close-by-close ratio of two frames on their common dates. None if either is missing."""
+    if a is None or b is None or not len(a) or not len(b):
+        return None
+    idx = a.index.intersection(b.index)
+    if not len(idx):
+        return None
+    s = (a["close"].loc[idx] / b["close"].loc[idx]).dropna()
+    return s if len(s) else None
+
+
+def _last(s: pd.Series | None) -> float | None:
+    return float(s.iloc[-1]) if s is not None and len(s) else None
+
+
+def _chg_4w(s: pd.Series | None, n: int = 20) -> float | None:
+    """% change over the last ~4 weeks (n trading days)."""
+    if s is None or len(s) <= n:
+        return None
+    return float((s.iloc[-1] / s.iloc[-1 - n] - 1.0) * 100.0)
+
+
+def _synth_ohlcv(s: pd.Series) -> pd.DataFrame:
+    """A synthetic OHLCV frame from a close-only ratio series (open = prior close) so the existing
+    Heiken-Ashi machinery can read a trend off a series that has no real high/low/volume."""
+    o = s.shift(1)
+    o.iloc[0] = s.iloc[0]
+    pair = pd.concat([o, s], axis=1)
+    return pd.DataFrame({"open": o, "high": pair.max(axis=1), "low": pair.min(axis=1),
+                         "close": s, "volume": 1.0}, index=s.index)
+
+
+def _ratio_weekly_trend(s: pd.Series | None, cfg: StrategyConfig) -> str | None:
+    """Weekly Heiken-Ashi color of a ratio series (bull / bear / neutral). None if too short."""
+    if s is None or len(s) < 15:
+        return None
+    ha = _tf_ha(resample_ohlcv(_synth_ohlcv(s), "1W"), cfg, "1wk")
+    return ha.color if ha else None
+
+
+def _recession_prob(ten_year: float | None, three_month: float | None) -> float | None:
+    """NY-Fed Estrella-Mishkin probit: 12-month recession probability from the 10y-3m spread (in
+    percentage points; ^TNX/^IRX are %-quotes). Keeps the recession watch alive after the binary
+    inversion flag clears (peak risk is the re-steepening AFTER un-inversion)."""
+    if ten_year is None or three_month is None:
+        return None
+    spread = ten_year - three_month
+    z = -0.5333 - 0.6629 * spread
+    return float(0.5 * (1.0 + math.erf(z / math.sqrt(2.0))) * 100.0)
 
 
 def _color(row: pd.Series) -> str:
@@ -98,6 +160,12 @@ def gather_market_facts(
     tlt_daily: pd.DataFrame | None = None,
     tnx_daily: pd.DataFrame | None = None,
     irx_daily: pd.DataFrame | None = None,
+    vix3m_daily: pd.DataFrame | None = None,
+    hyg_daily: pd.DataFrame | None = None,
+    lqd_daily: pd.DataFrame | None = None,
+    xly_daily: pd.DataFrame | None = None,
+    xlp_daily: pd.DataFrame | None = None,
+    rsp_daily: pd.DataFrame | None = None,
     cfg: StrategyConfig,
     as_of: date | None = None,
 ) -> MarketFacts:
@@ -130,6 +198,18 @@ def gather_market_facts(
         tlt_ha = _tf_ha(resample_ohlcv(tlt_daily, "1W"), cfg, "1wk")
         bond_trend = tlt_ha.color if tlt_ha else None
 
+    # v2 cross-asset signals -- each None-safe (a missing series leaves its fields None).
+    vix_term_ratio = _last(_ratio_series(vix_daily, vix3m_daily))
+    vix_backwardation = vix_term_ratio is not None and vix_term_ratio > 1.0
+
+    credit_s = _ratio_series(hyg_daily, lqd_daily)
+    credit_chg_4w = _chg_4w(credit_s)
+    credit_pctile = vix_percentile_rank(credit_s) if credit_s is not None else None
+
+    cyc_s = _ratio_series(xly_daily, xlp_daily)
+    breadth_s = _ratio_series(rsp_daily, spy_daily)
+    recession_prob = _recession_prob(ten_year, three_month)
+
     return MarketFacts(
         as_of=as_of or spy_daily.index[-1].date(),
         spy_close=float(spy_daily["close"].iloc[-1]) if len(spy_daily) else None,
@@ -138,4 +218,9 @@ def gather_market_facts(
         vix=vix, vix_rank=vix_rank, vix_spike=vix_spike,
         ten_year=ten_year, three_month=three_month, yield_inverted=yield_inverted,
         bond_trend=bond_trend,
+        vix_term_ratio=vix_term_ratio, vix_backwardation=vix_backwardation,
+        credit_chg_4w=credit_chg_4w, credit_pctile=credit_pctile,
+        cyc_def_trend=_ratio_weekly_trend(cyc_s, cfg), cyc_def_chg_4w=_chg_4w(cyc_s),
+        breadth_trend=_ratio_weekly_trend(breadth_s, cfg), breadth_chg_4w=_chg_4w(breadth_s),
+        recession_prob=recession_prob,
     )

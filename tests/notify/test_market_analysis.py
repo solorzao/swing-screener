@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import date
 
 from swing_screener.notify.market_analysis import (
@@ -62,6 +63,18 @@ def test_facts_block_surfaces_the_key_signals():
     assert "FRESH FLIP" in block          # weekly + daily flipped
     assert "PANIC SPIKE" in block         # vix_spike
     assert "INVERTED" in block            # 3m > 10y
+
+
+def test_facts_block_renders_v2_signals():
+    f = replace(_facts(), recession_prob=42.0, vix_term_ratio=1.10, vix_backwardation=True,
+                credit_pctile=12.0, credit_chg_4w=-2.0, cyc_def_trend="bear", cyc_def_chg_4w=-3.0,
+                breadth_trend="bear", breadth_chg_4w=-1.5)
+    block = facts_block(f)
+    assert "Recession probability" in block and "42%" in block
+    assert "BACKWARDATION" in block
+    assert "spreads WIDENING" in block
+    assert "Rotation cyclicals vs defensives" in block
+    assert "Breadth participation" in block
 
 
 def test_analyze_market_deep_parses_labelled_report():
