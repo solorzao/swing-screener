@@ -5,6 +5,7 @@ deterministic read) -> email the report -> persist a MarketReport row. All I/O i
 injectable seams (``fetch`` / Anthropic ``client`` / ``smtp_send``) so tests stay offline.
 """
 
+import argparse
 import logging
 from collections.abc import Callable
 from datetime import UTC, date, datetime
@@ -108,3 +109,24 @@ def run_market_report(
     finally:
         engine.dispose()
     return facts
+
+
+def main() -> None:
+    """CLI entry for the weekly Market Weather report (schedule via cron / a CI workflow)."""
+    from swing_screener.settings import load_settings
+
+    settings = load_settings()
+    parser = argparse.ArgumentParser(description="Send the weekly macro Market Weather report.")
+    parser.add_argument("--db", default=settings.db_url)
+    parser.add_argument("--cache-dir", type=Path, default=settings.cache_dir)
+    parser.add_argument("--to", default=None, help="recipient (defaults to the configured digest address)")
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO)
+    facts = run_market_report(db_url=args.db, cache_dir=args.cache_dir, to=args.to)
+    if facts is not None:
+        log.info("market report: alignment=%s vix_rank=%s inverted=%s",
+                 facts.ha_alignment, facts.vix_rank, facts.yield_inverted)
+
+
+if __name__ == "__main__":
+    main()
