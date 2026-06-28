@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 from sqlalchemy import select
@@ -26,6 +28,31 @@ def _fake_fetch(mapping):
     return lambda ticker: mapping.get(ticker)
 
 
+class _FakeClient:
+    """Minimal Anthropic stand-in returning a fixed labelled reply (no network)."""
+    def __init__(self, text):
+        self._text = text
+
+    @property
+    def messages(self):
+        text = self._text
+
+        class _Block:
+            type = "text"
+            def __init__(self):
+                self.text = text
+                self.citations = []
+
+        class _Resp:
+            content = [_Block()]
+            usage = None
+
+        class _M:
+            def create(self, **kw):
+                return _Resp()
+        return _M()
+
+
 def test_compose_market_body_subject_and_text():
     facts = gather_market_facts(spy_daily=_rising(), cfg=CFG)
     body = compose_market_body(facts, deterministic_market_analysis(facts))
@@ -35,21 +62,38 @@ def test_compose_market_body_subject_and_text():
     assert "<h2>" in body.html
 
 
-def test_run_market_report_persists_and_emails(tmp_path):
+def test_run_market_report_uses_llm_when_enabled(tmp_path):
+    # default cfg now has market_report_enabled=True; an injected fake client keeps it offline.
     sent: list[dict] = []
     db = f"sqlite:///{tmp_path / 'm.db'}"
+    client = _FakeClient("CORE: Risk-on tape.\nRegime: SPY aligned bull.\nRisk: complacency.")
     facts = run_market_report(db_url=db, to="me@example.com", fetch=_fake_fetch({"SPY": _rising()}),
-                              smtp_send=lambda **kw: sent.append(kw), cfg=CFG)
+                              smtp_send=lambda **kw: sent.append(kw), client=client, cfg=CFG)
     assert facts is not None
     assert sent and sent[0]["subject"].startswith("Market Weather")
     assert sent[0]["to"] == "me@example.com"
-
     eng = get_engine(db)
     try:
         with Session(eng) as s:
             rows = list(s.scalars(select(MarketReport)))
         assert len(rows) == 1
-        assert rows[0].ha_alignment == "aligned_bull" and rows[0].is_deep is False
+        assert rows[0].ha_alignment == "aligned_bull" and rows[0].is_deep is True
+        assert "Risk-on tape" in rows[0].core
+    finally:
+        eng.dispose()
+
+
+def test_run_market_report_deterministic_when_disabled(tmp_path):
+    db = f"sqlite:///{tmp_path / 'm.db'}"
+    cfg = replace(CFG, market_report_enabled=False)
+    facts = run_market_report(db_url=db, to="me@example.com", fetch=_fake_fetch({"SPY": _rising()}),
+                              smtp_send=lambda **kw: None, cfg=cfg)
+    assert facts is not None
+    eng = get_engine(db)
+    try:
+        with Session(eng) as s:
+            rows = list(s.scalars(select(MarketReport)))
+        assert len(rows) == 1 and rows[0].is_deep is False
     finally:
         eng.dispose()
 

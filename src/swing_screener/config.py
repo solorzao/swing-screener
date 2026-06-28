@@ -158,9 +158,11 @@ class StrategyConfig:
 
     # --- market screener (weekly macro "Market Weather" report) ------------------------
     vix_spike_rank: float = 80.0   # VIX percentile rank at/above this = a panic spike (flag it)
-    # opt-in LLM deep analysis for the weekly market report (mirrors deep_analysis). When off,
-    # the report is the deterministic facts read (no LLM call).
-    market_report_enabled: bool = False
+    # LLM deep analysis for the weekly market report. ON by default -- it is a ONCE-A-WEEK report,
+    # so one Opus call + a few web searches is trivially cheap, and the full macro read is the
+    # point. Falls back to the deterministic facts read if the LLM is unavailable (never blocks).
+    # Set False to force the deterministic read.
+    market_report_enabled: bool = True
     market_model: str = "claude-opus-4-8"
     market_reasoning: str = "high"
     market_max_searches: int = 6
