@@ -83,5 +83,14 @@ the book). Confirm promising subsets at the FULL universe (bounded baskets flatt
 - **#5 reversal volume-sign — POSITIVE (the wave's win).** Requiring HIGH bounce volume
   (`reversal_min_flip_rvol=1.3`) = **+0.14R, 95%-low +0.06, win 55%, n=823** on the full reversal
   book (best of three; default +0.03, low-vol −0.04). HIGH flip volume is *right* — the "wrong-sign
-  bug" was an overclaim. Broader than the CONFIRMED-strength edge (823 vs 346 trades). Pending:
-  0.05-ATR slippage + full-503 confirm, then ship as a reversal conviction gate / shadow variant.
+  bug" was an overclaim. **Confirmed at full 503: +0.183R gross → +0.157R at 0.05 ATR slippage,
+  95%-low +0.098, win 56%, n=1,626, 484 clusters** — strengthened with sample; the strongest,
+  most robust edge found (beats reversal CONFIRMED's +0.125R net). Shipped as shadow variant
+  `rev_highvol`; **promotion candidate** (shadow → surfacing). Use standalone — stacking on
+  CONFIRMED-strength thins to n=78 (the two conviction filters overlap).
+- **Wave-2 marquee RS-vs-SPY leadership — NEGATIVE on reversal.** `require_rs_leader` (RS line
+  above its MA at the bounce; `rs=close/spy` added to build_frame). Validation: flat on the full
+  book (+0.03R, same as default; prunes ~75% of trades for no gain) and *hurts* the confirmed book
+  (+0.15→+0.08R). "Buy oversold names out-leading SPY" doesn't translate. Third agent-top idea
+  refuted (after dry-up and the VIX gate) — pattern: **simple volume conviction wins; sophisticated
+  filters don't add.**
