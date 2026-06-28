@@ -64,3 +64,17 @@ expectancy 95%-low > 0 AND survives `fill_slippage_atr=0.05`, n_closed ≥ 20; p
 remove the noisiest fades over gates that merely select fewer trades (watch the CI as gates thin
 the book). Confirm promising subsets at the FULL universe (bounded baskets flatter — the
 `vol_band_body` lesson).
+
+## Results (2026-06-26, branch feat/edge-discovery)
+- **#1 regime diagnostic — done.** Reversal edge concentrates in **high market-vol** (+0.30R,
+  95%-low +0.078, n=148); ~flat in calm/elevated. Continuation is negative in *every* cell
+  (bull/bear × calm/elevated/high) — not regime-rescuable. Reversal is a high-vol play.
+- **#15 VIX-rank gate — built, then REFUTED by validation.** Fully implemented + tested
+  (`fetch_vix`, `vix_percentile_rank`/`vix_bucket`, `_vix_rank_by_date`, `PaperTrade.vix_bucket`
+  + migration, `max_vix_rank` gate). Validation (250 names, reversal CONFIRMED): the gate
+  (max_vix_rank=70) **hurts** (+0.15R→+0.07R, 95%-low −0.00→−0.13). Per-bucket, confirmed
+  reversals do **best in high VIX** (>70): +0.241R, 95%-low +0.009 (the only positive-significant
+  bucket) — the research claim *inverts* on our data (our CONFIRMED+no-flip reversals thrive in
+  panic, unlike naive RSI(2) oversold). **Keep `max_vix_rank` OFF**; the `vix_bucket` stamp stays
+  useful for attribution. Lesson: validate external research on our own data.
+- #2/#3 (volume dry-up, pocket pivot) + #5 (reversal volume-sign): races pending.
