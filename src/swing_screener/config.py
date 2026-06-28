@@ -134,6 +134,13 @@ class StrategyConfig:
     # laggards. 0/off when no rs column. Needs spy_close threaded into build_frame.
     require_rs_leader: bool = False
     rs_ma_window: int = 21
+    # Wyckoff spring trigger (edge-discovery exp 11): require the bounce bar to UNDERCUT a recent
+    # support low (over the lookback window ending spring_gap bars back) then CLOSE back above it
+    # -- a shakeout. 0/off. NOTE: our reversal flip bar opens near the decline bottom and closes
+    # up, so most reversals already qualify -- expect this to be near-no-op.
+    require_spring: bool = False
+    spring_lookback: int = 15
+    spring_gap: int = 3
     # surface only CONFIRMED-strength reversals in the digest (drop EARLY). A 503-name replay
     # found the cost-robust edge concentrates entirely in CONFIRMED reversals (+0.125R net of
     # 0.05 ATR slippage, 95%low >0) while EARLY is breakeven-to-negative and ~92% of the book.

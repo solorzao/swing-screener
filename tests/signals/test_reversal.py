@@ -117,6 +117,17 @@ def test_two_bar_dip_is_not_a_reversal():
     assert detect_reversal(_frame(_shallow_dip_rows()), CFG) is None  # red-run gate rejects it
 
 
+def test_spring_gate_undercut_reclaim():
+    # the bounce bar opens near the decline bottom and closes up. With spring_gap=3 the recent
+    # bottom is OUTSIDE the support window, so the bounce undercuts that prior support -> spring
+    # fires. With spring_gap=1 the window reaches the immediate pre-bounce lows, which the bounce
+    # does NOT undercut -> not a spring -> rejected. Exercises both arms of the gate.
+    frame = _frame(_reversal_rows())
+    assert detect_reversal(frame, CFG) is not None                                   # off -> fires
+    assert detect_reversal(frame, replace(CFG, require_spring=True, spring_gap=3)) is not None
+    assert detect_reversal(frame, replace(CFG, require_spring=True, spring_gap=1)) is None
+
+
 def test_reversal_flip_rvol_gates():
     # the bounce fires on heavy volume; the low-vol gate rejects it and the high-vol
     # gate passes it -- the two halves of the volume-sign A/B (edge-discovery exp 5).

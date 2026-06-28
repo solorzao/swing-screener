@@ -85,6 +85,14 @@ def detect_reversal(f: pd.DataFrame, cfg: StrategyConfig) -> ReversalContext | N
     else:
         return None
 
+    # Wyckoff spring (experiment): the bounce bar undercuts a recent support low (over the
+    # lookback ending spring_gap bars back) then closes back above it -- a shakeout. 0 = off.
+    if cfg.require_spring:
+        win = f["low"].iloc[-(cfg.spring_lookback + cfg.spring_gap):-cfg.spring_gap]
+        prior_support = float(win.min()) if len(win) else float("inf")
+        if not (float(bounce["low"]) < prior_support and float(bounce["close"]) > prior_support):
+            return None
+
     # RSI depth is scoring-only (no gate): the lowest RSI over the lookback window.
     min_rsi = float(f.iloc[-(cfg.reversal_oversold_lookback + 1):]["rsi"].min())
     avg_vol = float(f["volume"].tail(cfg.avg_dollar_vol_window).mean())
