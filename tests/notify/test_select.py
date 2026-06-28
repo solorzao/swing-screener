@@ -97,11 +97,25 @@ def test_exit_alerts_only_real_trades():
     assert len(alerts) == 1 and alerts[0].reason == "stop" and alerts[0].is_paper is False
 
 
-def _rev(ticker, rank, strength="early", first_seen=None):
+def _rev(ticker, rank, strength="early", first_seen=None, conviction_tier="base"):
     return Signal(run_date=RUN, ticker=ticker, timeframe="1d", horizon="medium",
-                  play_type="reversal", strength=strength, score=1.0 / rank, rank=rank,
+                  play_type="reversal", strength=strength, conviction_tier=conviction_tier,
+                  score=1.0 / rank, rank=rank,
                   trigger_close=50.0, atr=2.0, rsi=22.0, entry_floor=50.0, entry_ceiling=52.0,
                   stop=47.0, target=58.0, first_seen_date=first_seen)
+
+
+def test_reversal_picks_premium_only_surfaces_premium_tier():
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add_all([_rev("AAA", 1, "confirmed", conviction_tier="premium"),
+                   _rev("BBB", 2, "confirmed", conviction_tier="strong"),
+                   _rev("CCC", 3, "early", conviction_tier="base")])
+        s.commit()
+        prem = sel.reversal_picks(s, RUN, premium_only=True)
+        assert [p.ticker for p in prem] == ["AAA"]   # only the premium tier surfaces
+        # default (no filter) keeps all, by rank
+        assert [p.ticker for p in sel.reversal_picks(s, RUN)] == ["AAA", "BBB", "CCC"]
 
 
 def test_cooldown_drops_stale_repeats_keeps_fresh_and_legacy():

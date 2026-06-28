@@ -540,6 +540,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         if kind == "daily":
             reversal_sigs = sel.reversal_picks(
                 session, run_date, max_age_days=cooldown,
+                premium_only=StrategyConfig().reversal_surface_premium_only,
                 confirmed_only=StrategyConfig().reversal_surface_confirmed_only)
             if latest_closes_fn is not None:
                 reversal_sigs = _drop_already_ran(reversal_sigs, latest_closes_fn)

@@ -50,6 +50,7 @@ class FillCandidate:
     oversold: bool = False
     play_type: str = "continuation"
     strength: str | None = None
+    conviction_tier: str = "base"
 
 
 def open_from_signals(
@@ -94,6 +95,7 @@ def open_from_signals(
                 "horizon": cand.horizon,
                 "play_type": cand.play_type,
                 "strength": cand.strength,
+                "conviction_tier": cand.conviction_tier,
                 "signal_id": cand.signal_id,
                 "signal_score": cand.signal_score,
                 "rank": cand.rank,

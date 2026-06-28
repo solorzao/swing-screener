@@ -117,6 +117,15 @@ def test_two_bar_dip_is_not_a_reversal():
     assert detect_reversal(_frame(_shallow_dip_rows()), CFG) is None  # red-run gate rejects it
 
 
+def test_reversal_conviction_tier():
+    from swing_screener.signals.reversal import reversal_conviction_tier as tier
+    assert tier(1.5, True, "early", CFG) == "premium"       # high-vol AND spring
+    assert tier(1.5, False, "early", CFG) == "strong"       # high-vol only
+    assert tier(1.0, True, "early", CFG) == "strong"        # spring only
+    assert tier(1.0, False, "confirmed", CFG) == "strong"   # confirmed follow-through only
+    assert tier(1.0, False, "early", CFG) == "base"         # no conviction
+
+
 def test_spring_gate_undercut_reclaim():
     # the bounce bar opens near the decline bottom and closes up. With spring_gap=3 the recent
     # bottom is OUTSIDE the support window, so the bounce undercuts that prior support -> spring

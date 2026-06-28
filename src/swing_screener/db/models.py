@@ -39,6 +39,8 @@ class Signal(Base):
     play_type: Mapped[str] = mapped_column(String(16), default="continuation", index=True)
     # reversal strength: "early" / "confirmed"; None for continuation plays.
     strength: Mapped[str | None] = mapped_column(String(16), default=None)
+    # conviction tier (reversal): premium / strong / base -- tiered surfacing + sizing.
+    conviction_tier: Mapped[str] = mapped_column(String(16), default="base")
     score: Mapped[float]
     rank: Mapped[int]
     mtf_aligned: Mapped[bool] = mapped_column(default=False)
@@ -97,6 +99,8 @@ class PaperTrade(Base):
     # (continuation vs reversal) in QC without a join.
     play_type: Mapped[str] = mapped_column(String(16), default="continuation", index=True)
     strength: Mapped[str | None] = mapped_column(String(16), default=None)
+    # conviction tier (reversal): premium / strong / base -- drives conviction sizing.
+    conviction_tier: Mapped[str] = mapped_column(String(16), default="base")
     # which book this fill belongs to. "research" is the shadow grid (every screened
     # signal x arm x variant, auto-booked); a future curated "intent" book paper-executes
     # OrderIntents under "paper". The closed-trade research aggregates (leaderboards +

@@ -141,6 +141,20 @@ class StrategyConfig:
     require_spring: bool = False
     spring_lookback: int = 15
     spring_gap: int = 3
+
+    # --- item 1: tiered reversal surfacing + conviction sizing -------------------------
+    # conviction tier (reversal_conviction_tier): premium = high-vol bounce AND spring (the
+    # additive +0.25R edge); strong = any single conviction; base = none.
+    reversal_premium_min_rvol: float = 1.3   # bounce volume_ratio at/above this counts as high-vol
+    # 1a surfacing: when True, the digest's reversal list shows only the PREMIUM tier (high-vol +
+    # spring). EARLY/low-conviction reversals are still detected + shadow-booked, just not surfaced.
+    reversal_surface_premium_only: bool = True
+    # 1b conviction sizing: weight each fill's R by its conviction tier in SIZE-WEIGHTED
+    # performance (size the edge cohort up, the dead baseline down). False = risk-equal (legacy).
+    conviction_sizing: bool = False
+    conviction_weight_premium: float = 2.0
+    conviction_weight_strong: float = 1.0
+    conviction_weight_base: float = 0.5
     # surface only CONFIRMED-strength reversals in the digest (drop EARLY). A 503-name replay
     # found the cost-robust edge concentrates entirely in CONFIRMED reversals (+0.125R net of
     # 0.05 ATR slippage, 95%low >0) while EARLY is breakeven-to-negative and ~92% of the book.

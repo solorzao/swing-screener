@@ -14,6 +14,7 @@ from swing_screener.signals.reversal import (
     ReversalScoreInputs,
     compute_reversal_zone,
     detect_reversal,
+    reversal_conviction_tier,
     score_reversal,
 )
 from swing_screener.signals.score import score_signal
@@ -53,6 +54,9 @@ class SignalResult:
     strength: str | None = None       # reversal only: "early" | "confirmed"
     # continuation freshness metric ((close-EMA20)/ATR); None for reversal plays.
     extension_atr: float | None = None
+    # conviction tier for tiered surfacing + sizing: premium / strong / base (reversal only;
+    # continuation defaults to base).
+    conviction_tier: str = "base"
 
 
 def _is_uptrend(frame: pd.DataFrame) -> bool:
@@ -231,5 +235,7 @@ def analyze_reversals(
             entry_floor=zone.floor, entry_ceiling=zone.ceiling, stop=zone.stop,
             target=zone.target, frame=frame, ctx=ctx, zone=zone,
             play_type="reversal", strength=ctx.strength,
+            conviction_tier=reversal_conviction_tier(
+                ctx.volume_ratio, ctx.is_spring, ctx.strength, cfg),
         ))
     return results

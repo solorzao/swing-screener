@@ -35,6 +35,29 @@ _CLUSTER_FLOOR = 8
 _N_BOOT = 1000
 _BOOT_SEED = 12345
 
+# Conviction sizing (item 1b): weight each closed trade's R by its conviction_tier when
+# computing a SIZE-WEIGHTED expectancy -- deploy more capital to the edge cohort, less to the
+# dead baseline. Risk-equal weighting (all 1.0) recovers the plain mean.
+_DEFAULT_CONVICTION_WEIGHTS = {"premium": 2.0, "strong": 1.0, "base": 0.5}
+
+
+def size_weighted_expectancy(
+    trades: Iterable[PaperTrade], weights: Mapping[str, float] | None = None
+) -> tuple[float, float]:
+    """Conviction-weighted mean realized R over CLOSED trades, plus the total weight deployed.
+
+    Each trade's R is weighted by ``weights[conviction_tier]`` (default: premium 2x, strong 1x,
+    base 0.5x). Pure; safe on empty input (returns (0.0, 0.0)). With uniform weights this equals
+    the plain expectancy, so a gain over plain expectancy measures the sizing edge."""
+    w = weights or _DEFAULT_CONVICTION_WEIGHTS
+    num = den = 0.0
+    for t in trades:
+        if t.status == "closed" and t.realized_r is not None:
+            wt = w.get(t.conviction_tier, 1.0)
+            num += wt * float(t.realized_r)
+            den += wt
+    return (num / den if den else 0.0), den
+
 
 @dataclass(frozen=True)
 class PerformanceSummary:
