@@ -55,3 +55,33 @@ def classify_regime(spy_daily: pd.DataFrame | None, cfg: StrategyConfig) -> Mark
     else:
         vol = "high"
     return MarketRegime(trend, vol)
+
+
+# --- VIX percentile-rank overlay (mean-reversion REVERSAL regime gate) ---------------
+# Research: the oversold-bounce edge depends on the VIX regime -- in high-VIX panic, "oversold"
+# keeps falling. Rank = where today's VIX sits within its own trailing year (point-in-time).
+_VIX_RANK_WINDOW = 252          # trailing trading days for the percentile
+_VIX_RANK_LOW_MAX = 40.0        # rank < 40 -> "low"
+_VIX_RANK_MID_MAX = 70.0        # 40-70 -> "mid"; > 70 -> "high" (panic)
+
+
+def vix_percentile_rank(vix_close: pd.Series | None) -> float | None:
+    """Percentile rank (0-100) of the LAST close within the trailing ``_VIX_RANK_WINDOW``
+    closes (inclusive of the current bar, so no lookahead): the fraction of the window
+    strictly below the current value. None when there is no data."""
+    if vix_close is None or len(vix_close) == 0:
+        return None
+    window = vix_close.tail(_VIX_RANK_WINDOW)
+    current = float(window.iloc[-1])
+    return float((window < current).mean() * 100.0)
+
+
+def vix_bucket(rank: float | None) -> str | None:
+    """Bucket a 0-100 VIX rank: low (<40) / mid (40-70) / high (>70). None passes through."""
+    if rank is None:
+        return None
+    if rank < _VIX_RANK_LOW_MAX:
+        return "low"
+    if rank <= _VIX_RANK_MID_MAX:
+        return "mid"
+    return "high"

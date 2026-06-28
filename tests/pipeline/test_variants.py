@@ -49,6 +49,15 @@ def test_shadow_tracks_continuation_volband_combo():
     assert v.vol_thrust_min >= 1.3 and v.require_value_band and v.min_trigger_body_frac >= 0.5
 
 
+def test_shadow_tracks_reversal_highvol_combo():
+    # the high-bounce-volume reversal gate (edge-discovery exp 5) is a cost-robust edge
+    # (+0.11R, 95%low +0.03 net of slippage); shadow-track it forward as a screen variant.
+    base = StrategyConfig()
+    variants = build_screen_variants(base)
+    assert "rev_highvol" in variants
+    assert variants["rev_highvol"].reversal_min_flip_rvol >= 1.3
+
+
 def test_detection_only_fields_are_allowed_in_variants():
     # the outside-bar trigger and entry-depth gate are DETECTION fields (computed from the
     # shared frame), not indicator periods -- a variant may set them without rebuilding frames.

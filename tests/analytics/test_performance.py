@@ -13,13 +13,28 @@ from swing_screener.db.models import PaperTrade
 
 
 def _pt(*, fill_status="filled", status="closed", realized_r=None, hold_bars=None,
-        timeframe="1d", quality_tier="reputable", rank=1, exit_date=None, score=0.8):
+        timeframe="1d", quality_tier="reputable", rank=1, exit_date=None, score=0.8,
+        conviction_tier="base"):
     return PaperTrade(
         ticker="AAPL", timeframe=timeframe, horizon="medium", signal_score=score, rank=rank,
         mtf_aligned=True, quality_tier=quality_tier, volatility_tier="med",
         fill_status=fill_status, stop=95.0, target=110.0, risk=5.0, status=status,
         realized_r=realized_r, hold_bars=hold_bars, exit_date=exit_date,
+        conviction_tier=conviction_tier,
     )
+
+
+def test_size_weighted_expectancy_weights_by_conviction_tier():
+    from swing_screener.analytics.performance import size_weighted_expectancy
+    # premium R=+2 (weight 2.0), base R=-1 (weight 0.5): weighted = (2*2 + 0.5*-1)/2.5 = 1.4,
+    # vs a plain mean of +0.5 -- sizing lifts the edge cohort and trims the dead one.
+    trades = [_pt(realized_r=2.0, conviction_tier="premium"),
+              _pt(realized_r=-1.0, conviction_tier="base")]
+    exp, total_w = size_weighted_expectancy(trades)
+    assert abs(exp - 1.4) < 1e-9
+    assert abs(total_w - 2.5) < 1e-9
+    # open / unfilled trades are ignored
+    assert size_weighted_expectancy([_pt(status="open", realized_r=None)]) == (0.0, 0.0)
 
 
 def _book():

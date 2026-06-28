@@ -205,7 +205,8 @@ def _shadow_candidates(
         FillCandidate(pr.ticker, pr.timeframe, pr.horizon, pr.score, rank,
                       pr.mtf_aligned, None, pr.zone, quality_tier=pr.quality_tier,
                       volatility_tier=pr.volatility_tier, oversold=pr.oversold,
-                      play_type=pr.play_type, strength=pr.strength)
+                      play_type=pr.play_type, strength=pr.strength,
+                      conviction_tier=pr.conviction_tier)
         for group in (prior_cont, prior_rev)
         for rank, (pr, _h, _l) in enumerate(group, start=1)
     ]
@@ -216,7 +217,7 @@ def _shadow_candidates(
 def _to_signal(r: SignalResult, rank: int, run_date: date, first_seen: date) -> Signal:
     return Signal(
         run_date=run_date, ticker=r.ticker, timeframe=r.timeframe, horizon=r.horizon,
-        play_type=r.play_type, strength=r.strength,
+        play_type=r.play_type, strength=r.strength, conviction_tier=r.conviction_tier,
         score=r.score, rank=rank, mtf_aligned=r.mtf_aligned, quality_tier=r.quality_tier,
         volatility_tier=r.volatility_tier, oversold=r.oversold, trigger_close=r.trigger_close,
         atr=r.atr, rsi=r.rsi, entry_floor=r.entry_floor, entry_ceiling=r.entry_ceiling,

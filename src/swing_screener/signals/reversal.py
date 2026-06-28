@@ -43,6 +43,7 @@ class ReversalContext:
     volume_ratio: float    # flip-bar volume / recent average
     ema_slow: float        # slow EMA (reclaim resistance)
     decline_high: float    # prior swing high over a longer lookback (retracement target)
+    is_spring: bool = False  # bounce undercut a prior support then reclaimed (Wyckoff spring)
 
 
 def detect_reversal(f: pd.DataFrame, cfg: StrategyConfig) -> ReversalContext | None:
@@ -85,10 +86,32 @@ def detect_reversal(f: pd.DataFrame, cfg: StrategyConfig) -> ReversalContext | N
     else:
         return None
 
+    # Wyckoff spring: the bounce bar undercuts a recent support low (over the lookback ending
+    # spring_gap bars back) then closes back above it -- a shakeout. Computed ALWAYS (carried on
+    # the context for surfacing/sizing tiers); require_spring only decides whether to GATE on it.
+    _win = f["low"].iloc[-(cfg.spring_lookback + cfg.spring_gap):-cfg.spring_gap]
+    _prior_support = float(_win.min()) if len(_win) else float("inf")
+    is_spring = float(bounce["low"]) < _prior_support and float(bounce["close"]) > _prior_support
+    if cfg.require_spring and not is_spring:
+        return None
+
     # RSI depth is scoring-only (no gate): the lowest RSI over the lookback window.
     min_rsi = float(f.iloc[-(cfg.reversal_oversold_lookback + 1):]["rsi"].min())
     avg_vol = float(f["volume"].tail(cfg.avg_dollar_vol_window).mean())
     vol_ratio = float(bounce["volume"]) / avg_vol if avg_vol > 0 else 1.0
+    # experiment (edge-discovery exp 5): A/B the flip-bar volume sign. Low-vol-confirmation
+    # gate (supply exhausted) vs high-vol-confirmation gate (demand stepped in); 0 = off.
+    if cfg.reversal_max_flip_rvol > 0 and vol_ratio > cfg.reversal_max_flip_rvol:
+        return None
+    if cfg.reversal_min_flip_rvol > 0 and vol_ratio < cfg.reversal_min_flip_rvol:
+        return None
+    # RS-leadership gate (edge-discovery wave 2): only buy oversold names HOLDING UP vs SPY --
+    # the RS line (close/spy_close) must be above its own MA at the bounce. No-op when the rs
+    # column is absent (SPY not provided) or NaN (SPY gap) -- fail open, no market data penalty.
+    if cfg.require_rs_leader and "rs" in f.columns:
+        rs_now = float(f["rs"].iloc[-1])
+        if rs_now == rs_now and rs_now <= float(f["rs"].tail(cfg.rs_ma_window).mean()):
+            return None
     # The prior decline's high over a longer lookback -- the breakdown level the relief
     # rally targets (and the base for the target retracement).
     decline_high = float(f.iloc[-(cfg.reversal_target_lookback + 1):]["high"].max())
@@ -109,6 +132,7 @@ def detect_reversal(f: pd.DataFrame, cfg: StrategyConfig) -> ReversalContext | N
         volume_ratio=vol_ratio,
         ema_slow=float(last["ema_slow"]),
         decline_high=decline_high,
+        is_spring=is_spring,
     )
 
 
@@ -157,6 +181,22 @@ class ReversalScoreInputs:
     confirmed: bool
     min_rsi: float          # oversold depth (lower = deeper) -- a confirm, not a gate
     rsi_floor: float        # the oversold reference (cfg.reversal_oversold_rsi_max)
+
+
+def reversal_conviction_tier(volume_ratio: float, is_spring: bool, strength: str | None,
+                             cfg: StrategyConfig) -> str:
+    """Classify a reversal's conviction for tiered surfacing + sizing. The replay found the
+    two strongest, ADDITIVE filters are a high-volume bounce and a Wyckoff spring:
+      premium = high-volume bounce AND spring (+0.25R net, the edge);
+      strong  = any single conviction signal (high volume, spring, or confirmed follow-through);
+      base    = none.
+    """
+    high_vol = volume_ratio >= cfg.reversal_premium_min_rvol
+    if high_vol and is_spring:
+        return "premium"
+    if high_vol or is_spring or strength == "confirmed":
+        return "strong"
+    return "base"
 
 
 def _clip01(x: float) -> float:

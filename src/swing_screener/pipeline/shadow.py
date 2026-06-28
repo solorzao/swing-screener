@@ -50,6 +50,7 @@ class FillCandidate:
     oversold: bool = False
     play_type: str = "continuation"
     strength: str | None = None
+    conviction_tier: str = "base"
 
 
 def open_from_signals(
@@ -62,6 +63,7 @@ def open_from_signals(
     variant: str = "default",
     market_trend: str | None = None,
     market_vol: str | None = None,
+    vix_bucket: str | None = None,
 ) -> list[PaperTrade]:
     """Resolve each candidate against its next bar and persist a paper trade per arm.
 
@@ -93,6 +95,7 @@ def open_from_signals(
                 "horizon": cand.horizon,
                 "play_type": cand.play_type,
                 "strength": cand.strength,
+                "conviction_tier": cand.conviction_tier,
                 "signal_id": cand.signal_id,
                 "signal_score": cand.signal_score,
                 "rank": cand.rank,
@@ -104,6 +107,7 @@ def open_from_signals(
                 "variant": variant,
                 "market_trend": market_trend,
                 "market_vol": market_vol,
+                "vix_bucket": vix_bucket,
                 "fill_status": fill.status,
                 "stop": cand.zone.stop,
                 "target": cand.zone.target,

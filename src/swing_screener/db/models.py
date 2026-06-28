@@ -39,6 +39,8 @@ class Signal(Base):
     play_type: Mapped[str] = mapped_column(String(16), default="continuation", index=True)
     # reversal strength: "early" / "confirmed"; None for continuation plays.
     strength: Mapped[str | None] = mapped_column(String(16), default=None)
+    # conviction tier (reversal): premium / strong / base -- tiered surfacing + sizing.
+    conviction_tier: Mapped[str] = mapped_column(String(16), default="base")
     score: Mapped[float]
     rank: Mapped[int]
     mtf_aligned: Mapped[bool] = mapped_column(default=False)
@@ -97,6 +99,8 @@ class PaperTrade(Base):
     # (continuation vs reversal) in QC without a join.
     play_type: Mapped[str] = mapped_column(String(16), default="continuation", index=True)
     strength: Mapped[str | None] = mapped_column(String(16), default=None)
+    # conviction tier (reversal): premium / strong / base -- drives conviction sizing.
+    conviction_tier: Mapped[str] = mapped_column(String(16), default="base")
     # which book this fill belongs to. "research" is the shadow grid (every screened
     # signal x arm x variant, auto-booked); a future curated "intent" book paper-executes
     # OrderIntents under "paper". The closed-trade research aggregates (leaderboards +
@@ -127,6 +131,9 @@ class PaperTrade(Base):
     # None = unknown (SPY data unavailable) or a legacy row.
     market_trend: Mapped[str | None] = mapped_column(String(16), default=None)
     market_vol: Mapped[str | None] = mapped_column(String(16), default=None)
+    # VIX percentile-rank bucket at fill time (trailing 252d): low/<40, mid/40-70, high/>70.
+    # None = unknown (^VIX unavailable) or a legacy row. Used by breakdown(trades,"vix_bucket").
+    vix_bucket: Mapped[str | None] = mapped_column(String(16), default=None)
     fill_status: Mapped[str] = mapped_column(String(32))  # filled / missed / invalidated
     entry_date: Mapped[date | None] = mapped_column(default=None)
     entry_price: Mapped[float | None] = mapped_column(default=None)

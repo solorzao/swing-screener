@@ -56,6 +56,11 @@ def build_screen_variants(base: StrategyConfig) -> dict[str, StrategyConfig]:
         # See docs/plans/2026-06-25-continuation-edge-tournament-design.md.
         "cont_volband": replace(base, vol_thrust_min=1.3, require_value_band=True,
                                 min_trigger_body_frac=0.5, max_trigger_lower_wick_frac=1.0),
+        # Forward shadow-track the edge-tournament's reversal win: requiring a HIGH-volume
+        # bounce (flip volume >= 1.3x average) is cost-robust offline (+0.11R, 95%low +0.03 net
+        # of 0.05 ATR slippage, n=823) -- the strongest, broadest reversal conviction filter
+        # found. Measured here, not yet surfaced/traded; pending full-503 + forward confirm.
+        "rev_highvol": replace(base, reversal_min_flip_rvol=1.3),
     }
     for name, cfg in variants.items():
         if name != DEFAULT_VARIANT:

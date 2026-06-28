@@ -28,11 +28,17 @@ def test_replay_book_is_stable_golden_master():
     # guarantee Tasks 3-4 build on (they perturb numbers; this proves the substrate).
     # Targets are anchored on the entry ceiling (the fill): each target sits exactly
     # min_target_r (1.5) R above the entry, so a target exit realizes 1.5R.
+    # default + extguard_tight produce the same 2 continuation trades; cont_volband is too
+    # selective to fire on this fixture (0 trades); rev_highvol only gates REVERSALS (none in
+    # AMD 2018) so it mirrors default's continuation book. Reversal-only variants still book
+    # their identical continuation fills -- harmless, the leaderboard filters by play_type.
     expected = [
         ("AMD", "default", "2018-07-05", 15.2354, 14.5719, 16.2306, "target", 1.5),
         ("AMD", "default", "2018-07-06", 15.7311, 14.575, 17.4652, "time_stop", 0.6651),
         ("AMD", "extguard_tight", "2018-07-05", 15.2354, 14.5719, 16.2306, "target", 1.5),
         ("AMD", "extguard_tight", "2018-07-06", 15.7311, 14.575, 17.4652, "time_stop", 0.6651),
+        ("AMD", "rev_highvol", "2018-07-05", 15.2354, 14.5719, 16.2306, "target", 1.5),
+        ("AMD", "rev_highvol", "2018-07-06", 15.7311, 14.575, 17.4652, "time_stop", 0.6651),
     ]
     assert book == expected
 

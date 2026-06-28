@@ -5,6 +5,8 @@ classification) from synthetic OHLCV so the detector sees exactly what it sees
 in production.
 """
 
+from dataclasses import replace
+
 import pandas as pd
 
 from swing_screener.config import StrategyConfig
@@ -113,6 +115,41 @@ def _shallow_dip_rows():
 
 def test_two_bar_dip_is_not_a_reversal():
     assert detect_reversal(_frame(_shallow_dip_rows()), CFG) is None  # red-run gate rejects it
+
+
+def test_reversal_conviction_tier():
+    from swing_screener.signals.reversal import reversal_conviction_tier as tier
+    assert tier(1.5, True, "early", CFG) == "premium"       # high-vol AND spring
+    assert tier(1.5, False, "early", CFG) == "strong"       # high-vol only
+    assert tier(1.0, True, "early", CFG) == "strong"        # spring only
+    assert tier(1.0, False, "confirmed", CFG) == "strong"   # confirmed follow-through only
+    assert tier(1.0, False, "early", CFG) == "base"         # no conviction
+
+
+def test_spring_gate_undercut_reclaim():
+    # the bounce bar opens near the decline bottom and closes up. With spring_gap=3 the recent
+    # bottom is OUTSIDE the support window, so the bounce undercuts that prior support -> spring
+    # fires. With spring_gap=1 the window reaches the immediate pre-bounce lows, which the bounce
+    # does NOT undercut -> not a spring -> rejected. Exercises both arms of the gate.
+    frame = _frame(_reversal_rows())
+    assert detect_reversal(frame, CFG) is not None                                   # off -> fires
+    assert detect_reversal(frame, replace(CFG, require_spring=True, spring_gap=3)) is not None
+    assert detect_reversal(frame, replace(CFG, require_spring=True, spring_gap=1)) is None
+
+
+def test_reversal_flip_rvol_gates():
+    # the bounce fires on heavy volume; the low-vol gate rejects it and the high-vol
+    # gate passes it -- the two halves of the volume-sign A/B (edge-discovery exp 5).
+    frame = _frame(_reversal_rows())
+    ctx = detect_reversal(frame, CFG)
+    assert ctx is not None and ctx.volume_ratio > 1.0
+    vr = ctx.volume_ratio
+    # low-vol-confirmation gate: reject a flip whose volume exceeds the cap
+    assert detect_reversal(frame, replace(CFG, reversal_max_flip_rvol=vr - 0.5)) is None
+    assert detect_reversal(frame, replace(CFG, reversal_max_flip_rvol=vr + 0.5)) is not None
+    # high-vol-confirmation gate: reject a flip whose volume is below the floor
+    assert detect_reversal(frame, replace(CFG, reversal_min_flip_rvol=vr + 0.5)) is None
+    assert detect_reversal(frame, replace(CFG, reversal_min_flip_rvol=vr - 0.5)) is not None
 
 
 def test_no_reversal_in_a_healthy_uptrend():

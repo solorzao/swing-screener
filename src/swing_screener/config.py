@@ -62,6 +62,16 @@ class StrategyConfig:
     max_pullback_bar_atr: float = 1.5  # no single pullback bar's range may exceed this many ATR
     max_pullback_drop_atr: float = 2.5  # the whole pullback drop may not exceed this many ATR
 
+    # --- edge-discovery wave 1 (volume footprint) --------------------------------------
+    # volume DRY-UP: reject unless the pullback bars' mean volume <= this fraction of the
+    # pre-pullback baseline (mean over vol_avg_window bars before the pullback). The orthogonal
+    # other half of the volume thrust -- supply must exhaust on the dip, not just demand return.
+    pullback_vol_dryup_max: float = 0.0   # 0 = off; e.g. 0.85 = pullback at <=85% of baseline
+    # POCKET PIVOT: a self-normalizing thrust -- the up trigger bar's volume must EXCEED the
+    # largest down-day volume of the prior pocket_pivot_lookback bars (demand > worst supply).
+    require_pocket_pivot: bool = False
+    pocket_pivot_lookback: int = 10
+
     # staleness / cooldown: drop a digest pick once its setup has been on the list for
     # more than this many days (by first_seen_date) so the same play isn't re-pitched
     # day after day. A freshly-appearing setup (first_seen == run_date) always shows.
@@ -109,6 +119,42 @@ class StrategyConfig:
     reversal_pullback_deep: float = 0.618     # deep end of the pullback entry zone
     reversal_retrace_frac: float = 0.786      # target = this retracement of the decline (toward breakdown)
     reversal_target_r_multiple: float = 1.0   # measured-move fallback if the target sits below entry
+    # edge-discovery wave 1: A/B the reversal flip-bar volume sign. The scorer rewards HIGH flip
+    # volume, but Wyckoff/MR theory says the confirming test should be LOW volume (supply gone).
+    # These gates isolate each cohort to settle it empirically (0 = off).
+    reversal_max_flip_rvol: float = 0.0   # low-vol confirmation: reject if flip volume_ratio > this
+    reversal_min_flip_rvol: float = 0.0   # high-vol confirmation: reject if flip volume_ratio < this
+    # VIX-rank regime gate (edge-discovery exp 15): suppress REVERSAL fills when the
+    # point-in-time VIX percentile-rank (trailing 252d) exceeds this (panic states where
+    # oversold keeps falling). 0 = off. Needs ^VIX daily threaded into the replay (vix_daily).
+    max_vix_rank: float = 0.0
+    # relative-strength-vs-SPY leadership gate for the reversal book (edge-discovery wave 2):
+    # require the RS line (close/spy_close, added to the frame when SPY is provided) to be above
+    # its own MA at the bounce -- buy oversold names HOLDING UP vs the index, not the weakest
+    # laggards. 0/off when no rs column. Needs spy_close threaded into build_frame.
+    require_rs_leader: bool = False
+    rs_ma_window: int = 21
+    # Wyckoff spring trigger (edge-discovery exp 11): require the bounce bar to UNDERCUT a recent
+    # support low (over the lookback window ending spring_gap bars back) then CLOSE back above it
+    # -- a shakeout. 0/off. NOTE: our reversal flip bar opens near the decline bottom and closes
+    # up, so most reversals already qualify -- expect this to be near-no-op.
+    require_spring: bool = False
+    spring_lookback: int = 15
+    spring_gap: int = 3
+
+    # --- item 1: tiered reversal surfacing + conviction sizing -------------------------
+    # conviction tier (reversal_conviction_tier): premium = high-vol bounce AND spring (the
+    # additive +0.25R edge); strong = any single conviction; base = none.
+    reversal_premium_min_rvol: float = 1.3   # bounce volume_ratio at/above this counts as high-vol
+    # 1a surfacing: when True, the digest's reversal list shows only the PREMIUM tier (high-vol +
+    # spring). EARLY/low-conviction reversals are still detected + shadow-booked, just not surfaced.
+    reversal_surface_premium_only: bool = True
+    # 1b conviction sizing: weight each fill's R by its conviction tier in SIZE-WEIGHTED
+    # performance (size the edge cohort up, the dead baseline down). False = risk-equal (legacy).
+    conviction_sizing: bool = False
+    conviction_weight_premium: float = 2.0
+    conviction_weight_strong: float = 1.0
+    conviction_weight_base: float = 0.5
     # surface only CONFIRMED-strength reversals in the digest (drop EARLY). A 503-name replay
     # found the cost-robust edge concentrates entirely in CONFIRMED reversals (+0.125R net of
     # 0.05 ATR slippage, 95%low >0) while EARLY is breakeven-to-negative and ~92% of the book.
