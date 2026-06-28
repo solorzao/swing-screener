@@ -71,6 +71,21 @@ def _quality_gates_pass(f: pd.DataFrame, last, pullback: list, swing_low: float,
         drop_atr = (pull_high - swing_low) / atr
         if max_bar_atr > cfg.max_pullback_bar_atr or drop_atr > cfg.max_pullback_drop_atr:
             return False
+    # volume dry-up: the pullback must trade on contracting volume vs the pre-pullback baseline
+    if cfg.pullback_vol_dryup_max > 0:
+        n, k = cfg.vol_avg_window, len(pullback)
+        base = f["volume"].iloc[-(n + 1 + k):-(k + 1)].mean()
+        pull_vol = sum(float(b["volume"]) for b in pullback) / k
+        dryup = pull_vol / base if base and base > 0 else 1.0
+        if dryup > cfg.pullback_vol_dryup_max:
+            return False
+    # pocket pivot: the up trigger bar's volume must exceed the worst recent down-day volume
+    if cfg.require_pocket_pivot:
+        window = f.iloc[-(cfg.pocket_pivot_lookback + 1):-1]
+        down = window.loc[window["close"] < window["open"], "volume"]
+        down_vol_max = float(down.max()) if len(down) else 0.0
+        if not (float(last["close"]) > float(last["open"]) and float(last["volume"]) > down_vol_max):
+            return False
     return True
 
 

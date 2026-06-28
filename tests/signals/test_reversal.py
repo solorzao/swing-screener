@@ -5,6 +5,8 @@ classification) from synthetic OHLCV so the detector sees exactly what it sees
 in production.
 """
 
+from dataclasses import replace
+
 import pandas as pd
 
 from swing_screener.config import StrategyConfig
@@ -113,6 +115,21 @@ def _shallow_dip_rows():
 
 def test_two_bar_dip_is_not_a_reversal():
     assert detect_reversal(_frame(_shallow_dip_rows()), CFG) is None  # red-run gate rejects it
+
+
+def test_reversal_flip_rvol_gates():
+    # the bounce fires on heavy volume; the low-vol gate rejects it and the high-vol
+    # gate passes it -- the two halves of the volume-sign A/B (edge-discovery exp 5).
+    frame = _frame(_reversal_rows())
+    ctx = detect_reversal(frame, CFG)
+    assert ctx is not None and ctx.volume_ratio > 1.0
+    vr = ctx.volume_ratio
+    # low-vol-confirmation gate: reject a flip whose volume exceeds the cap
+    assert detect_reversal(frame, replace(CFG, reversal_max_flip_rvol=vr - 0.5)) is None
+    assert detect_reversal(frame, replace(CFG, reversal_max_flip_rvol=vr + 0.5)) is not None
+    # high-vol-confirmation gate: reject a flip whose volume is below the floor
+    assert detect_reversal(frame, replace(CFG, reversal_min_flip_rvol=vr + 0.5)) is None
+    assert detect_reversal(frame, replace(CFG, reversal_min_flip_rvol=vr - 0.5)) is not None
 
 
 def test_no_reversal_in_a_healthy_uptrend():

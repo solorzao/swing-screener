@@ -114,3 +114,46 @@ def test_orderly_pullback_gate(bars):
     # an impossibly tight per-bar cap proves the gate measures bar range and rejects
     assert not _fires(rows, StrategyConfig(require_orderly_pullback=True,
                                            max_pullback_bar_atr=0.5), bars)
+
+
+# --- Wave 1: volume dry-up + pocket pivot (edge-discovery backlog) ------------
+
+def _dryup_rows(pull_vol):
+    """Uptrend (base volume 1M) + 3-bar pullback at `pull_vol` + strong green trigger."""
+    rows = []
+    p = 10.0
+    for _ in range(60):
+        rows.append({"open": p, "high": p + 1.2, "low": p, "close": p + 1.0, "volume": 1_000_000})
+        p += 1.0
+    for _ in range(3):
+        rows.append({"open": p, "high": p + 0.05, "low": p - 1.5, "close": p - 1.2, "volume": pull_vol})
+        p -= 1.2
+    rows.append({"open": p, "high": p + 6.0, "low": p, "close": p + 5.6, "volume": 1_000_000})
+    return rows
+
+
+def test_volume_dryup_gate(bars):
+    # pullback on DRY volume (40% of base) passes; on WET volume (150%) is rejected
+    assert _fires(_dryup_rows(400_000), StrategyConfig(pullback_vol_dryup_max=0.9), bars)
+    assert not _fires(_dryup_rows(1_500_000), StrategyConfig(pullback_vol_dryup_max=0.9), bars)
+
+
+def _pocket_rows(trig_vol, down_vol):
+    rows = []
+    p = 10.0
+    for _ in range(60):
+        rows.append({"open": p, "high": p + 1.2, "low": p, "close": p + 1.0, "volume": 1_000_000})
+        p += 1.0
+    for _ in range(3):
+        rows.append({"open": p, "high": p + 0.05, "low": p - 1.5, "close": p - 1.2, "volume": down_vol})
+        p -= 1.2
+    rows.append({"open": p, "high": p + 6.0, "low": p, "close": p + 5.6, "volume": trig_vol})
+    return rows
+
+
+def test_pocket_pivot_gate(bars):
+    # trigger up-volume must EXCEED the largest down-day volume of the prior bars
+    assert _fires(_pocket_rows(trig_vol=3_000_000, down_vol=1_000_000),
+                  StrategyConfig(require_pocket_pivot=True), bars)
+    assert not _fires(_pocket_rows(trig_vol=900_000, down_vol=2_000_000),
+                      StrategyConfig(require_pocket_pivot=True), bars)

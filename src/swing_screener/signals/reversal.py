@@ -89,6 +89,12 @@ def detect_reversal(f: pd.DataFrame, cfg: StrategyConfig) -> ReversalContext | N
     min_rsi = float(f.iloc[-(cfg.reversal_oversold_lookback + 1):]["rsi"].min())
     avg_vol = float(f["volume"].tail(cfg.avg_dollar_vol_window).mean())
     vol_ratio = float(bounce["volume"]) / avg_vol if avg_vol > 0 else 1.0
+    # experiment (edge-discovery exp 5): A/B the flip-bar volume sign. Low-vol-confirmation
+    # gate (supply exhausted) vs high-vol-confirmation gate (demand stepped in); 0 = off.
+    if cfg.reversal_max_flip_rvol > 0 and vol_ratio > cfg.reversal_max_flip_rvol:
+        return None
+    if cfg.reversal_min_flip_rvol > 0 and vol_ratio < cfg.reversal_min_flip_rvol:
+        return None
     # The prior decline's high over a longer lookback -- the breakdown level the relief
     # rally targets (and the base for the target retracement).
     decline_high = float(f.iloc[-(cfg.reversal_target_lookback + 1):]["high"].max())
