@@ -95,6 +95,13 @@ def detect_reversal(f: pd.DataFrame, cfg: StrategyConfig) -> ReversalContext | N
         return None
     if cfg.reversal_min_flip_rvol > 0 and vol_ratio < cfg.reversal_min_flip_rvol:
         return None
+    # RS-leadership gate (edge-discovery wave 2): only buy oversold names HOLDING UP vs SPY --
+    # the RS line (close/spy_close) must be above its own MA at the bounce. No-op when the rs
+    # column is absent (SPY not provided) or NaN (SPY gap) -- fail open, no market data penalty.
+    if cfg.require_rs_leader and "rs" in f.columns:
+        rs_now = float(f["rs"].iloc[-1])
+        if rs_now == rs_now and rs_now <= float(f["rs"].tail(cfg.rs_ma_window).mean()):
+            return None
     # The prior decline's high over a longer lookback -- the breakdown level the relief
     # rally targets (and the base for the target retracement).
     decline_high = float(f.iloc[-(cfg.reversal_target_lookback + 1):]["high"].max())

@@ -109,7 +109,9 @@ def replay_book(
                 for ticker, raw in frames.items():
                     if raw is None or len(raw) <= warmup:
                         continue
-                    enriched = build_frame(raw, base_cfg)
+                    enriched = build_frame(
+                        raw, base_cfg,
+                        spy_close=spy_daily["close"] if spy_daily is not None else None)
                     _replay_one(s, ticker, timeframe, enriched, base_cfg, variants, warmup,
                                 regime_by_date, vix_rank_by_date)
                 trades = list(s.scalars(select(PaperTrade)))

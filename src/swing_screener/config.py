@@ -128,6 +128,12 @@ class StrategyConfig:
     # point-in-time VIX percentile-rank (trailing 252d) exceeds this (panic states where
     # oversold keeps falling). 0 = off. Needs ^VIX daily threaded into the replay (vix_daily).
     max_vix_rank: float = 0.0
+    # relative-strength-vs-SPY leadership gate for the reversal book (edge-discovery wave 2):
+    # require the RS line (close/spy_close, added to the frame when SPY is provided) to be above
+    # its own MA at the bounce -- buy oversold names HOLDING UP vs the index, not the weakest
+    # laggards. 0/off when no rs column. Needs spy_close threaded into build_frame.
+    require_rs_leader: bool = False
+    rs_ma_window: int = 21
     # surface only CONFIRMED-strength reversals in the digest (drop EARLY). A 503-name replay
     # found the cost-robust edge concentrates entirely in CONFIRMED reversals (+0.125R net of
     # 0.05 ATR slippage, 95%low >0) while EARLY is breakeven-to-negative and ~92% of the book.
