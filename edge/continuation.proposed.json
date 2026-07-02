@@ -1,0 +1,26 @@
+[
+  {
+    "name": "continuation_volatility_tier_high_0_q",
+    "play_type": "continuation",
+    "delta": {
+      "max_extension_atr": 2.0
+    },
+    "rationale": "High-vol tier is the worst bucket (-0.42R, CI lower -0.68R); tightening the max extension ATR filter should reject over-extended continuation entries that dominate the high-vol losses.",
+    "hunch_ref": "volatility_tier=high",
+    "status": "queued",
+    "drafted_at": "2026-07-02",
+    "provenance": "reflection-opus"
+  },
+  {
+    "name": "continuation_market_trend_bull_1_q",
+    "play_type": "continuation",
+    "delta": {
+      "min_pullback_bars": 3
+    },
+    "rationale": "Continuation entries fire without a meaningful pause; requiring a deeper pullback (more bars) should filter shallow chases that hurt the bull-trend bucket (-0.17R across n=231).",
+    "hunch_ref": "market_trend=bull",
+    "status": "queued",
+    "drafted_at": "2026-07-02",
+    "provenance": "reflection-opus"
+  }
+]
