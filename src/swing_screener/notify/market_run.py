@@ -13,6 +13,8 @@ from pathlib import Path
 
 import anthropic
 import pandas as pd
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from swing_screener.config import StrategyConfig
@@ -80,9 +82,15 @@ def run_market_report(
     migrate_fn: Callable[[str], None] | None = None,
     cfg: StrategyConfig | None = None, run_date: date | None = None,
 ) -> MarketFacts | None:
-    """Fetch -> gather facts -> analyze -> email -> persist. Returns the MarketFacts, or None if
-    SPY is unavailable. The report is the LLM read when ``cfg.market_report_enabled`` else the
-    deterministic facts read; it always persists and (with a recipient) emails."""
+    """Fetch -> gather facts -> (idempotency check) -> analyze -> PERSIST -> email.
+
+    Returns the MarketFacts, or None if SPY is unavailable OR a report for the as-of date
+    already exists (the Sunday UTC cron pair can double-fire on DST days, and a crashed
+    run retries -- prod once got two identical rows + two emails for one run_date).
+    The check runs BEFORE the billable analysis, and the row persists BEFORE the email:
+    a send crash leaves the report behind so the retry skips cleanly instead of
+    re-analyzing and double-mailing. The unique index on ``market_reports.run_date``
+    backstops the rare concurrent-replica race (the loser skips its email too)."""
     cfg = cfg or StrategyConfig()
     fetch = fetch or _default_fetch(cache_dir)
 
@@ -98,29 +106,42 @@ def run_market_report(
         cfg=cfg, as_of=run_date,
     )
 
-    if cfg.market_report_enabled:
-        analysis = analyze_market_deep(
-            facts, client=client, model=cfg.market_model,
-            reasoning=cfg.market_reasoning, max_searches=cfg.market_max_searches,
-        )
-    else:
-        analysis = deterministic_market_analysis(facts)
-
-    body = compose_market_body(facts, analysis)
-    recipient = _resolve_recipient(to)
-    if recipient:
-        send = smtp_send or resolve_sender()
-        send(to=recipient, subject=body.subject, text=body.text, html=body.html)
-    else:
-        log.warning("market report: no recipient; persisting without emailing")
-
     # Alembic owns the Azure SQL schema (get_engine does NOT create_all there), so self-migrate --
     # the Sunday run can precede a fresh migration and must not assume another job seeded the table.
     (migrate_fn or _migrate_with_retry)(db_url)
     engine = get_engine(db_url)
     try:
         with Session(engine) as s:
-            _persist(s, facts, analysis)
+            already = s.scalars(select(MarketReport).where(
+                MarketReport.run_date == facts.as_of)).first()
+        if already is not None:
+            log.info("market report for %s already persisted; skipping (idempotent re-run)",
+                     facts.as_of)
+            return None
+
+        if cfg.market_report_enabled:
+            analysis = analyze_market_deep(
+                facts, client=client, model=cfg.market_model,
+                reasoning=cfg.market_reasoning, max_searches=cfg.market_max_searches,
+            )
+        else:
+            analysis = deterministic_market_analysis(facts)
+
+        try:
+            with Session(engine) as s:
+                _persist(s, facts, analysis)  # PERSIST FIRST (see docstring)
+        except IntegrityError:  # lost a concurrent-replica race; the winner also emails
+            log.info("market report for %s persisted by a concurrent run; skipping email",
+                     facts.as_of)
+            return None
+
+        body = compose_market_body(facts, analysis)
+        recipient = _resolve_recipient(to)
+        if recipient:
+            send = smtp_send or resolve_sender()
+            send(to=recipient, subject=body.subject, text=body.text, html=body.html)
+        else:
+            log.warning("market report: no recipient; persisted without emailing")
     finally:
         engine.dispose()
     return facts
