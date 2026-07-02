@@ -160,6 +160,25 @@ def test_reversal_picks_confirmed_only_drops_early():
         assert all(p.strength == "confirmed" for p in conf)
 
 
+def test_reversal_funnel_counts_detected_and_confirmed():
+    """The funnel counts EVERYTHING stored for the run date (no cooldown, no tier filter):
+    they exist so the digest can say 'N detected, M confirmed' even when the surfaced
+    list is empty -- a filtered-out day must be distinguishable from a quiet market."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add_all([_rev("GME", 1, "confirmed"), _rev("BBBY", 2, "early"),
+                   _rev("AMC", 3, "confirmed", first_seen=date(2026, 6, 1))])  # stale too
+        s.add_all([_sig("AMD", "1d", 4)])  # continuation is not counted
+        s.commit()
+        assert sel.reversal_funnel(s, RUN) == (3, 2)
+
+
+def test_reversal_funnel_empty_day():
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        assert sel.reversal_funnel(s, RUN) == (0, 0)
+
+
 def test_reversal_picks_are_separate_from_continuation():
     engine = get_engine("sqlite:///:memory:")
     with Session(engine) as s:

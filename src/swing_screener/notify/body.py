@@ -171,6 +171,7 @@ def compose_digest_body(
     *,
     has_pdf: bool,
     reversal_picks: Sequence[DigestPick] | None = None,
+    reversal_funnel: tuple[int, int] | None = None,
     proposals_text: Sequence[str] | None = None,
     proposals_html: str | None = None,
     autonomy_status: str | None = None,
@@ -183,6 +184,12 @@ def compose_digest_body(
     "Reversal Plays" section -- pass an empty list to show it as "no setups", or
     None to omit the section entirely (weekly/monthly). Exit alerts get their own
     badged section, and a PDF pointer is appended when ``has_pdf``.
+
+    ``reversal_funnel`` (``(detected, confirmed)`` counts over ALL stored reversal signals
+    for the run date) appends a one-line funnel under the reversal section: "N detected ·
+    M confirmed · K surfaced". It makes a filtered-out day distinguishable from a quiet
+    market -- an empty surfaced list with a non-zero detected count is a surfacing-bar
+    event, not an absence of setups. None (or no reversal section) omits the line.
 
     ``proposals_text``/``proposals_html`` (the manual-mode "Proposed orders — place on
     Robinhood" shopping list, already rendered in :mod:`notify.proposals`) are appended
@@ -198,10 +205,18 @@ def compose_digest_body(
     """
     subject = f"Swing Screener - {_KIND_TITLE[kind]} Picks ({run_date})"
 
+    funnel_line: str | None = None
+    if reversal_picks is not None and reversal_funnel is not None:
+        detected, confirmed = reversal_funnel
+        funnel_line = (f"Reversal funnel: {detected} detected · {confirmed} confirmed · "
+                       f"{len(reversal_picks)} surfaced")
+
     # --- plain text ---
     lines = _section_text(CONTINUATION_TITLE, picks, run_date)
     if reversal_picks is not None:
         lines += ["", *_section_text(REVERSAL_TITLE, reversal_picks, run_date)]
+        if funnel_line:
+            lines.append(funnel_line)
     if proposals_text:
         lines += list(proposals_text)
     if exit_alerts:
@@ -220,6 +235,8 @@ def compose_digest_body(
     html_parts = [_section_html(CONTINUATION_TITLE, picks, run_date)]
     if reversal_picks is not None:
         html_parts.append(_section_html(REVERSAL_TITLE, reversal_picks, run_date))
+        if funnel_line:
+            html_parts.append(f"<p><i>{escape(funnel_line)}</i></p>")
     if proposals_html:
         html_parts.append(proposals_html)
     if exit_alerts:
