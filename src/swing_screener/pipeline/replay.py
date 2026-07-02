@@ -186,7 +186,11 @@ def _replay_one(
                 sigs = [s for s in sigs if s.play_type != "reversal"]
             if not sigs:
                 continue
-            prior_list = [(sig, *bar_hl) for sig in sigs]
+            # the trigger bar is i-1: thread its timestamp so booking carries the same
+            # cross-run dedup identity as the live screen (a no-op here -- the walk
+            # visits each trigger exactly once).
+            trig = prior.index[-1].to_pydatetime()
+            prior_list = [(sig, *bar_hl, trig) for sig in sigs]
             cands, next_bars = _shadow_candidates(prior_list)
             open_from_signals(session, cands, next_bars, fill_date=fill_date,
                               arms=(BASELINE,), variant=vname,

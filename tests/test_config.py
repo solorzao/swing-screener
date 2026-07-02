@@ -15,6 +15,14 @@ def test_override():
     assert cfg.ema_fast == 10
 
 
+def test_live_book_is_net_of_costs_by_default():
+    """fill_slippage_atr must default to the a-priori 0.05 ATR haircut: with 0.0 the live
+    shadow book (the evidence base for reflection/calibration) and the scheduled optimizer
+    judged everything GROSS of costs while reflect.py claimed cost-parity (2026-07 audit).
+    Fixed a-priori from a microstructure rule -- never swept by the optimizer."""
+    assert StrategyConfig().fill_slippage_atr == 0.05
+
+
 def test_reversal_surfacing_defaults_to_confirmed_not_premium():
     """Pins the digest surfacing posture: the 503-validated CONFIRMED edge governs the
     reversal list; the premium tier (rare: ~0.2% of live signals) must NOT be the gate.

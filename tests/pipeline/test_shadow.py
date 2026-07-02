@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 from sqlalchemy import select
@@ -113,6 +113,93 @@ def test_advance_is_idempotent_same_day():
         assert repo.load_open_paper_trades(s)[0].hold_bars == 1
         advance_open(s, {("AAPL", "1d"): quiet}, CFG, today=date(2024, 1, 4))
         assert repo.load_open_paper_trades(s)[0].hold_bars == 1  # already advanced today
+
+
+def test_same_trigger_is_not_rebooked_across_runs():
+    """A weekly flip bar is re-detected as a 'prior signal' on EVERY daily run of the week
+    (prior_frames drops only the partial current bucket) -- without trigger dedup each setup
+    was booked 5-12 times, inflating the evidence base with correlated pseudo-samples."""
+    engine = get_engine("sqlite:///:memory:")
+    trig = datetime(2024, 1, 5, 16, 0)  # the completed weekly flip bar's timestamp
+    cand = FillCandidate(ticker="AAPL", timeframe="1wk", horizon="long", signal_score=0.8,
+                         rank=1, mtf_aligned=True, signal_id=None, zone=ZONE,
+                         trigger_ts=trig)
+    with Session(engine) as s:
+        open_from_signals(s, [cand], {("AAPL", "1wk"): (105.0, 97.0)}, fill_date=date(2024, 1, 8))
+        n_first = len(_all_paper_trades(s))
+        assert n_first >= 1
+        # next daily run re-detects the SAME completed bar -> must not re-book
+        open_from_signals(s, [cand], {("AAPL", "1wk"): (106.0, 98.0)}, fill_date=date(2024, 1, 9))
+        assert len(_all_paper_trades(s)) == n_first
+        # a NEW trigger bar (next week's flip) books normally
+        cand2 = FillCandidate(ticker="AAPL", timeframe="1wk", horizon="long", signal_score=0.8,
+                              rank=1, mtf_aligned=True, signal_id=None, zone=ZONE,
+                              trigger_ts=datetime(2024, 1, 12, 16, 0))
+        open_from_signals(s, [cand2], {("AAPL", "1wk"): (106.0, 98.0)},
+                          fill_date=date(2024, 1, 16))
+        assert len(_all_paper_trades(s)) == 2 * n_first
+
+
+def test_trigger_dedup_is_scoped_per_variant():
+    """The same trigger booked under two screen VARIANTS is two separate books --
+    dedup must never collapse the variant leaderboard."""
+    engine = get_engine("sqlite:///:memory:")
+    trig = datetime(2024, 1, 5, 16, 0)
+    cand = FillCandidate(ticker="AAPL", timeframe="1wk", horizon="long", signal_score=0.8,
+                         rank=1, mtf_aligned=True, signal_id=None, zone=ZONE,
+                         trigger_ts=trig)
+    with Session(engine) as s:
+        open_from_signals(s, [cand], {("AAPL", "1wk"): (105.0, 97.0)},
+                          fill_date=date(2024, 1, 8), variant="default")
+        open_from_signals(s, [cand], {("AAPL", "1wk"): (105.0, 97.0)},
+                          fill_date=date(2024, 1, 8), variant="tight_gate")
+        variants = {t.variant for t in _all_paper_trades(s)}
+        assert variants == {"default", "tight_gate"}
+
+
+def test_no_trigger_ts_books_every_time_legacy():
+    """Candidates without a trigger timestamp (legacy/test callers) keep today's behavior."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        open_from_signals(s, [_cand()], {("AAPL", "1d"): (120.0, 102.0)}, fill_date=date(2024, 1, 3))
+        open_from_signals(s, [_cand()], {("AAPL", "1d"): (120.0, 102.0)}, fill_date=date(2024, 1, 4))
+        assert len(_all_paper_trades(s)) == 2
+
+
+def _wk_cand():
+    return FillCandidate(ticker="AAPL", timeframe="1wk", horizon="long", signal_score=0.8,
+                         rank=1, mtf_aligned=True, signal_id=None, zone=ZONE)
+
+
+def test_weekly_trade_advances_once_per_completed_weekly_bar():
+    """An open 1wk trade advances one bar per COMPLETED WEEKLY bar (keyed by the bar's
+    label via bar_date), not once per daily run -- previously max_hold_bars['1wk']=8 fired
+    after 8 trading days and momentum flips were read off half-formed weekly candles."""
+    engine = get_engine("sqlite:///:memory:")
+    quiet = {"low": 99.0, "high": 103.0, "close": 100.0, "shaved_head": False, "bearish": False}
+    with Session(engine) as s:
+        # filled Wednesday 2024-01-03 (mid-week)
+        open_from_signals(s, [_wk_cand()], {("AAPL", "1wk"): (105.0, 97.0)},
+                          fill_date=date(2024, 1, 3))
+        # the fill week's own completed bar (Fri 01-05) must NOT advance the trade
+        # (same bucket as the entry -- next-bar semantics).
+        advance_open(s, {("AAPL", "1wk"): {**quiet, "bar_date": date(2024, 1, 5)}},
+                     CFG, today=date(2024, 1, 8))
+        assert repo.load_open_paper_trades(s)[0].hold_bars == 0
+        # the NEXT completed weekly bar advances it exactly once...
+        advance_open(s, {("AAPL", "1wk"): {**quiet, "bar_date": date(2024, 1, 12)}},
+                     CFG, today=date(2024, 1, 15))
+        assert repo.load_open_paper_trades(s)[0].hold_bars == 1
+        # ...and re-presenting the SAME completed bar on later daily runs is a no-op.
+        advance_open(s, {("AAPL", "1wk"): {**quiet, "bar_date": date(2024, 1, 12)}},
+                     CFG, today=date(2024, 1, 16))
+        advance_open(s, {("AAPL", "1wk"): {**quiet, "bar_date": date(2024, 1, 12)}},
+                     CFG, today=date(2024, 1, 17))
+        assert repo.load_open_paper_trades(s)[0].hold_bars == 1
+        # a week later, the next completed bar advances again
+        advance_open(s, {("AAPL", "1wk"): {**quiet, "bar_date": date(2024, 1, 19)}},
+                     CFG, today=date(2024, 1, 22))
+        assert repo.load_open_paper_trades(s)[0].hold_bars == 2
 
 
 def test_open_records_categorization_tags():
@@ -472,8 +559,11 @@ def test_build_arms_baseline_pinned_all_or_nothing():
 
 # --- Chandelier runner trail (Step D) ---------------------------------------
 
+# fill_slippage_atr=0.0: these tests pin EXACT-level trail/partial mechanics; the
+# haircut's own arithmetic is covered in test_shadow_slippage.py.
 CHAND = StrategyConfig(partial_frac=0.33, partial_require_softening=True,
-                       trail_mode="chandelier", chandelier_atr_mult=3.0)
+                       trail_mode="chandelier", chandelier_atr_mult=3.0,
+                       fill_slippage_atr=0.0)
 
 
 def _partial_then(s, cfg, *, atr=2.0):
@@ -623,7 +713,9 @@ def _rev_cand(ticker="AAPL"):
 def test_reversal_trade_scales_out_at_its_target():
     # A reversal-tagged fill scales out at its (Fib) target via the shared machinery,
     # and the play_type tag is preserved through the scale-out.
-    cfg = StrategyConfig(partial_frac=0.33, partial_require_softening=True)
+    # zero haircut: this test pins the exact-level scale-out price (see CHAND note).
+    cfg = StrategyConfig(partial_frac=0.33, partial_require_softening=True,
+                         fill_slippage_atr=0.0)
     engine = get_engine("sqlite:///:memory:")
     with Session(engine) as s:
         open_from_signals(s, [_rev_cand()], {("AAPL", "1d"): (105.0, 97.0)},

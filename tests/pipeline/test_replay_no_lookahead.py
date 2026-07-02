@@ -23,21 +23,24 @@ def _key(t):
 def test_replay_book_is_stable_golden_master():
     book = sorted(_key(t) for t in replay_book({"AMD": _amd()}, timeframe="1d"))
     assert len(book) >= 1
-    # Snapshot frozen on first green run: the exact trade-level book over the AMD 2018
-    # fixture. Any drift (different fills, exits, or R) breaks this -- the load-bearing
-    # guarantee Tasks 3-4 build on (they perturb numbers; this proves the substrate).
+    # Snapshot of the exact trade-level book over the AMD 2018 fixture. Any drift
+    # (different fills, exits, or R) breaks this -- the load-bearing guarantee Tasks 3-4
+    # build on (they perturb numbers; this proves the substrate).
     # Targets are anchored on the entry ceiling (the fill): each target sits exactly
-    # min_target_r (1.5) R above the entry, so a target exit realizes 1.5R.
+    # min_target_r (1.5) R above the entry. RE-FROZEN 2026-07 when fill_slippage_atr's
+    # default moved 0.0 -> 0.05 (the audit's net-of-cost fix): a target exit now fills at
+    # target - 0.05*ATR, realizing ~1.4489R here; time_stop exits use the bar close (never
+    # haircut) and are unchanged. Entry/stop/target levels are identical to the 0.0 book.
     # default + extguard_tight produce the same 2 continuation trades; cont_volband is too
     # selective to fire on this fixture (0 trades); rev_highvol only gates REVERSALS (none in
     # AMD 2018) so it mirrors default's continuation book. Reversal-only variants still book
     # their identical continuation fills -- harmless, the leaderboard filters by play_type.
     expected = [
-        ("AMD", "default", "2018-07-05", 15.2354, 14.5719, 16.2306, "target", 1.5),
+        ("AMD", "default", "2018-07-05", 15.2354, 14.5719, 16.2306, "target", 1.4489),
         ("AMD", "default", "2018-07-06", 15.7311, 14.575, 17.4652, "time_stop", 0.6651),
-        ("AMD", "extguard_tight", "2018-07-05", 15.2354, 14.5719, 16.2306, "target", 1.5),
+        ("AMD", "extguard_tight", "2018-07-05", 15.2354, 14.5719, 16.2306, "target", 1.4489),
         ("AMD", "extguard_tight", "2018-07-06", 15.7311, 14.575, 17.4652, "time_stop", 0.6651),
-        ("AMD", "rev_highvol", "2018-07-05", 15.2354, 14.5719, 16.2306, "target", 1.5),
+        ("AMD", "rev_highvol", "2018-07-05", 15.2354, 14.5719, 16.2306, "target", 1.4489),
         ("AMD", "rev_highvol", "2018-07-06", 15.7311, 14.575, 17.4652, "time_stop", 0.6651),
     ]
     assert book == expected
@@ -67,7 +70,10 @@ def _synth(n=400):
 
 
 def test_future_bar_cannot_change_past_trades():
-    cfg = StrategyConfig(max_extension_atr=0.0)   # gate off so the synth fires setups
+    # gate off so the synth fires setups; slippage off because this test isolates
+    # TRIGGER/FILL lookahead -- with a haircut, a trade exiting AFTER the spike
+    # legitimately depends on its (spiked) exit bar's ATR, which is not lookahead.
+    cfg = StrategyConfig(max_extension_atr=0.0, fill_slippage_atr=0.0)
     full = _synth(400)
     spiked = full.copy()
     j = SPIKE_BAR
