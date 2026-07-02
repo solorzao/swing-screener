@@ -97,6 +97,35 @@ def save_paper_trades(session: Session, trades: Sequence[PaperTrade]) -> None:
     session.commit()
 
 
+def booked_trigger_keys(
+    session: Session,
+    *,
+    variant: str,
+    keys: Sequence[tuple[str, str, str, datetime]],
+) -> set[tuple[str, str, str, datetime]]:
+    """The subset of ``(ticker, timeframe, play_type, trigger_ts)`` keys already booked
+    for ``variant`` -- the cross-run shadow-booking dedup lookup (a weekly trigger is
+    re-detected on every daily run of its week). One batched SELECT filtered by the
+    run's tickers + trigger timestamps, intersected in Python (portable across SQLite
+    and Azure SQL, no tuple-IN needed). Empty input -> empty set.
+    """
+    if not keys:
+        return set()
+    stmt = (
+        select(PaperTrade.ticker, PaperTrade.timeframe, PaperTrade.play_type,
+               PaperTrade.trigger_ts)
+        .where(
+            PaperTrade.variant == variant,
+            PaperTrade.trigger_ts.is_not(None),
+            PaperTrade.ticker.in_({k[0] for k in keys}),
+            PaperTrade.trigger_ts.in_({k[3] for k in keys}),
+        )
+        .distinct()
+    )
+    existing = {(t, tf, pt, ts) for t, tf, pt, ts in session.execute(stmt)}
+    return existing & set(keys)
+
+
 def load_open_paper_trades(
     session: Session, *, exclude_live: bool = False
 ) -> list[PaperTrade]:

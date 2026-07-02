@@ -107,6 +107,12 @@ class PaperTrade(Base):
     # analyst calibration) are pinned to "research" so the intent book never inflates
     # them; open-trade stepping stays inclusive so paper trades still advance.
     account: Mapped[str] = mapped_column(String(16), default="research", index=True)
+    # the trigger bar's timestamp (the completed bar the signal fired on), for CROSS-RUN
+    # dedup: a weekly flip bar is re-detected as a "prior signal" on every daily run of
+    # the week, so without this key each setup was booked 5-12 times (2026-07 audit).
+    # The shadow book books each distinct trigger ONCE per (ticker, timeframe, play_type,
+    # variant). None on legacy rows and test-seam candidates (no dedup applied).
+    trigger_ts: Mapped[datetime | None] = mapped_column(default=None)
     signal_id: Mapped[int | None] = mapped_column(ForeignKey("signals.id"), default=None)
     signal_score: Mapped[float]
     rank: Mapped[int]

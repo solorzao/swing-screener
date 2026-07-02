@@ -4,7 +4,7 @@ import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -43,6 +43,49 @@ from swing_screener.storage.blob import blob_enabled, upload_chart
 log = logging.getLogger(__name__)
 
 _BAR_KEYS = ("low", "high", "close", "shaved_head", "bearish", "shaved_bottom", "atr")
+
+# Calendar timeframes resample with the IN-PROGRESS bucket as the frame's last bar
+# (see data.resample) -- the shadow book must never read that partial bar.
+_CALENDAR_TFS = ("1wk", "1mo")
+
+
+def _is_period_end(today: date, timeframe: str) -> bool:
+    """True when a calendar bucket (1wk/1mo) completes at today's close.
+
+    1wk completes Friday; 1mo on the month's last business day (weekend-aware; a
+    holiday-shortened period is missed and self-heals on the next run via the
+    completed-bar label). Intraday/daily timeframes are always "complete" -- the
+    evening screen runs after the close.
+    """
+    if timeframe == "1wk":
+        return today.weekday() == 4
+    if timeframe == "1mo":
+        nxt = today + timedelta(days=1)
+        while nxt.weekday() >= 5:
+            nxt += timedelta(days=1)
+        return nxt.month != today.month
+    return True
+
+
+def _latest_completed_bar(
+    frame: pd.DataFrame, timeframe: str, today: date
+) -> dict[str, float | bool | date] | None:
+    """The last COMPLETED bar's row (per ``_bar_row``) stamped with its ``bar_date`` label,
+    or None when only a partial bucket exists.
+
+    Mid-period, a calendar frame's last bar is the in-progress bucket, so the completed
+    bar is the one before it; on the period-end run the last bar completes today.
+    ``advance_open`` keys idempotency on ``bar_date``, so open 1wk/1mo trades advance
+    once per completed bar of their own timeframe -- not once per daily run against a
+    half-formed candle (2026-07 audit)."""
+    f = frame
+    if timeframe in _CALENDAR_TFS and not _is_period_end(today, timeframe):
+        if len(frame) < 2:
+            return None
+        f = frame.iloc[:-1]
+    row: dict[str, float | bool | date] = dict(_bar_row(f))
+    row["bar_date"] = f.index[-1].date()
+    return row
 
 # Azure SQL serverless error raised while the database is auto-resuming from a
 # paused state: the first connection of the day fails with this until the DB
@@ -189,13 +232,14 @@ def _bar_row(frame: pd.DataFrame) -> dict[str, float | bool]:
 
 
 def _shadow_candidates(
-    prior_list: list[tuple[SignalResult, float, float]],
+    prior_list: list[tuple[SignalResult, float, float, datetime | None]],
 ) -> tuple[list[FillCandidate], dict[tuple[str, str], tuple[float, float]]]:
     """Build the shadow-book fill candidates + next-bar map for one variant's prior signals.
 
     Ranks WITHIN each play_type (continuation and reversal each rank from 1) by score --
     a ranking space distinct from the persisted ``Signal.rank``. The next-bar high/low is
-    the actual traded bar, so it's config-independent across variants.
+    the actual traded bar, so it's config-independent across variants. Each candidate
+    carries its trigger bar's timestamp for the cross-run booking dedup.
     """
     prior_cont = sorted((x for x in prior_list if x[0].play_type == "continuation"),
                         key=lambda x: x[0].score, reverse=True)
@@ -206,11 +250,11 @@ def _shadow_candidates(
                       pr.mtf_aligned, None, pr.zone, quality_tier=pr.quality_tier,
                       volatility_tier=pr.volatility_tier, oversold=pr.oversold,
                       play_type=pr.play_type, strength=pr.strength,
-                      conviction_tier=pr.conviction_tier)
+                      conviction_tier=pr.conviction_tier, trigger_ts=trig)
         for group in (prior_cont, prior_rev)
-        for rank, (pr, _h, _l) in enumerate(group, start=1)
+        for rank, (pr, _h, _l, trig) in enumerate(group, start=1)
     ]
-    next_bars = {(pr.ticker, pr.timeframe): (h, low) for (pr, h, low) in prior_list}
+    next_bars = {(pr.ticker, pr.timeframe): (h, low) for (pr, h, low, _t) in prior_list}
     return candidates, next_bars
 
 
@@ -275,15 +319,16 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
     universe_metrics: dict[str, dict[str, float | str | None]] = {}
     today_results: list[SignalResult] = []      # continuation
     today_reversals: list[SignalResult] = []     # reversal
-    prior: list[tuple[SignalResult, float, float]] = []  # (prior signal, next_high, next_low)
-    latest_bars: dict[tuple[str, str], dict[str, float | bool]] = {}
+    # (prior signal, next_high, next_low, trigger bar timestamp)
+    prior: list[tuple[SignalResult, float, float, datetime | None]] = []
+    latest_bars: dict[tuple[str, str], dict[str, float | bool | date]] = {}
 
     # Screen-variant leaderboard: re-screen the prior bar under each alt config (they share
     # the base's indicator periods, so the same enriched frames are reused) and book each
     # variant's fills separately under the baseline exit. prior_variants mirrors `prior`.
     screen_variants = build_screen_variants(cfg)
     alt_variants = {n: c for n, c in screen_variants.items() if n != DEFAULT_VARIANT}
-    prior_variants: dict[str, list[tuple[SignalResult, float, float]]] = {
+    prior_variants: dict[str, list[tuple[SignalResult, float, float, datetime | None]]] = {
         n: [] for n in alt_variants
     }
 
@@ -303,24 +348,39 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
             frames = build_frames(bars_by_tf, cfg)
             for tf, f in frames.items():
                 if len(f):
-                    latest_bars[(entry.ticker, tf)] = _bar_row(f)
+                    # Only COMPLETED bars reach the bar-stepper: mid-period, a calendar
+                    # frame's last bar is the in-progress bucket, and advancing on it
+                    # denominated 1wk holds in trading DAYS (2026-07 audit).
+                    row = _latest_completed_bar(f, tf, today)
+                    if row is not None:
+                        latest_bars[(entry.ticker, tf)] = row
             today_results.extend(analyze_frames(entry.ticker, frames, cfg))
             today_reversals.extend(analyze_reversals(entry.ticker, frames, cfg))
             # Prior-bar signals (both play types) feed the shadow book: a signal that
             # fired on the prior bar is filled if today's bar trades into its zone.
+            # Calendar timeframes book ONLY on their period-end run, when the "next
+            # bar" is the full completed bucket -- booking mid-week would give a
+            # weekly signal a 1-2 day fill window and (pre-dedup) re-book it daily.
             prior_frames = {tf: f.iloc[:-1] for tf, f in frames.items() if len(f) > 1}
             prior_signals = (analyze_frames(entry.ticker, prior_frames, cfg)
                              + analyze_reversals(entry.ticker, prior_frames, cfg))
             for pr in prior_signals:
+                if not _is_period_end(today, pr.timeframe):
+                    continue
                 last = frames[pr.timeframe].iloc[-1]
-                prior.append((pr, float(last["high"]), float(last["low"])))
+                trig = prior_frames[pr.timeframe].index[-1].to_pydatetime()
+                prior.append((pr, float(last["high"]), float(last["low"]), trig))
             # Re-screen the SAME prior frames under each alt screen variant (own fills).
             for vname, vcfg in alt_variants.items():
                 vsignals = (analyze_frames(entry.ticker, prior_frames, vcfg)
                             + analyze_reversals(entry.ticker, prior_frames, vcfg))
                 for pr in vsignals:
+                    if not _is_period_end(today, pr.timeframe):
+                        continue
                     last = frames[pr.timeframe].iloc[-1]
-                    prior_variants[vname].append((pr, float(last["high"]), float(last["low"])))
+                    trig = prior_frames[pr.timeframe].index[-1].to_pydatetime()
+                    prior_variants[vname].append(
+                        (pr, float(last["high"]), float(last["low"]), trig))
         except Exception:  # per-ticker isolation: one bad ticker never aborts the run
             log.warning("ticker %s failed; skipping", entry.ticker, exc_info=True)
             n_failed += 1
