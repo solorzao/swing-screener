@@ -44,6 +44,7 @@ az deployment sub create \
   --template-file infra/main.bicep \
   --parameters infra/main.bicepparam \
   --parameters anthropicApiKey=<...> digestTo=<you@example.com> \
+               alertEmail=<you@example.com> \
                sqlAadAdminLogin=<your-upn> sqlAadAdminObjectId=<your-object-id> \
                sqlAllowedIps='["<your-home-ip>"]' \
   --what-if                                         # review first, then re-run without --what-if
@@ -63,6 +64,16 @@ az deployment sub create \
   surface. A private endpoint is the stronger Phase-6 option.)
 - The Log Analytics workspace has a **daily ingestion cap** and 30-day retention so the
   ~9×/day jobs don't run up a logging bill.
+- **Ops alerting** ([`infra/modules/alerts.bicep`](../infra/modules/alerts.bicep)) ships
+  with this same re-provisioning: an action group emailing the **new required
+  `alertEmail` param** (not a secret — it lands readable in the action group; pass it at
+  deploy time like `digestTo`), plus two scheduled-query alerts on the workspace:
+  **any job execution failed** (`ContainerAppSystemLogs_CL`, every 15 min) and **evening
+  screen missing** — no `SCREEN_RUN_COMPLETE` marker in `ContainerAppConsoleLogs_CL` by
+  19:00 ET on a weekday (hourly; weekends never evaluate, so no Saturday false alarms).
+  Both are stateful (one email per incident) and cost noise-level query volume against
+  the capped workspace. On a **fresh** workspace the rules show query errors until the
+  first job execution creates the `_CL` tables (Step 4 does this).
 
 ## Step 2 — Build + push the image
 
