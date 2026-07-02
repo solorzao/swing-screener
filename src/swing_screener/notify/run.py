@@ -537,7 +537,11 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # Reversal "Top 5" -- daily digest only for now (weekly/monthly stay continuation).
         reversal_digest: list[DigestPick] | None = None
         reversal_pdf: list[PdfPick] = []
+        rev_funnel: tuple[int, int] | None = None
         if kind == "daily":
+            # The unfiltered detected/confirmed counts, rendered under the reversal section
+            # so a surfacing-bar wipeout is visibly different from a no-signals day.
+            rev_funnel = sel.reversal_funnel(session, run_date)
             reversal_sigs = sel.reversal_picks(
                 session, run_date, max_age_days=cooldown,
                 premium_only=StrategyConfig().reversal_surface_premium_only,
@@ -638,6 +642,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         )
         body = compose_digest_body(kind, run_date, digest_picks, alert_lines,
                                    has_pdf=pdf_attached, reversal_picks=reversal_digest,
+                                   reversal_funnel=rev_funnel,
                                    proposals_text=proposals_text(proposals),
                                    proposals_html=proposals_html(proposals),
                                    autonomy_status=autonomy_status,

@@ -135,6 +135,33 @@ def test_reversal_section_renders_with_strength_tag():
     assert "<h3>Top 5 - Reversal Plays</h3>" in c.html
 
 
+def test_reversal_funnel_line_shows_filtered_empty_state():
+    """When the surfaced reversal list is empty but signals WERE detected, the email must
+    say so -- 'No qualifying setups' alone is indistinguishable from a quiet market (the
+    2026-06-28 drought went unnoticed for exactly this reason)."""
+    cont = [DigestPick("AMD", "Advanced Micro Devices", "medium", "Continuation.", score=0.9)]
+    c = compose_digest_body("daily", date(2026, 6, 15), cont, [], has_pdf=False,
+                            reversal_picks=[], reversal_funnel=(114, 17))
+    assert "Reversal funnel: 114 detected · 17 confirmed · 0 surfaced" in c.text
+    assert "Reversal funnel: 114 detected" in c.html
+
+
+def test_reversal_funnel_line_counts_surfaced_picks():
+    cont = [DigestPick("AMD", "Advanced Micro Devices", "medium", "Continuation.", score=0.9)]
+    rev = [DigestPick("GME", "GameStop", "short", "Oversold bounce.", score=0.7,
+                      strength="confirmed")]
+    c = compose_digest_body("daily", date(2026, 6, 15), cont, [], has_pdf=False,
+                            reversal_picks=rev, reversal_funnel=(10, 4))
+    assert "Reversal funnel: 10 detected · 4 confirmed · 1 surfaced" in c.text
+
+
+def test_no_funnel_renders_as_before():
+    cont = [DigestPick("AMD", "Advanced Micro Devices", "medium", "Continuation.", score=0.9)]
+    c = compose_digest_body("daily", date(2026, 6, 15), cont, [], has_pdf=False,
+                            reversal_picks=[])
+    assert "Reversal funnel" not in c.text and "Reversal funnel" not in c.html
+
+
 def test_reversal_section_omitted_when_none():
     cont = [DigestPick("AMD", "Advanced Micro Devices", "medium", "Continuation.", score=0.9)]
     c = compose_digest_body("weekly", date(2026, 6, 15), cont, [], has_pdf=False)  # no reversals

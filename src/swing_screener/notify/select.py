@@ -6,7 +6,7 @@ cadence (daily / weekly / monthly) and which exit alerts to send.
 
 from datetime import date, timedelta
 
-from sqlalchemy import ColumnElement, or_, select
+from sqlalchemy import ColumnElement, func, or_, select
 from sqlalchemy.orm import Session
 
 from swing_screener.db.models import ExitEvent, Signal, Universe
@@ -79,6 +79,25 @@ def reversal_picks(session: Session, run_date: date, *, top_n: int = 5,
         where.append(Signal.strength == "confirmed")
     stmt = select(Signal).where(*where).order_by(Signal.rank).limit(top_n)
     return list(session.scalars(stmt))
+
+
+def reversal_funnel(session: Session, run_date: date) -> tuple[int, int]:
+    """``(detected, confirmed)`` counts of ALL reversal signals stored for the run date.
+
+    Deliberately unfiltered (no cooldown, no tier/strength gate): these counts let the
+    digest say "N detected, M confirmed, K surfaced" so a day where the surfacing bar
+    filtered everything out is visibly different from a day where nothing fired -- the
+    2026-06-28 premium-only regression was invisible for days precisely because the
+    email rendered the same empty state for both.
+    """
+    rows = session.execute(
+        select(Signal.strength, func.count())
+        .where(Signal.run_date == run_date, Signal.play_type == "reversal")
+        .group_by(Signal.strength)
+    ).all()
+    detected = sum(n for _, n in rows)
+    confirmed = sum(n for strength, n in rows if strength == "confirmed")
+    return detected, confirmed
 
 
 def _by_timeframe(session: Session, run_date: date, timeframe: str, top_n: int,

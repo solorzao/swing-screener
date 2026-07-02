@@ -13,3 +13,13 @@ def test_defaults_present():
 def test_override():
     cfg = StrategyConfig(ema_fast=10)
     assert cfg.ema_fast == 10
+
+
+def test_reversal_surfacing_defaults_to_confirmed_not_premium():
+    """Pins the digest surfacing posture: the 503-validated CONFIRMED edge governs the
+    reversal list; the premium tier (rare: ~0.2% of live signals) must NOT be the gate.
+    premium_only=True silently starved the digest of reversal picks from 2026-06-28 on
+    (premium overrides confirmed in reversal_picks), so this default is load-bearing."""
+    cfg = StrategyConfig()
+    assert cfg.reversal_surface_premium_only is False
+    assert cfg.reversal_surface_confirmed_only is True

@@ -76,6 +76,53 @@ def test_send_digest_emails_with_pdf_and_is_idempotent(tmp_path):
     assert len(sent) == 1  # recorder not called again
 
 
+def _rev_sig(ticker, rank, strength):
+    return Signal(run_date=RUN, ticker=ticker, timeframe="1d", horizon="medium",
+                  play_type="reversal", strength=strength, score=1.0 / rank, rank=rank,
+                  trigger_close=50.0, atr=2.0, rsi=22.0, entry_floor=50.0,
+                  entry_ceiling=52.0, stop=47.0, target=58.0)
+
+
+def test_daily_digest_surfaces_confirmed_reversals_with_funnel_line(tmp_path):
+    """Under the default config the CONFIRMED reversal surfaces (premium_only must not
+    silently blank the list -- the 2026-06-28..07-01 drought) and the body carries the
+    detected/confirmed/surfaced funnel so a filtered-empty day is visibly different
+    from a no-signals day."""
+    url = f"sqlite:///{tmp_path / 'rev.sqlite'}"
+    _seed(url)  # 2 continuation picks
+    engine = get_engine(url)
+    with Session(engine) as s:
+        s.add_all([_rev_sig("GME", 1, "confirmed"), _rev_sig("BBBY", 2, "early")])
+        s.commit()
+    sent = []
+    res = run.send_digest(kind="daily", db_url=url, run_date=RUN, to="me@example.com",
+                          pdf_dir=tmp_path / "digests", anthropic_client=_FakeClient(),
+                          smtp_send=lambda **k: sent.append(k))
+    assert res.sent is True and res.n_reversals == 1  # the confirmed pick surfaced
+    body = sent[-1]["text"]
+    assert "GME" in body                      # confirmed reversal is in the email
+    assert "BBBY" not in body                 # early stays shadow-tracked, hidden
+    assert "Reversal funnel: 2 detected · 1 confirmed · 1 surfaced" in body
+    assert "Reversal funnel: 2 detected" in sent[-1]["html"]
+
+
+def test_daily_digest_funnel_line_on_filtered_empty_day(tmp_path):
+    """All-early day: the surfaced list is empty but the funnel line still reports what
+    was detected, so the reader can tell 'filtered out' from 'nothing found'."""
+    url = f"sqlite:///{tmp_path / 'revempty.sqlite'}"
+    _seed(url)
+    engine = get_engine(url)
+    with Session(engine) as s:
+        s.add_all([_rev_sig("GME", 1, "early"), _rev_sig("BBBY", 2, "early")])
+        s.commit()
+    sent = []
+    res = run.send_digest(kind="daily", db_url=url, run_date=RUN, to="me@example.com",
+                          pdf_dir=tmp_path / "digests", anthropic_client=_FakeClient(),
+                          smtp_send=lambda **k: sent.append(k))
+    assert res.sent is True and res.n_reversals == 0
+    assert "Reversal funnel: 2 detected · 0 confirmed · 0 surfaced" in sent[-1]["text"]
+
+
 def test_send_digest_drops_already_ran_picks(tmp_path):
     """A pick whose live price has run past its entry ceiling (or broken its stop) by
     digest time is dropped: the screen ran the prior evening, so a pick can leave its
