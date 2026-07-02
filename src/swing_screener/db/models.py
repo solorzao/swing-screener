@@ -308,7 +308,9 @@ class MarketReport(Base):
     __tablename__ = "market_reports"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    run_date: Mapped[date] = mapped_column(index=True)
+    # unique: ONE report per as-of date -- the idempotency backstop against the DST
+    # double-fire / crash-retry duplicates observed 2026-06 (migration f4c1e8a2b6d9).
+    run_date: Mapped[date] = mapped_column(index=True, unique=True)
     ha_alignment: Mapped[str] = mapped_column(String(16))  # aligned_bull / aligned_bear / mixed
     flipped: Mapped[bool] = mapped_column(default=False)   # any SPY timeframe flipped this run
     spy_vs_200dma: Mapped[str | None] = mapped_column(String(8), default=None)

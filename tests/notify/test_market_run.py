@@ -99,6 +99,51 @@ def test_run_market_report_deterministic_when_disabled(tmp_path):
         eng.dispose()
 
 
+def test_run_market_report_is_idempotent_per_run_date(tmp_path):
+    """The Sunday UTC cron pair can double-fire (DST) and a crashed run retries: a second
+    run for the same as-of date must not re-analyze, re-email, or insert a second row
+    (observed in prod: two identical MarketReport rows + two emails for 2026-06-26)."""
+    sent: list[dict] = []
+    db = f"sqlite:///{tmp_path / 'm.db'}"
+    kwargs = dict(db_url=db, to="me@example.com", fetch=_fake_fetch({"SPY": _rising()}),
+                  smtp_send=lambda **kw: sent.append(kw), migrate_fn=lambda _u: None,
+                  cfg=replace(CFG, market_report_enabled=False))
+    first = run_market_report(**kwargs)
+    assert first is not None and len(sent) == 1
+    second = run_market_report(**kwargs)  # same data -> same as_of -> a no-op
+    assert second is None
+    assert len(sent) == 1  # no duplicate email
+    eng = get_engine(db)
+    try:
+        with Session(eng) as s:
+            assert len(list(s.scalars(select(MarketReport)))) == 1  # no duplicate row
+    finally:
+        eng.dispose()
+
+
+def test_report_persists_before_the_email_is_sent(tmp_path):
+    """PERSIST-then-SEND: a send crash must leave the report row behind, so the retry run
+    skips cleanly (no second Opus bill, no duplicate email) instead of redoing everything.
+    The old order (send first) is what double-mailed on retry."""
+    import pytest
+
+    db = f"sqlite:///{tmp_path / 'm.db'}"
+
+    def boom(**kw):
+        raise RuntimeError("smtp down")
+
+    with pytest.raises(RuntimeError):
+        run_market_report(db_url=db, to="me@example.com", fetch=_fake_fetch({"SPY": _rising()}),
+                          smtp_send=boom, migrate_fn=lambda _u: None,
+                          cfg=replace(CFG, market_report_enabled=False))
+    eng = get_engine(db)
+    try:
+        with Session(eng) as s:
+            assert len(list(s.scalars(select(MarketReport)))) == 1  # persisted despite the crash
+    finally:
+        eng.dispose()
+
+
 def test_run_market_report_skips_without_spy(tmp_path):
     sent: list[dict] = []
     out = run_market_report(db_url=f"sqlite:///{tmp_path / 'm.db'}", to="me@example.com",
