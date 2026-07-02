@@ -43,3 +43,8 @@ param logRetentionInDays = 30
 // --- Secrets: leave empty here; pass real values at deploy time only ---
 param anthropicApiKey = ''
 param digestTo = ''
+
+// --- Ops alerts recipient: not a secret, but pass the real address at deploy
+// time like digestTo (an empty address fails the action group deployment
+// LOUDLY -- alerting must never be silently absent). ---
+param alertEmail = ''
