@@ -23,6 +23,13 @@ def test_live_book_is_net_of_costs_by_default():
     assert StrategyConfig().fill_slippage_atr == 0.05
 
 
+def test_reversal_fill_window_defaults_to_multi_bar():
+    """A reversal entry is a resting limit into a pullback; giving it one bar to fill made
+    ~95% of confirmed reversals unfillable and adversely selected the rest (live -0.86R vs
+    replay +0.125R, 2026-07 audit). The shadow book measures a multi-bar resting order."""
+    assert StrategyConfig().reversal_fill_window_bars == 5
+
+
 def test_reversal_surfacing_defaults_to_confirmed_not_premium():
     """Pins the digest surfacing posture: the 503-validated CONFIRMED edge governs the
     reversal list; the premium tier (rare: ~0.2% of live signals) must NOT be the gate.

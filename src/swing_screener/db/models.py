@@ -140,7 +140,15 @@ class PaperTrade(Base):
     # VIX percentile-rank bucket at fill time (trailing 252d): low/<40, mid/40-70, high/>70.
     # None = unknown (^VIX unavailable) or a legacy row. Used by breakdown(trades,"vix_bucket").
     vix_bucket: Mapped[str | None] = mapped_column(String(16), default=None)
-    fill_status: Mapped[str] = mapped_column(String(32))  # filled / missed / invalidated
+    # filled / missed / invalidated / pending (a reversal resting-limit order still
+    # inside its fill window; resolve_pending fills, invalidates, or expires it).
+    fill_status: Mapped[str] = mapped_column(String(32))
+    # the entry zone, persisted for PENDING rows so later window bars can resolve the
+    # fill without the (transient) screen-time EntryZone. None on legacy rows.
+    entry_floor: Mapped[float | None] = mapped_column(default=None)
+    entry_ceiling: Mapped[float | None] = mapped_column(default=None)
+    # bars checked while pending (the fill-window counter). None = never pended.
+    pending_bars: Mapped[int | None] = mapped_column(default=None)
     entry_date: Mapped[date | None] = mapped_column(default=None)
     entry_price: Mapped[float | None] = mapped_column(default=None)
     opened_date: Mapped[date | None] = mapped_column(default=None)

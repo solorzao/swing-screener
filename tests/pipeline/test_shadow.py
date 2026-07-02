@@ -15,6 +15,7 @@ from swing_screener.pipeline.shadow import (
     _is_softening,
     advance_open,
     open_from_signals,
+    resolve_pending,
 )
 from swing_screener.signals.entry_zone import EntryZone
 
@@ -742,6 +743,79 @@ def _rev_cand(ticker="AAPL"):
     return FillCandidate(ticker=ticker, timeframe="1d", horizon="medium", signal_score=0.8,
                          rank=1, mtf_aligned=False, signal_id=None, zone=ZONE,
                          play_type="reversal")
+
+
+def test_reversal_missed_first_bar_pends_then_fills_in_window():
+    """A reversal entry is a resting limit order: with a fill window, a first bar that
+    gaps above the zone leaves the order PENDING (not terminal), and a later window bar
+    that trades into the zone fills it at the worst-case in-zone price. The 2026-07 audit
+    found ~95% of confirmed reversals unfillable in the old one-bar window."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        open_from_signals(s, [_rev_cand()], {("AAPL", "1d"): (108.0, 102.0)},  # low > ceiling
+                          fill_date=date(2024, 1, 3), reversal_fill_window_bars=3)
+        pt = _all_paper_trades(s)[0]
+        assert pt.fill_status == "pending" and pt.status == "pending"
+        assert repo.load_open_paper_trades(s) == []  # a pending order is never bar-stepped
+        # a later window bar trades into the zone -> filled at min(bar_high, ceiling)
+        bar = {"low": 97.0, "high": 105.0, "close": 100.0, "bar_date": date(2024, 1, 4)}
+        resolve_pending(s, {("AAPL", "1d"): bar}, window=3, today=date(2024, 1, 4))
+        pt = _all_paper_trades(s)[0]
+        assert pt.status == "open" and pt.fill_status == "filled"
+        assert pt.entry_price == 101.0 and pt.entry_date == date(2024, 1, 4)
+        assert pt.risk == 101.0 - 94.0 and pt.hold_bars == 0
+        # the same run's advance pass must not step it on its own fill bar
+        quiet = {"low": 99.0, "high": 103.0, "close": 100.0, "bar_date": date(2024, 1, 4)}
+        advance_open(s, {("AAPL", "1d"): quiet}, CFG, today=date(2024, 1, 4))
+        assert repo.load_open_paper_trades(s)[0].hold_bars == 0
+
+
+def test_pending_expires_to_missed_after_window():
+    engine = get_engine("sqlite:///:memory:")
+    away = {"low": 102.0, "high": 108.0, "close": 105.0}  # never re-enters the zone
+    with Session(engine) as s:
+        open_from_signals(s, [_rev_cand()], {("AAPL", "1d"): (108.0, 102.0)},
+                          fill_date=date(2024, 1, 3), reversal_fill_window_bars=2)
+        resolve_pending(s, {("AAPL", "1d"): {**away, "bar_date": date(2024, 1, 4)}},
+                        window=2, today=date(2024, 1, 4))
+        pt = _all_paper_trades(s)[0]
+        assert pt.fill_status == "missed" and pt.status == "closed"  # window exhausted
+
+
+def test_pending_invalidated_when_stop_breaks_before_fill():
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        open_from_signals(s, [_rev_cand()], {("AAPL", "1d"): (108.0, 102.0)},
+                          fill_date=date(2024, 1, 3), reversal_fill_window_bars=5)
+        # the bar collapses through the stop without ever entering the zone
+        crash = {"low": 90.0, "high": 93.0, "close": 91.0, "bar_date": date(2024, 1, 4)}
+        resolve_pending(s, {("AAPL", "1d"): crash}, window=5, today=date(2024, 1, 4))
+        pt = _all_paper_trades(s)[0]
+        assert pt.fill_status == "invalidated" and pt.status == "closed"
+
+
+def test_pending_step_is_idempotent_per_bar_label():
+    engine = get_engine("sqlite:///:memory:")
+    away = {"low": 102.0, "high": 108.0, "close": 105.0}
+    with Session(engine) as s:
+        open_from_signals(s, [_rev_cand()], {("AAPL", "1d"): (108.0, 102.0)},
+                          fill_date=date(2024, 1, 3), reversal_fill_window_bars=5)
+        bar = {**away, "bar_date": date(2024, 1, 4)}
+        resolve_pending(s, {("AAPL", "1d"): bar}, window=5, today=date(2024, 1, 4))
+        resolve_pending(s, {("AAPL", "1d"): bar}, window=5, today=date(2024, 1, 5))  # re-run
+        pt = _all_paper_trades(s)[0]
+        assert pt.status == "pending" and pt.pending_bars == 2  # 1 (booking) + 1, not 3
+
+
+def test_continuation_missed_stays_terminal_even_with_window():
+    """The window is a REVERSAL entry semantic (a limit resting into a pullback);
+    continuation misses stay terminal -- their fill rate was never the problem."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        open_from_signals(s, [_cand()], {("AAPL", "1d"): (120.0, 102.0)},
+                          fill_date=date(2024, 1, 3), reversal_fill_window_bars=5)
+        pt = _all_paper_trades(s)[0]
+        assert pt.fill_status == "missed" and pt.status == "closed"
 
 
 def test_reversal_trade_scales_out_at_its_target():

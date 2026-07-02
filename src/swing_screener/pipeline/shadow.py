@@ -87,6 +87,7 @@ def open_from_signals(
     market_trend: str | None = None,
     market_vol: str | None = None,
     vix_bucket: str | None = None,
+    reversal_fill_window_bars: int = 1,
 ) -> list[PaperTrade]:
     """Resolve each candidate against its next bar and persist a paper trade per arm.
 
@@ -106,6 +107,12 @@ def open_from_signals(
     (any arm -- arms are always written together) is skipped, so a weekly trigger that is
     re-detected on every daily run of its week books exactly once. ``trigger_ts=None``
     candidates are never deduped (legacy/test behavior).
+
+    FILL WINDOW: with ``reversal_fill_window_bars > 1``, a REVERSAL candidate whose first
+    bar misses (never trades down into the zone) is booked as a PENDING resting-limit
+    order instead of a terminal miss; ``resolve_pending`` walks it forward one completed
+    bar at a time until it fills, breaks the stop (invalidated), or the window expires
+    (missed). Continuation misses stay terminal -- their fill rate was never the problem.
     """
     keyed = [(c.ticker, c.timeframe, c.play_type, cast(datetime, _naive(c.trigger_ts)))
              for c in candidates if c.trigger_ts is not None]
@@ -159,6 +166,23 @@ def open_from_signals(
                     status="open",
                     hold_bars=0,
                 )
+            elif (fill.status == "missed" and cand.play_type == "reversal"
+                    and reversal_fill_window_bars > 1):
+                # the resting-limit order stays working: persist the zone so later
+                # window bars can resolve it (see resolve_pending). last_advanced
+                # records the first checked bar so the same-run pending pass skips it.
+                common["fill_status"] = "pending"
+                trade = PaperTrade(
+                    **common,
+                    entry_floor=cand.zone.floor,
+                    entry_ceiling=cand.zone.ceiling,
+                    pending_bars=1,
+                    entry_price=None,
+                    entry_date=None,
+                    risk=cand.zone.risk,
+                    status="pending",
+                    last_advanced=fill_date,
+                )
             else:
                 # missed/invalidated, OR a degenerate fill with non-positive risk that
                 # we cannot honestly trade -> downgrade to invalidated, terminal, never
@@ -178,6 +202,61 @@ def open_from_signals(
 
     repo.save_paper_trades(session, trades)
     return trades
+
+
+def resolve_pending(
+    session: Session,
+    latest_bars: Mapping[tuple[str, str], Mapping[str, float | bool | date]],
+    *,
+    window: int,
+    today: date,
+) -> None:
+    """Walk every PENDING resting-limit order forward one completed bar.
+
+    Each pending row re-runs ``resolve_fill`` against its persisted entry zone on the
+    new bar: trades into the zone -> FILLED (worst-case in-zone price, ``entry_date`` =
+    the bar's label, hold count starts at 0); breaks the stop without entering ->
+    INVALIDATED (terminal); neither, with the window (``pending_bars``) exhausted ->
+    MISSED (terminal). Idempotent per bar label via ``last_advanced`` (the same guard
+    the bar-stepper uses), so re-runs and partial-bar days never double-count. Runs
+    BEFORE ``advance_open`` in the screen; a row filled here is skipped by the stepper's
+    entry-bar guard the same run.
+    """
+    for pt in repo.load_pending_paper_trades(session):
+        bar = latest_bars.get((pt.ticker, pt.timeframe))
+        if bar is None:
+            continue
+        raw_bar_date = bar.get("bar_date")
+        bar_date = raw_bar_date if isinstance(raw_bar_date, date) else today
+        if pt.last_advanced is not None and bar_date <= pt.last_advanced:
+            continue
+        if pt.entry_floor is None or pt.entry_ceiling is None:  # legacy row: cannot resolve
+            continue
+        num_bar = cast("Mapping[str, float | bool]", bar)
+        zone = EntryZone(floor=pt.entry_floor, ceiling=pt.entry_ceiling, stop=pt.stop,
+                         target=pt.target, risk=pt.risk, reference=pt.entry_ceiling)
+        fill = resolve_fill(zone, float(num_bar["high"]), float(num_bar["low"]))
+        pt.pending_bars = (pt.pending_bars or 1) + 1
+        pt.last_advanced = bar_date
+
+        risk = fill.price - pt.stop if fill.price is not None else None
+        if fill.status == "filled" and risk is not None and risk > 0:
+            pt.fill_status = "filled"
+            pt.status = "open"
+            pt.entry_price = fill.price
+            pt.entry_date = bar_date
+            pt.risk = risk
+            pt.hold_bars = 0
+        elif fill.status == "invalidated" or (fill.status == "filled" and
+                                              (risk is None or risk <= 0)):
+            # stop broken before entry (or a degenerate non-positive-risk fill we cannot
+            # honestly trade) -> the order is cancelled, never opened.
+            pt.fill_status = "invalidated"
+            pt.status = "closed"
+        elif pt.pending_bars >= window:
+            pt.fill_status = "missed"   # window exhausted; the pullback never came
+            pt.status = "closed"
+    session.commit()
 
 
 def advance_open(
