@@ -475,9 +475,16 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         # (one batch UPDATE; None-skips, self-commits).
         repo.apply_universe_metrics(s, universe_metrics)
 
-    return RunResult(n_signals=len(today_results) + len(today_reversals),
-                     n_paper_opened=n_paper_opened, n_charts=n_charts, n_failed=n_failed,
-                     n_reversals=len(today_reversals))
+    result = RunResult(n_signals=len(today_results) + len(today_reversals),
+                       n_paper_opened=n_paper_opened, n_charts=n_charts, n_failed=n_failed,
+                       n_reversals=len(today_reversals))
+    # Stable ops marker: the Azure "missing evening screen" alert (infra/modules/
+    # alerts.bicep) greps ContainerAppConsoleLogs_CL for the literal token
+    # SCREEN_RUN_COMPLETE. Reword ONLY together with that KQL.
+    log.info("SCREEN_RUN_COMPLETE signals=%d reversals=%d paper_opened=%d charts=%d failed=%d",
+             result.n_signals, result.n_reversals, result.n_paper_opened, result.n_charts,
+             result.n_failed)
+    return result
 
 
 def _resolve_db_url(cli_db: str | None) -> str:

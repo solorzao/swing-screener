@@ -1,3 +1,4 @@
+import logging
 from collections import Counter
 from datetime import date
 from types import SimpleNamespace
@@ -329,3 +330,21 @@ def test_run_double_fire_does_not_duplicate_or_double_advance(tmp_path, bars, mo
     assert (n1, keys1) == (n2, keys2) == (res1.n_signals, keys2)
     assert papers1 == papers2  # no duplicate opens, no double-advance
     assert res1.n_paper_opened == res2.n_paper_opened
+
+
+def test_run_logs_completion_marker(tmp_path, bars, monkeypatch, caplog):
+    """SCREEN_RUN_COMPLETE is the contract with the Azure "missing evening screen"
+    alert (infra/modules/alerts.bicep greps ContainerAppConsoleLogs_CL for the
+    literal token): every run_screen must end by logging it."""
+    def fake_fetch(ticker, *, cache_dir, today, cfg):
+        return {"1d": _firing(bars)} if ticker == "AAPL" else {}
+    monkeypatch.setattr(run, "_fetch_all_timeframes", fake_fetch)
+
+    db = f"sqlite:///{tmp_path / 'db.sqlite'}"
+    with caplog.at_level(logging.INFO, logger="swing_screener.pipeline.run"):
+        run.run_screen(
+            universe_path=_write_universe(tmp_path, ["AAPL"]), db_url=db,
+            cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts",
+            today=date(2024, 4, 1), cfg=_NO_EXT_GATE,
+        )
+    assert any("SCREEN_RUN_COMPLETE" in m for m in caplog.messages)

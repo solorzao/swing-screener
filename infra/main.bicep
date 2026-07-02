@@ -65,6 +65,12 @@ param anthropicApiKey string
 @description('Digest recipient list.')
 param digestTo string
 
+// Parallels digestTo but is deliberately NOT @secure(): the address is stored
+// readable in the Azure Monitor action group (ops routing metadata, not a
+// credential), whereas digestTo is seeded into Key Vault.
+@description('Email address for ops alerts (failed job / missing evening screen).')
+param alertEmail string
+
 @description('Seed Key Vault secret VALUES from the params above. Set false on re-deploys so an existing/rotated secret is never overwritten.')
 param seedSecrets bool = true
 
@@ -212,6 +218,23 @@ module jobs 'modules/jobs.bicep' = {
     acsSender: acs.outputs.senderAddress
     keyVaultUrl: keyvault.outputs.vaultUri
     secretNames: keyvault.outputs.secretNames
+    tags: commonTags
+  }
+}
+
+// --- Ops alerting: push job failures / a missing evening screen (2026-07-01
+// audit: zero alerting -- a dead job was invisible until an email failed to
+// arrive). Depends only on the workspace; the jobs it watches are discovered
+// at query time, not deploy time.
+module alerts 'modules/alerts.bicep' = {
+  name: 'alerts'
+  scope: rg
+  params: {
+    location: location
+    namePrefix: namePrefix
+    resourceToken: resourceToken
+    workspaceId: env.outputs.workspaceId
+    alertEmail: alertEmail
     tags: commonTags
   }
 }
