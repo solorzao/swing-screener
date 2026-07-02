@@ -34,6 +34,7 @@ from swing_screener.settings import (
     Settings,
     load_settings,
     real_money_limits_ok,
+    resolve_edge_dir,
     resolve_execution,
 )
 
@@ -194,7 +195,9 @@ def main() -> None:
         description="Read-only preflight GO/NO-GO check: is the broker reachable + funded, "
                     "are all caps set, does is_real_money match the host, is the autonomy gate "
                     "ready? READ-ONLY -- it arms NOTHING and moves no money.")
-    parser.add_argument("--edge-dir", type=Path, default=_EDGE_DIR)
+    # None -> the shared env-first resolution (SWING_EDGE_DIR), so the GO/NO-GO check
+    # reads the SAME directory as the digest instead of a second cwd-relative default.
+    parser.add_argument("--edge-dir", type=Path, default=None)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
 
@@ -206,7 +209,8 @@ def main() -> None:
         return
     engine = get_engine(settings.db_url)
     with Session(engine) as session:
-        report = preflight(session, settings, broker=broker, edge_dir=args.edge_dir)
+        report = preflight(session, settings, broker=broker,
+                           edge_dir=resolve_edge_dir(args.edge_dir))
     print(render_preflight(report))  # noqa: T201 -- the CLI prints the checklist
 
 

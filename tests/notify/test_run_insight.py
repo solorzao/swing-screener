@@ -165,6 +165,27 @@ def test_missing_playbooks_warn_loudly_when_deep_on(tmp_path, monkeypatch, caplo
     assert any("insight engine" in m and "reversal" in m for m in warnings)
 
 
+def test_missing_playbooks_surface_in_digest_footer(tmp_path, monkeypatch):
+    """The insight-OFF state must reach the EMAIL, not just a container log line -- an
+    unread log is the channel that hid the 2026-07 outage for weeks. With deep on and no
+    playbooks, the digest footer says so; with playbooks present, no such note."""
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS", "1")
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS_TOP_N", "1")
+    monkeypatch.delenv("SWING_DEEP_ANALYSIS_KINDS", raising=False)
+    url = f"sqlite:///{tmp_path / 'footer.sqlite'}"
+    _seed(url, n=1)
+    sent = []
+    run.send_digest(**_kwargs(
+        tmp_path, url, smtp_send=lambda **k: sent.append(k),
+        deep_analyze_fn=lambda facts, **k: SignalAnalysis(core_reason="x", rationale="y"),
+        chart_bytes_loader=lambda p: None, edge_dir=tmp_path / "no_such_edge",
+        fundamentals_fn=lambda t: Fundamentals(ticker=t, ok=False),
+        news_fn=lambda t: [], market_trend_fn=lambda: None))
+    body = sent[-1]["text"]
+    assert "insight engine OFF" in body
+    assert "continuation" in body and "reversal" in body
+
+
 def test_insight_engine_scores_resolved_prior_calls(tmp_path, monkeypatch):
     monkeypatch.setenv("SWING_DEEP_ANALYSIS", "1")
     monkeypatch.setenv("SWING_DEEP_ANALYSIS_TOP_N", "1")

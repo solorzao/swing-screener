@@ -98,6 +98,13 @@ param deepAnalysisKinds string = 'daily,weekly,monthly'
 @description('Max web searches per deep-analysis call (cost cap).')
 param analysisMaxSearches string = '4'
 
+// The per-RUN dollar ceiling pairs with the ON-by-default master switch above: once a
+// digest run's accumulated deep-analysis spend reaches it, remaining picks fall back to
+// the deterministic narrator. Deep-on with NO ceiling (the app treats missing/garbage
+// as None = unbounded) must never be a template default.
+@description('Per-run deep-analysis spend ceiling in USD (SWING_DEEP_ANALYSIS_MAX_USD).')
+param deepAnalysisMaxUsd string = '2.50'
+
 @description('Tags applied to the jobs.')
 param tags object = {}
 
@@ -170,11 +177,16 @@ var commonEnv = [
     name: 'AZURE_CLIENT_ID'
     value: uamiClientId
   }
-  // Deep-analysis knobs (only the digest jobs act on them; default OFF). They are
-  // harmless on the screen/exit jobs, which never read them.
+  // Deep-analysis knobs (only the digest jobs act on them; default ON, bounded by the
+  // per-run spend ceiling). They are harmless on the screen/exit jobs, which never
+  // read them.
   {
     name: 'SWING_DEEP_ANALYSIS'
     value: deepAnalysisEnabled
+  }
+  {
+    name: 'SWING_DEEP_ANALYSIS_MAX_USD'
+    value: deepAnalysisMaxUsd
   }
   {
     name: 'SWING_ANALYSIS_MODEL'

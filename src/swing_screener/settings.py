@@ -178,6 +178,16 @@ def load_settings() -> Settings:
     )
 
 
+def resolve_edge_dir(explicit: Path | None) -> Path:
+    """The ONE edge-dir resolution, shared by the digest and the autonomy / preflight /
+    reflect CLIs: an explicit path (CLI flag / test seam) wins untouched; ``None`` falls
+    back to the env-first settings value (``SWING_EDGE_DIR``, resolved absolute). Split
+    resolution is how the digest and the gate CLI ended up reading DIFFERENT directories
+    for the same verdicts files (2026-07-01 audit).
+    """
+    return explicit if explicit is not None else load_settings().edge_dir
+
+
 def resolve_risk_unit(settings: Settings) -> tuple[float, int | None]:
     """Resolve the per-trade risk unit (1R, in dollars) + the optional share cap.
 
