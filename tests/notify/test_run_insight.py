@@ -112,6 +112,80 @@ def test_insight_engine_renders_order_intent_and_records_call(tmp_path, monkeypa
         assert rows[0].play_type == "continuation"
 
 
+def test_edge_dir_resolves_from_env_when_not_passed(tmp_path, monkeypatch):
+    """With no explicit edge_dir, send_digest must resolve it from SWING_EDGE_DIR (settings)
+    rather than a cwd-relative Path("edge") -- the container has no /app/edge unless the
+    env/default points at the shipped copy, and the cwd-relative default is what silently
+    disabled the insight engine in prod (2026-07-01 audit)."""
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS", "1")
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS_TOP_N", "1")
+    monkeypatch.delenv("SWING_DEEP_ANALYSIS_KINDS", raising=False)
+    url = f"sqlite:///{tmp_path / 'envedge.sqlite'}"
+    _seed(url, n=1)
+    edge = _edge_dir(tmp_path)
+    monkeypatch.setenv("SWING_EDGE_DIR", str(edge))
+
+    conv_calls = []
+    run.send_digest(**_kwargs(  # NOTE: no edge_dir= -- must come from the env
+        tmp_path, url,
+        analyze_conviction_fn=lambda f, **k: (conv_calls.append(f.ticker) or ConvictionResult(
+            conviction="high", nudge_reason="x", insight="i", is_deep=True)),
+        chart_bytes_loader=lambda p: None,
+        fundamentals_fn=lambda t: Fundamentals(ticker=t, ok=False),
+        news_fn=lambda t: [], market_trend_fn=lambda: None))
+
+    assert conv_calls == ["AMD"]  # insight engine engaged via the env-resolved edge dir
+    with Session(get_engine(url)) as s:
+        assert len(list(s.scalars(select(AnalystCall)))) == 1
+
+
+def test_missing_playbooks_warn_loudly_when_deep_on(tmp_path, monkeypatch, caplog):
+    """Deep analysis ON + no playbook/verdicts -> a WARNING naming each play type. The
+    silent fallback is what hid the dead learning loop for weeks: Opus was billed daily
+    while record_analyst_call was unreachable, with nothing in the logs."""
+    import logging
+
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS", "1")
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS_TOP_N", "1")
+    monkeypatch.delenv("SWING_DEEP_ANALYSIS_KINDS", raising=False)
+    url = f"sqlite:///{tmp_path / 'noedge.sqlite'}"
+    _seed(url, n=1)
+    empty_edge = tmp_path / "no_such_edge"
+
+    with caplog.at_level(logging.WARNING, logger="swing_screener.notify.run"):
+        run.send_digest(**_kwargs(
+            tmp_path, url,
+            deep_analyze_fn=lambda facts, **k: SignalAnalysis(core_reason="x", rationale="y"),
+            chart_bytes_loader=lambda p: None, edge_dir=empty_edge,
+            fundamentals_fn=lambda t: Fundamentals(ticker=t, ok=False),
+            news_fn=lambda t: [], market_trend_fn=lambda: None))
+
+    warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("insight engine" in m and "continuation" in m for m in warnings)
+    assert any("insight engine" in m and "reversal" in m for m in warnings)
+
+
+def test_missing_playbooks_surface_in_digest_footer(tmp_path, monkeypatch):
+    """The insight-OFF state must reach the EMAIL, not just a container log line -- an
+    unread log is the channel that hid the 2026-07 outage for weeks. With deep on and no
+    playbooks, the digest footer says so; with playbooks present, no such note."""
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS", "1")
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS_TOP_N", "1")
+    monkeypatch.delenv("SWING_DEEP_ANALYSIS_KINDS", raising=False)
+    url = f"sqlite:///{tmp_path / 'footer.sqlite'}"
+    _seed(url, n=1)
+    sent = []
+    run.send_digest(**_kwargs(
+        tmp_path, url, smtp_send=lambda **k: sent.append(k),
+        deep_analyze_fn=lambda facts, **k: SignalAnalysis(core_reason="x", rationale="y"),
+        chart_bytes_loader=lambda p: None, edge_dir=tmp_path / "no_such_edge",
+        fundamentals_fn=lambda t: Fundamentals(ticker=t, ok=False),
+        news_fn=lambda t: [], market_trend_fn=lambda: None))
+    body = sent[-1]["text"]
+    assert "insight engine OFF" in body
+    assert "continuation" in body and "reversal" in body
+
+
 def test_insight_engine_scores_resolved_prior_calls(tmp_path, monkeypatch):
     monkeypatch.setenv("SWING_DEEP_ANALYSIS", "1")
     monkeypatch.setenv("SWING_DEEP_ANALYSIS_TOP_N", "1")

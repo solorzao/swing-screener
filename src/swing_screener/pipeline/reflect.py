@@ -50,7 +50,7 @@ from swing_screener.pipeline.proposed import (
 )
 from swing_screener.pipeline.replay import replay_book
 from swing_screener.pipeline.variants import DEFAULT_VARIANT
-from swing_screener.settings import load_settings
+from swing_screener.settings import load_settings, resolve_edge_dir
 
 log = logging.getLogger(__name__)
 
@@ -1071,7 +1071,9 @@ def main() -> None:
     settings = load_settings()
     parser.add_argument("--tickers", default=_DEFAULT_TICKERS, help="comma-separated")
     parser.add_argument("--cache-dir", type=Path, default=settings.cache_dir)
-    parser.add_argument("--edge-dir", type=Path, default=_EDGE_DIR)
+    # None -> the shared env-first resolution (SWING_EDGE_DIR), so reflection writes to
+    # the SAME directory the digest and gate read instead of a cwd-relative default.
+    parser.add_argument("--edge-dir", type=Path, default=None)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
 
@@ -1085,7 +1087,7 @@ def main() -> None:
     with Session(engine) as session:
         reflected = run_reflection(
             session, replay_frames=replay_frames, spy_daily=spy_daily,
-            edge_dir=args.edge_dir, today=date.today().isoformat(),
+            edge_dir=resolve_edge_dir(args.edge_dir), today=date.today().isoformat(),
             drafter=_opus_drafter(),
         )
     if reflected:

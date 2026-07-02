@@ -74,11 +74,14 @@ param screenTimeoutSeconds int = 3600
 @description('Replica timeout (seconds) for digest/alert jobs.')
 param digestTimeoutSeconds int = 1800
 
-// --- Deep-analysis (Opus web-search analyst) knobs. Default OFF / cheap; flip
-// SWING_DEEP_ANALYSIS to "1" (and ensure web search is enabled in the Claude
-// Console) to turn it on. All values are strings (Container Apps env vars).
+// --- Deep-analysis (Opus web-search analyst) knobs. Default ON: the insight engine is
+// the qualitative learning loop (analyst calls recorded + scored -> calibration -> the
+// autonomy gate). The template default MUST match the intended prod state -- it was
+// flipped on out-of-band in 2026-06 while this default stayed '0', so any bicep
+// redeploy would have silently disarmed the analyst (2026-07-01 audit). Set '0' to
+// force the deterministic narrator. All values are strings (Container Apps env vars).
 @description('Master switch for deep analysis: "1"/"true" on, anything else off.')
-param deepAnalysisEnabled string = '0'
+param deepAnalysisEnabled string = '1'
 
 @description('Model id for the analysis call.')
 param analysisModel string = 'claude-opus-4-8'
@@ -94,6 +97,13 @@ param deepAnalysisKinds string = 'daily,weekly,monthly'
 
 @description('Max web searches per deep-analysis call (cost cap).')
 param analysisMaxSearches string = '4'
+
+// The per-RUN dollar ceiling pairs with the ON-by-default master switch above: once a
+// digest run's accumulated deep-analysis spend reaches it, remaining picks fall back to
+// the deterministic narrator. Deep-on with NO ceiling (the app treats missing/garbage
+// as None = unbounded) must never be a template default.
+@description('Per-run deep-analysis spend ceiling in USD (SWING_DEEP_ANALYSIS_MAX_USD).')
+param deepAnalysisMaxUsd string = '2.50'
 
 @description('Tags applied to the jobs.')
 param tags object = {}
@@ -167,11 +177,16 @@ var commonEnv = [
     name: 'AZURE_CLIENT_ID'
     value: uamiClientId
   }
-  // Deep-analysis knobs (only the digest jobs act on them; default OFF). They are
-  // harmless on the screen/exit jobs, which never read them.
+  // Deep-analysis knobs (only the digest jobs act on them; default ON, bounded by the
+  // per-run spend ceiling). They are harmless on the screen/exit jobs, which never
+  // read them.
   {
     name: 'SWING_DEEP_ANALYSIS'
     value: deepAnalysisEnabled
+  }
+  {
+    name: 'SWING_DEEP_ANALYSIS_MAX_USD'
+    value: deepAnalysisMaxUsd
   }
   {
     name: 'SWING_ANALYSIS_MODEL'

@@ -27,6 +27,10 @@ class Settings:
     chart_dir: Path
     cache_dir: Path
     pdf_dir: Path
+    # Playbook home: edge/<play_type>.md + <play_type>.verdicts.json (the insight engine's
+    # inputs). Env-first + resolved ABSOLUTE like every other dir -- the old cwd-relative
+    # Path("edge") default silently pointed nowhere in the container.
+    edge_dir: Path
     blob_account_url: str | None
     blob_container: str
     key_vault_url: str | None
@@ -145,6 +149,7 @@ def load_settings() -> Settings:
         chart_dir=_abs(env.get("SWING_CHART_DIR", ".charts")),
         cache_dir=_abs(env.get("SWING_CACHE_DIR", ".cache")),
         pdf_dir=_abs(env.get("SWING_PDF_DIR", ".digests")),
+        edge_dir=_abs(env.get("SWING_EDGE_DIR", "edge")),
         blob_account_url=env.get("SWING_BLOB_ACCOUNT_URL"),
         blob_container=env.get("SWING_BLOB_CONTAINER", "charts"),
         key_vault_url=env.get("KEY_VAULT_URL"),
@@ -171,6 +176,16 @@ def load_settings() -> Settings:
             env.get("SWING_BROKER_ALLOW_REAL_MONEY", "").strip().lower() in _TRUE
         ),
     )
+
+
+def resolve_edge_dir(explicit: Path | None) -> Path:
+    """The ONE edge-dir resolution, shared by the digest and the autonomy / preflight /
+    reflect CLIs: an explicit path (CLI flag / test seam) wins untouched; ``None`` falls
+    back to the env-first settings value (``SWING_EDGE_DIR``, resolved absolute). Split
+    resolution is how the digest and the gate CLI ended up reading DIFFERENT directories
+    for the same verdicts files (2026-07-01 audit).
+    """
+    return explicit if explicit is not None else load_settings().edge_dir
 
 
 def resolve_risk_unit(settings: Settings) -> tuple[float, int | None]:

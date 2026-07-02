@@ -1,7 +1,12 @@
 # Keep the build context small and never bake local state into the image.
-# The Dockerfile only COPYs pyproject.toml, src/, alembic/, alembic.ini, so
-# everything else is safe to drop. pyproject has no `readme=`, so README.md
-# (and all docs) are NOT needed by the build -- excluded below.
+# The Dockerfile COPYs pyproject.toml, src/, alembic/, alembic.ini AND edge/
+# (the playbooks + verdicts the insight engine reads), so everything else is
+# safe to drop. pyproject has no `readme=`, so README.md (and all docs) are
+# NOT needed by the build -- excluded below.
+#
+# NOTE: `*.md` below is anchored at the context root (dockerignore patterns
+# don't cross `/` without `**`), so edge/*.md still reaches the build context.
+# Do NOT change it to **/*.md -- that would strip the playbooks from the image.
 
 # virtualenv / VCS / CI
 .venv

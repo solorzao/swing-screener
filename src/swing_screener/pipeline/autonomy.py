@@ -34,7 +34,7 @@ from swing_screener.analytics.calibration import (
 from swing_screener.db import repo
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.reflect import Verdict, load_verdicts
-from swing_screener.settings import load_settings
+from swing_screener.settings import load_settings, resolve_edge_dir
 
 log = logging.getLogger(__name__)
 
@@ -233,14 +233,16 @@ def main() -> None:
         description="Advisory autonomy gate: read each play type's forward-confirmed "
                     "verdicts + scored analyst calls and report whether autonomy MAY be "
                     "considered. READ-ONLY -- it never flips execution_mode or any config.")
-    parser.add_argument("--edge-dir", type=Path, default=_EDGE_DIR)
+    # None -> the shared env-first resolution (SWING_EDGE_DIR), so the CLI reads the
+    # SAME directory as the digest instead of a second cwd-relative default.
+    parser.add_argument("--edge-dir", type=Path, default=None)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
 
     settings = load_settings()
     engine = get_engine(settings.db_url)
     with Session(engine) as session:
-        report = autonomy_gate(session, edge_dir=args.edge_dir)
+        report = autonomy_gate(session, edge_dir=resolve_edge_dir(args.edge_dir))
     print(render_report(report))  # noqa: T201 -- the CLI's whole job is to print the report
 
 

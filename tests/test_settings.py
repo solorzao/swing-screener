@@ -39,6 +39,37 @@ def test_defaults_match_old_repo_relative_resolved(monkeypatch):
     assert s.pdf_dir == _OLD_PDF and s.pdf_dir.is_absolute()
 
 
+def test_edge_dir_defaults_to_repo_relative_resolved(monkeypatch):
+    """edge_dir must be env-first + ABSOLUTE like every other dir: the default Path("edge")
+    was cwd-relative, which silently pointed at a nonexistent /app/edge in the container
+    (the insight engine never engaged in prod -- 2026-07-01 audit)."""
+    _clear_env(monkeypatch)
+    monkeypatch.delenv("SWING_EDGE_DIR", raising=False)
+    s = load_settings()
+    assert s.edge_dir == Path("edge").resolve()
+    assert s.edge_dir.is_absolute()
+
+
+def test_edge_dir_env_override(monkeypatch, tmp_path):
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("SWING_EDGE_DIR", str(tmp_path / "playbooks"))
+    assert load_settings().edge_dir == (tmp_path / "playbooks").resolve()
+
+
+def test_resolve_edge_dir_explicit_wins_else_settings(monkeypatch, tmp_path):
+    """The ONE edge-dir resolution shared by the digest and the autonomy/preflight/reflect
+    CLIs: an explicit path (CLI flag / test seam) wins; None falls back to the env-first
+    settings value. Split resolution is how the digest and the gate CLI ended up reading
+    DIFFERENT directories for the same verdicts files."""
+    from swing_screener.settings import resolve_edge_dir
+
+    _clear_env(monkeypatch)
+    explicit = tmp_path / "explicit"
+    assert resolve_edge_dir(explicit) == explicit          # explicit passes through untouched
+    monkeypatch.setenv("SWING_EDGE_DIR", str(tmp_path / "env"))
+    assert resolve_edge_dir(None) == (tmp_path / "env").resolve()  # None -> settings
+
+
 def test_explicit_abs_chart_dir_used_exactly(monkeypatch, tmp_path):
     _clear_env(monkeypatch)
     abs_dir = tmp_path / "data" / "charts"
