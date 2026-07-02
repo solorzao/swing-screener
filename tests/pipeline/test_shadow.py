@@ -157,6 +157,25 @@ def test_trigger_dedup_is_scoped_per_variant():
         assert variants == {"default", "tight_gate"}
 
 
+def test_tz_aware_trigger_ts_still_dedupes():
+    """4h frames resample from tz-aware 1h data, so their trigger_ts arrives tz-AWARE --
+    but the DB round-trip strips tzinfo, and a naive-vs-aware comparison never matches,
+    silently disabling the dedup for exactly the timeframe with the most triggers. The
+    booking path must normalize to naive so the second booking attempt is skipped."""
+    from zoneinfo import ZoneInfo
+
+    engine = get_engine("sqlite:///:memory:")
+    aware = datetime(2024, 1, 5, 12, 0, tzinfo=ZoneInfo("America/New_York"))
+    cand = FillCandidate(ticker="AAPL", timeframe="4h", horizon="short", signal_score=0.8,
+                         rank=1, mtf_aligned=True, signal_id=None, zone=ZONE,
+                         trigger_ts=aware)
+    with Session(engine) as s:
+        open_from_signals(s, [cand], {("AAPL", "4h"): (105.0, 97.0)}, fill_date=date(2024, 1, 5))
+        n_first = len(_all_paper_trades(s))
+        open_from_signals(s, [cand], {("AAPL", "4h"): (106.0, 98.0)}, fill_date=date(2024, 1, 8))
+        assert len(_all_paper_trades(s)) == n_first  # deduped despite the tz round-trip
+
+
 def test_no_trigger_ts_books_every_time_legacy():
     """Candidates without a trigger timestamp (legacy/test callers) keep today's behavior."""
     engine = get_engine("sqlite:///:memory:")
@@ -200,6 +219,21 @@ def test_weekly_trade_advances_once_per_completed_weekly_bar():
         advance_open(s, {("AAPL", "1wk"): {**quiet, "bar_date": date(2024, 1, 19)}},
                      CFG, today=date(2024, 1, 22))
         assert repo.load_open_paper_trades(s)[0].hold_bars == 2
+
+
+def test_stale_frame_never_advances_a_trade_on_its_own_fill_bar():
+    """A ticker whose data is STALE (last bar label older than today) can still fill a
+    trade on today's run; the same run's advance pass must not step it on that very bar
+    -- a bar from before (or at) the entry is never a 'next bar'."""
+    engine = get_engine("sqlite:///:memory:")
+    quiet = {"low": 99.0, "high": 103.0, "close": 100.0, "shaved_head": False, "bearish": False}
+    with Session(engine) as s:
+        open_from_signals(s, [_cand()], {("AAPL", "1d"): (105.0, 97.0)},
+                          fill_date=date(2024, 1, 5))  # filled on today's run...
+        # ...but the frame's last completed bar is labeled three days earlier (stale data)
+        advance_open(s, {("AAPL", "1d"): {**quiet, "bar_date": date(2024, 1, 2)}},
+                     CFG, today=date(2024, 1, 5))
+        assert repo.load_open_paper_trades(s)[0].hold_bars == 0  # not advanced
 
 
 def test_open_records_categorization_tags():

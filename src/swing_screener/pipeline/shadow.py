@@ -26,6 +26,14 @@ from swing_screener.signals.exits import OpenTrade, evaluate_exit
 from swing_screener.signals.fill import resolve_fill
 
 
+def _naive(ts: datetime | None) -> datetime | None:
+    """Strip tzinfo from a trigger timestamp. 4h frames resample from tz-aware 1h data,
+    but the DB round-trip returns naive datetimes -- an aware key would NEVER match the
+    stored value, silently disabling the cross-run dedup. Normalized once here (the
+    booking choke point) so every writer and every lookup agree."""
+    return ts.replace(tzinfo=None) if ts is not None else None
+
+
 def _same_bucket(d1: date, d2: date, timeframe: str) -> bool:
     """True when two dates fall in the same bar bucket of ``timeframe`` -- the guard that
     keeps a trade from being advanced on the bar it filled in (next-bar semantics)."""
@@ -99,13 +107,14 @@ def open_from_signals(
     re-detected on every daily run of its week books exactly once. ``trigger_ts=None``
     candidates are never deduped (legacy/test behavior).
     """
-    keyed = [(c.ticker, c.timeframe, c.play_type, c.trigger_ts)
+    keyed = [(c.ticker, c.timeframe, c.play_type, cast(datetime, _naive(c.trigger_ts)))
              for c in candidates if c.trigger_ts is not None]
     already = repo.booked_trigger_keys(session, variant=variant, keys=keyed)
     trades: list[PaperTrade] = []
     for cand in candidates:
-        if (cand.trigger_ts is not None
-                and (cand.ticker, cand.timeframe, cand.play_type, cand.trigger_ts) in already):
+        trigger_ts = _naive(cand.trigger_ts)
+        if (trigger_ts is not None
+                and (cand.ticker, cand.timeframe, cand.play_type, trigger_ts) in already):
             continue
         bar = next_bars.get((cand.ticker, cand.timeframe))
         if bar is None:
@@ -131,7 +140,7 @@ def open_from_signals(
                 "oversold": cand.oversold,
                 "arm": arm,
                 "variant": variant,
-                "trigger_ts": cand.trigger_ts,
+                "trigger_ts": trigger_ts,
                 "market_trend": market_trend,
                 "market_vol": market_vol,
                 "vix_bucket": vix_bucket,
@@ -206,9 +215,13 @@ def advance_open(
         # contract; evaluate_exit/_is_softening never read "bar_date"). The cast
         # records that narrowing for the calls below without copying the mapping.
         num_bar = cast("Mapping[str, float | bool]", bar)
-        # Never advance on the bucket the trade filled in (next-bar semantics), and
-        # never re-advance a bar already counted (idempotent per bar label).
-        if pt.entry_date is not None and _same_bucket(pt.entry_date, bar_date, pt.timeframe):
+        # Never advance on the bucket the trade filled in (next-bar semantics) NOR on a
+        # bar labeled at/before the entry (a stale frame can fill a trade on today's run
+        # while its last completed bar predates the fill -- that bar is never a "next
+        # bar"), and never re-advance a bar already counted (idempotent per bar label).
+        if pt.entry_date is not None and (
+                bar_date <= pt.entry_date
+                or _same_bucket(pt.entry_date, bar_date, pt.timeframe)):
             continue
         if pt.last_advanced is not None and bar_date <= pt.last_advanced:
             continue
