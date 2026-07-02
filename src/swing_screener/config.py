@@ -147,8 +147,12 @@ class StrategyConfig:
     # additive +0.25R edge); strong = any single conviction; base = none.
     reversal_premium_min_rvol: float = 1.3   # bounce volume_ratio at/above this counts as high-vol
     # 1a surfacing: when True, the digest's reversal list shows only the PREMIUM tier (high-vol +
-    # spring). EARLY/low-conviction reversals are still detected + shadow-booked, just not surfaced.
-    reversal_surface_premium_only: bool = True
+    # spring). DEMOTED to False after the 2026-07-01 audit: premium fires ~0.2% live (2 signals in
+    # 15 days) and its +0.25R was measured on a 250-name subset never confirmed at the full
+    # universe -- turning it on silently blanked the reversal list from 06-28 (it overrides
+    # confirmed_only in reversal_picks). Premium stays computed/shadow-booked as a tier; it may
+    # regain surfacing only with a full-universe result AND a documented expected picks/week.
+    reversal_surface_premium_only: bool = False
     # 1b conviction sizing: weight each fill's R by its conviction tier in SIZE-WEIGHTED
     # performance (size the edge cohort up, the dead baseline down). False = risk-equal (legacy).
     conviction_sizing: bool = False
