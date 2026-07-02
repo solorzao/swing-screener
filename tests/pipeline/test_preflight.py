@@ -55,7 +55,7 @@ def _settings(
     (not via env) so the test controls the fields without monkeypatching the environment."""
     return Settings(
         db_url="sqlite:///:memory:", chart_dir=Path("."), cache_dir=Path("."),
-        pdf_dir=Path("."), blob_account_url=None, blob_container="charts",
+        pdf_dir=Path("."), edge_dir=Path("."), blob_account_url=None, blob_container="charts",
         key_vault_url=None, azure_client_id=None, acs_endpoint=None, acs_sender=None,
         deep_analysis_enabled=False, analysis_model="claude-opus-4-8",
         analysis_reasoning="high", deep_analysis_top_n=5,

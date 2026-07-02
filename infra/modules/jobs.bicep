@@ -74,11 +74,14 @@ param screenTimeoutSeconds int = 3600
 @description('Replica timeout (seconds) for digest/alert jobs.')
 param digestTimeoutSeconds int = 1800
 
-// --- Deep-analysis (Opus web-search analyst) knobs. Default OFF / cheap; flip
-// SWING_DEEP_ANALYSIS to "1" (and ensure web search is enabled in the Claude
-// Console) to turn it on. All values are strings (Container Apps env vars).
+// --- Deep-analysis (Opus web-search analyst) knobs. Default ON: the insight engine is
+// the qualitative learning loop (analyst calls recorded + scored -> calibration -> the
+// autonomy gate). The template default MUST match the intended prod state -- it was
+// flipped on out-of-band in 2026-06 while this default stayed '0', so any bicep
+// redeploy would have silently disarmed the analyst (2026-07-01 audit). Set '0' to
+// force the deterministic narrator. All values are strings (Container Apps env vars).
 @description('Master switch for deep analysis: "1"/"true" on, anything else off.')
-param deepAnalysisEnabled string = '0'
+param deepAnalysisEnabled string = '1'
 
 @description('Model id for the analysis call.')
 param analysisModel string = 'claude-opus-4-8'

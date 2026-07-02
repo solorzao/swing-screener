@@ -22,4 +22,14 @@ CREATE USER [<your-entra-upn>] FROM EXTERNAL PROVIDER;
 ALTER ROLE db_datareader ADD MEMBER [<your-entra-upn>];
 GO
 
+-- 3) The GitHub deploy identity (the cd.yml/reflect.yml OIDC app registration or UAMI),
+--    so the weekly REFLECTION workflow can READ the forward book (paper_trades etc.).
+--    Read-only: reflection writes edge/ files in the repo, never the database. Use the
+--    identity's Entra DISPLAY NAME. The same identity also needs firewall-rule write on
+--    the SQL SERVER resource (e.g. "SQL Server Contributor" scoped to the server) so
+--    reflect.yml can open/close its ephemeral per-run firewall rule.
+CREATE USER [<deploy-identity-name>] FROM EXTERNAL PROVIDER;
+ALTER ROLE db_datareader ADD MEMBER [<deploy-identity-name>];
+GO
+
 -- Entra role propagation can take a few minutes before the new users can connect.

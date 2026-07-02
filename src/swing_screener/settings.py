@@ -27,6 +27,10 @@ class Settings:
     chart_dir: Path
     cache_dir: Path
     pdf_dir: Path
+    # Playbook home: edge/<play_type>.md + <play_type>.verdicts.json (the insight engine's
+    # inputs). Env-first + resolved ABSOLUTE like every other dir -- the old cwd-relative
+    # Path("edge") default silently pointed nowhere in the container.
+    edge_dir: Path
     blob_account_url: str | None
     blob_container: str
     key_vault_url: str | None
@@ -145,6 +149,7 @@ def load_settings() -> Settings:
         chart_dir=_abs(env.get("SWING_CHART_DIR", ".charts")),
         cache_dir=_abs(env.get("SWING_CACHE_DIR", ".cache")),
         pdf_dir=_abs(env.get("SWING_PDF_DIR", ".digests")),
+        edge_dir=_abs(env.get("SWING_EDGE_DIR", "edge")),
         blob_account_url=env.get("SWING_BLOB_ACCOUNT_URL"),
         blob_container=env.get("SWING_BLOB_CONTAINER", "charts"),
         key_vault_url=env.get("KEY_VAULT_URL"),

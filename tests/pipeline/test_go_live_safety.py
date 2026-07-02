@@ -76,7 +76,8 @@ def _live_settings(*, mode: str = "live", allow: bool = True) -> Settings:
     controls the locks without monkeypatching the environment."""
     return Settings(
         db_url="sqlite:///:memory:", chart_dir=Path("."), cache_dir=Path("."),
-        pdf_dir=Path("."), blob_account_url=None, blob_container="c", key_vault_url=None,
+        pdf_dir=Path("."), edge_dir=Path("."), blob_account_url=None, blob_container="c",
+        key_vault_url=None,
         azure_client_id=None, acs_endpoint=None, acs_sender=None,
         deep_analysis_enabled=False, analysis_model="m", analysis_reasoning="high",
         deep_analysis_top_n=5, deep_analysis_kinds=frozenset(), analysis_max_searches=4,

@@ -46,8 +46,9 @@ htmlcov/
 # Bicep build artifact (compiled ARM template; deploy uses the .bicep directly)
 infra/main.json
 
-# Reflection sidecar (machine-readable verdicts; regenerated each run from grade())
-edge/*.verdicts.json
-# NOTE: edge/*.proposed.json (analyst-queued screen variants, Phase-6) is deliberately NOT
-# ignored -- unlike verdicts.json it is durable INPUT (the queue the optimizer sweeps), so it
-# is committed as the auditable record of what was queued and when.
+# NOTE: everything under edge/ is COMMITTED -- the playbooks (edge/*.md), the analyst-queued
+# screen variants (edge/*.proposed.json), AND the machine-readable verdicts sidecars
+# (edge/*.verdicts.json). The sidecars were previously gitignored as "regenerated each run",
+# but the ONLY writer is the reflection pass -- ignoring them meant no runtime (and no Docker
+# image) could ever see a verdict, freezing the insight engine and the autonomy gate at zero
+# (2026-07-01 audit). Reflection PRs commit them; the image ships them.

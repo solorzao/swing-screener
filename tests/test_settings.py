@@ -39,6 +39,23 @@ def test_defaults_match_old_repo_relative_resolved(monkeypatch):
     assert s.pdf_dir == _OLD_PDF and s.pdf_dir.is_absolute()
 
 
+def test_edge_dir_defaults_to_repo_relative_resolved(monkeypatch):
+    """edge_dir must be env-first + ABSOLUTE like every other dir: the default Path("edge")
+    was cwd-relative, which silently pointed at a nonexistent /app/edge in the container
+    (the insight engine never engaged in prod -- 2026-07-01 audit)."""
+    _clear_env(monkeypatch)
+    monkeypatch.delenv("SWING_EDGE_DIR", raising=False)
+    s = load_settings()
+    assert s.edge_dir == Path("edge").resolve()
+    assert s.edge_dir.is_absolute()
+
+
+def test_edge_dir_env_override(monkeypatch, tmp_path):
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("SWING_EDGE_DIR", str(tmp_path / "playbooks"))
+    assert load_settings().edge_dir == (tmp_path / "playbooks").resolve()
+
+
 def test_explicit_abs_chart_dir_used_exactly(monkeypatch, tmp_path):
     _clear_env(monkeypatch)
     abs_dir = tmp_path / "data" / "charts"

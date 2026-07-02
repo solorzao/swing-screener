@@ -329,7 +329,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                 fundamentals_fn: Callable[[str], market_context.Fundamentals] | None = None,
                 news_fn: Callable[[str], list[market_context.NewsItem]] | None = None,
                 analyze_conviction_fn: Callable[..., ConvictionResult] | None = None,
-                edge_dir: Path = Path("edge"),
+                edge_dir: Path | None = None,
                 market_trend_fn: Callable[[], str | None] | None = None,
                 execution_adapter: ExecutionAdapter | None = None,
                 broker: BrokerClient | None = None,
@@ -343,6 +343,11 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
     # Deep-analysis seams (default to the real impls; tests inject fakes). Whether
     # the deep path actually runs is gated by settings below, NOT by these.
     cfg = load_settings()
+    if edge_dir is None:
+        # Env-first (SWING_EDGE_DIR) and ABSOLUTE: the old cwd-relative Path("edge")
+        # default resolved to a nonexistent dir in the container, silently disabling
+        # the insight engine in prod. Tests still inject an explicit edge_dir.
+        edge_dir = cfg.edge_dir
     deep_analyze = deep_analyze_fn or analyze_signal_deep
     analyze_conv = analyze_conviction_fn or analyze_conviction
     load_chart = chart_bytes_loader or _load_chart_bytes
@@ -405,6 +410,16 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # Playbook + verdicts per play type, loaded once. Present -> the insight engine runs
         # for that play type's deep picks; absent -> they fall back to the old deep path.
         playbooks = {pt: _load_playbook(edge_dir, pt) for pt in ("continuation", "reversal")}
+        # A missing playbook on the deep path must be LOUD: the fallback still bills Opus
+        # but records no analyst call, so a silent miss freezes the whole learning loop
+        # (calibration, autonomy gate) with every job green -- exactly the 2026-07 outage.
+        if deep_on:
+            for pt, pb in playbooks.items():
+                if pb is None:
+                    log.warning(
+                        "insight engine disabled for %s: playbook or verdicts sidecar "
+                        "missing under %s -- falling back to the legacy deep path "
+                        "(no conviction baseline, no analyst call recorded)", pt, edge_dir)
 
         # The EARNED conviction-nudge bound per play type. The advisory autonomy gate already
         # runs ``conviction_calibrated`` PER play type over the scored book, so we reuse its

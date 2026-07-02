@@ -52,6 +52,11 @@ COPY pyproject.toml ./
 COPY src/ ./src/
 COPY alembic/ ./alembic/
 COPY alembic.ini ./alembic.ini
+#   - edge/               : the per-strategy playbooks (+ committed verdicts sidecars).
+#                           The insight engine reads them at /app/edge (SWING_EDGE_DIR
+#                           default); WITHOUT this COPY the deep path silently fell back
+#                           and never recorded an analyst call (2026-07-01 audit).
+COPY edge/ ./edge/
 
 # Install with the Azure extra (pyodbc, azure-*, alembic). Editable is not used:
 # a regular install bundles the package data (universe_seed.csv) into site-packages.
