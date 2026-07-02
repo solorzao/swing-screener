@@ -35,7 +35,12 @@ from swing_screener.pipeline.broker import BrokerClient
 from swing_screener.pipeline.broker_alpaca import build_broker
 from swing_screener.pipeline.reconcile import reconcile_live
 from swing_screener.pipeline.regime import MARKET_PROXY, classify_regime
-from swing_screener.pipeline.shadow import FillCandidate, advance_open, open_from_signals
+from swing_screener.pipeline.shadow import (
+    FillCandidate,
+    advance_open,
+    open_from_signals,
+    resolve_pending,
+)
 from swing_screener.pipeline.variants import DEFAULT_VARIANT, build_screen_variants
 from swing_screener.settings import load_settings
 from swing_screener.storage.blob import blob_enabled, upload_chart
@@ -440,18 +445,23 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         candidates, next_bars = _shadow_candidates(prior)
         opened = open_from_signals(s, candidates, next_bars, fill_date=today,
                                    arms=tuple(arms), variant=DEFAULT_VARIANT,
-                                   market_trend=regime.trend, market_vol=regime.vol)
+                                   market_trend=regime.trend, market_vol=regime.vol,
+                                   reversal_fill_window_bars=cfg.reversal_fill_window_bars)
         # count distinct fills (one arm), not the per-arm duplicates
         n_paper_opened = sum(1 for t in opened if t.status == "open" and t.arm == BASELINE)
         # Screen variants: book each alt config's own fills under the baseline exit only
         # (one extra book per variant), so breakdown(baseline-arm trades, "variant") ranks
         # the screen configs head-to-head. advance_open keys exits off `arm`, so these ride
         # the baseline exit automatically -- no variant awareness needed downstream.
-        for vname in alt_variants:
+        for vname, vcfg in alt_variants.items():
             vcands, vnext = _shadow_candidates(prior_variants[vname])
             open_from_signals(s, vcands, vnext, fill_date=today, arms=(BASELINE,),
                               variant=vname, market_trend=regime.trend,
-                              market_vol=regime.vol)
+                              market_vol=regime.vol,
+                              reversal_fill_window_bars=vcfg.reversal_fill_window_bars)
+        # Step the PENDING resting-limit orders before the open trades: a pending order
+        # that fills on this bar is then skipped by the stepper's entry-bar guard.
+        resolve_pending(s, latest_bars, window=cfg.reversal_fill_window_bars, today=today)
         advance_open(s, latest_bars, arms, today=today)
         # Live book: the bar-stepper above excludes account="live" rows -- the BROKER owns
         # their fills/exits. Reconcile them here (same cadence) so a broker fill materializes

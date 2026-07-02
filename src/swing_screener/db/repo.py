@@ -146,6 +146,16 @@ def load_open_paper_trades(
     return list(session.scalars(stmt))
 
 
+def load_pending_paper_trades(session: Session) -> list[PaperTrade]:
+    """Every PENDING resting-limit order (a reversal fill window still working).
+
+    Pending rows are created only by the shadow booking path (``account="research"`` and
+    the screen-variant books), so no account filter is needed; ``resolve_pending`` fills,
+    invalidates, or expires each one.
+    """
+    return list(session.scalars(select(PaperTrade).where(PaperTrade.status == "pending")))
+
+
 def load_open_live_trades(session: Session) -> list[PaperTrade]:
     """Every OPEN ``account == "live"`` paper trade -- the reconciler's own loader.
 

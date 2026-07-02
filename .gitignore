@@ -52,3 +52,6 @@ infra/main.json
 # but the ONLY writer is the reflection pass -- ignoring them meant no runtime (and no Docker
 # image) could ever see a verdict, freezing the insight engine and the autonomy gate at zero
 # (2026-07-01 audit). Reflection PRs commit them; the image ships them.
+
+# Claude Code agent worktrees (never repo content)
+.claude/worktrees/

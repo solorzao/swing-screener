@@ -134,6 +134,14 @@ class StrategyConfig:
     # laggards. 0/off when no rs column. Needs spy_close threaded into build_frame.
     require_rs_leader: bool = False
     rs_ma_window: int = 21
+    # Reversal fill window: how many completed bars a reversal's resting-limit entry may
+    # wait to fill before expiring to "missed" (the stop breaking first invalidates it).
+    # 1 = the legacy next-bar-only fill, which the 2026-07 audit found left ~95% of
+    # confirmed reversals unfillable (the zone needs a >38% bounce retrace on the very
+    # next bar) and adversely selected the rest (live -0.86R vs replay +0.125R). A real
+    # trader's limit order rests; the shadow book now measures that. Continuation is
+    # unaffected (its zones fill on the next bar ~97% of the time).
+    reversal_fill_window_bars: int = 5
     # Wyckoff spring trigger (edge-discovery exp 11): require the bounce bar to UNDERCUT a recent
     # support low (over the lookback window ending spring_gap bars back) then CLOSE back above it
     # -- a shakeout. 0/off. NOTE: our reversal flip bar opens near the decline bottom and closes

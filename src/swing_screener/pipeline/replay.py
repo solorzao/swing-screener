@@ -40,7 +40,7 @@ from swing_screener.pipeline.regime import (
     vix_percentile_rank,
 )
 from swing_screener.pipeline.run import _bar_row, _shadow_candidates
-from swing_screener.pipeline.shadow import advance_open, open_from_signals
+from swing_screener.pipeline.shadow import advance_open, open_from_signals, resolve_pending
 from swing_screener.pipeline.variants import build_screen_variants
 from swing_screener.signals.frame import build_frame
 
@@ -196,10 +196,15 @@ def _replay_one(
                               arms=(BASELINE,), variant=vname,
                               market_trend=reg.trend if reg else None,
                               market_vol=reg.vol if reg else None,
-                              vix_bucket=vbucket)
+                              vix_bucket=vbucket,
+                              reversal_fill_window_bars=vcfg.reversal_fill_window_bars)
 
-        # Advance every open trade one bar under the baseline exit (arm-keyed downstream).
+        # Step pending resting-limit orders, then advance every open trade one bar under
+        # the baseline exit (arm-keyed downstream). A pending row booked THIS iteration
+        # carries last_advanced=fill_date, so it is not double-stepped on its first bar.
         latest = {(ticker, timeframe): _bar_row(through)}
+        resolve_pending(session, latest, window=base_cfg.reversal_fill_window_bars,
+                        today=fill_date)
         advance_open(session, latest, {BASELINE: base_cfg}, today=fill_date)
 
 
