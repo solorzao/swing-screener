@@ -177,6 +177,27 @@ class StrategyConfig:
     spring_lookback: int = 15
     spring_gap: int = 3
 
+    # Reversal score weights, lifted from inline literals (2026-07-03) so the replay
+    # machinery can sweep them: the score is the ONLY ordering behind the digest's top-5
+    # reversal picks. The LEGACY vector (0.35 bounce / 0.20 downtrend / 0.15 volume /
+    # 0.15 confirmed / 0.15 depth, no lag term) graded NON-PREDICTIVE on the fixed
+    # confirmed book -- flat quintile ladder, top-quintile-vs-rest clustered delta bound
+    # -0.059 -- as did every individual component. The only ordering that separates is
+    # CONFIRMATION LAG (how many bars after the flip the confirmation printed; the
+    # ranking-space echo of the late-confirm edge) plus flip volume. This DEFAULT vector
+    # was validated on the same book: top-quintile +0.097R (own bound +0.043), q5-vs-rest
+    # delta bound +0.011, holds at 0.10 slippage (+0.017), and posts the best per-day
+    # top-5 simulation of every key tested (+0.073R, bound +0.019). Weights are
+    # normalized by their sum, so only the RATIOS matter. NOTE: score semantics changed
+    # here -- edge/reversal.md score-band history before 2026-07-03 measures the old
+    # definition. See docs/plans/2026-07-03-reversal-score-overhaul.md.
+    reversal_score_w_lag: float = 0.40         # confirmation lag / confirm window (late = better)
+    reversal_score_w_volume: float = 0.30      # flip-bar volume vs average
+    reversal_score_w_bounce: float = 0.10      # HA flip-bar quality (body + shaved bottom)
+    reversal_score_w_downtrend: float = 0.10   # red-run depth of the decline
+    reversal_score_w_confirmed: float = 0.10   # confirmed follow-through (orders above EARLY)
+    reversal_score_w_depth: float = 0.0        # oversold RSI depth: no predictive power found
+
     # --- item 1: tiered reversal surfacing + conviction sizing -------------------------
     # conviction tier (reversal_conviction_tier): premium = high-vol bounce AND spring (the
     # additive +0.25R edge); strong = any single conviction; base = none.

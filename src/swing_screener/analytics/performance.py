@@ -54,6 +54,32 @@ def _tier_stamped(trades: Iterable[PaperTrade]) -> list[PaperTrade]:
             if t.opened_date is None or t.opened_date >= TIER_STAMPED_FROM]
 
 
+# signal_score's DEFINITION changed for the reversal book on 2026-07-03 (score v2:
+# confirmation-lag + volume weights replaced the falsified legacy vector -- see
+# docs/plans/2026-07-03-reversal-score-overhaul.md). FORWARD rows scored before then
+# measure a different quantity, so a score-band aggregate over the forward book must
+# exclude them or one bucket pools two definitions and the resulting verdicts steer
+# conviction with a biased number. Keyed per play type: only reversal's score changed.
+SCORE_STAMPED_FROM: dict[str, date] = {"reversal": date(2026, 7, 3)}
+
+
+def score_stamped(trades: Iterable[PaperTrade]) -> list[PaperTrade]:
+    """Only trades whose ``signal_score`` was computed under the CURRENT definition
+    (see SCORE_STAMPED_FROM).
+
+    For FORWARD-book score aggregates only: a forward row's score was frozen at booking
+    time by whatever code ran that night. Do NOT apply this to a REPLAY book -- a replay
+    walk scores every row with the current code, so its (historical) ``opened_date``
+    says nothing about score vintage and the filter would wrongly empty it. Undated
+    rows (tests/fakes) fail open, mirroring ``_tier_stamped``."""
+    out: list[PaperTrade] = []
+    for t in trades:
+        cutoff = SCORE_STAMPED_FROM.get(t.play_type)
+        if cutoff is None or t.opened_date is None or t.opened_date >= cutoff:
+            out.append(t)
+    return out
+
+
 def size_weighted_expectancy(
     trades: Iterable[PaperTrade], weights: Mapping[str, float] | None = None
 ) -> tuple[float, float]:
