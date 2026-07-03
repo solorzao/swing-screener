@@ -1,7 +1,7 @@
 """Thin CRUD layer over the SQLAlchemy models for signals and trades."""
 
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import CursorResult, delete, func, select, update
@@ -219,6 +219,13 @@ def load_scored_analyst_calls(
     return list(session.scalars(stmt))
 
 
+# How long after a call its own pick can plausibly BOOK in the shadow book: the next run
+# for 1d/4h (1-3 calendar days across a weekend), the period-end run + weekend for 1wk
+# (~7-9 days). Anything beyond is a DIFFERENT setup that happens to share the pick keys --
+# grading a call against it poisons the calibration record the autonomy gate reads.
+_ANALYST_SCORE_WINDOW_DAYS = 10
+
+
 def score_analyst_calls(session: Session) -> int:
     """Score each UNSCORED ``AnalystCall`` against its realized shadow-book outcome.
 
@@ -227,9 +234,12 @@ def score_analyst_calls(session: Session) -> int:
     that FILLED on the first run AFTER ``d`` for that same pick -- i.e. the closed
     ``PaperTrade`` (``arm == BASELINE``, ``variant == DEFAULT_VARIANT``, filled, with a
     realized R) whose ``opened_date`` is the EARLIEST strictly greater than the call's
-    ``run_date``. The shadow book paper-trades the PRIOR-bar signal (fired on ``d``,
-    filled on ``d+1``), so this convention join on the pick keys + earliest post-call
-    fill is the robust link -- no Signal FK required.
+    ``run_date`` AND within ``_ANALYST_SCORE_WINDOW_DAYS`` of it. The shadow book
+    paper-trades the PRIOR-bar signal (fired on ``d``, booked the next run; a 1wk pick
+    books on its period-end run), so the bounded convention join on the pick keys is the
+    robust link -- no Signal FK required. The bound is what keeps the join honest: a
+    call whose own pick never booked/filled stays UNSCORED FOREVER (there is no outcome
+    for what the analyst graded) instead of borrowing a later, unrelated trade's R.
 
     Stamps ``realized_r`` + ``scored_at`` (the trade's ``exit_date``, else today) onto
     each matched call. A pick that hasn't filled+closed yet stays unscored and is
@@ -243,6 +253,7 @@ def score_analyst_calls(session: Session) -> int:
     for call in unscored:
         # `==` for the string/enum facets (renders `col = 'x'`); `.is_not(None)` for the
         # NULL guard -- both portable to SQL Server, unlike a boolean `.is_(0)`.
+        window_end = call.run_date + timedelta(days=_ANALYST_SCORE_WINDOW_DAYS)
         trade = session.scalars(
             select(PaperTrade).where(
                 PaperTrade.ticker == call.ticker,
@@ -255,6 +266,7 @@ def score_analyst_calls(session: Session) -> int:
                 PaperTrade.fill_status == "filled",
                 PaperTrade.realized_r.is_not(None),
                 PaperTrade.opened_date > call.run_date,
+                PaperTrade.opened_date <= window_end,
             ).order_by(PaperTrade.opened_date).limit(1)
         ).first()
         if trade is None:
