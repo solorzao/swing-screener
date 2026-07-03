@@ -82,6 +82,51 @@ def test_exit_check_does_not_mutate_real_trades(tmp_path):
             assert t.exit_date is None and t.exit_price is None and t.exit_reason is None
 
 
+def test_reversal_trade_uses_the_reversal_exit_policy(tmp_path):
+    """A real REVERSAL trade must not be alerted to momentum-flip-exit: the replay
+    evidence says the flip converts +0.77R reversal outcomes into ~-0.19R early cuts
+    (reversal_momentum_flip_exit defaults off). Before play_type was resolved through
+    the signal_id FK, every real trade defaulted to 'continuation' and reversal
+    positions received the continuation flip-exit advice."""
+    from swing_screener.db.models import Signal
+
+    url = f"sqlite:///{tmp_path / 'rev.sqlite'}"
+    engine = get_engine(url)
+    with Session(engine) as s:
+        rev_sig = Signal(run_date=RUN, ticker="GME", timeframe="1d", horizon="medium",
+                         play_type="reversal", strength="confirmed", score=0.5, rank=1,
+                         trigger_close=100.0, atr=2.0, rsi=30.0, entry_floor=96.0,
+                         entry_ceiling=101.0, stop=95.0, target=110.0)
+        cont_sig = Signal(run_date=RUN, ticker="AMD", timeframe="1d", horizon="medium",
+                          play_type="continuation", score=0.5, rank=2,
+                          trigger_close=100.0, atr=2.0, rsi=55.0, entry_floor=96.0,
+                          entry_ceiling=101.0, stop=95.0, target=110.0)
+        s.add_all([rev_sig, cont_sig])
+        s.flush()
+        rev = _trade("GME")
+        rev.signal_id = rev_sig.id
+        cont = _trade("AMD")
+        cont.signal_id = cont_sig.id
+        legacy = _trade("AEP")  # no signal_id: legacy/manual -> continuation fallback
+        s.add_all([rev, cont, legacy])
+        s.commit()
+
+    # a bearish shaved-head bar: the momentum-flip trigger (no stop/target/time trip)
+    flip = {"low": 99.0, "high": 103.0, "close": 100.0, "shaved_head": True, "bearish": True}
+
+    def flip_bars(tickers, timeframe):  # noqa: ARG001 - mirror the live seam signature
+        return {t: flip for t in tickers}
+
+    result = run_exit_check(db_url=url, today=RUN, latest_bars_fn=flip_bars)
+
+    events = _exit_events(url)
+    assert result.n_exited == 2
+    exited = {e.message.split()[0] for e in events}
+    assert exited == {"AMD", "AEP"}          # continuation + legacy fallback flip out
+    assert all(e.reason == "momentum_flip" for e in events)
+    assert "GME" not in exited               # the reversal position rides (policy: no flip)
+
+
 # benign bar: low > stop, high < target, no shaved head -> only the time-stop tier
 # can fire, so this isolates the bars_held calculation.
 _BENIGN = {"low": 99.0, "high": 103.0, "close": 100.0, "shaved_head": False, "bearish": False}

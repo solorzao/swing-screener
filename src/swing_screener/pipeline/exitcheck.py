@@ -132,6 +132,15 @@ def run_exit_check(*, db_url: str, today: date | None = None,
         open_trades = repo.get_open_trades(session)
         bars = _bars_for(open_trades, latest_bars_fn)
 
+        # play_type selects the exit POLICY: the momentum-flip exit is a net drag on
+        # reversals (config.reversal_momentum_flip_exit, default off for that book), so
+        # a real reversal trade must not be alerted to flip-exit like a continuation.
+        # A Trade row doesn't carry play_type; resolve it through the signal_id FK in
+        # one batch. Legacy/manual rows with no signal fall back to "continuation"
+        # (the historical behavior).
+        play_types = repo.signal_play_types(
+            session, [t.signal_id for t in open_trades if t.signal_id is not None])
+
         # Dedupe against today's already-recorded real exit events so a re-run of
         # the hourly job never piles up duplicates.
         seen = {
@@ -155,6 +164,8 @@ def run_exit_check(*, db_url: str, today: date | None = None,
                 target=t.target,
                 timeframe=t.timeframe,
                 bars_held=bars_held,
+                play_type=(play_types.get(t.signal_id, "continuation")
+                           if t.signal_id is not None else "continuation"),
             )
             decision = evaluate_exit(open_trade, bar, cfg)
             if decision.action != "EXIT":
