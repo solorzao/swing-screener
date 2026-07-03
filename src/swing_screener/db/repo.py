@@ -393,6 +393,21 @@ def get_open_trades(session: Session) -> list[Trade]:
     return list(session.scalars(select(Trade).where(Trade.status == "open")))
 
 
+def signal_play_types(session: Session, signal_ids: list[int]) -> dict[int, str]:
+    """``{signal_id: play_type}`` for the given signal ids (one batch query).
+
+    Lets a real ``Trade`` resolve its play type through the ``signal_id`` FK -- the
+    exit policy differs per play type (the momentum-flip exit is a net drag on
+    reversals), and Trade rows don't carry it themselves. Unknown/absent ids are
+    simply missing from the result (callers fall back to "continuation")."""
+    if not signal_ids:
+        return {}
+    rows = session.execute(
+        select(Signal.id, Signal.play_type).where(Signal.id.in_(signal_ids))
+    ).all()
+    return {sid: pt for sid, pt in rows}
+
+
 def get_closed_trades(session: Session) -> list[Trade]:
     stmt = select(Trade).where(Trade.status == "closed").order_by(Trade.exit_date.desc())
     return list(session.scalars(stmt))
