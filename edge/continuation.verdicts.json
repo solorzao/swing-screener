@@ -1,0 +1,112 @@
+[
+  {
+    "play_type": "continuation",
+    "dimension": "market_trend",
+    "bucket": "bull",
+    "tier": "hunch",
+    "n": 231,
+    "expectancy_r": -0.16831948638632477,
+    "ci_low": -0.35696688179830766,
+    "n_clusters": 138,
+    "source": "none"
+  },
+  {
+    "play_type": "continuation",
+    "dimension": "market_trend",
+    "bucket": "bear",
+    "tier": "hunch",
+    "n": 0,
+    "expectancy_r": 0.0,
+    "ci_low": 0.0,
+    "n_clusters": 0,
+    "source": "none"
+  },
+  {
+    "play_type": "continuation",
+    "dimension": "volatility_tier",
+    "bucket": "low",
+    "tier": "hunch",
+    "n": 140,
+    "expectancy_r": -0.12141753682362459,
+    "ci_low": -0.3290575998306496,
+    "n_clusters": 91,
+    "source": "none"
+  },
+  {
+    "play_type": "continuation",
+    "dimension": "volatility_tier",
+    "bucket": "med",
+    "tier": "hunch",
+    "n": 204,
+    "expectancy_r": -0.061887091643700765,
+    "ci_low": -0.2644645327727472,
+    "n_clusters": 95,
+    "source": "none"
+  },
+  {
+    "play_type": "continuation",
+    "dimension": "volatility_tier",
+    "bucket": "high",
+    "tier": "hunch",
+    "n": 128,
+    "expectancy_r": -0.4246595741089654,
+    "ci_low": -0.6754351703073711,
+    "n_clusters": 37,
+    "source": "none"
+  },
+  {
+    "play_type": "continuation",
+    "dimension": "score",
+    "bucket": "0.00-0.50",
+    "tier": "hunch",
+    "n": 87,
+    "expectancy_r": -0.3034439063335104,
+    "ci_low": -0.600347506631287,
+    "n_clusters": 52,
+    "source": "none"
+  },
+  {
+    "play_type": "continuation",
+    "dimension": "score",
+    "bucket": "0.50-0.60",
+    "tier": "hunch",
+    "n": 98,
+    "expectancy_r": 0.12567692721428012,
+    "ci_low": -0.17815944871203435,
+    "n_clusters": 71,
+    "source": "none"
+  },
+  {
+    "play_type": "continuation",
+    "dimension": "score",
+    "bucket": "0.60-0.70",
+    "tier": "hunch",
+    "n": 148,
+    "expectancy_r": -0.1513319177888192,
+    "ci_low": -0.42875734807339966,
+    "n_clusters": 72,
+    "source": "none"
+  },
+  {
+    "play_type": "continuation",
+    "dimension": "score",
+    "bucket": "0.70-0.80",
+    "tier": "hunch",
+    "n": 65,
+    "expectancy_r": -0.4350777362131308,
+    "ci_low": -0.6614327782092182,
+    "n_clusters": 46,
+    "source": "none"
+  },
+  {
+    "play_type": "continuation",
+    "dimension": "score",
+    "bucket": "0.80-1.00",
+    "tier": "hunch",
+    "n": 74,
+    "expectancy_r": -0.25972148197236844,
+    "ci_low": -0.551456832845467,
+    "n_clusters": 34,
+    "source": "none"
+  }
+]

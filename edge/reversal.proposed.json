@@ -1,0 +1,38 @@
+[
+  {
+    "name": "reversal_volatility_tier_high_0_q",
+    "play_type": "reversal",
+    "delta": {
+      "max_extension_atr": 3.0
+    },
+    "rationale": "High-vol tier bleeds (-0.22R); tightening the max ATR extension gate should filter overextended, gappy reversals that dominate the high-vol bucket and drag expectancy.",
+    "hunch_ref": "volatility_tier=high",
+    "status": "queued",
+    "drafted_at": "2026-07-02",
+    "provenance": "reflection-opus"
+  },
+  {
+    "name": "reversal_market_trend_bull_1_q",
+    "play_type": "reversal",
+    "delta": {
+      "min_pullback_bars": 3
+    },
+    "rationale": "The bull-trend sample is large (n=288) but only marginally positive; requiring a deeper/longer pullback before a reversal entry should skip shallow bounces and lift expectancy above the CI bound.",
+    "hunch_ref": "market_trend=bull",
+    "status": "queued",
+    "drafted_at": "2026-07-02",
+    "provenance": "reflection-opus"
+  },
+  {
+    "name": "reversal_score_0_00_0_50_2_q",
+    "play_type": "reversal",
+    "delta": {
+      "oversold_rsi_max": 25
+    },
+    "rationale": "Low score bucket (0.00-0.50) is where nearly all reversals live and is barely breakeven; demanding a more extreme oversold read should concentrate entries into genuine capitulation reversals.",
+    "hunch_ref": "score=0.00-0.50",
+    "status": "queued",
+    "drafted_at": "2026-07-02",
+    "provenance": "reflection-opus"
+  }
+]
