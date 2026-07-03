@@ -17,6 +17,14 @@ momentum-flip exit OFF**. Over 503 names:
 CONFIRMED survives realistic slippage with significance intact; EARLY is breakeven-to-negative
 and is ~92% of the reversal book (it dilutes the average). Continuation is dead at every level.
 
+> **2026-07 postscript.** This table omitted the CONFIRMED cohort's sample size — a violation
+> of the "every claim carries its n" principle flagged by the 2026-07-01 audit. The current
+> re-runnable evaluation (`scripts/replay_fill_window.py`, 511 names, net of 0.05 ATR) carries
+> it: under the original one-bar fill window, CONFIRMED = +0.124R (95%low +0.020), **n=746,
+> 392 clusters, fill rate 14%**; under the realistic 5-bar resting-limit window shipped in
+> PR #78, CONFIRMED = **+0.071R (95%low +0.013), n=2,231, 503 clusters, fill rate 42%** — the
+> honest tradable number. The fragility noted here (95%low goes negative at 0.10 slip) stands.
+
 ## Changes (both behind config flags, reversible)
 
 ### 1. CONFIRMED-only reversal surfacing

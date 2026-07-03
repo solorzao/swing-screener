@@ -59,7 +59,10 @@ rule that never bends to emotion, under hard limits I can always override.
 - **Shared playbook:** `edge/<strategy>.md` — thesis, confirmed edges, hunches / needs-a-test,
   falsified / retired, open questions. Versioned, human-readable, hand-editable.
 - **Execution arc:** the engine emits a structured **order intent**; a pluggable adapter runs
-  it — `manual` and `paper` now, `robinhood` (agentic / MCP) when autonomy is earned.
+  it — `manual` and `paper` now, **`alpaca` live** when autonomy is earned. (Decision
+  2026-06-21: a headless-auth spike found Robinhood's agentic MCP unusable for an unattended
+  cron — desktop-per-session OAuth, no paper sandbox — so Alpaca is the autonomous broker and
+  Robinhood remains a human-approval surface via the `manual` adapter's order tickets.)
 
 ## Success looks like
 

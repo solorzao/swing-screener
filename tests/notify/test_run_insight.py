@@ -186,6 +186,34 @@ def test_missing_playbooks_surface_in_digest_footer(tmp_path, monkeypatch):
     assert "continuation" in body and "reversal" in body
 
 
+def test_scoring_runs_even_with_deep_analysis_off(tmp_path, monkeypatch):
+    """score_analyst_calls is a cheap idempotent DB join, not a model call -- gating it
+    behind SWING_DEEP_ANALYSIS meant pausing the analyst silently froze the grading of
+    calls ALREADY MADE (2026-07 audit). Scoring must run on every daily digest."""
+    monkeypatch.delenv("SWING_DEEP_ANALYSIS", raising=False)  # deep path OFF
+    url = f"sqlite:///{tmp_path / 'scoreoff.sqlite'}"
+    _seed(url, n=1)
+    with Session(get_engine(url)) as s:
+        s.add(AnalystCall(
+            created_date=date(2026, 6, 1), ticker="OLD", timeframe="1d",
+            play_type="continuation", run_date=date(2026, 6, 1),
+            baseline_conviction="medium", final_conviction="high", nudge_reason="x",
+            model="claude-opus-4-8"))
+        s.add(PaperTrade(
+            ticker="OLD", timeframe="1d", horizon="medium", play_type="continuation",
+            signal_score=0.8, rank=1, arm=BASELINE, variant=DEFAULT_VARIANT,
+            fill_status="filled", stop=95.0, target=110.0, risk=5.0, status="closed",
+            realized_r=1.5, hold_bars=3, opened_date=date(2026, 6, 2),
+            exit_date=date(2026, 6, 9)))
+        s.commit()
+
+    run.send_digest(**_kwargs(tmp_path, url))
+
+    with Session(get_engine(url)) as s:
+        old = s.scalars(select(AnalystCall).where(AnalystCall.ticker == "OLD")).one()
+        assert old.realized_r == 1.5  # graded despite the analyst being off
+
+
 def test_insight_engine_scores_resolved_prior_calls(tmp_path, monkeypatch):
     monkeypatch.setenv("SWING_DEEP_ANALYSIS", "1")
     monkeypatch.setenv("SWING_DEEP_ANALYSIS_TOP_N", "1")

@@ -203,9 +203,10 @@ both EST and EDT) and the Python gate picks the right Eastern hour. "Last busine
 
 On a DST-transition day a UTC cron pair can fire **twice** (or zero times) for the intended
 ET hour. This is safe because the workloads are **idempotent**: the screen delete+reinserts
-per `run_date` and `advance_open` guards on `last_advanced == today`; digests/exit alerts
-dedupe via the `EmailLog` unique constraint. (Pinned by `test_run_double_fire_*`.) The
-**on-demand-analysis** worker is ungated (it polls the `analysis_requests` queue every 15 min);
+per `run_date` and `advance_open` guards on the completed-bar label; digests/exit alerts
+dedupe via the `EmailLog` unique constraint, and the market report via a unique
+`market_reports.run_date`. (Pinned by `test_run_double_fire_*`.) The
+**on-demand-analysis** worker is ungated (it polls the `analysis_requests` queue hourly);
 it dedupes emails via `EmailLog` (`kind="ondemand"`), claims rows atomically, and requeues
 stale `running` rows so a crashed retry recovers. Like the others, the **new job is created by
 re-running the provisioning** (`az deployment sub create`, Step 1) — CD only updates images;
@@ -213,6 +214,12 @@ the `analysis_requests` table is created by `alembic upgrade head` on the job's 
 
 ## Operational notes
 
+- **GitHub cron workflows can silently stop:** GitHub disables `schedule:`-triggered
+  workflows (the Sunday **optimizer** and **reflection** loops) after ~60 days without
+  repo activity, and their no-op paths exit green — so a stopped loop looks identical to
+  a quiet one. If the repo goes dormant while the system runs, re-enable them under
+  Actions, or expect the enablement email and act on it. (The Azure jobs have no such
+  auto-disable.)
 - **Cold resume:** Azure SQL (serverless option) auto-pauses; the first request of the day
   fails with error **40613** while it wakes (~1 min). `run_screen` retries the startup
   `alembic upgrade head` with backoff, so the evening screen survives it.
