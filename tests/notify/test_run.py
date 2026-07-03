@@ -196,7 +196,8 @@ def test_reversal_top5_sector_cap_backfills(tmp_path):
     assert res.sent is True and res.n_reversals == 4
     body = sent[-1]["text"]
     assert "CRM" in body and "WDAY" in body
-    assert "BAC" not in body  # a 3rd same-sector financial is capped out
+    # capped-out names stay visible on the compact overflow line, not as full picks
+    assert "Also confirmed (lost the top-5/sector race): MS, BAC, C" in body
 
 
 def test_send_digest_keeps_picks_when_quotes_unavailable(tmp_path):

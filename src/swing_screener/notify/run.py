@@ -569,6 +569,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         reversal_digest: list[DigestPick] | None = None
         reversal_pdf: list[PdfPick] = []
         rev_funnel: tuple[int, ...] | None = None
+        reversal_overflow: list[str] = []
         if kind == "daily":
             # Stage-attributed funnel, rendered under the reversal section so a
             # surfacing-bar wipeout is visibly different from a quiet market AND says
@@ -590,6 +591,11 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
             reversal_sigs = sel.cap_signals_by_sector(
                 session, pool, max_per_sector=scfg.reversal_max_per_sector, limit=5)
             rev_funnel = (detected, confirmed_n, n_fresh, n_actionable)
+            # Overflow: names that cleared every bar but lost the top-5/sector race. On a
+            # broad rotation day these ARE the story (2026-07-02: CRM/WDAY/PTC at rank
+            # 9-12 -- present, invisible); one compact line keeps them visible.
+            surfaced = {s.ticker for s in reversal_sigs}
+            reversal_overflow = [s.ticker for s in pool if s.ticker not in surfaced]
             reversal_digest, reversal_pdf = _build_picks(
                 reversal_sigs, play_type="reversal", collect_intents=collected_intents)
 
@@ -695,6 +701,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         body = compose_digest_body(kind, run_date, digest_picks, alert_lines,
                                    has_pdf=pdf_attached, reversal_picks=reversal_digest,
                                    reversal_funnel=rev_funnel,
+                                   reversal_overflow=reversal_overflow,
                                    proposals_text=proposals_text(proposals),
                                    proposals_html=proposals_html(proposals),
                                    autonomy_status=autonomy_status,
