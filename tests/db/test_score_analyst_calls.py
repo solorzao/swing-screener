@@ -55,6 +55,39 @@ def test_scores_call_from_first_post_call_closed_baseline_default_trade() -> Non
         assert call.scored_at == date(2026, 6, 25)
 
 
+def test_call_is_never_scored_by_a_distant_unrelated_trade() -> None:
+    """The join is bounded in time: a call whose own pick never filled must NOT be graded
+    by whatever same-key trade happens to close weeks later — that's a different setup at
+    different levels, and miscored calls poison the calibration record the autonomy gate
+    reads (2026-07 audit). The pick's own booking lands within days of the call (next run
+    for 1d/4h; the period-end run + weekend for 1wk), so anything beyond the window is
+    someone else's trade."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add(_call())  # run_date 2026-06-19
+        # same pick keys, but opened 3 weeks after the call -> a different setup entirely
+        s.add(_pt(realized_r=-2.0, opened_date=date(2026, 7, 10), exit_date=date(2026, 7, 15)))
+        s.commit()
+
+        assert repo.score_analyst_calls(s) == 0
+        call = s.query(AnalystCall).one()
+        assert call.realized_r is None and call.scored_at is None
+
+
+def test_call_scored_by_a_late_but_in_window_booking() -> None:
+    """A 1wk pick called mid-week books on the period-end run, up to ~a week after the
+    call (plus a weekend) — that booking is still the call's own setup and must score."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add(_call(timeframe="1wk"))  # run_date Fri-adjacent 2026-06-19
+        s.add(_pt(timeframe="1wk", realized_r=0.8,
+                  opened_date=date(2026, 6, 26), exit_date=date(2026, 7, 24)))  # 7 days later
+        s.commit()
+
+        assert repo.score_analyst_calls(s) == 1
+        assert s.query(AnalystCall).one().realized_r == 0.8
+
+
 def test_unfilled_pick_stays_unscored() -> None:
     engine = get_engine("sqlite:///:memory:")
     with Session(engine) as s:
