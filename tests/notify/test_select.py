@@ -118,6 +118,40 @@ def test_reversal_picks_premium_only_surfaces_premium_tier():
         assert [p.ticker for p in sel.reversal_picks(s, RUN)] == ["AAA", "BBB", "CCC"]
 
 
+def test_reversal_filters_compose_instead_of_premium_overriding():
+    """premium_only AND confirmed_only both set -> both apply (AND). The old elif let
+    premium silently override confirmed_only, which is how the 2026-06-28 premium-only
+    regression blanked the reversal list without anyone noticing."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add_all([_rev("AAA", 1, "early", conviction_tier="premium"),
+                   _rev("BBB", 2, "confirmed", conviction_tier="premium"),
+                   _rev("CCC", 3, "confirmed", conviction_tier="base")])
+        s.commit()
+        both = sel.reversal_picks(s, RUN, premium_only=True, confirmed_only=True)
+        assert [p.ticker for p in both] == ["BBB"]  # premium AND confirmed
+
+
+def test_cap_signals_by_sector_caps_and_backfills():
+    """The reversal-list sector cap: a hot sector keeps at most max_per_sector slots and
+    lower-ranked names from other sectors backfill (2026-07-02: 31 same-day confirmations
+    crowded every software rotation name out of the top-5)."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add_all([Universe(ticker="AAA", sector="Financials"),
+                   Universe(ticker="BBB", sector="Financials"),
+                   Universe(ticker="CCC", sector="Financials"),
+                   Universe(ticker="SFT", sector="Information Technology")])
+        s.commit()
+        sigs = [_rev("AAA", 1), _rev("BBB", 2), _rev("CCC", 3), _rev("SFT", 4)]
+        capped = sel.cap_signals_by_sector(s, sigs, max_per_sector=2, limit=3)
+        assert [p.ticker for p in capped] == ["AAA", "BBB", "SFT"]  # CCC capped out
+        # None -> pure trim, no sector logic
+        assert [p.ticker for p in
+                sel.cap_signals_by_sector(s, sigs, max_per_sector=None, limit=3)] == [
+            "AAA", "BBB", "CCC"]
+
+
 def test_cooldown_drops_stale_repeats_keeps_fresh_and_legacy():
     engine = get_engine("sqlite:///:memory:")
     with Session(engine) as s:

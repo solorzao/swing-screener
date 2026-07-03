@@ -3,7 +3,7 @@ from datetime import UTC, date, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from swing_screener.db.models import EmailLog, ExitEvent, Signal
+from swing_screener.db.models import EmailLog, ExitEvent, Signal, Universe
 from swing_screener.db.session import get_engine
 from swing_screener.notify import run
 
@@ -102,7 +102,10 @@ def test_daily_digest_surfaces_confirmed_reversals_with_funnel_line(tmp_path):
     body = sent[-1]["text"]
     assert "GME" in body                      # confirmed reversal is in the email
     assert "BBBY" not in body                 # early stays shadow-tracked, hidden
-    assert "Reversal funnel: 2 detected · 1 confirmed · 1 surfaced" in body
+    # stage-attributed funnel: cooldown (fresh) and actionability stages are visible so a
+    # wipeout names the bar that filtered the list (2026-07 rotation audit).
+    assert ("Reversal funnel: 2 detected · 1 confirmed · 1 fresh · 1 actionable · "
+            "1 surfaced") in body
     assert "Reversal funnel: 2 detected" in sent[-1]["html"]
 
 
@@ -120,7 +123,8 @@ def test_daily_digest_funnel_line_on_filtered_empty_day(tmp_path):
                           pdf_dir=tmp_path / "digests", anthropic_client=_FakeClient(),
                           smtp_send=lambda **k: sent.append(k))
     assert res.sent is True and res.n_reversals == 0
-    assert "Reversal funnel: 2 detected · 0 confirmed · 0 surfaced" in sent[-1]["text"]
+    assert ("Reversal funnel: 2 detected · 0 confirmed · 0 fresh · 0 actionable · "
+            "0 surfaced") in sent[-1]["text"]
 
 
 def test_send_digest_drops_already_ran_picks(tmp_path):
@@ -142,6 +146,58 @@ def test_send_digest_drops_already_ran_picks(tmp_path):
     body = sent[-1]["text"]
     assert "American Electric Power" in body          # AEP still actionable -> kept
     assert "Advanced Micro Devices" not in body       # AMD already ran -> dropped
+
+
+def test_reversal_pick_extended_is_kept_broken_is_dropped(tmp_path):
+    """Play-type-aware already-ran semantics: a REVERSAL pick is a resting limit with a
+    multi-bar fill window, so sitting above its ceiling at digest time is its NORMAL
+    state (a confirmed reversal closes above the flip high by definition) -- it must be
+    KEPT. Only a broken stop drops it. The old drop-on-extended rule silently deleted
+    every confirmed reversal during the 2026-07 rotation."""
+    url = f"sqlite:///{tmp_path / 'revran.sqlite'}"
+    _seed(url)
+    engine = get_engine(url)
+    with Session(engine) as s:
+        # zone 50-52, stop 47: GME at 55 is extended (keep); BBBY at 46 broke the stop (drop)
+        s.add_all([_rev_sig("GME", 1, "confirmed"), _rev_sig("BBBY", 2, "confirmed")])
+        s.commit()
+    sent = []
+    prices = {"GME": 55.0, "BBBY": 46.0, "AMD": 100.0, "AEP": 100.0}
+    res = run.send_digest(kind="daily", db_url=url, run_date=RUN, to="me@example.com",
+                          pdf_dir=tmp_path / "digests", anthropic_client=_FakeClient(),
+                          smtp_send=lambda **k: sent.append(k),
+                          latest_closes_fn=lambda tickers: prices)
+    assert res.sent is True and res.n_reversals == 1
+    body = sent[-1]["text"]
+    assert "GME" in body        # extended reversal: the resting limit is still working
+    assert "BBBY" not in body   # broken stop: the setup failed before entry
+
+
+def test_reversal_top5_sector_cap_backfills(tmp_path):
+    """A one-sector wave can't fill the reversal list: with reversal_max_per_sector=2 the
+    third+ same-sector names give way to the next sectors' picks (the Jul-2 crowding)."""
+    url = f"sqlite:///{tmp_path / 'revcap.sqlite'}"
+    _seed(url)
+    engine = get_engine(url)
+    with Session(engine) as s:
+        fins = ["JPM", "GS", "MS", "BAC", "C"]
+        s.add_all([_rev_sig(t, i + 1, "confirmed") for i, t in enumerate(fins)])
+        s.add_all([_rev_sig("CRM", 6, "confirmed"), _rev_sig("WDAY", 7, "confirmed")])
+        s.add_all([Universe(ticker=t, sector="Financials") for t in fins])
+        s.add_all([Universe(ticker=t, sector="Information Technology")
+                   for t in ("CRM", "WDAY")])
+        s.commit()
+    sent = []
+    res = run.send_digest(kind="daily", db_url=url, run_date=RUN, to="me@example.com",
+                          pdf_dir=tmp_path / "digests", anthropic_client=_FakeClient(),
+                          smtp_send=lambda **k: sent.append(k))
+    # 2 financials keep their rank slots, the 3 others are capped out, and the software
+    # names ranked 6-7 backfill -> 4 surfaced from the 7 candidates
+    assert res.sent is True and res.n_reversals == 4
+    body = sent[-1]["text"]
+    assert "CRM" in body and "WDAY" in body
+    # capped-out names stay visible on the compact overflow line, not as full picks
+    assert "Also confirmed (lost the top-5/sector race): MS, BAC, C" in body
 
 
 def test_send_digest_keeps_picks_when_quotes_unavailable(tmp_path):

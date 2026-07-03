@@ -171,7 +171,8 @@ def compose_digest_body(
     *,
     has_pdf: bool,
     reversal_picks: Sequence[DigestPick] | None = None,
-    reversal_funnel: tuple[int, int] | None = None,
+    reversal_funnel: tuple[int, ...] | None = None,
+    reversal_overflow: Sequence[str] | None = None,
     proposals_text: Sequence[str] | None = None,
     proposals_html: str | None = None,
     autonomy_status: str | None = None,
@@ -185,11 +186,17 @@ def compose_digest_body(
     None to omit the section entirely (weekly/monthly). Exit alerts get their own
     badged section, and a PDF pointer is appended when ``has_pdf``.
 
-    ``reversal_funnel`` (``(detected, confirmed)`` counts over ALL stored reversal signals
-    for the run date) appends a one-line funnel under the reversal section: "N detected ·
-    M confirmed · K surfaced". It makes a filtered-out day distinguishable from a quiet
-    market -- an empty surfaced list with a non-zero detected count is a surfacing-bar
-    event, not an absence of setups. None (or no reversal section) omits the line.
+    ``reversal_funnel`` appends a one-line funnel under the reversal section. The short
+    form ``(detected, confirmed)`` renders "N detected · M confirmed · K surfaced"; the
+    stage-attributed form ``(detected, confirmed, fresh, actionable)`` adds the cooldown
+    and actionability stages so a wipeout says WHICH bar filtered the list (the 2026-07
+    rotation miss was undiagnosable from the two-count line). Either way a filtered-out
+    day reads differently from a quiet market. None omits the line.
+
+    ``reversal_overflow`` (tickers that cleared every surfacing bar but lost the top-N /
+    sector-cap race) renders one compact "also confirmed:" line under the funnel, so a
+    broad rotation day is VISIBLE even when the rotating names don't win the five slots
+    (on 2026-07-02 CRM/WDAY/PTC were rank 9-12 -- present, invisible). None/empty omits.
 
     ``proposals_text``/``proposals_html`` (the manual-mode "Proposed orders — place on
     Robinhood" shopping list, already rendered in :mod:`notify.proposals`) are appended
@@ -207,9 +214,16 @@ def compose_digest_body(
 
     funnel_line: str | None = None
     if reversal_picks is not None and reversal_funnel is not None:
-        detected, confirmed = reversal_funnel
-        funnel_line = (f"Reversal funnel: {detected} detected · {confirmed} confirmed · "
-                       f"{len(reversal_picks)} surfaced")
+        detected, confirmed, *stages = reversal_funnel
+        mid = f"{detected} detected · {confirmed} confirmed"
+        if stages:  # stage-attributed form: (detected, confirmed, fresh, actionable)
+            fresh, actionable = stages
+            mid += f" · {fresh} fresh · {actionable} actionable"
+        funnel_line = f"Reversal funnel: {mid} · {len(reversal_picks)} surfaced"
+    overflow_line: str | None = None
+    if reversal_picks is not None and reversal_overflow:
+        overflow_line = "Also confirmed (lost the top-5/sector race): " + ", ".join(
+            reversal_overflow)
 
     # --- plain text ---
     lines = _section_text(CONTINUATION_TITLE, picks, run_date)
@@ -217,6 +231,8 @@ def compose_digest_body(
         lines += ["", *_section_text(REVERSAL_TITLE, reversal_picks, run_date)]
         if funnel_line:
             lines.append(funnel_line)
+        if overflow_line:
+            lines.append(overflow_line)
     if proposals_text:
         lines += list(proposals_text)
     if exit_alerts:
@@ -237,6 +253,8 @@ def compose_digest_body(
         html_parts.append(_section_html(REVERSAL_TITLE, reversal_picks, run_date))
         if funnel_line:
             html_parts.append(f"<p><i>{escape(funnel_line)}</i></p>")
+        if overflow_line:
+            html_parts.append(f"<p><i>{escape(overflow_line)}</i></p>")
     if proposals_html:
         html_parts.append(proposals_html)
     if exit_alerts:

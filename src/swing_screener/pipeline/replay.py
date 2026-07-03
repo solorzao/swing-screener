@@ -202,9 +202,11 @@ def _replay_one(
         # Step pending resting-limit orders, then advance every open trade one bar under
         # the baseline exit (arm-keyed downstream). A pending row booked THIS iteration
         # carries last_advanced=fill_date, so it is not double-stepped on its first bar.
+        # Per-variant windows: a window sweep books AND expires under its own config.
         latest = {(ticker, timeframe): _bar_row(through)}
-        resolve_pending(session, latest, window=base_cfg.reversal_fill_window_bars,
-                        today=fill_date)
+        resolve_pending(session, latest, today=fill_date,
+                        window={n: c.reversal_fill_window_bars
+                                for n, c in variants.items()})
         advance_open(session, latest, {BASELINE: base_cfg}, today=fill_date)
 
 

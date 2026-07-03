@@ -134,6 +134,33 @@ class StrategyConfig:
     # laggards. 0/off when no rs column. Needs spy_close threaded into build_frame.
     require_rs_leader: bool = False
     rs_ma_window: int = 21
+    # --- rotation-capture entry mechanics (2026-07: the Jul 1-2 software rotation was
+    # detected -- CRM/WDAY/INTU/PTC all fired -- but was structurally untradeable: EARLY
+    # hidden on the thrust day, CONFIRMED born with price above its own pullback ceiling,
+    # and a V-move never retraces 38.2% to fill the resting limit. Three default-off knobs
+    # let replay variants A/B the entry mechanics; the defaults reproduce legacy exactly. ---
+    # A flip may confirm up to this many bars after the flip bar: the trailing HA-green run
+    # must start green-out-of-red and today's close is the FIRST close above the flip bar's
+    # high. 1 = the legacy next-bar-only confirmation. For late confirms (>1 bar after the
+    # flip) the decline gates are measured as-of the FLIP bar, where the downtrend claim
+    # belongs (green recovery bars otherwise erode the red-run count).
+    # DEFAULT 3 (replay-screened 2026-07-03, 511 names / 5y): the late-confirm increment --
+    # flips that pause a bar or two before confirming, permanently invisible at window=1 --
+    # graded +0.110R (clustered 95%low +0.065) net of 0.05 ATR slippage and HELD at 0.10
+    # (+0.079R, low +0.034), while the legacy-only confirmed book no longer clears the bar
+    # (+0.004R at 0.05, negative at 0.10). The legacy rule stays measured forward as the
+    # `rev_confirm1` screen variant. See docs/plans/2026-07-03-reversal-rotation-capture.md.
+    reversal_confirm_window: int = 3
+    # Anchor the CONFIRMED entry band on the top of the bounce-so-far (max high of the
+    # trailing green run) instead of the flip bar's high. The flip anchor leaves every
+    # confirmed signal born above its own ceiling by construction (confirmation REQUIRES
+    # a close above the flip high while the ceiling sits 38.2% below it).
+    reversal_anchor_confirmation: bool = False
+    # Entry ceiling at the trigger close -- a "buy at yesterday's close or better" resting
+    # limit -- instead of the shallow-retracement band ceiling. The floor keeps the
+    # deep-retrace bound. Catches V-shaped bounces that never pull back into the band.
+    reversal_ceiling_at_close: bool = False
+
     # Reversal fill window: how many completed bars a reversal's resting-limit entry may
     # wait to fill before expiring to "missed" (the stop breaking first invalidates it).
     # 1 = the legacy next-bar-only fill, which the 2026-07 audit found left ~95% of
@@ -184,6 +211,10 @@ class StrategyConfig:
     # EARLY is still detected, scored, and shadow-booked (learning loop intact) -- just hidden.
     # False restores the full list. See docs/plans/2026-06-25-reversal-confirmed-noflip-design.md.
     reversal_surface_confirmed_only: bool = True
+    # Sector-diversity cap for the reversal list (the daily_max_per_sector counterpart).
+    # 2026-07-02: 31 same-day confirmations crowded every software rotation name out of the
+    # score-ranked top-5. Unknown sectors are never capped (fail-open); None disables.
+    reversal_max_per_sector: int | None = 2
 
     # exits
     # momentum-flip exit: close a trade when the HA candle flips bearish (a shaved head).

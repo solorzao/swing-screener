@@ -21,6 +21,7 @@ from swing_screener.config import StrategyConfig
 from swing_screener.db import repo
 from swing_screener.db.models import PaperTrade
 from swing_screener.pipeline.arms import BASELINE
+from swing_screener.pipeline.variants import DEFAULT_VARIANT
 from swing_screener.signals.entry_zone import EntryZone
 from swing_screener.signals.exits import OpenTrade, evaluate_exit
 from swing_screener.signals.fill import resolve_fill
@@ -208,7 +209,7 @@ def resolve_pending(
     session: Session,
     latest_bars: Mapping[tuple[str, str], Mapping[str, float | bool | date]],
     *,
-    window: int,
+    window: int | Mapping[str, int],
     today: date,
 ) -> None:
     """Walk every PENDING resting-limit order forward one completed bar.
@@ -221,7 +222,20 @@ def resolve_pending(
     the bar-stepper uses), so re-runs and partial-bar days never double-count. Runs
     BEFORE ``advance_open`` in the screen; a row filled here is skipped by the stepper's
     entry-bar guard the same run.
+
+    ``window`` is either one width for every row (legacy) or a ``{variant: bars}``
+    mapping so each screen variant's pending rows expire under ITS OWN
+    ``reversal_fill_window_bars`` -- booking already used the variant's width, but expiry
+    silently clamped every row to the base config's, corrupting any window A/B
+    (2026-07 review). Unmapped variants fall back to the default variant's width, else
+    the mapping's max (expiring late is visible in fill%, expiring early silently
+    drops fills).
     """
+    def _window_for(variant: str) -> int:
+        if isinstance(window, int):
+            return window
+        return window.get(variant, window.get(DEFAULT_VARIANT, max(window.values())))
+
     for pt in repo.load_pending_paper_trades(session):
         bar = latest_bars.get((pt.ticker, pt.timeframe))
         if bar is None:
@@ -253,7 +267,7 @@ def resolve_pending(
             # honestly trade) -> the order is cancelled, never opened.
             pt.fill_status = "invalidated"
             pt.status = "closed"
-        elif pt.pending_bars >= window:
+        elif pt.pending_bars >= _window_for(pt.variant):
             pt.fill_status = "missed"   # window exhausted; the pullback never came
             pt.status = "closed"
     session.commit()

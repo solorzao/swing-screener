@@ -23,7 +23,9 @@ _Forward-confirmed (gold): cleared the multiple-comparisons-corrected lower boun
 
 _Replay-screened (candidate): cleared the bound on the haircut replay corpus only -- a backtest screen, NOT live-confirmed._
 
-_none yet_
+- **Windowed confirmation (`reversal_confirm_window=3`)** — confirmed-cohort expectancy **+0.039R**, n=9,706 closed (511 clusters), clustered 95% CI lower bound **+0.012R**, net of 0.05 ATR slippage, full 511-name / 5y corpus (through 2026-07-02). The legacy next-bar-only rule scored +0.004R (lower bound -0.028R) on the same corpus — it no longer clears the bar there.
+
+  The isolated **late-confirm increment** (flips that confirmed 2-3 bars after the flip — permanently invisible to the legacy rule) is the strongest cohort measured on this book: **+0.110R**, n=7,833 (3,191 closed, 507 clusters), clustered lower bound **+0.065R** net of cost. Mechanism: a pause bar before confirmation leaves the pullback limit near the market (41% fill vs the vertical confirms it replaces), and a digested confirmation is higher-quality than a one-bar rip. Found while diagnosing the missed 2026-07-01/02 software rotation (INTU missed legacy confirmation by $0.80 on Jul 2 and the setup died forever). **Cost-robust**: the increment holds at 0.10 ATR slippage (+0.079R, clustered lower bound +0.034R) while the legacy-only book is negative there (-0.030R). Shipped as the default (`reversal_confirm_window=3`); the legacy rule is forward-tracked as the `rev_confirm1` screen variant, so promotion to gold (or reversal of the flip) follows the live shadow book.
 
 ## Hunches / needs a test
 
@@ -51,7 +53,9 @@ _Watched conditions that have not cleared the bound on either book -- ideas, not
 
 _Prior claims now contradicted by the evidence, kept for the record._
 
-_none yet_
+- **Chase entries (`reversal_ceiling_at_close`, ceiling at the trigger close)** — REFUTED 2026-07-03: fill rate jumps 44% -> 92% but confirmed-cohort expectancy collapses to **-0.062R** (clustered lower bound -0.075R, n=13,657 closed), and the rotation cohort is no better. The pullback limit's "adverse selection" is actually favorable selection — buying lower IS the edge; paying up forfeits it. The V-rotation fix is the confirmation WINDOW (catch the pause-then-confirm shape), not a chase.
+- **Confirmation-bar band anchor (`reversal_anchor_confirmation`)** — REFUTED 2026-07-03: raising the band onto the bounce top lifts fills (44% -> 61%) but drops confirmed expectancy to -0.022R (lower bound -0.043R). Same lesson as the chase, in miniature.
+- **Corpus note**: the 2026-07-03 refresh (511 names, 5y through 2026-07-02, current yfinance adjustments) moved several old numbers — legacy CONFIRMED no longer clears the bound standalone (+0.004R vs the +0.125R measured 2026-06-25), and the old "confirmed does best at VIX>70" read INVERTED (vix_bucket=high -0.068R, vix_bucket=low +0.115R lower bound +0.063R on this corpus). Prior-corpus claims should be re-validated before promotion decisions lean on them.
 
 ## Analyst calibration
 
@@ -61,6 +65,9 @@ _No scored analyst calls yet -- calibration pending._
 ## Open questions
 
 _Things to investigate next._
+
+- EARLY signals graded **+0.020R overall (clustered lower bound +0.005R)** on the refreshed corpus — thin but positive, unlike the 2026-06-25 read. The strong sub-cohorts (EARLY × vol_tier=high +0.171R lb +0.108; EARLY × market_vol=high +0.209R lb +0.172) come from a wide multiple-comparison sweep and contradict the forward-confirmed low-vol edge's direction — treat as hunches for the reflection loop, not surfacing changes.
+- Same-day sector clustering (>=4 reversal signals in one GICS sector) tags ~85% of the book — reversal signals inherently cluster on broad red days, so the tag as defined barely discriminates. A sharper rotation definition (sector-relative return of the CLUSTER vs SPY on the flip day, or sector-ETF thrust conditioning) is the next cut worth building; the surfacing sector cap already handles the crowding symptom.
 
 - Is the confirmed low-volatility edge doing all the work inside the bull-regime bucket? Cross-tabulate `volatility_tier=low` against `market_trend=bull` to see whether the two are the same trades wearing different labels.
 - The volatility gradient is monotonic and clean (low +0.35R → med -0.02R → high -0.22R). Worth testing whether a hard volatility filter — trade only the low tier — is the single most important gate for this play.

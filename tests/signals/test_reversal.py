@@ -152,6 +152,75 @@ def test_reversal_flip_rvol_gates():
     assert detect_reversal(frame, replace(CFG, reversal_min_flip_rvol=vr - 0.5)) is not None
 
 
+def _late_confirm_rows():
+    """Flip bar, then a green PAUSE bar that does NOT clear the flip high (the normal
+    inside day digesting a violent rotation bar), then the close above the flip high.
+    Legacy next-bar-only confirmation is permanently blind to this shape (2026-07)."""
+    rows = _reversal_rows()  # ends on the green flip bar
+    flip_close = rows[-1]["close"]
+    flip_high = rows[-1]["high"]
+    rows.append(_bar(flip_close, flip_high - 0.1, flip_close - 0.2, flip_high - 0.2))
+    rows.append(_bar(flip_high - 0.2, flip_high + 3.0, flip_high - 0.4, flip_high + 2.5,
+                     v=2_500_000.0))
+    return rows
+
+
+def test_late_confirmation_needs_the_window():
+    frame = _frame(_late_confirm_rows())
+    # legacy window=1 (kept as the rev_confirm1 variant): the pause bar killed the
+    # pattern forever
+    assert detect_reversal(frame, replace(CFG, reversal_confirm_window=1)) is None
+    # the default window: today is the FIRST close above the flip high -> confirmed
+    ctx = detect_reversal(frame, CFG)
+    assert ctx is not None
+    assert ctx.strength == CONFIRMED
+
+
+def test_late_confirmation_fires_exactly_once():
+    rows = _late_confirm_rows()
+    last_close = rows[-1]["close"]
+    rows.append(_bar(last_close, last_close + 2.0, last_close - 0.3, last_close + 1.5))
+    frame = _frame(rows)
+    # the day AFTER the first close above the flip high: an earlier run bar already
+    # confirmed, so the trigger must not re-fire
+    assert detect_reversal(frame, CFG) is None
+
+
+def test_next_bar_confirmation_unchanged_by_window():
+    # the wider default window must not change the legacy next-bar confirmation itself
+    frame = _frame(_reversal_rows(confirm=True))
+    ctx = detect_reversal(frame, CFG)
+    assert ctx is not None and ctx.strength == CONFIRMED
+    legacy = detect_reversal(frame, replace(CFG, reversal_confirm_window=1))
+    assert legacy is not None and legacy.strength == CONFIRMED
+
+
+def test_anchor_confirmation_re_anchors_the_band_on_the_bounce_top():
+    frame = _frame(_reversal_rows(confirm=True))
+    legacy = detect_reversal(frame, CFG)
+    anchored = detect_reversal(frame, replace(CFG, reversal_anchor_confirmation=True))
+    assert legacy is not None and anchored is not None
+    # legacy anchors on the flip bar's high; the confirmation bar closed ABOVE it, so the
+    # signal is born above its own ceiling. The re-anchor tracks the bounce top instead.
+    assert anchored.bounce_high > legacy.bounce_high
+    assert anchored.bounce_high >= anchored.trigger_close
+    z_legacy = compute_reversal_zone(legacy, CFG)
+    z_anchored = compute_reversal_zone(anchored, replace(CFG, reversal_anchor_confirmation=True))
+    assert z_anchored.ceiling > z_legacy.ceiling
+
+
+def test_ceiling_at_close_buys_yesterdays_close():
+    cfg = replace(CFG, reversal_ceiling_at_close=True)
+    ctx = _rev_ctx(trigger_close=112.0, bounce_high=110.0)  # confirmed: closed over the high
+    z = compute_reversal_zone(ctx, cfg)
+    assert z is not None
+    assert z.ceiling == ctx.trigger_close      # "at yesterday's close or better"
+    assert z.reference == z.ceiling            # R still anchored on the fill price
+    assert z.risk == z.ceiling - z.stop
+    # legacy band ceiling sits below the confirmation close by construction
+    assert compute_reversal_zone(ctx, CFG).ceiling < ctx.trigger_close
+
+
 def test_no_reversal_in_a_healthy_uptrend():
     # a steady grind up is never oversold -> no reversal candidate
     rows, p = [], 50.0

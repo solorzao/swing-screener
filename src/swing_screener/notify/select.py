@@ -79,16 +79,39 @@ def reversal_picks(session: Session, run_date: date, *, top_n: int = 5,
 
     ``premium_only`` keeps only the PREMIUM conviction tier (high-volume bounce AND Wyckoff
     spring -- the additive +0.25R edge). ``confirmed_only`` keeps CONFIRMED-strength reversals.
-    Either way the filtered-out reversals are still stored/shadow-tracked, just hidden from the
-    digest (the learning loop is preserved)."""
+    The two COMPOSE (AND) when both are set -- premium used to silently override
+    confirmed_only via an elif, which is how the 2026-06-28 premium-only regression blanked
+    the digest. Either way the filtered-out reversals are still stored/shadow-tracked, just
+    hidden from the digest (the learning loop is preserved)."""
     where = [Signal.run_date == run_date, Signal.play_type == "reversal",
              *_fresh_enough(session, run_date, max_age_days)]
     if premium_only:
         where.append(Signal.conviction_tier == "premium")
-    elif confirmed_only:
+    if confirmed_only:
         where.append(Signal.strength == "confirmed")
     stmt = select(Signal).where(*where).order_by(Signal.rank).limit(top_n)
     return list(session.scalars(stmt))
+
+
+def cap_signals_by_sector(session: Session, signals: list[Signal], *,
+                          max_per_sector: int | None, limit: int) -> list[Signal]:
+    """Cap an already-ranked signal list to ``max_per_sector`` per GICS sector, then trim
+    to ``limit`` -- the reversal-list counterpart of ``daily_picks``' cap (2026-07-02: 31
+    same-day confirmations crowded every software rotation name out of the top-5).
+
+    Runs over an in-memory list (the caller filters staleness/actionability first, so a
+    dropped pick never consumes a sector slot). Unknown sectors are never capped
+    (fail-open); ``max_per_sector=None`` just trims to ``limit``."""
+    if max_per_sector is None:
+        return signals[:limit]
+    tickers = {s.ticker for s in signals}
+    rows = session.execute(
+        select(Universe.ticker, Universe.sector).where(Universe.ticker.in_(tickers))
+    ).all()
+    sector_of = {t: sec for t, sec in rows}
+    capped = cap_by_sector(signals, lambda s: sector_of.get(s.ticker),
+                           max_per_sector=max_per_sector, limit=limit)
+    return list(capped)
 
 
 def reversal_funnel(session: Session, run_date: date) -> tuple[int, int]:
