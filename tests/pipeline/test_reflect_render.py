@@ -61,14 +61,20 @@ def test_parse_state_reads_nonzero_counter_and_a_date():
 
 
 # ---------------------------------------------------------------------------
-# The SEED files on disk must parse to a zeroed counter (Task 4, Step 4).
+# The LIVE playbooks on disk must always parse. They are LIVING documents -- the
+# frontmatter counter advances with every merged reflection PR (the first one moved
+# it 0 -> 472/506), so asserting a zeroed counter is asserting repo history, not an
+# invariant. The invariant is parseability + a well-formed counter/date.
 # ---------------------------------------------------------------------------
-def test_seed_files_parse_to_zero_counter():
+def test_live_playbooks_always_parse():
+    import re
+
     for name in ("continuation.md", "reversal.md"):
         text = (_EDGE_DIR / name).read_text(encoding="utf-8")
         st = parse_state(text)
-        assert st.forward_closed_at_last_reflection == 0
-        assert st.last_reflected is None
+        assert st.forward_closed_at_last_reflection >= 0
+        assert st.last_reflected is None or re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}", str(st.last_reflected))
 
 
 def test_seed_files_carry_thesis_and_section_headers():

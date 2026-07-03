@@ -89,15 +89,49 @@ def _mem_session() -> Session:
     return Session(engine)
 
 
+# A PRISTINE counter-0 scaffold, written inline. Deliberately NOT copied from the
+# repo's edge/ -- those are LIVING documents whose frontmatter counters advance with
+# every merged reflection PR (the first one moved them to 472/506, which silently
+# turned every copied-fixture test's premise false and broke CI).
+_PRISTINE_MD = """---
+forward_closed_at_last_reflection: 0
+last_reflected: null
+---
+
+> Maintained by the reflection pass; hand-editable; changes land as a human-gated PR.
+
+## Thesis
+
+{pt} seed thesis.
+
+## Confirmed edges
+
+_none yet_
+
+## Screened candidates
+
+_none yet_
+
+## Hunches / needs a test
+
+_none yet_
+
+## Falsified / retired
+
+_none yet_
+
+## Open questions
+
+_none yet_
+"""
+
+
 def _seed_edge_dir(tmp_path: Path) -> Path:
-    """Copy the two seed edge files into a temp dir so a test can rewrite them safely."""
+    """A pristine (counter-0) edge dir a test can rewrite safely, independent of repo state."""
     edge_dir = tmp_path / "edge"
     edge_dir.mkdir()
-    repo_edge = Path(__file__).resolve().parents[2] / "edge"
     for pt in ("continuation", "reversal"):
-        (edge_dir / f"{pt}.md").write_text(
-            (repo_edge / f"{pt}.md").read_text(encoding="utf-8"), encoding="utf-8"
-        )
+        (edge_dir / f"{pt}.md").write_text(_PRISTINE_MD.format(pt=pt), encoding="utf-8")
     return edge_dir
 
 

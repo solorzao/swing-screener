@@ -100,14 +100,16 @@ def _mem_session() -> Session:
     return Session(engine)
 
 
+# Pristine counter-0 scaffold, NOT copied from the repo's edge/ (living documents whose
+# counters advance with every merged reflection PR -- see test_reflect_run._PRISTINE_MD).
+from tests.pipeline.test_reflect_run import _PRISTINE_MD  # noqa: E402
+
+
 def _seed_edge_dir(tmp_path: Path) -> Path:
     edge_dir = tmp_path / "edge"
     edge_dir.mkdir()
-    repo_edge = Path(__file__).resolve().parents[2] / "edge"
     for pt in ("continuation", "reversal"):
-        (edge_dir / f"{pt}.md").write_text(
-            (repo_edge / f"{pt}.md").read_text(encoding="utf-8"), encoding="utf-8"
-        )
+        (edge_dir / f"{pt}.md").write_text(_PRISTINE_MD.format(pt=pt), encoding="utf-8")
     return edge_dir
 
 
