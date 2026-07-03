@@ -32,14 +32,18 @@ def test_replay_book_is_stable_golden_master():
     # target - 0.05*ATR, realizing ~1.4489R here; time_stop exits use the bar close (never
     # haircut) and are unchanged. Entry/stop/target levels are identical to the 0.0 book.
     # default + extguard_tight produce the same 2 continuation trades; cont_volband is too
-    # selective to fire on this fixture (0 trades); rev_highvol only gates REVERSALS (none in
-    # AMD 2018) so it mirrors default's continuation book. Reversal-only variants still book
-    # their identical continuation fills -- harmless, the leaderboard filters by play_type.
+    # selective to fire on this fixture (0 trades); rev_highvol + rev_confirm1 only gate
+    # REVERSALS (none fire in AMD 2018 under either confirm window -- verified when the
+    # default flipped to reversal_confirm_window=3, 2026-07-03) so they mirror default's
+    # continuation book. Reversal-only variants still book their identical continuation
+    # fills -- harmless, the leaderboard filters by play_type.
     expected = [
         ("AMD", "default", "2018-07-05", 15.2354, 14.5719, 16.2306, "target", 1.4489),
         ("AMD", "default", "2018-07-06", 15.7311, 14.575, 17.4652, "time_stop", 0.6651),
         ("AMD", "extguard_tight", "2018-07-05", 15.2354, 14.5719, 16.2306, "target", 1.4489),
         ("AMD", "extguard_tight", "2018-07-06", 15.7311, 14.575, 17.4652, "time_stop", 0.6651),
+        ("AMD", "rev_confirm1", "2018-07-05", 15.2354, 14.5719, 16.2306, "target", 1.4489),
+        ("AMD", "rev_confirm1", "2018-07-06", 15.7311, 14.575, 17.4652, "time_stop", 0.6651),
         ("AMD", "rev_highvol", "2018-07-05", 15.2354, 14.5719, 16.2306, "target", 1.4489),
         ("AMD", "rev_highvol", "2018-07-06", 15.7311, 14.575, 17.4652, "time_stop", 0.6651),
     ]

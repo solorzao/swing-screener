@@ -83,6 +83,18 @@ small throwaway book — the single shared SQLite grows quadratically slow past 
 - No sector-thrust detection gate: the >=4-cluster tag doesn't discriminate; a sector-relative
   definition is queued as an open question.
 
-## Robustness appendix (filled after the 0.10-slippage walk)
+## Robustness appendix (0.10 ATR slippage, same corpus)
 
-_TBD_
+| cohort | slip 0.05 exp / 95% low | slip 0.10 exp / 95% low |
+|---|---|---|
+| default confirmed (legacy) | +0.004 / -0.028 | **-0.030 / -0.063** |
+| confirm3 confirmed (full book) | +0.039 / +0.012 | +0.006 / -0.021 |
+| **late-confirm increment** | **+0.110 / +0.065** | **+0.079 / +0.034** |
+| confirm3 + highvol (rvol>=1.3) | +0.060 / -0.005 | +0.032 / -0.034 |
+
+Read: the INCREMENT the window adds is cost-robust (holds the clustered bound at both
+haircuts, 507 clusters); the full confirm3 book is fragile at 0.10 only because the legacy
+portion it contains drags it (legacy alone is negative there). Stacking the high-volume
+filter on the windowed book thins it to 1,309 closed and the bound does not clear —
+not additive-confirmed; `rev_highvol` keeps tracking that question standalone. Decision:
+flip the default to window=3 and forward-track the legacy rule as `rev_confirm1`.

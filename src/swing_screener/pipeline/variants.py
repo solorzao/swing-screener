@@ -61,6 +61,12 @@ def build_screen_variants(base: StrategyConfig) -> dict[str, StrategyConfig]:
         # of 0.05 ATR slippage, n=823) -- the strongest, broadest reversal conviction filter
         # found. Measured here, not yet surfaced/traded; pending full-503 + forward confirm.
         "rev_highvol": replace(base, reversal_min_flip_rvol=1.3),
+        # The LEGACY next-bar-only confirmation, kept as the counterfactual book after the
+        # default flipped to reversal_confirm_window=3 (2026-07-03 rotation-capture screen:
+        # the late-confirm increment graded +0.110R, 95%low +0.065 at 0.05 slippage and held
+        # at 0.10, while legacy-only no longer cleared the bar). If the live forward books
+        # disagree with the replay, this is the variant that reverses the flip.
+        "rev_confirm1": replace(base, reversal_confirm_window=1),
     }
     for name, cfg in variants.items():
         if name != DEFAULT_VARIANT:

@@ -167,10 +167,11 @@ def _late_confirm_rows():
 
 def test_late_confirmation_needs_the_window():
     frame = _frame(_late_confirm_rows())
-    # legacy window=1: the pause bar killed the pattern forever
-    assert detect_reversal(frame, CFG) is None
-    # window=3: today is the FIRST close above the flip high -> confirmed
-    ctx = detect_reversal(frame, replace(CFG, reversal_confirm_window=3))
+    # legacy window=1 (kept as the rev_confirm1 variant): the pause bar killed the
+    # pattern forever
+    assert detect_reversal(frame, replace(CFG, reversal_confirm_window=1)) is None
+    # the default window: today is the FIRST close above the flip high -> confirmed
+    ctx = detect_reversal(frame, CFG)
     assert ctx is not None
     assert ctx.strength == CONFIRMED
 
@@ -182,14 +183,16 @@ def test_late_confirmation_fires_exactly_once():
     frame = _frame(rows)
     # the day AFTER the first close above the flip high: an earlier run bar already
     # confirmed, so the trigger must not re-fire
-    assert detect_reversal(frame, replace(CFG, reversal_confirm_window=3)) is None
+    assert detect_reversal(frame, CFG) is None
 
 
 def test_next_bar_confirmation_unchanged_by_window():
-    # a wider window must not change the legacy next-bar confirmation itself
+    # the wider default window must not change the legacy next-bar confirmation itself
     frame = _frame(_reversal_rows(confirm=True))
-    ctx = detect_reversal(frame, replace(CFG, reversal_confirm_window=3))
+    ctx = detect_reversal(frame, CFG)
     assert ctx is not None and ctx.strength == CONFIRMED
+    legacy = detect_reversal(frame, replace(CFG, reversal_confirm_window=1))
+    assert legacy is not None and legacy.strength == CONFIRMED
 
 
 def test_anchor_confirmation_re_anchors_the_band_on_the_bounce_top():

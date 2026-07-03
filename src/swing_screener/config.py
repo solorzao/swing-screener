@@ -141,10 +141,16 @@ class StrategyConfig:
     # let replay variants A/B the entry mechanics; the defaults reproduce legacy exactly. ---
     # A flip may confirm up to this many bars after the flip bar: the trailing HA-green run
     # must start green-out-of-red and today's close is the FIRST close above the flip bar's
-    # high. 1 = legacy next-bar-only confirmation. For late confirms (>1 bar after the
+    # high. 1 = the legacy next-bar-only confirmation. For late confirms (>1 bar after the
     # flip) the decline gates are measured as-of the FLIP bar, where the downtrend claim
     # belongs (green recovery bars otherwise erode the red-run count).
-    reversal_confirm_window: int = 1
+    # DEFAULT 3 (replay-screened 2026-07-03, 511 names / 5y): the late-confirm increment --
+    # flips that pause a bar or two before confirming, permanently invisible at window=1 --
+    # graded +0.110R (clustered 95%low +0.065) net of 0.05 ATR slippage and HELD at 0.10
+    # (+0.079R, low +0.034), while the legacy-only confirmed book no longer clears the bar
+    # (+0.004R at 0.05, negative at 0.10). The legacy rule stays measured forward as the
+    # `rev_confirm1` screen variant. See docs/plans/2026-07-03-reversal-rotation-capture.md.
+    reversal_confirm_window: int = 3
     # Anchor the CONFIRMED entry band on the top of the bounce-so-far (max high of the
     # trailing green run) instead of the flip bar's high. The flip anchor leaves every
     # confirmed signal born above its own ceiling by construction (confirmation REQUIRES
