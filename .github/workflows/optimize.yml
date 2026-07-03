@@ -12,9 +12,13 @@ on:
   workflow_dispatch:
     inputs:
       tickers:
-        description: "Comma-separated tickers to sweep"
+        description: "Comma-separated tickers to sweep (overrides the universe-seed basket)"
         required: false
-        default: "AMD,NVDA,AAPL,MSFT,META,AMZN,GOOGL,TSLA,JPM,XOM,WMT,AVGO"
+        default: ""
+      basket_size:
+        description: "How many universe-seed tickers to sweep when no explicit list is given"
+        required: false
+        default: "100"
 
 permissions:
   contents: write
@@ -24,7 +28,12 @@ jobs:
   propose:
     runs-on: ubuntu-latest
     env:
-      TICKERS: ${{ github.event.inputs.tickers || 'AMD,NVDA,AAPL,MSFT,META,AMZN,GOOGL,TSLA,JPM,XOM,WMT,AVGO' }}
+      TICKERS_OVERRIDE: ${{ github.event.inputs.tickers || '' }}
+      BASKET_SIZE: ${{ github.event.inputs.basket_size || '100' }}
+      # Last-resort basket if runtime derivation from the universe seed fails. The seed
+      # basket is the default: a fixed mega-cap dozen is exactly the "bounded baskets
+      # flatter" failure mode (edge-discovery backlog / 2026-07-01 audit).
+      FALLBACK_TICKERS: "AMD,NVDA,AAPL,MSFT,META,AMZN,GOOGL,TSLA,JPM,XOM,WMT,AVGO"
     steps:
       - uses: actions/checkout@v4
 
@@ -37,8 +46,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      - name: Resolve ticker basket (explicit input, else first N of the universe seed)
+        id: basket
+        run: |
+          if [ -n "$TICKERS_OVERRIDE" ]; then
+            TICKERS="$TICKERS_OVERRIDE"
+          else
+            TICKERS=$(python -m swing_screener.data.universe --first "$BASKET_SIZE") || TICKERS="$FALLBACK_TICKERS"
+          fi
+          echo "Sweeping $(echo "$TICKERS" | awk -F',' '{print NF}') tickers"
+          echo "tickers=$TICKERS" >> "$GITHUB_OUTPUT"
+
       - name: Run optimizer (may edit config.py + write pr_title.txt / pr_body.md)
-        run: python -m swing_screener.pipeline.propose --tickers "$TICKERS"
+        run: python -m swing_screener.pipeline.propose --tickers "${{ steps.basket.outputs.tickers }}"
 
       - name: Read proposal (if any)
         id: proposal

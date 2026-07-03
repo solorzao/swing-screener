@@ -262,8 +262,10 @@ def main() -> None:
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
     frames = fetch_daily(tickers, args.cache_dir)
     if not frames:
-        log.error("no data fetched for %s; proposing nothing", tickers)
-        return
+        # Exit RED, not green: the scheduled weekly run must not read as a successful
+        # sweep when a data outage meant nothing was swept at all (2026-07-01 audit).
+        log.error("no data fetched for %s; failing the run", tickers)
+        raise SystemExit(1)
 
     grid = _grid_with_queued(StrategyConfig(), resolve_edge_dir(args.edge_dir))
     result = optimize(frames, timeframe="1d", grid=grid, oos_frac=args.oos_frac)

@@ -526,6 +526,10 @@ def _render_performance(session: Session) -> None:
                     "ci_low": by_variant[v].expectancy_ci_low,
                     "ci_high": by_variant[v].expectancy_ci_high,
                     "win_rate": by_variant[v].win_rate,
+                    # Fill visibility (2026-07-01 audit): a variant that 'wins' by rarely
+                    # filling must show it where the ranking is read.
+                    "fill_rate": by_variant[v].fill_rate,
+                    "total": by_variant[v].n_total,
                     "closed": by_variant[v].n_closed,
                     "clusters": by_variant[v].n_clusters,
                     "sample": performance.leaderboard_flag(by_variant[v]),
@@ -543,6 +547,8 @@ def _render_performance(session: Session) -> None:
                 "ci_low": st.column_config.NumberColumn("95% low", format="%.2f"),
                 "ci_high": st.column_config.NumberColumn("95% high", format="%.2f"),
                 "win_rate": st.column_config.NumberColumn("Win rate", format="percent"),
+                "fill_rate": st.column_config.NumberColumn("Fill rate", format="percent"),
+                "total": st.column_config.NumberColumn("Signals (n)", format="%d"),
                 "closed": st.column_config.NumberColumn("Closed (n)", format="%d"),
                 "clusters": st.column_config.NumberColumn("Tickers", format="%d"),
                 "sample": st.column_config.TextColumn("Sample"),
@@ -571,6 +577,8 @@ def _render_performance(session: Session) -> None:
                     "arm": a,
                     "expectancy_r": by_arm[a].expectancy_r,
                     "win_rate": by_arm[a].win_rate,
+                    "fill_rate": by_arm[a].fill_rate,
+                    "total": by_arm[a].n_total,
                     "closed": by_arm[a].n_closed,
                 }
                 for a in arms
@@ -584,6 +592,8 @@ def _render_performance(session: Session) -> None:
                 "arm": st.column_config.TextColumn("Arm"),
                 "expectancy_r": st.column_config.NumberColumn("Expectancy R", format="%.2f"),
                 "win_rate": st.column_config.NumberColumn("Win rate", format="percent"),
+                "fill_rate": st.column_config.NumberColumn("Fill rate", format="percent"),
+                "total": st.column_config.NumberColumn("Signals (n)", format="%d"),
                 "closed": st.column_config.NumberColumn("Closed", format="%d"),
             },
         )

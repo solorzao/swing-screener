@@ -53,6 +53,28 @@ def _closed(ticker: str, r: float) -> PaperTrade:
     return PaperTrade(ticker=ticker, status="closed", fill_status="filled", realized_r=r)
 
 
+def _unfilled(ticker: str) -> PaperTrade:
+    return PaperTrade(ticker=ticker, status="open", fill_status="pending")
+
+
+def test_leaderboard_shows_fill_rate_and_total_signals():
+    """A variant can 'win' by rarely filling; the leaderboard must surface fill% + n_total
+    wherever the rankings are read (2026-07-01 audit)."""
+    # 2 filled-and-closed out of 4 signals -> 50% fill rate on 4 total.
+    half = summarize([_closed("A", 1.0), _closed("B", 1.0), _unfilled("C"), _unfilled("D")])
+    assert half.fill_rate == 0.5 and half.n_total == 4
+    full = summarize([_closed(f"T{i}", 0.5) for i in range(8)])
+
+    txt = format_leaderboard({"half": half, "full": full})
+    header = txt.splitlines()[0]
+    assert "fill%" in header and "total" in header
+
+    rows = {line.split()[0]: line.split() for line in txt.splitlines()
+            if line.startswith(("half", "full"))}
+    assert "50%" in rows["half"] and "4" in rows["half"]
+    assert "100%" in rows["full"] and "8" in rows["full"]
+
+
 def test_leaderboard_marks_the_iid_fallback_for_thin_clusters():
     # Thin: 3 distinct tickers (< the cluster floor of 8) -> the bound falls back to IID.
     thin = summarize([_closed(t, 1.0) for t in ("A", "B", "C")])

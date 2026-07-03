@@ -214,16 +214,19 @@ def format_leaderboard(by_variant: Mapping[str, PerformanceSummary]) -> str:
     Ranks trusted samples (>= ``MIN_LEADERBOARD_N`` closed) above thin ones, then by the
     lower 95% bound of expectancy -- matching the dashboard, so a thin lucky variant can't
     top a deeper one. The sample size + interval are printed so the ranking is auditable.
+    ``fill%``/``total`` surface HOW OFTEN a variant's signals actually fill: a config that
+    'wins' on expectancy while rarely filling is visible, not crowned (2026-07-01 audit).
     """
     order = leaderboard_order(by_variant)
-    header = (f"{'variant':<18}{'expectancy_r':>14}{'95%_low':>10}"
-              f"{'win_rate':>10}{'closed':>8}{'clusters':>10}{'sample':>8}")
+    header = (f"{'variant':<18}{'expectancy_r':>14}{'95%_low':>10}{'win_rate':>10}"
+              f"{'fill%':>7}{'total':>7}{'closed':>8}{'clusters':>10}{'sample':>8}")
     lines = [header, "-" * len(header)]
     for v in order:
         s = by_variant[v]
         flag = leaderboard_flag(s)   # shared with the dashboard (iid > thin > ok)
         lines.append(f"{v:<18}{s.expectancy_r:>14.2f}{s.expectancy_ci_low:>10.2f}"
-                     f"{s.win_rate:>10.2f}{s.n_closed:>8d}{s.n_clusters:>10d}{flag:>8}")
+                     f"{s.win_rate:>10.2f}{s.fill_rate:>7.0%}{s.n_total:>7d}"
+                     f"{s.n_closed:>8d}{s.n_clusters:>10d}{flag:>8}")
     return "\n".join(lines)
 
 
