@@ -48,6 +48,62 @@ def _result(*, winner, in_sample, out_of_sample, out_of_sample_trades=None):
     )
 
 
+def test_queued_variant_win_is_loud_but_never_auto_applied(caplog):
+    """An analyst-QUEUED variant (grid key "proposed:*") that wins the sweep AND clears
+    every promotion gate must NOT be auto-applied -- apply_to_config edits the gate knob
+    only, and promotion of an arbitrary analyst delta stays a human act. It must also not
+    CRASH (the old code parsed float("proposed:...") -> ValueError = a red weekly run).
+    The win is surfaced as a WARNING so it can't pass silently."""
+    import logging
+
+    win_trades = _trades(_WINNER_TICKERS, "proposed:rev_lowvol_gate")
+    inc_trades = _trades(_INCUMBENT_TICKERS, "ext_2.0")
+    result = _result(
+        winner="proposed:rev_lowvol_gate",
+        in_sample={"proposed:rev_lowvol_gate": _summary_of(win_trades),
+                   "ext_2.0": _summary_of(inc_trades)},
+        out_of_sample={"proposed:rev_lowvol_gate": _summary_of(win_trades),
+                       "ext_2.0": _summary_of(inc_trades)},
+        out_of_sample_trades={"proposed:rev_lowvol_gate": win_trades,
+                              "ext_2.0": inc_trades},
+    )
+    with caplog.at_level(logging.WARNING, logger="swing_screener.pipeline.propose"):
+        assert propose(result, BASE) is None  # no crash, no auto-edit
+    assert any("proposed:rev_lowvol_gate" in r.message and "human" in r.message.lower()
+               for r in caplog.records)
+
+
+def test_grid_with_queued_merges_the_reflection_queue(tmp_path):
+    """The reflection-to-optimizer handoff: queued variants in edge/*.proposed.json join
+    the swept grid under namespaced keys, alongside the standard gate sweep."""
+    import json
+
+    from swing_screener.pipeline.propose import _grid_with_queued
+
+    edge = tmp_path / "edge"
+    edge.mkdir()
+    (edge / "reversal.proposed.json").write_text(json.dumps([{
+        "name": "rev_min_pullback", "play_type": "reversal",
+        "delta": {"min_pullback_bars": 3}, "rationale": "r", "hunch_ref": "h",
+        "status": "queued", "drafted_at": "2026-07-02", "provenance": "reflection-opus",
+    }]), encoding="utf-8")
+
+    grid = _grid_with_queued(BASE, edge)
+    assert "proposed:rev_min_pullback" in grid
+    assert grid["proposed:rev_min_pullback"].min_pullback_bars == 3
+    assert any(k.startswith("ext_") for k in grid)  # the standard sweep is still there
+
+
+def test_grid_with_queued_is_plain_sweep_when_nothing_queued(tmp_path):
+    from swing_screener.pipeline.propose import _grid_with_queued
+
+    edge = tmp_path / "edge"
+    edge.mkdir()  # no proposed.json files
+    grid = _grid_with_queued(BASE, edge)
+    assert all(not k.startswith("proposed:") for k in grid)
+    assert any(k.startswith("ext_") for k in grid)
+
+
 def test_proposes_when_winner_beats_incumbent_out_of_sample():
     # ext_1.5 wins in-sample AND holds out-of-sample on a trusted, positive, MULTI-TICKER book
     # that beats the incumbent (ext_2.0): trusted n, positive lower bound, beats incumbent on
