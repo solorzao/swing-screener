@@ -39,6 +39,11 @@ on:
         description: "How many universe-seed tickers to replay when no explicit list is given"
         required: false
         default: "100"
+      force:
+        description: "Reflect every play type now, ignoring the re-arm counter (the manual re-grade path after a graded facet changes, e.g. a score-definition change)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -137,7 +142,10 @@ jobs:
           SWING_DB_URL: mssql+pyodbc://${{ env.SQL_SERVER }}.database.windows.net/swing?driver=ODBC+Driver+18+for+SQL+Server
           AZURE_TOKEN_CREDENTIALS: dev
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: python -m swing_screener.pipeline.reflect --tickers "${{ steps.basket.outputs.tickers }}"
+        run: >
+          python -m swing_screener.pipeline.reflect
+          --tickers "${{ steps.basket.outputs.tickers }}"
+          ${{ github.event.inputs.force == 'true' && '--force' || '' }}
 
       - name: Remove ephemeral SQL firewall rule
         if: always()

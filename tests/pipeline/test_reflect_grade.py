@@ -195,3 +195,37 @@ def test_score_band_bucket_grades_off_score_bucket_labels():
     # a band with no trades is still emitted as a hunch
     empty_band = _find(verdicts, "score", "0.00-0.50")
     assert empty_band.tier == "hunch" and empty_band.n == 0
+
+
+def test_score_dimension_ignores_pre_v2_forward_reversal_rows():
+    """Score v2 (2026-07-03) changed what signal_score MEANS for the reversal book: a
+    forward row scored before it measures a different quantity, so the score dimension
+    must exclude it -- while every other dimension still sees the full book, and the
+    REPLAY book is exempt (a replay walk scores rows with the CURRENT code, so its
+    historical opened_date says nothing about score vintage)."""
+    from datetime import date
+
+    from swing_screener.analytics.performance import SCORE_STAMPED_FROM
+
+    assert date(2026, 6, 1) < SCORE_STAMPED_FROM["reversal"]  # the rows below are pre-v2
+    fwd = _spread_book([1.0] * 12, dimension="volatility_tier", bucket="low")
+    for t in fwd:
+        t.play_type = "reversal"
+        t.signal_score = 0.9
+        t.opened_date = date(2026, 6, 1)  # pre-v2: old score definition
+    rpl = _spread_book([1.0] * 12, dimension="volatility_tier", bucket="low", prefix="R")
+    for t in rpl:
+        t.play_type = "reversal"
+        t.signal_score = 0.9
+        t.opened_date = date(2023, 5, 12)  # historical fill date, CURRENT-code score
+
+    verdicts = grade("reversal", fwd, rpl)
+
+    top_band = _find(verdicts, "score", "0.80-1.00")
+    # the forward rows are filtered from the score dimension, so if the band confirms it
+    # can only be from the REPLAY book -- never forward_confirmed on old-definition scores
+    assert top_band.tier != "forward_confirmed"
+    assert top_band.n > 0 and top_band.source in ("replay", "none")
+    # every other dimension still sees the full forward book
+    low_vol = _find(verdicts, "volatility_tier", "low")
+    assert low_vol.source == "forward"

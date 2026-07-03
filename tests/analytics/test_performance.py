@@ -277,3 +277,22 @@ def test_clustered_bound_never_above_iid_across_varied_inputs():
         realized = [t.realized_r for t in trades]
         s = summarize(trades)
         assert s.expectancy_ci_low <= _iid_low(realized) + 1e-9
+
+
+def test_score_stamped_excludes_pre_v2_reversal_rows():
+    from swing_screener.analytics.performance import SCORE_STAMPED_FROM, score_stamped
+
+    cutoff = SCORE_STAMPED_FROM["reversal"]
+    old_rev = _pt(realized_r=1.0, opened_date=date(2026, 6, 1))
+    old_rev.play_type = "reversal"
+    new_rev = _pt(realized_r=1.0, opened_date=cutoff)
+    new_rev.play_type = "reversal"
+    old_cont = _pt(realized_r=1.0, opened_date=date(2026, 6, 1))  # continuation: unchanged
+    undated_rev = _pt(realized_r=1.0)                             # tests/fakes: fail open
+    undated_rev.play_type = "reversal"
+
+    kept = score_stamped([old_rev, new_rev, old_cont, undated_rev])
+    # the pre-v2 reversal row measured a DIFFERENT score definition -> excluded;
+    # everything else (post-cutoff, other play types, undated) stays.
+    assert old_rev not in kept
+    assert new_rev in kept and old_cont in kept and undated_rev in kept

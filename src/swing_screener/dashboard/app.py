@@ -631,7 +631,9 @@ def _render_performance(session: Session) -> None:
     # Score calibration: does a higher composite score actually earn more? Expectancy by
     # score band should trend up; a flat/inverted curve means the score needs rework. Chart
     # only bands that have closed trades (an empty band would read as a spurious 0).
-    by_score = performance.score_bucket(trades, [0.5, 0.6, 0.7, 0.8])
+    # score_stamped: forward rows scored before a score-definition change (score v2,
+    # 2026-07-03) measure a different quantity and would pool two definitions per band.
+    by_score = performance.score_bucket(performance.score_stamped(trades), [0.5, 0.6, 0.7, 0.8])
     scored = {k: v for k, v in by_score.items() if v.n_closed > 0}
     if len(scored) > 1:
         st.markdown("**Score calibration** — expectancy by signal-score band")
