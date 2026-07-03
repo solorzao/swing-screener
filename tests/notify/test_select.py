@@ -144,6 +144,28 @@ def test_cooldown_applies_to_reversal_picks():
         assert [p.ticker for p in sel.reversal_picks(s, RUN, max_age_days=1)] == ["GME"]
 
 
+def test_cooldown_counts_runs_not_calendar_days_across_a_weekend():
+    """A pick first seen on FRIDAY's run must still show in MONDAY's digest under
+    cooldown=1: freshness counts SCREEN RUNS (the distinct run_dates the system actually
+    experienced), not calendar days -- the old arithmetic computed Monday-1=Sunday and
+    dropped every Friday-fresh setup from Monday's email (2026-07 audit)."""
+    friday = date(2026, 6, 12)  # RUN (2026-06-15) is the following Monday
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        # Friday's run: the setup appears fresh...
+        s.add(Signal(run_date=friday, ticker="AMD", timeframe="1d", horizon="medium",
+                     score=0.9, rank=1, trigger_close=100.0, atr=4.0, rsi=55.0,
+                     entry_floor=96.0, entry_ceiling=101.0, stop=95.0, target=110.0,
+                     first_seen_date=friday))
+        # ...and Monday's run re-detects it, streak carried (first_seen still Friday).
+        s.add(_sig("AMD", "1d", 1, first_seen=friday))
+        s.add(_sig("MSFT", "1d", 2, first_seen=date(2026, 6, 1)))  # genuinely stale
+        s.commit()
+
+        picks = sel.daily_picks(s, RUN, max_age_days=1)
+        assert [p.ticker for p in picks] == ["AMD"]  # Friday-fresh survives Monday
+
+
 def test_reversal_picks_confirmed_only_drops_early():
     """confirmed_only=True keeps only CONFIRMED-strength reversals (the cost-robust edge);
     EARLY is still in the DB (shadow-tracked) but hidden from the digest. Default keeps all."""

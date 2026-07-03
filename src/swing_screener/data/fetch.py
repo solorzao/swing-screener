@@ -29,11 +29,18 @@ def _download(ticker: str, interval: str, period: str) -> pd.DataFrame:
     return df[_COLS]
 
 
-def fetch_bars(ticker: str, interval: str, *, cache_dir: Path, period: str = "2y",
+def fetch_bars(ticker: str, interval: str, *, cache_dir: Path, period: str = "5y",
                today: date | None = None, retries: int = 3,
                backoff: float = 0.5, jitter: float = 0.5) -> pd.DataFrame | None:
     """Fetch OHLCV for one ticker, cached per (interval, ticker, day). Returns None
     on persistent failure (per-ticker isolation: never raises to the caller).
+
+    ``period`` defaults to FIVE years because the 1mo frame resamples from the daily
+    series and its detectors need ~56 monthly bars: 2y yielded ~24, so the monthly
+    timeframe could never signal and the monthly digest was permanently empty
+    (2026-07 audit). 5y yields ~60 -- above the floor. The cache key carries no
+    period, so the horizon is a single default rather than a per-caller choice;
+    intraday callers still pass their own short period (e.g. "60d" for 1h).
 
     Retries use exponential backoff plus random ``jitter`` so that, across the
     ~500-ticker universe, retries do not fire in lockstep -- a synchronized retry

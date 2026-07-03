@@ -13,18 +13,28 @@ from swing_screener.db.models import ExitEvent, Signal, Universe
 from swing_screener.pipeline.diversity import cap_by_sector
 
 
-def _fresh_enough(run_date: date, max_age_days: int | None) -> list[ColumnElement[bool]]:
+def _fresh_enough(session: Session, run_date: date,
+                  max_age_days: int | None) -> list[ColumnElement[bool]]:
     """A staleness/cooldown WHERE clause (as a list to splat into ``.where``).
 
-    When ``max_age_days`` is set, keep only setups first seen within the window --
-    a pick whose ``first_seen_date`` is older than ``run_date - max_age_days`` has
-    been on the list too long and is dropped, so the same play isn't re-pitched day
-    after day. Legacy rows (NULL ``first_seen_date``) are never dropped (fail-open).
-    ``None`` disables the cooldown entirely.
+    When ``max_age_days`` is set, keep only setups first seen within the last
+    ``max_age_days`` SCREEN RUNS -- counted over the distinct ``run_date``s actually in
+    the signals table (the trading calendar the system experienced), NOT calendar days.
+    Calendar arithmetic aged weekend-spanning setups out one appearance early: with
+    cooldown=1, Monday - 1 day = Sunday, so every Friday-fresh pick was dropped from
+    Monday's digest (2026-07 audit). A pick whose ``first_seen_date`` predates the
+    cutoff run has been on the list too long and is dropped, so the same play isn't
+    re-pitched run after run. Legacy rows (NULL ``first_seen_date``) are never dropped
+    (fail-open); fewer prior runs than the window (a fresh store) falls back to the
+    oldest run available. ``None`` disables the cooldown entirely.
     """
     if max_age_days is None:
         return []
-    cutoff = run_date - timedelta(days=max_age_days)
+    recent_runs = list(session.scalars(
+        select(Signal.run_date).where(Signal.run_date <= run_date)
+        .distinct().order_by(Signal.run_date.desc()).limit(max_age_days + 1)
+    ))
+    cutoff = recent_runs[-1] if recent_runs else run_date - timedelta(days=max_age_days)
     return [or_(Signal.first_seen_date.is_(None), Signal.first_seen_date >= cutoff)]
 
 
@@ -44,7 +54,7 @@ def daily_picks(session: Session, run_date: date, *, top_n: int = 5,
     (fail-open). None leaves the result a pure rank-ordered top-N.
     """
     where = (Signal.run_date == run_date, Signal.play_type == "continuation",
-             *_fresh_enough(run_date, max_age_days))
+             *_fresh_enough(session, run_date, max_age_days))
     if max_per_sector is None:
         stmt = select(Signal).where(*where).order_by(Signal.rank).limit(top_n)
         return list(session.scalars(stmt))
@@ -72,7 +82,7 @@ def reversal_picks(session: Session, run_date: date, *, top_n: int = 5,
     Either way the filtered-out reversals are still stored/shadow-tracked, just hidden from the
     digest (the learning loop is preserved)."""
     where = [Signal.run_date == run_date, Signal.play_type == "reversal",
-             *_fresh_enough(run_date, max_age_days)]
+             *_fresh_enough(session, run_date, max_age_days)]
     if premium_only:
         where.append(Signal.conviction_tier == "premium")
     elif confirmed_only:
@@ -106,7 +116,7 @@ def _by_timeframe(session: Session, run_date: date, timeframe: str, top_n: int,
         select(Signal)
         .where(Signal.run_date == run_date, Signal.timeframe == timeframe,
                Signal.play_type == "continuation",
-               *_fresh_enough(run_date, max_age_days))
+               *_fresh_enough(session, run_date, max_age_days))
         .order_by(Signal.rank)
         .limit(top_n)
     )
