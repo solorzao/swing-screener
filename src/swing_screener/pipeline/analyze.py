@@ -225,7 +225,8 @@ def analyze_reversals(
             red_run=ctx.red_run, decline_bars=ctx.decline_bars,
             volume_ratio=ctx.volume_ratio, confirmed=(ctx.strength == "confirmed"),
             min_rsi=ctx.min_rsi, rsi_floor=cfg.reversal_oversold_rsi_max,
-        ))
+            confirm_lag=ctx.confirm_lag,
+        ), cfg)
         results.append(SignalResult(
             ticker=ticker, timeframe=tf, horizon=_HORIZON_BY_TF[tf], score=score,
             mtf_aligned=False,  # reversals are counter-trend; no MTF requirement

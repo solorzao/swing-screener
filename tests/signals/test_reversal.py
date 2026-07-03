@@ -311,21 +311,64 @@ def _score_inputs(**over):
     return ReversalScoreInputs(**base)
 
 
-def test_score_is_ha_centric():
+def test_score_rewards_the_separating_components():
     b = score_reversal(_score_inputs())
     assert 0.0 <= b <= 1.0
-    # HA factors dominate: a stronger flip body and a longer red run both raise it.
-    assert score_reversal(_score_inputs(body_frac=0.9)) > b      # stronger HA flip
-    assert score_reversal(_score_inputs(red_run=6)) > b          # deeper HA downtrend
-    assert score_reversal(_score_inputs(shaved_bottom=True)) > b  # clean HA flip
-    assert score_reversal(_score_inputs(volume_ratio=2.0)) > b   # heavier volume
-    assert score_reversal(_score_inputs(confirmed=True)) > b     # confirmation
-    assert score_reversal(_score_inputs(min_rsi=5.0)) > b        # deeper oversold (a confirm)
+    # the two components the rank sweep found predictive dominate the default vector:
+    assert score_reversal(_score_inputs(confirm_lag=3)) > score_reversal(
+        _score_inputs(confirm_lag=1)) > b                        # later confirm > next-bar
+    assert score_reversal(_score_inputs(volume_ratio=2.0)) > b   # heavier flip volume
+    # HA quality still contributes (smaller weights), and confirmation orders above early
+    assert score_reversal(_score_inputs(body_frac=0.9)) > b
+    assert score_reversal(_score_inputs(red_run=6)) > b
+    assert score_reversal(_score_inputs(shaved_bottom=True)) > b
+    assert score_reversal(_score_inputs(confirmed=True)) > b
 
 
-def test_rsi_depth_is_a_minor_factor_vs_ha():
-    # The HA flip+downtrend swing must outweigh the RSI-depth swing, or the screener
-    # would be RSI-driven. Max-out HA factors vs max-out RSI depth from the same base.
-    ha_max = score_reversal(_score_inputs(body_frac=1.0, shaved_bottom=True, red_run=6))
-    rsi_max = score_reversal(_score_inputs(min_rsi=0.0))
-    assert ha_max > rsi_max
+def test_confirm_lag_is_carried_on_the_context():
+    # next-bar confirmation -> lag 1; the pause-then-confirm shape -> lag 2; early -> 0
+    assert detect_reversal(_frame(_reversal_rows(confirm=True)), CFG).confirm_lag == 1
+    assert detect_reversal(_frame(_late_confirm_rows()), CFG).confirm_lag == 2
+    assert detect_reversal(_frame(_reversal_rows()), CFG).confirm_lag == 0
+
+
+def test_score_weights_are_sweepable_via_config():
+    """The weights live in StrategyConfig (normalized by their sum) so the replay
+    machinery can sweep the scorer -- including reproducing the LEGACY vector exactly."""
+    s = _score_inputs(body_frac=0.8, shaved_bottom=True, red_run=5, volume_ratio=1.6,
+                      confirmed=True, min_rsi=15.0)
+    legacy_w = replace(StrategyConfig(), reversal_score_w_lag=0.0,
+                       reversal_score_w_bounce=0.35, reversal_score_w_downtrend=0.20,
+                       reversal_score_w_volume=0.15, reversal_score_w_confirmed=0.15,
+                       reversal_score_w_depth=0.15)
+    legacy = (0.35 * (0.6 * 0.8 + 0.4) + 0.20 * (5 / 6) + 0.15 * 0.6 + 0.15 * 1.0
+              + 0.15 * (10.0 / 25.0))
+    assert abs(score_reversal(s, legacy_w) - legacy) < 1e-9
+    # a volume-only weighting ranks purely by flip rvol (clipped at 2x average)
+    vol_only = replace(StrategyConfig(), reversal_score_w_lag=0.0,
+                       reversal_score_w_bounce=0.0, reversal_score_w_downtrend=0.0,
+                       reversal_score_w_volume=1.0, reversal_score_w_confirmed=0.0,
+                       reversal_score_w_depth=0.0)
+    assert abs(score_reversal(s, vol_only) - 0.6) < 1e-9
+    # normalization: only ratios matter, so doubling every weight changes nothing
+    default = score_reversal(s)
+    doubled = replace(StrategyConfig(), reversal_score_w_lag=0.80,
+                      reversal_score_w_bounce=0.20, reversal_score_w_downtrend=0.20,
+                      reversal_score_w_volume=0.60, reversal_score_w_confirmed=0.20,
+                      reversal_score_w_depth=0.0)
+    assert abs(score_reversal(s, doubled) - default) < 1e-9
+    # degenerate all-zero weights fail closed, not divide-by-zero
+    zeros = replace(StrategyConfig(), reversal_score_w_lag=0.0,
+                    reversal_score_w_bounce=0.0, reversal_score_w_downtrend=0.0,
+                    reversal_score_w_volume=0.0, reversal_score_w_confirmed=0.0,
+                    reversal_score_w_depth=0.0)
+    assert score_reversal(s, zeros) == 0.0
+
+
+def test_rsi_depth_is_inert_at_default_weights():
+    # RSI depth showed no outcome separation in the rank sweep; its default weight is 0,
+    # so a deeper oversold read must not move the score (it remains sweepable via cfg).
+    assert score_reversal(_score_inputs(min_rsi=0.0)) == score_reversal(_score_inputs())
+    depth_on = replace(StrategyConfig(), reversal_score_w_depth=0.15)
+    assert score_reversal(_score_inputs(min_rsi=0.0), depth_on) > score_reversal(
+        _score_inputs(), depth_on)

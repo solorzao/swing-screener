@@ -25,6 +25,10 @@ from swing_screener.signals.entry_zone import EntryZone
 EARLY = "early"
 CONFIRMED = "confirmed"
 
+# score_reversal's fallback weights when no cfg is passed (identical to the field
+# defaults); module-level so the per-signal hot path never rebuilds a StrategyConfig.
+_DEFAULT_CFG = StrategyConfig()
+
 
 @dataclass(frozen=True)
 class ReversalContext:
@@ -44,6 +48,10 @@ class ReversalContext:
     ema_slow: float        # slow EMA (reclaim resistance)
     decline_high: float    # prior swing high over a longer lookback (retracement target)
     is_spring: bool = False  # bounce undercut a prior support then reclaimed (Wyckoff spring)
+    # bars from the flip to the confirmation close (1 = next-bar, up to the confirm
+    # window); 0 for EARLY. The only ordering signal found to separate outcomes on the
+    # confirmed book (2026-07-03 rank sweep) -- feeds score_reversal's lag term.
+    confirm_lag: int = 0
 
 
 def detect_reversal(f: pd.DataFrame, cfg: StrategyConfig) -> ReversalContext | None:
@@ -158,6 +166,7 @@ def detect_reversal(f: pd.DataFrame, cfg: StrategyConfig) -> ReversalContext | N
         ema_slow=float(last["ema_slow"]),
         decline_high=decline_high,
         is_spring=is_spring,
+        confirm_lag=g - 1 if strength == CONFIRMED else 0,
     )
 
 
@@ -211,6 +220,7 @@ class ReversalScoreInputs:
     confirmed: bool
     min_rsi: float          # oversold depth (lower = deeper) -- a confirm, not a gate
     rsi_floor: float        # the oversold reference (cfg.reversal_oversold_rsi_max)
+    confirm_lag: int = 0    # bars from flip to confirmation (0 = early / next-bar = 1)
 
 
 def reversal_conviction_tier(volume_ratio: float, is_spring: bool, strength: str | None,
@@ -233,15 +243,28 @@ def _clip01(x: float) -> float:
     return max(0.0, min(1.0, x))
 
 
-def score_reversal(s: ReversalScoreInputs) -> float:
-    """0..1 conviction. HA-CENTRIC: the flip-bar strength and the downtrend it
-    reverses dominate; volume + confirmation matter; oversold RSI depth is only a
-    smaller confirmation (so the screener isn't RSI-driven)."""
+def score_reversal(s: ReversalScoreInputs, cfg: StrategyConfig | None = None) -> float:
+    """0..1 conviction, driven by the components that SEPARATE outcomes.
+
+    The 2026-07-03 rank sweep over the fixed confirmed replay book found exactly one
+    ordering signal with a positive clustered separation bound at both cost levels:
+    CONFIRMATION LAG (a flip that paused before confirming beats a one-bar rip), with
+    flip volume adding a little. The legacy HA-quality/RSI-depth-heavy vector -- and
+    every individual component -- did not separate. The default weights encode that
+    verdict; all weights live in ``cfg`` (``reversal_score_w_*``, normalized by their
+    sum so only ratios matter) so the replay machinery can re-sweep them."""
+    cfg = cfg or _DEFAULT_CFG
+    lag = _clip01(s.confirm_lag / max(cfg.reversal_confirm_window, 1))
     bounce = 0.6 * _clip01(s.body_frac) + 0.4 * (1.0 if s.shaved_bottom else 0.0)  # HA flip
     downtrend = _clip01(s.red_run / max(s.decline_bars, 1))                        # HA red run
     volume = _clip01(s.volume_ratio - 1.0)        # 2x average volume saturates
     confirmation = 1.0 if s.confirmed else 0.0
     depth = _clip01((s.rsi_floor - s.min_rsi) / s.rsi_floor) if s.rsi_floor > 0 else 0.0
-    # HA factors (bounce+downtrend) = 0.55; RSI depth only 0.15.
-    score = 0.35 * bounce + 0.20 * downtrend + 0.15 * volume + 0.15 * confirmation + 0.15 * depth
-    return _clip01(score)
+    weights = (cfg.reversal_score_w_lag, cfg.reversal_score_w_volume,
+               cfg.reversal_score_w_bounce, cfg.reversal_score_w_downtrend,
+               cfg.reversal_score_w_confirmed, cfg.reversal_score_w_depth)
+    total = sum(weights)
+    if total <= 0:
+        return 0.0
+    parts = (lag, volume, bounce, downtrend, confirmation, depth)
+    return _clip01(sum(w * p for w, p in zip(weights, parts)) / total)
