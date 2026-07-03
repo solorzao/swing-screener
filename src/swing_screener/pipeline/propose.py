@@ -27,8 +27,16 @@ from swing_screener.analytics.performance import (
 )
 from swing_screener.config import StrategyConfig
 from swing_screener.db.models import PaperTrade
-from swing_screener.pipeline.optimize import OptimizeResult, fetch_daily, optimize
+from swing_screener.pipeline.optimize import (
+    _PROPOSED_PREFIX,
+    OptimizeResult,
+    build_config_grid,
+    fetch_daily,
+    optimize,
+)
+from swing_screener.pipeline.proposed import load_proposed_for
 from swing_screener.pipeline.replay import format_leaderboard
+from swing_screener.settings import resolve_edge_dir
 
 log = logging.getLogger(__name__)
 
@@ -175,6 +183,19 @@ def propose(
     if not _placebo_cleared(winner_trades, incumbent_trades, observed_delta):
         return None
 
+    if winner.startswith(_PROPOSED_PREFIX):
+        # An analyst-QUEUED variant won the sweep AND cleared every promotion gate.
+        # Auto-editing config is gate-only by design (apply_to_config rewrites one knob;
+        # an arbitrary analyst delta stays a HUMAN promotion, per North Star #1/#3) --
+        # so surface the win loudly instead of crashing on the name parse or, worse,
+        # passing silently.
+        log.warning(
+            "analyst-queued variant %r beat the incumbent OUT-OF-SAMPLE and cleared every "
+            "promotion gate (expectancy %.2fR, 95%% low %.2f, n=%d) -- promotion is a HUMAN "
+            "act: review its delta in edge/*.proposed.json and apply it by hand.",
+            winner, w_oos.expectancy_r, w_oos.expectancy_ci_low, w_oos.n_closed)
+        return None
+
     proposed = float(winner.removeprefix("ext_"))
     title = (f"optimizer: propose max_extension_atr "
              f"{base_cfg.max_extension_atr} → {proposed}")
@@ -206,6 +227,23 @@ def apply_to_config(source: str, proposal: Proposal) -> str:
     return new
 
 
+def _grid_with_queued(base_cfg: StrategyConfig, edge_dir: Path) -> dict[str, StrategyConfig]:
+    """The auto-propose grid: the standard gate sweep PLUS every analyst-QUEUED variant
+    from ``edge/*.proposed.json`` (both play types -- the replay books both, and the
+    leaderboards slice honestly). This is the reflection-to-optimizer handoff the queue
+    exists for: reflection drafts candidates "for the optimizer to sweep", and until this
+    was wired the scheduled sweep never loaded them (2026-07 audit). ``to_config``
+    validates every delta inside ``build_config_grid``; an invalid one is skipped with a
+    warning, never poisoning the grid.
+    """
+    queued = [pv for pt in ("continuation", "reversal")
+              for pv in load_proposed_for(pt, edge_dir)]
+    if queued:
+        log.info("sweeping %d analyst-queued variant(s): %s",
+                 len(queued), ", ".join(pv.name for pv in queued))
+    return build_config_grid(base_cfg, proposed=queued)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Sweep configs over daily history and, if one beats the incumbent "
@@ -216,6 +254,8 @@ def main() -> None:
     parser.add_argument("--out-dir", type=Path, default=Path("."))
     parser.add_argument("--oos-frac", type=float, default=0.3)
     parser.add_argument("--min-oos-trades", type=int, default=MIN_LEADERBOARD_N)
+    # None -> the shared env-first resolution (SWING_EDGE_DIR), same as every other CLI.
+    parser.add_argument("--edge-dir", type=Path, default=None)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
 
@@ -225,7 +265,8 @@ def main() -> None:
         log.error("no data fetched for %s; proposing nothing", tickers)
         return
 
-    result = optimize(frames, timeframe="1d", oos_frac=args.oos_frac)
+    grid = _grid_with_queued(StrategyConfig(), resolve_edge_dir(args.edge_dir))
+    result = optimize(frames, timeframe="1d", grid=grid, oos_frac=args.oos_frac)
     proposal = propose(result, StrategyConfig(), min_oos_trades=args.min_oos_trades)
     if proposal is None:
         log.info("no config change proposed (no trusted out-of-sample winner over incumbent)")
