@@ -32,6 +32,7 @@ from swing_screener.analytics.performance import (
     _bucket_trades_by_score,
     _clustered_ci_low,
     _score_labels,
+    score_stamped,
     summarize,
 )
 from swing_screener.config import StrategyConfig
@@ -176,7 +177,13 @@ def grade(
     k = _family_size()
     verdicts: list[Verdict] = []
     for dimension, buckets in _FAMILY:
-        fwd_groups = _bucketed(forward_trades, dimension)
+        # The score dimension only trusts FORWARD rows scored under the current score
+        # definition (score v2 shipped 2026-07-03; older rows measure a different
+        # quantity -- pooling them poisons the bands). The replay book is exempt: a
+        # replay walk scores every row with the current code, so its historical
+        # opened_date says nothing about score vintage.
+        fwd = score_stamped(forward_trades) if dimension == "score" else forward_trades
+        fwd_groups = _bucketed(fwd, dimension)
         rpl_groups = _bucketed(replay_trades, dimension)
         for bucket in buckets:
             fwd = fwd_groups.get(bucket, [])
@@ -984,8 +991,14 @@ def run_reflection(
     client: anthropic.Anthropic | None = None,
     today: str | None = None,
     drafter: DrafterFn | None = None,
+    force: bool = False,
 ) -> list[str]:
     """Reflect every DUE play type and rewrite its ``edge/<pt>.md``; return the list reflected.
+
+    ``force=True`` reflects EVERY play type regardless of the 20-new-closes re-arm --
+    the manual re-grade path for when the graded facets themselves change (a score
+    definition change, a family edit) and waiting weeks for the counter would leave
+    stale verdicts steering conviction.
 
     For each due play type: load the live forward book (arm=BASELINE, variant=DEFAULT_VARIANT);
     build the screened tier by replaying ``replay_frames`` on the 1d timeframe with the fixed
@@ -1005,7 +1018,7 @@ def run_reflection(
     """
     cfg = replace(StrategyConfig(), fill_slippage_atr=_REPLAY_HAIRCUT_ATR)
     base = StrategyConfig()
-    due = due_play_types(session, edge_dir=edge_dir)
+    due = list(_PLAY_TYPES) if force else due_play_types(session, edge_dir=edge_dir)
     if not due:
         return []
 
@@ -1074,6 +1087,10 @@ def main() -> None:
     # None -> the shared env-first resolution (SWING_EDGE_DIR), so reflection writes to
     # the SAME directory the digest and gate read instead of a cwd-relative default.
     parser.add_argument("--edge-dir", type=Path, default=None)
+    parser.add_argument("--force", action="store_true",
+                        help="reflect every play type now, ignoring the re-arm counter "
+                             "(the manual re-grade path after a graded facet changes, "
+                             "e.g. a score-definition change)")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
 
@@ -1088,7 +1105,7 @@ def main() -> None:
         reflected = run_reflection(
             session, replay_frames=replay_frames, spy_daily=spy_daily,
             edge_dir=resolve_edge_dir(args.edge_dir), today=date.today().isoformat(),
-            drafter=_opus_drafter(),
+            drafter=_opus_drafter(), force=args.force,
         )
     if reflected:
         log.info("reflected play types: %s", ", ".join(reflected))

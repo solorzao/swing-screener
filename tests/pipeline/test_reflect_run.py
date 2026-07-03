@@ -376,3 +376,19 @@ def test_main_smoke(monkeypatch, tmp_path):
     # The glue wired the replay frames + edge_dir through to run_reflection.
     assert captured["edge_dir"] == edge_dir
     assert "S" in captured["replay_frames"]
+
+
+def test_run_reflection_force_reflects_all_play_types_even_when_not_due(tmp_path):
+    """force=True is the manual re-grade path for when a graded facet itself changes
+    (e.g. the 2026-07-03 score-definition change): it must reflect EVERY play type
+    without waiting for the 20-new-closes re-arm."""
+    edge_dir = _seed_edge_dir(tmp_path)
+    with _mem_session() as session:
+        _seed(session, [_closed_trade("T0", 1.0, "continuation")])  # far below the trigger
+        assert due_play_types(session, edge_dir=edge_dir) == []
+        client = _FakeClient("## Thesis\n\nAuthored prose.\n\nSome edge narrative.\n")
+        reflected = run_reflection(
+            session, replay_frames={"S": _synth()}, spy_daily=None,
+            edge_dir=edge_dir, client=client, today="2026-07-03", force=True,
+        )
+    assert set(reflected) == {"continuation", "reversal"}
