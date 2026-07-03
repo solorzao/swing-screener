@@ -32,9 +32,13 @@ on:
   workflow_dispatch:
     inputs:
       tickers:
-        description: "Comma-separated tickers for the replay screen"
+        description: "Comma-separated tickers for the replay screen (overrides the universe-seed basket)"
         required: false
-        default: "AMD,NVDA,AAPL,MSFT,META,AMZN,GOOGL,TSLA,JPM,XOM,WMT,AVGO"
+        default: ""
+      basket_size:
+        description: "How many universe-seed tickers to replay when no explicit list is given"
+        required: false
+        default: "100"
 
 permissions:
   contents: write
@@ -45,7 +49,12 @@ jobs:
   reflect:
     runs-on: ubuntu-latest
     env:
-      TICKERS: ${{ github.event.inputs.tickers || 'AMD,NVDA,AAPL,MSFT,META,AMZN,GOOGL,TSLA,JPM,XOM,WMT,AVGO' }}
+      TICKERS_OVERRIDE: ${{ github.event.inputs.tickers || '' }}
+      BASKET_SIZE: ${{ github.event.inputs.basket_size || '100' }}
+      # Last-resort basket if runtime derivation from the universe seed fails. The seed
+      # basket is the default: a fixed mega-cap dozen is exactly the "bounded baskets
+      # flatter" failure mode (edge-discovery backlog / 2026-07-01 audit).
+      FALLBACK_TICKERS: "AMD,NVDA,AAPL,MSFT,META,AMZN,GOOGL,TSLA,JPM,XOM,WMT,AVGO"
       RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
       SQL_SERVER: ${{ vars.AZURE_SQL_SERVER }}
       FIREWALL_RULE: gh-reflect-${{ github.run_id }}
@@ -107,6 +116,17 @@ jobs:
           sudo apt-get update
           sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18
 
+      - name: Resolve ticker basket (explicit input, else first N of the universe seed)
+        id: basket
+        run: |
+          if [ -n "$TICKERS_OVERRIDE" ]; then
+            TICKERS="$TICKERS_OVERRIDE"
+          else
+            TICKERS=$(python -m swing_screener.data.universe --first "$BASKET_SIZE") || TICKERS="$FALLBACK_TICKERS"
+          fi
+          echo "Replaying $(echo "$TICKERS" | awk -F',' '{print NF}') tickers"
+          echo "tickers=$TICKERS" >> "$GITHUB_OUTPUT"
+
       - name: Run reflection against the production forward book
         env:
           # No auth keyword: db/session.get_engine strips it and injects an Entra token
@@ -117,7 +137,7 @@ jobs:
           SWING_DB_URL: mssql+pyodbc://${{ env.SQL_SERVER }}.database.windows.net/swing?driver=ODBC+Driver+18+for+SQL+Server
           AZURE_TOKEN_CREDENTIALS: dev
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: python -m swing_screener.pipeline.reflect --tickers "$TICKERS"
+        run: python -m swing_screener.pipeline.reflect --tickers "${{ steps.basket.outputs.tickers }}"
 
       - name: Remove ephemeral SQL firewall rule
         if: always()

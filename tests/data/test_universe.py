@@ -30,3 +30,25 @@ def test_names_by_ticker_default_seed():
     assert names["AAPL"] == "Apple Inc."
     assert names["MSFT"] == "Microsoft"
     assert names["AMD"] == "Advanced Micro Devices"
+
+
+def test_cli_prints_first_n_tickers_comma_joined(monkeypatch, capsys):
+    """The workflow seam: `python -m swing_screener.data.universe --first N` prints the
+    first N seed tickers as a comma-joined basket for the scheduled optimizer/reflection
+    sweeps (widened from the fixed 12-mega-cap list, 2026-07-01 audit)."""
+    from swing_screener.data.universe import main
+
+    monkeypatch.setattr("sys.argv", ["universe", "--first", "2", "--path", str(FIXTURE)])
+    main()
+    assert capsys.readouterr().out.strip() == "AAPL,MSFT"
+
+
+def test_cli_defaults_to_first_100_of_the_shipped_seed(monkeypatch, capsys):
+    from swing_screener.data.universe import main
+
+    monkeypatch.setattr("sys.argv", ["universe"])
+    main()
+    tickers = capsys.readouterr().out.strip().split(",")
+    assert len(tickers) == 100
+    assert len(set(tickers)) == 100          # load_universe de-duplicates
+    assert all(t == t.upper() and t for t in tickers)

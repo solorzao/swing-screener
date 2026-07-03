@@ -241,3 +241,20 @@ def test_apply_to_config_raises_if_field_missing():
     import pytest
     with pytest.raises(ValueError, match="not found"):
         apply_to_config("nothing here\n", p)
+
+
+def test_main_exits_nonzero_when_no_data_fetched(monkeypatch, tmp_path):
+    """A data outage must show RED on the scheduled optimize run, not a green no-op
+    (2026-07-01 audit): main() raises SystemExit(1) when fetch_daily yields nothing."""
+    import pytest
+
+    from swing_screener.pipeline import propose as propose_mod
+
+    monkeypatch.setattr(propose_mod, "fetch_daily", lambda tickers, cache_dir: {})
+    monkeypatch.setattr(
+        "sys.argv",
+        ["propose", "--tickers", "AMD,NVDA", "--cache-dir", str(tmp_path)],
+    )
+    with pytest.raises(SystemExit) as exc:
+        propose_mod.main()
+    assert exc.value.code == 1

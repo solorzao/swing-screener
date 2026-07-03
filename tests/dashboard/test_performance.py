@@ -152,6 +152,59 @@ def test_performance_shows_strategy_leaderboard_for_variants(tmp_path, monkeypat
     assert next(m.value for m in at.metric if m.label == "Expectancy R") == "1.00"
 
 
+def _seed_partially_filled_variant(url):
+    engine = get_engine(url)
+    with Session(engine) as s:
+        # "picky" variant: 1 filled-and-closed winner out of 4 signals (25% fill rate) --
+        # a variant that could 'win' the board while rarely filling (2026-07-01 audit).
+        s.add(PaperTrade(ticker="AMD", timeframe="1d", horizon="medium", signal_score=0.9,
+                         rank=1, arm="baseline", variant="picky", fill_status="filled",
+                         stop=95.0, target=110.0, risk=5.0, status="closed", realized_r=2.0,
+                         hold_bars=4, exit_date=date(2026, 1, 5)))
+        for i in range(3):
+            s.add(PaperTrade(ticker=f"N{i}", timeframe="1d", horizon="medium", signal_score=0.8,
+                             rank=1, arm="baseline", variant="picky", fill_status="pending",
+                             stop=95.0, target=110.0, risk=5.0, status="open"))
+        # "default" variant: 2 signals, both filled (100%).
+        for r in (1.0, 0.5):
+            s.add(PaperTrade(ticker="MSFT", timeframe="1d", horizon="medium", signal_score=0.8,
+                             rank=1, arm="baseline", variant="default", fill_status="filled",
+                             stop=300.0, target=340.0, risk=15.0, status="closed", realized_r=r,
+                             hold_bars=3, exit_date=date(2026, 1, 6)))
+        s.commit()
+
+
+def test_variant_leaderboard_surfaces_fill_rate_and_total(tmp_path, monkeypatch):
+    url = f"sqlite:///{tmp_path / 'perf_fill.sqlite'}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    _seed_partially_filled_variant(url)
+    at = AppTest.from_file(APP).run()
+    at.sidebar.radio[0].set_value("Screener Performance").run()
+    assert not at.exception
+
+    board = at.dataframe[0].value  # leaderboard is the first table on the page
+    assert "fill_rate" in board.columns and "total" in board.columns
+    fills = dict(zip(board["variant"], board["fill_rate"], strict=True))
+    totals = dict(zip(board["variant"], board["total"], strict=True))
+    assert fills["picky"] == 0.25 and totals["picky"] == 4
+    assert fills["default"] == 1.0 and totals["default"] == 2
+
+
+def test_arm_table_surfaces_fill_rate_and_total(tmp_path, monkeypatch):
+    url = f"sqlite:///{tmp_path / 'perf_arm_fill.sqlite'}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    _seed_two_arms(url)
+    at = AppTest.from_file(APP).run()
+    at.sidebar.radio[0].set_value("Screener Performance").run()
+    assert not at.exception
+
+    # The arm A/B table (first table on the page when only one variant exists).
+    arms = at.dataframe[0].value
+    assert "fill_rate" in arms.columns and "total" in arms.columns
+    assert list(arms["fill_rate"]) == [1.0, 1.0]  # arms share fills
+    assert list(arms["total"]) == [1, 1]
+
+
 def _seed_deep_vs_thin_variants(url):
     engine = get_engine(url)
     with Session(engine) as s:
