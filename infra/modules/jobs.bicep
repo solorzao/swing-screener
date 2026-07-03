@@ -247,14 +247,15 @@ var jobSpecs = [
   }
   {
     // On-demand single-ticker deep-analysis worker. Drains the analysis_requests
-    // queue every 15 minutes, so -- unlike the digest/screen jobs -- it is NOT
-    // gated on an Eastern hour: an empty gateEnv leaves RUN_IF_ET_HOUR unset, and
-    // the eastern_gate passes straight through to exec the worker on every firing.
-    // Same image/UAMI/secrets/env as daily-digest (it emails + calls Anthropic +
-    // reads/writes Azure SQL + uploads to Blob); only the cron + entrypoint args
-    // differ.
+    // queue -- unlike the digest/screen jobs it is NOT gated on an Eastern hour: an
+    // empty gateEnv leaves RUN_IF_ET_HOUR unset, and the eastern_gate passes straight
+    // through to exec the worker on every firing. Same image/UAMI/secrets/env as
+    // daily-digest (it emails + calls Anthropic + reads/writes Azure SQL + uploads to
+    // Blob); only the cron + entrypoint args differ. HOURLY, not */15: the queue has
+    // never held a row (2026-07 audit) -- ~2,880 empty container starts/month bought
+    // nothing; widen back if/when the feature gets a real user.
     name: 'on-demand-analysis'
-    cron: '*/15 * * * *'
+    cron: '0 * * * *'
     args: [
       '-m'
       'swing_screener.notify.ondemand'

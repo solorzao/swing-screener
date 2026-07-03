@@ -40,6 +40,19 @@ _BOOT_SEED = 12345
 # dead baseline. Risk-equal weighting (all 1.0) recovers the plain mean.
 _DEFAULT_CONVICTION_WEIGHTS = {"premium": 2.0, "strong": 1.0, "base": 0.5}
 
+# conviction_tier was only COMPUTED from this date: the a7c2e9f4d8b6 migration backfilled
+# every earlier row with the literal lowest tier "base", so ~683 unknown-tier fills would
+# masquerade as deliberate base-tier picks in any tier-conditioned statistic (2026-07
+# audit). Tier-conditioned aggregates exclude rows opened before it; an undated row
+# (tests/fakes -- production always stamps opened_date) fails open.
+TIER_STAMPED_FROM = date(2026, 6, 29)
+
+
+def _tier_stamped(trades: Iterable[PaperTrade]) -> list[PaperTrade]:
+    """Only trades whose ``conviction_tier`` was actually computed (see TIER_STAMPED_FROM)."""
+    return [t for t in trades
+            if t.opened_date is None or t.opened_date >= TIER_STAMPED_FROM]
+
 
 def size_weighted_expectancy(
     trades: Iterable[PaperTrade], weights: Mapping[str, float] | None = None
@@ -47,11 +60,13 @@ def size_weighted_expectancy(
     """Conviction-weighted mean realized R over CLOSED trades, plus the total weight deployed.
 
     Each trade's R is weighted by ``weights[conviction_tier]`` (default: premium 2x, strong 1x,
-    base 0.5x). Pure; safe on empty input (returns (0.0, 0.0)). With uniform weights this equals
-    the plain expectancy, so a gain over plain expectancy measures the sizing edge."""
+    base 0.5x). Inherently tier-conditioned, so pre-stamping legacy rows are excluded (see
+    ``TIER_STAMPED_FROM``). Pure; safe on empty input (returns (0.0, 0.0)). With uniform
+    weights this equals the plain expectancy over the stamped cohort, so a gain over that
+    plain expectancy measures the sizing edge."""
     w = weights or _DEFAULT_CONVICTION_WEIGHTS
     num = den = 0.0
-    for t in trades:
+    for t in _tier_stamped(trades):
         if t.status == "closed" and t.realized_r is not None:
             wt = w.get(t.conviction_tier, 1.0)
             num += wt * float(t.realized_r)
@@ -227,7 +242,13 @@ def summarize(trades: Iterable[PaperTrade]) -> PerformanceSummary:
 
 
 def breakdown(trades: Iterable[PaperTrade], key: str) -> dict[str, PerformanceSummary]:
-    """Group trades by ``str(getattr(t, key))`` and summarize each group."""
+    """Group trades by ``str(getattr(t, key))`` and summarize each group.
+
+    Slicing by ``conviction_tier`` excludes pre-stamping legacy rows (see
+    ``TIER_STAMPED_FROM``): their 'base' is a migration backfill, not a computed tier,
+    and pooling them poisons the tier ladder. Every other key is untouched."""
+    if key == "conviction_tier":
+        trades = _tier_stamped(trades)
     groups: dict[str, list[PaperTrade]] = defaultdict(list)
     for t in trades:
         groups[str(getattr(t, key))].append(t)

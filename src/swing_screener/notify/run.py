@@ -572,9 +572,12 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
             reversal_digest, reversal_pdf = _build_picks(
                 reversal_sigs, play_type="reversal", collect_intents=collected_intents)
 
-        if deep_on:  # close the learning loop: score any now-resolved prior analyst calls
-            n_scored = repo.score_analyst_calls(session)
-            log.info("scored %d resolved analyst call(s)", n_scored)
+        # Close the learning loop: score any now-resolved prior analyst calls. NOT gated
+        # on deep_on -- scoring is a cheap idempotent DB join (no model call, no-op on an
+        # empty table), and gating it meant pausing the analyst would silently freeze the
+        # grading of calls already made (2026-07 audit).
+        n_scored = repo.score_analyst_calls(session)
+        log.info("scored %d resolved analyst call(s)", n_scored)
 
         # Batch-dispatch the run's order intents through the adapter in ONE try/except.
         # GATED: the "off" NoOp adapter writes nothing and produces no ticket, so the

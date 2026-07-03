@@ -14,13 +14,13 @@ from swing_screener.db.models import PaperTrade
 
 def _pt(*, fill_status="filled", status="closed", realized_r=None, hold_bars=None,
         timeframe="1d", quality_tier="reputable", rank=1, exit_date=None, score=0.8,
-        conviction_tier="base"):
+        conviction_tier="base", opened_date=None):
     return PaperTrade(
         ticker="AAPL", timeframe=timeframe, horizon="medium", signal_score=score, rank=rank,
         mtf_aligned=True, quality_tier=quality_tier, volatility_tier="med",
         fill_status=fill_status, stop=95.0, target=110.0, risk=5.0, status=status,
         realized_r=realized_r, hold_bars=hold_bars, exit_date=exit_date,
-        conviction_tier=conviction_tier,
+        conviction_tier=conviction_tier, opened_date=opened_date,
     )
 
 
@@ -35,6 +35,26 @@ def test_size_weighted_expectancy_weights_by_conviction_tier():
     assert abs(total_w - 2.5) < 1e-9
     # open / unfilled trades are ignored
     assert size_weighted_expectancy([_pt(status="open", realized_r=None)]) == (0.0, 0.0)
+
+
+def test_tier_conditioned_stats_exclude_pre_stamping_rows():
+    """conviction_tier was only COMPUTED from 2026-06-29; the migration backfilled every
+    earlier row with the literal lowest tier 'base', so ~683 unknown-tier fills would
+    masquerade as deliberate base-tier picks (and be size-weighted 0.5x), poisoning any
+    tier/sizing statistic (2026-07 audit). Tier-conditioned aggregates exclude rows
+    opened before the stamping date; undated rows (tests/fakes) fail open."""
+    from swing_screener.analytics.performance import size_weighted_expectancy
+
+    legacy = _pt(realized_r=-5.0, conviction_tier="base", opened_date=date(2026, 6, 20))
+    stamped = _pt(realized_r=2.0, conviction_tier="premium", opened_date=date(2026, 7, 1))
+
+    exp, total_w = size_weighted_expectancy([legacy, stamped])
+    assert (exp, total_w) == (2.0, 2.0)  # the legacy row is excluded, not weighted 0.5x
+
+    by_tier = breakdown([legacy, stamped], "conviction_tier")
+    assert set(by_tier) == {"premium"}  # legacy 'base' masquerade excluded
+    # NON-tier breakdowns are untouched -- the exclusion is tier-specific.
+    assert breakdown([legacy, stamped], "timeframe")["1d"].n_total == 2
 
 
 def _book():
