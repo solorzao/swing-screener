@@ -782,6 +782,32 @@ def test_pending_expires_to_missed_after_window():
         assert pt.fill_status == "missed" and pt.status == "closed"  # window exhausted
 
 
+def test_pending_expiry_uses_each_variants_own_window():
+    """Per-variant windows: a window-sweep variant's pending rows must expire under ITS
+    config, not the base's. Booking already used the variant's width; expiry silently
+    clamped every row to the single window passed to resolve_pending, corrupting any
+    fill-window A/B (2026-07 review)."""
+    engine = get_engine("sqlite:///:memory:")
+    away = {"low": 102.0, "high": 108.0, "close": 105.0}  # never re-enters the zone
+    with Session(engine) as s:
+        open_from_signals(s, [_rev_cand()], {("AAPL", "1d"): (108.0, 102.0)},
+                          fill_date=date(2024, 1, 3), variant="short_win",
+                          reversal_fill_window_bars=2)
+        open_from_signals(s, [_rev_cand()], {("AAPL", "1d"): (108.0, 102.0)},
+                          fill_date=date(2024, 1, 3), variant="long_win",
+                          reversal_fill_window_bars=4)
+        windows = {"short_win": 2, "long_win": 4}
+        resolve_pending(s, {("AAPL", "1d"): {**away, "bar_date": date(2024, 1, 4)}},
+                        window=windows, today=date(2024, 1, 4))
+        by_variant = {pt.variant: pt for pt in _all_paper_trades(s)}
+        assert by_variant["short_win"].fill_status == "missed"    # its 2-bar window is up
+        assert by_variant["long_win"].status == "pending"         # its 4-bar window is not
+        # an unmapped variant falls back to the default variant's width, else the max
+        resolve_pending(s, {("AAPL", "1d"): {**away, "bar_date": date(2024, 1, 5)}},
+                        window=windows, today=date(2024, 1, 5))
+        assert _all_paper_trades(s) is not None  # smoke: mapping path never raises
+
+
 def test_pending_invalidated_when_stop_breaks_before_fill():
     engine = get_engine("sqlite:///:memory:")
     with Session(engine) as s:

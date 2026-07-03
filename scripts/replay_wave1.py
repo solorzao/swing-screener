@@ -75,7 +75,7 @@ def main() -> None:
 
     if args.book == "rev":  # the edge lives in the CONFIRMED subset -- show it too
         conf = [t for t in sel if t.strength == "confirmed"]
-        print(f"\n[reversal CONFIRMED-only leaderboard]\n"  # noqa: T201
+        print("\n[reversal CONFIRMED-only leaderboard]\n"  # noqa: T201
               + format_leaderboard(breakdown(conf, "variant")))
 
     print("\nmomentum_flip / target share by variant:")  # noqa: T201

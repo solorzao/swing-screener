@@ -62,28 +62,45 @@ def detect_reversal(f: pd.DataFrame, cfg: StrategyConfig) -> ReversalContext | N
         return None
 
     last = f.iloc[-1]
-    prev = f.iloc[-2]
-    prev2 = f.iloc[-3]
 
-    # 1) HA downtrend: enough red HA candles in the decline window. The green flip
-    #    bar(s) are bullish, so they don't count toward the red run.
-    decline = f.iloc[-(cfg.reversal_decline_bars + 1):]
+    # 1) the HA flip. ``g`` is the trailing HA-green run ending today; the FLIP bar is its
+    #    oldest bar (green out of red). g==1 -> the flip IS today (early). g>=2 -> a
+    #    confirmed follow-through when today prints the FIRST close above the flip bar's
+    #    high, within ``reversal_confirm_window`` bars of the flip. At the default window
+    #    of 1 only g==2 can confirm, which is exactly the legacy 3-bar pattern; a wider
+    #    window lets a green pause bar (an inside day digesting a violent flip) confirm a
+    #    bar or two late instead of killing the setup forever (2026-07 rotation audit).
+    g = 0
+    while g < len(f) - 1 and bool(f.iloc[-1 - g]["bullish"]):
+        g += 1
+    if g == 0 or not bool(f.iloc[-g - 1]["bearish"]):
+        return None
+    if g == 1:
+        strength, bounce = EARLY, last
+    else:
+        if g - 1 > cfg.reversal_confirm_window:
+            return None
+        flip = f.iloc[-g]
+        if float(last["close"]) <= float(flip["high"]):
+            return None
+        between = f["close"].iloc[len(f) - g + 1: len(f) - 1]
+        if len(between) and float(between.max()) > float(flip["high"]):
+            return None  # an earlier bar of the run already confirmed; today is not the first
+        strength, bounce = CONFIRMED, flip
+
+    # 2) HA downtrend: enough red HA candles in the decline window. The green flip
+    #    bar(s) are bullish, so they don't count toward the red run. A late confirm
+    #    (g > 2) measures the window as-of the FLIP bar -- otherwise the recovery greens
+    #    displace the reds the gate is looking for.
+    gate_f = f if g <= 2 else f.iloc[: len(f) - g + 1]
+    decline = gate_f.iloc[-(cfg.reversal_decline_bars + 1):]
     red_run = int(decline["bearish"].sum())
     if red_run < cfg.reversal_min_bearish_bars:
         return None
 
-    # 2) beaten-down context: the decline low is below the slow EMA.
+    # 3) beaten-down context: the decline low is below the slow EMA.
     reversal_low = float(decline["low"].min())
     if reversal_low >= float(last["ema_slow"]):
-        return None
-
-    # 3) the HA flip -- green out of red (early), or a confirmed follow-through.
-    if bool(last["bullish"]) and bool(prev["bearish"]):
-        strength, bounce = EARLY, last
-    elif (bool(prev["bullish"]) and bool(prev2["bearish"]) and bool(last["bullish"])
-          and float(last["close"]) > float(prev["high"])):
-        strength, bounce = CONFIRMED, prev
-    else:
         return None
 
     # Wyckoff spring: the bounce bar undercuts a recent support low (over the lookback ending
@@ -116,12 +133,20 @@ def detect_reversal(f: pd.DataFrame, cfg: StrategyConfig) -> ReversalContext | N
     # rally targets (and the base for the target retracement).
     decline_high = float(f.iloc[-(cfg.reversal_target_lookback + 1):]["high"].max())
 
+    # Entry-band anchor: legacy = the flip bar's high, which for CONFIRMED sits BELOW the
+    # confirmation close by definition (the signal is born above its own ceiling). The
+    # anchor_confirmation knob re-anchors on the top of the bounce-so-far (max high of the
+    # trailing green run) so the band tracks where the bounce actually is.
+    bounce_high = float(bounce["high"])
+    if strength == CONFIRMED and cfg.reversal_anchor_confirmation:
+        bounce_high = float(f["high"].iloc[len(f) - g:].max())
+
     return ReversalContext(
         trigger_ts=f.index[-1],
         trigger_close=float(last["close"]),
         atr=float(last["atr"]),
         reversal_low=reversal_low,
-        bounce_high=float(bounce["high"]),
+        bounce_high=bounce_high,
         rsi=float(last["rsi"]),
         min_rsi=min_rsi,
         strength=strength,
@@ -151,6 +176,11 @@ def compute_reversal_zone(ctx: ReversalContext, cfg: StrategyConfig) -> EntryZon
     if bounce_range <= 0:
         return None
     ceiling = ctx.bounce_high - cfg.reversal_pullback_shallow * bounce_range
+    # "Buy at yesterday's close or better": the ceiling is the trigger close itself, so a
+    # V-bounce that never retraces into the band can still fill (any next-bar trade at or
+    # below the trigger close does it). The floor keeps the deep-retrace bound.
+    if cfg.reversal_ceiling_at_close:
+        ceiling = ctx.trigger_close
     floor = ctx.bounce_high - cfg.reversal_pullback_deep * bounce_range
     stop = ctx.reversal_low - cfg.stop_buffer_atr * ctx.atr
     # R is measured from the price the order actually fills at -- the entry CEILING (the

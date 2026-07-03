@@ -461,7 +461,10 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
                               reversal_fill_window_bars=vcfg.reversal_fill_window_bars)
         # Step the PENDING resting-limit orders before the open trades: a pending order
         # that fills on this bar is then skipped by the stepper's entry-bar guard.
-        resolve_pending(s, latest_bars, window=cfg.reversal_fill_window_bars, today=today)
+        # Per-variant windows: each variant's pending rows expire under its own config.
+        resolve_pending(s, latest_bars, today=today,
+                        window={n: c.reversal_fill_window_bars
+                                for n, c in screen_variants.items()})
         advance_open(s, latest_bars, arms, today=today)
         # Live book: the bar-stepper above excludes account="live" rows -- the BROKER owns
         # their fills/exits. Reconcile them here (same cadence) so a broker fill materializes

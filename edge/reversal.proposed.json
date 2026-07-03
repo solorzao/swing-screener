@@ -5,9 +5,9 @@
     "delta": {
       "max_extension_atr": 3.0
     },
-    "rationale": "High-vol tier bleeds (-0.22R); tightening the max ATR extension gate should filter overextended, gappy reversals that dominate the high-vol bucket and drag expectancy.",
+    "rationale": "High-vol tier bleeds (-0.22R); tightening the max ATR extension gate should filter overextended, gappy reversals that dominate the high-vol bucket and drag expectancy. WITHDRAWN 2026-07-03: max_extension_atr is a continuation-path gate (pipeline/analyze.py analyze_frames) that never reaches the reversal detector -- sweeping it would produce an identical reversal book and mint a false null on this hunch.",
     "hunch_ref": "volatility_tier=high",
-    "status": "queued",
+    "status": "withdrawn",
     "drafted_at": "2026-07-02",
     "provenance": "reflection-opus"
   },
@@ -17,9 +17,9 @@
     "delta": {
       "min_pullback_bars": 3
     },
-    "rationale": "The bull-trend sample is large (n=288) but only marginally positive; requiring a deeper/longer pullback before a reversal entry should skip shallow bounces and lift expectancy above the CI bound.",
+    "rationale": "The bull-trend sample is large (n=288) but only marginally positive; requiring a deeper/longer pullback before a reversal entry should skip shallow bounces and lift expectancy above the CI bound. WITHDRAWN 2026-07-03: min_pullback_bars gates the continuation pullback detector (signals/detect.py), not the reversal path -- a no-op delta that would burn a sweep slot and mint a false null.",
     "hunch_ref": "market_trend=bull",
-    "status": "queued",
+    "status": "withdrawn",
     "drafted_at": "2026-07-02",
     "provenance": "reflection-opus"
   },
@@ -29,9 +29,9 @@
     "delta": {
       "oversold_rsi_max": 25
     },
-    "rationale": "Low score bucket (0.00-0.50) is where nearly all reversals live and is barely breakeven; demanding a more extreme oversold read should concentrate entries into genuine capitulation reversals.",
+    "rationale": "Low score bucket (0.00-0.50) is where nearly all reversals live and is barely breakeven; demanding a more extreme oversold read should concentrate entries into genuine capitulation reversals. WITHDRAWN 2026-07-03: oversold_rsi_max only feeds the continuation 'oversold' tag; the reversal detector reads reversal_oversold_rsi_max, and that one is scoring-only (no gate) -- the delta cannot change the reversal book.",
     "hunch_ref": "score=0.00-0.50",
-    "status": "queued",
+    "status": "withdrawn",
     "drafted_at": "2026-07-02",
     "provenance": "reflection-opus"
   }

@@ -96,6 +96,10 @@ SmtpSend = Callable[..., None]
 
 _PICKERS = {"daily": sel.daily_picks, "weekly": sel.weekly_picks, "monthly": sel.monthly_picks}
 
+# Reversal over-fetch depth: pull this many ranked candidates so the actionability drop
+# and the sector cap backfill the top-5 from below instead of shrinking the list.
+_REVERSAL_POOL_N = 20
+
 
 @dataclass(frozen=True)
 class DigestResult:
@@ -234,14 +238,17 @@ def _drop_already_ran(
     signals: list[Signal],
     latest_closes_fn: Callable[[list[str]], dict[str, float]],
 ) -> list[Signal]:
-    """Drop picks that already ran past their entry ceiling (``extended``) or broke their
-    stop (``broken``) by digest time.
+    """Drop picks whose entry is no longer live at digest time -- with PLAY-TYPE-AWARE
+    semantics.
 
-    The screen runs the prior evening, so a pick can leave its entry zone overnight; this
-    re-checks each pick's stored zone against the latest close (the same live actionability
-    the dashboard shows) and keeps only ``actionable``/``unknown`` picks. Fail-open: a pick
-    with no live quote -- or ANY fetch error -- is KEPT, so a quote outage never silences the
-    digest. Caller passes ``latest_closes_fn=None`` to skip the filter entirely."""
+    CONTINUATION picks drop on ``extended`` (ran past the ceiling: the chase the freshness
+    gate exists to prevent) and on ``broken`` (stop violated). A REVERSAL pick is a RESTING
+    LIMIT with a multi-bar fill window: sitting above its ceiling at digest time is its
+    NORMAL state (a confirmed reversal closes above the flip high by definition), so
+    ``extended`` is kept and only ``broken`` drops it -- the old drop-on-extended rule
+    silently deleted every confirmed reversal during the 2026-07 rotation. Fail-open: a
+    pick with no live quote -- or ANY fetch error -- is KEPT, so a quote outage never
+    silences the digest. Caller passes ``latest_closes_fn=None`` to skip entirely."""
     if not signals:
         return signals
     try:
@@ -249,12 +256,15 @@ def _drop_already_ran(
     except Exception:  # noqa: BLE001 -- a quote outage must never block/empty the digest
         log.warning("live-quote fetch failed; keeping all picks (already-ran filter skipped)")
         return signals
-    return [
-        s for s in signals
-        if classify(entry_floor=s.entry_floor, entry_ceiling=s.entry_ceiling,
-                    stop=s.stop, price=prices.get(s.ticker)).status
-        in ("actionable", "unknown")
-    ]
+    out: list[Signal] = []
+    for s in signals:
+        status = classify(entry_floor=s.entry_floor, entry_ceiling=s.entry_ceiling,
+                          stop=s.stop, price=prices.get(s.ticker)).status
+        keep = ("actionable", "unknown", "extended") if s.play_type == "reversal" else (
+            "actionable", "unknown")
+        if status in keep:
+            out.append(s)
+    return out
 
 
 def _already_sent(session: Session, kind: str, run_date: date) -> bool:
@@ -558,17 +568,28 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # Reversal "Top 5" -- daily digest only for now (weekly/monthly stay continuation).
         reversal_digest: list[DigestPick] | None = None
         reversal_pdf: list[PdfPick] = []
-        rev_funnel: tuple[int, int] | None = None
+        rev_funnel: tuple[int, ...] | None = None
         if kind == "daily":
-            # The unfiltered detected/confirmed counts, rendered under the reversal section
-            # so a surfacing-bar wipeout is visibly different from a no-signals day.
-            rev_funnel = sel.reversal_funnel(session, run_date)
-            reversal_sigs = sel.reversal_picks(
-                session, run_date, max_age_days=cooldown,
-                premium_only=StrategyConfig().reversal_surface_premium_only,
-                confirmed_only=StrategyConfig().reversal_surface_confirmed_only)
+            # Stage-attributed funnel, rendered under the reversal section so a
+            # surfacing-bar wipeout is visibly different from a quiet market AND says
+            # WHICH bar did the filtering (2026-07-02: 31 confirmations, 0 software
+            # names surfaced, undiagnosable from the old two-count line).
+            detected, confirmed_n = sel.reversal_funnel(session, run_date)
+            scfg = StrategyConfig()
+            # Over-fetch so the actionability drop and sector cap BACKFILL from below
+            # the top-N instead of shrinking the list (top-5-then-filter left the Jul-2
+            # digest with no room for the rotation names ranked 6th+).
+            pool = sel.reversal_picks(
+                session, run_date, top_n=_REVERSAL_POOL_N, max_age_days=cooldown,
+                premium_only=scfg.reversal_surface_premium_only,
+                confirmed_only=scfg.reversal_surface_confirmed_only)
+            n_fresh = len(pool)
             if latest_closes_fn is not None:
-                reversal_sigs = _drop_already_ran(reversal_sigs, latest_closes_fn)
+                pool = _drop_already_ran(pool, latest_closes_fn)
+            n_actionable = len(pool)
+            reversal_sigs = sel.cap_signals_by_sector(
+                session, pool, max_per_sector=scfg.reversal_max_per_sector, limit=5)
+            rev_funnel = (detected, confirmed_n, n_fresh, n_actionable)
             reversal_digest, reversal_pdf = _build_picks(
                 reversal_sigs, play_type="reversal", collect_intents=collected_intents)
 
