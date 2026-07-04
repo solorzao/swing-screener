@@ -44,6 +44,7 @@ def _order_json(
     status: str = "new",
     filled_qty: str = "0",
     filled_avg_price: str | None = None,
+    side: str = "buy",
 ) -> dict[str, object]:
     """A trimmed-but-faithful Alpaca order JSON (numbers as STRINGS, like the real API)."""
     return {
@@ -54,7 +55,7 @@ def _order_json(
         "filled_qty": filled_qty,
         "filled_avg_price": filled_avg_price,
         "qty": "10",
-        "side": "buy",
+        "side": side,
         "type": "limit",
         "limit_price": "100.00",
         "time_in_force": "day",
@@ -74,7 +75,8 @@ def _broker(handler: object, *, host: str = PAPER_HOST) -> AlpacaBroker:
 
 def _spec(
     *, client_order_id: str = "k1", symbol: str = "AAPL", qty: int = 10,
-    limit_price: float | None = 100.0,
+    limit_price: float | None = 100.0, stop_loss: float | None = None,
+    take_profit: float | None = None,
 ) -> BrokerOrderSpec:
     return BrokerOrderSpec(
         client_order_id=client_order_id,
@@ -84,6 +86,8 @@ def _spec(
         order_type="limit",
         limit_price=limit_price,
         time_in_force="day",
+        stop_loss=stop_loss,
+        take_profit=take_profit,
     )
 
 
@@ -308,10 +312,10 @@ def test_last_close_price_from_recent_filled_closing_order() -> None:
                 # newest first (Alpaca default direction=desc); the first FILLED wins.
                 _order_json(
                     order_id="latest", symbol="AAPL", status="filled",
-                    filled_qty="10", filled_avg_price="161.50"),
+                    filled_qty="10", filled_avg_price="161.50", side="sell"),
                 _order_json(
                     order_id="older", symbol="AAPL", status="filled",
-                    filled_qty="10", filled_avg_price="150.00"),
+                    filled_qty="10", filled_avg_price="150.00", side="sell"),
             ],
         )
 
@@ -331,12 +335,30 @@ def test_last_close_price_skips_unfilled_orders() -> None:
                 # ...in favor of the next FILLED one.
                 _order_json(
                     order_id="filled", symbol="AAPL", status="filled",
-                    filled_qty="10", filled_avg_price="142.00"),
+                    filled_qty="10", filled_avg_price="142.00", side="sell"),
             ],
         )
 
     broker = _broker(handler)
     assert broker.last_close_price("AAPL") == 142.00
+
+
+def test_last_close_price_skips_the_entry_buy() -> None:
+    """The entry BUY is also a filled closed order for the symbol: without the sell-side
+    filter a vanished position would book its "exit" at the entry fill price (realized_r
+    == 0 regardless of the real outcome)."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                _order_json(
+                    order_id="entry", symbol="AAPL", status="filled",
+                    filled_qty="10", filled_avg_price="100.00", side="buy"),
+            ],
+        )
+
+    broker = _broker(handler)
+    assert broker.last_close_price("AAPL") is None  # a buy is never an exit price
 
 
 def test_last_close_price_none_when_no_closing_orders() -> None:
@@ -423,3 +445,43 @@ def test_default_construction_builds_auth_headers_from_args() -> None:
 def test_alpaca_broker_satisfies_broker_client_protocol() -> None:
     client: BrokerClient = _broker(lambda r: httpx.Response(200, json={}))
     assert client.name == "alpaca"
+
+
+def test_submit_order_sends_bracket_legs_when_the_spec_carries_them() -> None:
+    """With stop_loss + take_profit set, the entry goes out as order_class=bracket and
+    the venue holds the protective legs itself (money-safety: the exit used to exist
+    only virtually, enforced by nothing at the venue if the screener died)."""
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_order_json(status="new"))
+
+    broker = _broker(handler)
+    broker.submit_order(_spec(symbol="AAPL", qty=10, limit_price=100.0,
+                              stop_loss=94.0, take_profit=110.0))
+
+    body = seen["body"]
+    assert isinstance(body, dict)
+    assert body["order_class"] == "bracket"
+    assert body["stop_loss"] == {"stop_price": "94.0"}       # strings, like every price
+    assert body["take_profit"] == {"limit_price": "110.0"}
+
+
+def test_submit_order_stays_a_plain_limit_without_both_legs() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_order_json(status="new"))
+
+    broker = _broker(handler)
+    broker.submit_order(_spec(symbol="AAPL", qty=10, limit_price=100.0, stop_loss=94.0))
+
+    body = seen["body"]
+    assert isinstance(body, dict)
+    assert "order_class" not in body  # one leg alone never sends a half-bracket

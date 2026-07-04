@@ -265,3 +265,35 @@ def test_broker_returns_rejected_order() -> None:
 
 def test_adapter_name() -> None:
     assert LiveAdapter(FakeBroker()).name == "live"
+
+
+# ---------------------------------------------------------------------------
+# bracket orders: the venue holds the protective stop + target itself, so a
+# filled position stays protected even if the screener dies.
+# ---------------------------------------------------------------------------
+def test_submit_carries_the_intents_stop_and_target_as_bracket_legs() -> None:
+    with _session() as s:
+        broker = FakeBroker(real_money=False)
+        adapter = LiveAdapter(broker, settings=_live_settings(),
+                              gate_ready_fn=lambda _s: True)
+        result = adapter.submit(_intent(stop=94.0, target=110.0),
+                                session=s, run_date=RUN, limits=NO_LIMITS)
+
+        assert result.status == "submitted_live"
+        (spec,) = broker.submitted_specs
+        # the deterministic levels ride the spec verbatim (North Star #4: never computed here)
+        assert spec.stop_loss == 94.0
+        assert spec.take_profit == 110.0
+
+
+def test_bracket_off_falls_back_to_a_plain_limit_entry() -> None:
+    from dataclasses import replace as dc_replace
+
+    with _session() as s:
+        broker = FakeBroker(real_money=False)
+        settings = dc_replace(_live_settings(), bracket_orders=False)
+        adapter = LiveAdapter(broker, settings=settings, gate_ready_fn=lambda _s: True)
+        adapter.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
+
+        (spec,) = broker.submitted_specs
+        assert spec.stop_loss is None and spec.take_profit is None

@@ -68,6 +68,10 @@ class Settings:
     # ready (see ``can_arm_real_money``). Both default safe: no broker, real money disallowed.
     broker: str
     allow_real_money: bool
+    # Submit live entries as BRACKET orders (venue-held stop + target), so a filled
+    # position stays protected even if the screener dies. Default ON; SWING_BRACKET_ORDERS
+    # ="off" falls back to plain limit entries (reconcile-managed exits only).
+    bracket_orders: bool = True
 
 
 _TRUE = {"1", "true", "yes", "on"}
@@ -174,6 +178,10 @@ def load_settings() -> Settings:
         broker=env.get("SWING_BROKER", "").strip().lower(),
         allow_real_money=(
             env.get("SWING_BROKER_ALLOW_REAL_MONEY", "").strip().lower() in _TRUE
+        ),
+        bracket_orders=(
+            env.get("SWING_BRACKET_ORDERS", "on").strip().lower()
+            not in {"off", "0", "false", "no"}
         ),
     )
 

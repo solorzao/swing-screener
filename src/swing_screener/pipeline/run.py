@@ -500,9 +500,20 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         advance_open(s, latest_bars, arms, today=today)
         # Live book: the bar-stepper above excludes account="live" rows -- the BROKER owns
         # their fills/exits. Reconcile them here (same cadence) so a broker fill materializes
-        # a live position + a venue close reconciles its exit. Only when live + a broker; the
-        # off/paper path never reaches here (broker is None).
-        if broker is not None and settings.execution_mode == "live":
+        # a live position + a venue close reconciles its exit. Runs in live mode -- AND,
+        # disarm-safety, whenever OPEN live exposure exists even after the mode is flipped
+        # off: disarming used to stop the reconcile precisely when the operator was trying
+        # to reduce risk, leaving the live book dark while positions sat at the venue
+        # (2026-07 review). Broker construction for that path is guarded: missing broker
+        # secrets must degrade to a loud warning, never kill the screen run.
+        if broker is None and settings.broker and repo.load_open_live_trades(s):
+            try:
+                broker = build_broker(settings)
+            except Exception:  # noqa: BLE001 -- a secrets/config gap must not abort the screen
+                log.warning("open LIVE exposure exists but the broker could not be built; "
+                            "live book NOT reconciled this run", exc_info=True)
+        if broker is not None and (settings.execution_mode == "live"
+                                   or repo.load_open_live_trades(s)):
             n_reconciled = reconcile_live(s, broker, today=today)
             log.info("live reconcile: %d change(s)", n_reconciled)
 
