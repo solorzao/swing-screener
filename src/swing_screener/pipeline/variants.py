@@ -28,6 +28,18 @@ _INDICATOR_FIELDS = (
     "macd_signal", "wick_frac", "zone_body_frac",
 )
 
+# Fields the EXIT machinery reads (evaluate_exit / advance_open). A screen variant that
+# differs from base in one of these is a SILENT NO-OP: both live (pipeline/run.py) and
+# replay (pipeline/replay.py) advance every open trade under the BASE config's exits, so
+# the variant books an identical book and the sweep honestly reports "no delta" -- a
+# false null recorded as tested-and-dead when it was never tested (2026-07 review).
+# Exit ideas are tested as ARMS (pipeline/arms.py), which advance_open keys per trade.
+_EXIT_FIELDS = (
+    "momentum_flip_exit", "reversal_momentum_flip_exit", "max_hold_bars",
+    "time_stop_factor", "fill_slippage_atr", "trail_mode", "chandelier_atr_mult",
+    "partial_frac", "partial_require_softening",
+)
+
 
 def _assert_shared_indicators(base: StrategyConfig, name: str, cfg: StrategyConfig) -> None:
     for field in _INDICATOR_FIELDS:
@@ -35,6 +47,14 @@ def _assert_shared_indicators(base: StrategyConfig, name: str, cfg: StrategyConf
             raise ValueError(
                 f"screen variant {name!r} changes indicator field {field!r}; variants must "
                 "share the base's indicator periods (the shadow book reuses base frames)"
+            )
+    for field in _EXIT_FIELDS:
+        if getattr(base, field) != getattr(cfg, field):
+            raise ValueError(
+                f"screen variant {name!r} changes exit field {field!r}, which a screen "
+                "variant cannot test (open trades advance under the BASE config's exits, so "
+                "the variant books an identical no-op book and mints a false null). Test "
+                "exit ideas as an ARM (pipeline/arms.py) instead."
             )
 
 

@@ -22,14 +22,14 @@ import pandas as pd
 
 from swing_screener.analytics.performance import (
     PerformanceSummary,
-    breakdown,
     leaderboard_order,
+    summarize,
 )
 from swing_screener.config import StrategyConfig
 from swing_screener.data.fetch import fetch_bars
 from swing_screener.db.models import PaperTrade
 from swing_screener.pipeline.proposed import QUEUED, ProposedVariant, to_config
-from swing_screener.pipeline.replay import _warmup, format_leaderboard, replay, replay_book
+from swing_screener.pipeline.replay import _warmup, format_leaderboard, replay_book
 from swing_screener.pipeline.variants import _assert_shared_indicators
 
 log = logging.getLogger(__name__)
@@ -71,6 +71,10 @@ class OptimizeResult:
     # 0 means "unknown" (a summary-only caller did not record the swept size); provenance then
     # falls back to the in-sample size.
     n_variants_tested: int = 0
+    # variant name -> the play type its knob touches (see ``grid_scopes``): the SCOPE its
+    # leaderboard line was computed on and the scope propose()'s gates must slice to.
+    # Missing name = pooled (legacy behavior).
+    scopes: dict[str, str] = field(default_factory=dict)
 
 
 def build_config_grid(
@@ -131,6 +135,31 @@ def build_config_grid(
     return grid
 
 
+def grid_scopes(proposed: list[ProposedVariant] | None = None) -> dict[str, str]:
+    """Variant name -> the play type its swept knob actually touches (its scoring scope).
+
+    Every variant book pools continuation AND reversal fills, but each swept knob alters
+    only ONE play type's code path -- the other play type's fills are byte-identical
+    across arms, so ranking or gating on the pooled book dilutes a real single-play-type
+    delta toward zero and the promotion gates become structurally near-blind (2026-07
+    review). ``ext_*``/``mtr_*`` sweep continuation-only knobs; an analyst-queued variant
+    declares its own ``play_type``. A name absent from the map scores on the pooled book
+    (legacy behavior)."""
+    scopes = {f"ext_{e:.1f}": "continuation" for e in _EXT_GRID}
+    scopes |= {f"mtr_{m:.1f}": "continuation" for m in _MTR_GRID}
+    for pv in proposed or []:
+        scopes[f"{_PROPOSED_PREFIX}{pv.name}"] = pv.play_type
+    return scopes
+
+
+def scoped_trades(
+    trades: list[PaperTrade], name: str, scopes: Mapping[str, str]
+) -> list[PaperTrade]:
+    """``trades`` sliced to the play type ``name`` is scoped to (all trades when unscoped)."""
+    pt = scopes.get(name)
+    return trades if pt is None else [t for t in trades if t.play_type == pt]
+
+
 def _split(
     frames: Mapping[str, pd.DataFrame], oos_frac: float, lookback: int
 ) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame]]:
@@ -153,27 +182,46 @@ def optimize(
     base_cfg: StrategyConfig | None = None,
     grid: Mapping[str, StrategyConfig] | None = None,
     oos_frac: float = 0.3,
+    scopes: Mapping[str, str] | None = None,
 ) -> OptimizeResult:
     """Sweep ``grid`` over ``frames`` with a walk-forward split and pick an in-sample winner.
 
     Ranks the grid on the in-sample slice (trust-tiered, like the leaderboard) and carries the
     winner's out-of-sample line so the report can show whether the edge holds up.
-    """
+
+    ``scopes`` (see ``grid_scopes``) slices each variant's LEADERBOARD lines to the play
+    type its knob touches, so a continuation-knob arm is ranked on continuation fills
+    only -- the pooled book's untouched-play-type fills are common-mode noise that
+    otherwise dilutes every comparison toward zero. ``out_of_sample_trades`` keeps the
+    FULL per-variant books (propose() re-slices to the winner's scope so winner and
+    incumbent are always compared on the same population)."""
     base_cfg = base_cfg or StrategyConfig()
-    grid = grid or build_config_grid(base_cfg)
+    if grid is None:
+        grid = build_config_grid(base_cfg)
+        scopes = grid_scopes() if scopes is None else scopes
+    scopes = dict(scopes or {})
     in_frames, out_frames = _split(frames, oos_frac, _warmup(base_cfg))
 
-    in_sample = replay(in_frames, timeframe=timeframe, base_cfg=base_cfg, variants=grid)
+    def _scoped_summaries(book: list[PaperTrade]) -> tuple[
+        dict[str, PerformanceSummary], dict[str, list[PaperTrade]]
+    ]:
+        by_variant: dict[str, list[PaperTrade]] = defaultdict(list)
+        for t in book:
+            by_variant[t.variant].append(t)
+        summaries = {}
+        for name, ts in by_variant.items():
+            sliced = scoped_trades(ts, name, scopes)
+            if sliced:  # mirror breakdown(): a variant with no (in-scope) trades is absent
+                summaries[name] = summarize(sliced)
+        return summaries, dict(by_variant)
 
-    # Build the OOS book ONCE and derive both views from it: the per-variant trade lists
-    # (for propose()'s clustered delta + placebo gates) and the summarized leaderboard. Running
-    # replay_book + breakdown here -- instead of replay() then a second replay_book() -- keeps the
-    # expensive bar-by-bar walk single-pass and guarantees the trades and summaries agree.
+    # Build each slice's book ONCE and derive both views from it: the per-variant trade
+    # lists (for propose()'s clustered delta + placebo gates) and the summarized
+    # leaderboard -- single-pass, and the trades and summaries can never disagree.
+    is_book = replay_book(in_frames, timeframe=timeframe, base_cfg=base_cfg, variants=grid)
+    in_sample, _ = _scoped_summaries(is_book)
     oos_book = replay_book(out_frames, timeframe=timeframe, base_cfg=base_cfg, variants=grid)
-    out_of_sample_trades: dict[str, list[PaperTrade]] = defaultdict(list)
-    for t in oos_book:
-        out_of_sample_trades[t.variant].append(t)
-    out_of_sample = breakdown(oos_book, "variant")
+    out_of_sample, out_of_sample_trades = _scoped_summaries(oos_book)
 
     # Best in-sample config that actually traded (a 0-trade config can't be a winner).
     winner = next((n for n in leaderboard_order(in_sample) if in_sample[n].n_closed > 0), None)
@@ -181,10 +229,11 @@ def optimize(
         in_sample=in_sample,
         out_of_sample=out_of_sample,
         winner=winner,
-        out_of_sample_trades=dict(out_of_sample_trades),
+        out_of_sample_trades=out_of_sample_trades,
         # The honest search width: how many configs were SWEPT (incl. analyst-queued ones),
         # not how many traded. propose()'s provenance surfaces this.
         n_variants_tested=len(grid),
+        scopes=scopes,
     )
 
 
@@ -244,7 +293,8 @@ def main() -> None:
     # stays gate-only (it parses the winner as ext_<float> and edits only the gate).
     grid = build_config_grid(StrategyConfig(), include_min_target_r=True)
     print(format_report(  # noqa: T201
-        optimize(frames, timeframe="1d", grid=grid, oos_frac=args.oos_frac)))
+        optimize(frames, timeframe="1d", grid=grid, oos_frac=args.oos_frac,
+                 scopes=grid_scopes())))
 
 
 if __name__ == "__main__":

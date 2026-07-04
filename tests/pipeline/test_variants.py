@@ -68,3 +68,21 @@ def test_detection_only_fields_are_allowed_in_variants():
     base = StrategyConfig()
     _assert_shared_indicators(base, "outside_bar", replace(base, trigger_kind="outside_bar"))
     _assert_shared_indicators(base, "band_touch", replace(base, require_band_touch=True))
+
+
+def test_rejects_a_variant_that_changes_an_exit_knob():
+    """A screen variant differing in an EXIT field is a silent no-op (open trades advance
+    under the BASE config's exits in both live and replay), so the guard must fail loudly
+    and point at arms instead of letting a false null be recorded (2026-07 review)."""
+    from dataclasses import replace
+
+    from swing_screener.pipeline.variants import _assert_shared_indicators
+
+    base = StrategyConfig()
+    for field, value in (("partial_frac", 0.33), ("trail_mode", "chandelier"),
+                         ("time_stop_factor", base.time_stop_factor * 2),
+                         ("reversal_momentum_flip_exit", True),
+                         ("fill_slippage_atr", base.fill_slippage_atr + 0.05)):
+        bad = replace(base, **{field: value})
+        with pytest.raises(ValueError, match="exit field"):
+            _assert_shared_indicators(base, f"bad_{field}", bad)

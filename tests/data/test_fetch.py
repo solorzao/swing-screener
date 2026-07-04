@@ -174,3 +174,50 @@ def test_info_sector_reads_info_dict(monkeypatch):
     assert fetch._info_sector("XOM") == "Energy"  # trimmed
     monkeypatch.setattr(fetch.yf, "Ticker", lambda t: _FakeTicker({}))
     assert fetch._info_sector("X") is None  # no sector key
+
+
+def _df_ending(last_day: str, periods: int = 3):
+    idx = pd.date_range(end=last_day, periods=periods, freq="1D")
+    return pd.DataFrame(
+        {"open": [1.0] * periods, "high": [2.0] * periods, "low": [0.5] * periods,
+         "close": [1.5] * periods, "volume": [100.0] * periods}, index=idx,
+    )
+
+
+def test_daily_fetch_drops_todays_in_progress_bar_before_the_close(tmp_path, monkeypatch):
+    """The 'daily bar is complete' invariant, enforced at the cache seam: a 2pm dashboard
+    fetch must not pin today's half-formed session bar as the day's cached truth (the
+    evening screen would detect/fill/advance off it -- 2026-07 audit's partial-bar
+    contamination). After the close (or for prior dates) the bar passes through."""
+    from datetime import datetime
+
+    monkeypatch.setattr(fetch, "_download", lambda *a: _df_ending("2026-07-03"))
+
+    # 2pm ET on the bar's own date: the in-progress bar is dropped before caching
+    monkeypatch.setattr(fetch, "_now_eastern",
+                        lambda: datetime(2026, 7, 3, 14, 0, tzinfo=fetch._EASTERN))
+    df = fetch.fetch_bars("AAPL", "1d", cache_dir=tmp_path)
+    assert df is not None and len(df) == 2
+    assert df.index[-1].date() == date(2026, 7, 2)
+
+    # 5pm ET same day (fresh cache dir): the session closed, the bar is kept
+    monkeypatch.setattr(fetch, "_now_eastern",
+                        lambda: datetime(2026, 7, 3, 17, 0, tzinfo=fetch._EASTERN))
+    df = fetch.fetch_bars("AAPL", "1d", cache_dir=tmp_path / "pm")
+    assert df is not None and len(df) == 3
+
+    # a later calendar day (fresh cache dir): historical bars are never touched
+    monkeypatch.setattr(fetch, "_now_eastern",
+                        lambda: datetime(2026, 7, 6, 14, 0, tzinfo=fetch._EASTERN))
+    df = fetch.fetch_bars("AAPL", "1d", cache_dir=tmp_path / "later")
+    assert df is not None and len(df) == 3
+
+
+def test_hourly_fetch_is_not_touched_by_the_daily_guard(tmp_path, monkeypatch):
+    from datetime import datetime
+
+    monkeypatch.setattr(fetch, "_download", lambda *a: _df_ending("2026-07-03"))
+    monkeypatch.setattr(fetch, "_now_eastern",
+                        lambda: datetime(2026, 7, 3, 14, 0, tzinfo=fetch._EASTERN))
+    df = fetch.fetch_bars("AAPL", "1h", cache_dir=tmp_path, period="60d")
+    assert df is not None and len(df) == 3  # intraday frames keep every row

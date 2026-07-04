@@ -392,3 +392,27 @@ def test_run_reflection_force_reflects_all_play_types_even_when_not_due(tmp_path
             edge_dir=edge_dir, client=client, today="2026-07-03", force=True,
         )
     assert set(reflected) == {"continuation", "reversal"}
+
+
+def test_reflection_grades_only_the_would_surface_facet(tmp_path):
+    """North Star #7: verdicts are earned on the trades the digest would SURFACE. A fat
+    edge living entirely in hidden rows (would_surface False -- or legacy None) must not
+    mint a forward-sourced verdict; the identical edge on surfaced rows must."""
+    import json
+
+    for flag, expect_forward in ((False, False), (None, False), (True, True)):
+        edge_dir = tmp_path / f"edge_{flag}"
+        edge_dir.mkdir()
+        with _mem_session() as session:
+            trades = [_closed_trade(f"T{i}", 1.0, "reversal")
+                      for i in range(_REFLECT_TRIGGER_N + 5)]
+            for t in trades:
+                t.would_surface = flag
+            _seed(session, trades)
+            client = _FakeClient("## Thesis\n\nAuthored prose.\n")
+            run_reflection(session, replay_frames={"S": _synth()}, spy_daily=None,
+                           edge_dir=edge_dir, client=client, today="2026-07-03")
+        verdicts = json.loads(
+            (edge_dir / "reversal.verdicts.json").read_text(encoding="utf-8"))
+        has_forward = any(v["source"] == "forward" for v in verdicts)
+        assert has_forward is expect_forward, f"would_surface={flag}"

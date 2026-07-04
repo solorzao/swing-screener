@@ -348,3 +348,32 @@ def test_run_logs_completion_marker(tmp_path, bars, monkeypatch, caplog):
             today=date(2024, 4, 1), cfg=_NO_EXT_GATE,
         )
     assert any("SCREEN_RUN_COMPLETE" in m for m in caplog.messages)
+
+
+def test_would_surface_stamps_strength_and_top5_rank():
+    """The booking-time surfacing estimate (North Star #7): reversal EARLY is hidden
+    under confirmed_only, the premium bar composes, and rank must hold the digest's
+    top-5 within the play type."""
+    from dataclasses import replace
+
+    from swing_screener.pipeline.analyze import SignalResult
+    from swing_screener.pipeline.run import _would_surface
+
+    cfg = StrategyConfig()
+
+    def sig(play_type, strength=None, tier="base"):
+        return SignalResult(ticker="X", timeframe="1d", horizon="medium", score=0.5,
+                            mtf_aligned=False, quality_tier="", volatility_tier="",
+                            oversold=False, trigger_close=100.0, atr=2.0, rsi=50.0,
+                            entry_floor=96.0, entry_ceiling=101.0, stop=95.0, target=110.0,
+                            frame=None, ctx=None, zone=None, play_type=play_type,
+                            strength=strength, conviction_tier=tier)
+
+    assert _would_surface(sig("continuation"), 5, cfg) is True
+    assert _would_surface(sig("continuation"), 6, cfg) is False        # below the top-5
+    assert _would_surface(sig("reversal", "confirmed"), 1, cfg) is True
+    assert _would_surface(sig("reversal", "early"), 1, cfg) is False   # confirmed_only hides EARLY
+    assert _would_surface(sig("reversal", "confirmed"), 6, cfg) is False
+    prem = replace(cfg, reversal_surface_premium_only=True)
+    assert _would_surface(sig("reversal", "confirmed", "premium"), 1, prem) is True
+    assert _would_surface(sig("reversal", "confirmed", "base"), 1, prem) is False
