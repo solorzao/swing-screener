@@ -132,6 +132,9 @@ class AlpacaBroker:
         }
         if spec.limit_price is not None:
             body["limit_price"] = str(spec.limit_price)
+        if spec.stop_price is not None:
+            # a plain protective STOP (the disarm restore path) -- NOT a bracket.
+            body["stop_price"] = str(spec.stop_price)
         if spec.stop_loss is not None and spec.take_profit is not None:
             body["order_class"] = "bracket"
             body["stop_loss"] = {"stop_price": str(spec.stop_loss)}
@@ -241,6 +244,10 @@ class AlpacaBroker:
                 float(filled_avg_price) if filled_avg_price is not None else None
             ),
             symbol=raw["symbol"],
+            # side/type distinguish entry buys from protective sell legs; the disarm
+            # path keys off them. Defaults match the pre-bracket vocabulary.
+            side=str(raw.get("side") or "buy"),
+            order_type=str(raw.get("type") or "limit"),
         )
 
     def _request(

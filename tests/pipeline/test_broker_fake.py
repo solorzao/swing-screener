@@ -234,6 +234,56 @@ def test_get_account_honors_the_constructor_knobs() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Bracket-leg modeling: a filled bracket entry leaves LIVE venue-held sell legs
+# (the protective stop + the target), exactly like Alpaca does -- so tests can
+# prove a disarm/kill-switch keeps positions stop-protected.
+# ---------------------------------------------------------------------------
+def _bracket_spec(*, client_order_id: str = "b1", symbol: str = "NVDA",
+                  qty: int = 8) -> BrokerOrderSpec:
+    return BrokerOrderSpec(
+        client_order_id=client_order_id, symbol=symbol, side="buy", qty=qty,
+        order_type="limit", limit_price=100.0, time_in_force="day",
+        stop_loss=95.0, take_profit=110.0)
+
+
+def test_orders_carry_side_and_order_type() -> None:
+    order = FakeBroker().submit_order(_spec(symbol="MSFT"))
+    assert order.side == "buy"
+    assert order.order_type == "limit"
+
+
+def test_fill_of_bracket_entry_spawns_live_protective_legs() -> None:
+    broker = FakeBroker()
+    entry = broker.submit_order(_bracket_spec(symbol="NVDA", qty=8))
+
+    broker.fill(entry.broker_order_id, price=100.0)
+
+    open_orders = broker.list_open_orders()
+    stops = [o for o in open_orders if o.side == "sell" and o.order_type == "stop"]
+    targets = [o for o in open_orders if o.side == "sell" and o.order_type == "limit"]
+    assert [o.symbol for o in stops] == ["NVDA"]   # the venue-held protective stop
+    assert [o.symbol for o in targets] == ["NVDA"]  # the venue-held target
+    assert stops[0].filled_qty == 0 and stops[0].status == "new"
+    # the position itself opened as usual.
+    assert broker.get_positions() == [
+        BrokerPosition(symbol="NVDA", qty=8, avg_entry_price=100.0)
+    ]
+
+
+def test_cancel_all_orders_kills_bracket_stop_legs_like_the_venue() -> None:
+    # Documents the REAL venue semantic that makes a blanket cancel dangerous:
+    # DELETE /v2/orders pulls the protective legs of a FILLED position too.
+    broker = FakeBroker()
+    entry = broker.submit_order(_bracket_spec())
+    broker.fill(entry.broker_order_id, price=100.0)
+
+    broker.cancel_all_orders()
+
+    assert broker.list_open_orders() == []          # the protective stop died too
+    assert len(broker.get_positions()) == 1         # ...while the position remains
+
+
+# ---------------------------------------------------------------------------
 # FakeBroker structurally satisfies the BrokerClient protocol (the seam contract).
 # ---------------------------------------------------------------------------
 def test_fake_broker_satisfies_broker_client_protocol() -> None:

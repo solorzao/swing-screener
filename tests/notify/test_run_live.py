@@ -197,3 +197,39 @@ def test_off_mode_never_submits_even_with_a_broker(tmp_path, monkeypatch):
     assert broker.list_open_orders() == []  # the broker was never touched
     with Session(get_engine(url)) as s:
         assert list(s.scalars(select(ExecutionLog))) == []  # the NoOp wrote nothing
+
+
+# ---------------------------------------------------------------------------
+# the kill switch must NOT strip the bracket's protective stop legs off open
+# positions (the 2026-07-04 disarm-safety fix): only entry-side buys are pulled.
+# ---------------------------------------------------------------------------
+def test_kill_switch_pulls_entries_but_keeps_bracket_stop_legs(tmp_path, monkeypatch):
+    from swing_screener.pipeline.broker import BrokerOrderSpec
+
+    _enable_deep(monkeypatch)
+    _live(monkeypatch)
+    monkeypatch.setenv("SWING_RISK_PER_TRADE_DOLLARS", "300")
+    url = f"sqlite:///{tmp_path / 'killsafe.sqlite'}"
+    _seed(url, n=1)
+    broker = FakeBroker(real_money=False)
+    # A live position ALREADY at the venue, protected by its bracket's sell legs,
+    # plus a resting entry limit from an earlier run.
+    entry = broker.submit_order(BrokerOrderSpec(
+        client_order_id="prior-entry", symbol="NVDA", side="buy", qty=8,
+        order_type="limit", limit_price=100.0, time_in_force="day",
+        stop_loss=95.0, take_profit=110.0))
+    broker.fill(entry.broker_order_id, price=100.0)
+    broker.submit_order(BrokerOrderSpec(
+        client_order_id="resting-entry", symbol="AMD", side="buy", qty=3,
+        order_type="limit", limit_price=90.0, time_in_force="day"))
+
+    res = run.send_digest(**_insight_kwargs(
+        tmp_path, url, smtp_send=lambda **k: None, broker=broker,
+        mode_reader=lambda: "off"))  # disarmed before the first submit
+
+    assert res.sent is True
+    open_orders = broker.list_open_orders()
+    assert [o.symbol for o in open_orders if o.side == "buy"] == []  # entries pulled
+    stops = [o for o in open_orders if o.side == "sell" and o.order_type == "stop"]
+    assert [o.symbol for o in stops] == ["NVDA"]  # the protective stop SURVIVES
+    assert len(broker.get_positions()) == 1

@@ -328,6 +328,27 @@ def execution_logs_for_day(
     return list(session.scalars(stmt))
 
 
+def latest_recorded_stop(session: Session, ticker: str) -> float | None:
+    """The newest LIVE ticket's recorded stop level for ``ticker``, or None.
+
+    The disarm restore path re-arms a dead bracket stop leg at this level -- COPIED
+    from the ticket that placed the position (North Star #4: deterministic levels are
+    ground truth), never computed fresh. Only live rows count (``submitted_live`` /
+    ``filled_live``): manual/paper tickets never created venue exposure, so their
+    levels never belong on a live venue order. None -> the caller refuses to guess."""
+    stmt = (
+        select(ExecutionLog.stop)
+        .where(
+            ExecutionLog.ticker == ticker,
+            ExecutionLog.side == "buy",
+            ExecutionLog.status.in_(("submitted_live", "filled_live")),
+        )
+        .order_by(ExecutionLog.id.desc())
+        .limit(1)
+    )
+    return session.scalars(stmt).first()
+
+
 def realized_r_on(session: Session, *, run_date: date, account: str) -> float:
     """Sum of ``realized_r`` over CLOSED ``account`` trades whose ``exit_date == run_date``.
 

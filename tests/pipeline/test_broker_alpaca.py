@@ -485,3 +485,43 @@ def test_submit_order_stays_a_plain_limit_without_both_legs() -> None:
     body = seen["body"]
     assert isinstance(body, dict)
     assert "order_class" not in body  # one leg alone never sends a half-bracket
+
+
+# ---------------------------------------------------------------------------
+# side / order_type parsing + the plain protective STOP submit (disarm restore).
+# ---------------------------------------------------------------------------
+def test_get_order_parses_side_and_order_type() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raw = _order_json(order_id="oid-9", side="sell")
+        raw["type"] = "stop"
+        return httpx.Response(200, json=raw)
+
+    order = _broker(handler).get_order("oid-9")
+    assert order.side == "sell"
+    assert order.order_type == "stop"
+
+
+def test_submit_plain_stop_sends_stop_price_and_no_limit() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        seen["body"] = json.loads(request.content)
+        raw = _order_json(order_id="oid-10", side="sell")
+        raw["type"] = "stop"
+        return httpx.Response(200, json=raw)
+
+    spec = BrokerOrderSpec(
+        client_order_id="restop-1", symbol="NVDA", side="sell", qty=8,
+        order_type="stop", limit_price=None, time_in_force="gtc", stop_price=95.0)
+    _broker(handler).submit_order(spec)
+
+    body = seen["body"]
+    assert isinstance(body, dict)
+    assert body["side"] == "sell"
+    assert body["type"] == "stop"
+    assert body["stop_price"] == "95.0"      # Alpaca wants strings
+    assert body["time_in_force"] == "gtc"    # protection must not expire at EOD
+    assert "limit_price" not in body
+    assert "order_class" not in body         # a plain stop, not a bracket

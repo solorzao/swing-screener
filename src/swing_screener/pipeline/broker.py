@@ -47,6 +47,10 @@ class BrokerOrderSpec:
     # nightly reconcile). None/None = a plain limit entry (legacy).
     stop_loss: float | None = None
     take_profit: float | None = None
+    # A plain protective STOP order (``order_type="stop"``): the trigger price. Used by the
+    # disarm/kill-switch restore path to re-arm a position whose bracket stop leg died --
+    # the level is COPIED from the ExecutionLog ticket, never computed (North Star #4).
+    stop_price: float | None = None
 
 
 @dataclass(frozen=True)
@@ -54,7 +58,9 @@ class BrokerOrder:
     """The response side: a broker order's current state.
 
     ``status`` is one of ``new`` / ``partially_filled`` / ``filled`` / ``canceled`` /
-    ``rejected``. ``filled_avg_price`` is None until something fills."""
+    ``rejected``. ``filled_avg_price`` is None until something fills. ``side`` /
+    ``order_type`` distinguish entry-side buys from protective sell legs (stop/limit) --
+    the disarm path cancels ONLY buys, so a filled position's venue-held stop survives."""
 
     broker_order_id: str
     client_order_id: str
@@ -62,6 +68,8 @@ class BrokerOrder:
     filled_qty: int
     filled_avg_price: float | None
     symbol: str
+    side: str = "buy"
+    order_type: str = "limit"
 
 
 @dataclass(frozen=True)
@@ -148,6 +156,10 @@ class FakeBroker:
         self._submitted_qty: dict[str, int] = {}
         # every spec handed to submit_order, in order (tests assert on bracket legs etc.)
         self.submitted_specs: list[BrokerOrderSpec] = []
+        # broker_order_id -> its spec, so fill() can see the bracket children; entries whose
+        # legs were already spawned (fill() must be idempotent about leg creation).
+        self._specs: dict[str, BrokerOrderSpec] = {}
+        self._legs_spawned: set[str] = set()
 
     # -- BrokerClient protocol ------------------------------------------------
     def submit_order(self, spec: BrokerOrderSpec) -> BrokerOrder:
@@ -169,10 +181,13 @@ class FakeBroker:
             filled_qty=0,
             filled_avg_price=None,
             symbol=spec.symbol,
+            side=spec.side,
+            order_type=spec.order_type,
         )
         self._orders[broker_order_id] = order
         self._by_client_id[spec.client_order_id] = broker_order_id
         self._submitted_qty[broker_order_id] = spec.qty
+        self._specs[broker_order_id] = spec
         return order
 
     def get_order(self, broker_order_id: str) -> BrokerOrder:
@@ -210,13 +225,35 @@ class FakeBroker:
     # -- test-driver helpers (the scripting surface for Tasks 4/5/7) ----------
     def fill(self, broker_order_id: str, price: float, qty: int | None = None) -> None:
         """Fully fill an order at ``price`` (``qty`` defaults to the order's quantity) and
-        open/replace the corresponding position -- the way a venue fill would."""
+        open/replace the corresponding position -- the way a venue fill would. A BRACKET
+        entry (spec carrying stop_loss + take_profit) additionally spawns its venue-held
+        sell legs as LIVE open orders (the protective stop + the target), mirroring
+        Alpaca: the legs outlive the entry, and a blanket cancel would kill them."""
         order = self._orders[broker_order_id]
         fill_qty = qty if qty is not None else self._submitted_qty[broker_order_id]
         self._orders[broker_order_id] = replace(
             order, status="filled", filled_qty=fill_qty, filled_avg_price=price)
         self._positions[order.symbol] = BrokerPosition(
             symbol=order.symbol, qty=fill_qty, avg_entry_price=price)
+        spec = self._specs.get(broker_order_id)
+        if (spec is not None and spec.stop_loss is not None
+                and spec.take_profit is not None
+                and broker_order_id not in self._legs_spawned):
+            self._legs_spawned.add(broker_order_id)
+            for leg_type in ("stop", "limit"):
+                leg_id = f"fake-{self._next_id}"
+                self._next_id += 1
+                self._orders[leg_id] = BrokerOrder(
+                    broker_order_id=leg_id,
+                    client_order_id=f"{spec.client_order_id}::{leg_type}_leg",
+                    status="new",
+                    filled_qty=0,
+                    filled_avg_price=None,
+                    symbol=order.symbol,
+                    side="sell",
+                    order_type=leg_type,
+                )
+                self._submitted_qty[leg_id] = fill_qty
 
     def partially_fill(self, broker_order_id: str, price: float, qty: int) -> None:
         """Partially fill an order: it stays OPEN (``partially_filled``)."""
