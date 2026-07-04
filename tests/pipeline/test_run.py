@@ -39,11 +39,50 @@ def test_digest_chart_indices_unions_global_and_per_timeframe_picks():
     assert idx == sorted(idx)         # returned in ascending index order
 
 
-def test_digest_chart_indices_caps_each_timeframe_at_top_n():
-    # seven 1wk signals: the digest only selects the top-5 per timeframe, so the
-    # 6th/7th weekly signal is never picked and must not be charted (no waste).
-    results = [_r("1wk")] * 7
-    assert run._digest_chart_indices(results, top_n=5) == [0, 1, 2, 3, 4]
+def test_digest_chart_indices_over_renders_by_the_cooldown_margin():
+    # The digest's repeat cooldown drops stale picks at SEND time and promotes
+    # lower-ranked names the evening render can't foresee -- so each cadence renders
+    # top_n + _CHART_MARGIN charts (deliberate small waste), and stops there.
+    results = [_r("1wk")] * 15
+    idx = run._digest_chart_indices(results, top_n=5)
+    assert idx == list(range(5 + run._CHART_MARGIN))  # margin rendered, 11th+ not
+
+
+def _rev_r(strength, tier="base"):
+    """Lightweight reversal SignalResult stand-in for _reversal_chart_indices."""
+    return SimpleNamespace(strength=strength, conviction_tier=tier, play_type="reversal")
+
+
+def test_reversal_chart_indices_cover_the_digest_eligible_pool():
+    """The digest surfaces CONFIRMED-only from a 20-deep pool (with backfill), so charts
+    must cover every eligible signal -- not the raw top-N by score, which EARLY signals
+    dominate (the 2026-07-03 chartless-PDF diagnosis: 4 of 5 emailed picks unrendered)."""
+    cfg = StrategyConfig()
+    # score order: two EARLY on top (old code charted these), confirmed below
+    results = [_rev_r("early"), _rev_r("early"), _rev_r("confirmed"), _rev_r("early"),
+               _rev_r("confirmed"), _rev_r("early"), _rev_r("confirmed")]
+    idx = run._reversal_chart_indices(results, cfg, top_n=2, pool_n=20)
+    assert set(idx) >= {2, 4, 6}      # every digest-eligible (confirmed) signal charted
+    # eligible pool (3) already covers top_n=2: no top-up needed beyond it
+    assert len(idx) == 3
+
+
+def test_reversal_chart_indices_top_up_when_few_are_eligible():
+    """With no (or few) eligible signals, top up with the best remaining raw signals so
+    the dashboard still gets charts -- and the legacy single-EARLY case stays charted."""
+    cfg = StrategyConfig()
+    results = [_rev_r("early"), _rev_r("early"), _rev_r("early")]
+    assert run._reversal_chart_indices(results, cfg, top_n=2, pool_n=20) == [0, 1]
+    mixed = [_rev_r("early"), _rev_r("confirmed"), _rev_r("early")]
+    # one eligible + top-up with the best remaining (index 0) to reach top_n=2
+    assert run._reversal_chart_indices(mixed, cfg, top_n=2, pool_n=20) == [0, 1]
+
+
+def test_reversal_chart_indices_respect_the_pool_depth():
+    cfg = StrategyConfig()
+    results = [_rev_r("confirmed")] * 25
+    idx = run._reversal_chart_indices(results, cfg, top_n=5, pool_n=20)
+    assert idx == list(range(20))     # the whole eligible pool, capped at pool depth
 
 
 def _firing(bars):

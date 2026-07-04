@@ -447,3 +447,24 @@ def test_emit_exit_alert_tolerates_integrity_error(tmp_path, monkeypatch):
     with Session(engine) as s:
         # still exactly one exit log row -- the collision was swallowed.
         assert len(list(s.scalars(select(EmailLog).where(EmailLog.kind == "exit")))) == 1
+
+
+def test_digest_warns_when_a_surfaced_pick_has_no_chart(tmp_path, caplog):
+    """A surfaced pick with no rendered chart reaches the PDF as a chartless section --
+    the render/selection gap must be LOUD at digest time (it was invisible for weeks)."""
+    import logging
+
+    url = f"sqlite:///{tmp_path / 'nochart.sqlite'}"
+    _seed(url)  # AMD + AEP continuation picks, chart_path unset in the fixture
+    engine = get_engine(url)
+    with Session(engine) as s:
+        s.add(_rev_sig("GME", 1, "confirmed"))  # surfaced reversal, also chartless
+        s.commit()
+    sent = []
+    with caplog.at_level(logging.WARNING, logger="swing_screener.notify.run"):
+        run.send_digest(kind="daily", db_url=url, run_date=RUN, to="me@example.com",
+                        pdf_dir=tmp_path / "digests", anthropic_client=_FakeClient(),
+                        smtp_send=lambda **k: sent.append(k))
+    msgs = [r.message for r in caplog.records if "NO chart" in r.message]
+    assert any("daily" in m and "AMD" in m for m in msgs)
+    assert any("daily-reversal" in m and "GME" in m for m in msgs)
