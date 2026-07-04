@@ -21,6 +21,7 @@ from swing_screener.data.fetch import (
 from swing_screener.data.resample import resample_ohlcv
 from swing_screener.data.universe import load_universe
 from swing_screener.db import repo
+from swing_screener.notify.select import REVERSAL_POOL_N
 from swing_screener.db.models import Signal
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.analyze import (
@@ -177,6 +178,13 @@ class RunResult:
 _DIGEST_TIMEFRAMES = ("1wk", "1mo")
 
 
+# Over-render margin: the digest's repeat COOLDOWN (notify.select._fresh_enough) drops
+# stale picks at send time and promotes lower-ranked names -- digest-time state the
+# evening render can't see. A few extra charts per cadence absorb those promotions
+# (deliberate small waste; a promoted pick arriving chartless is worse).
+_CHART_MARGIN = 5
+
+
 def _digest_chart_indices(
     results: list[SignalResult], top_n: int, *,
     sector_of: "Callable[[SignalResult], str | None] | None" = None,
@@ -185,25 +193,27 @@ def _digest_chart_indices(
     """Indices into score-sorted ``results`` for every signal a digest can pick.
 
     Charts are rendered for the UNION of the global top-N (the daily digest) and
-    the top-N within each per-timeframe cadence (weekly=1wk, monthly=1mo). Without
-    the per-timeframe slices a weekly/monthly pick ranked below the global top-N
+    the top-N within each per-timeframe cadence (weekly=1wk, monthly=1mo) -- each
+    extended by ``_CHART_MARGIN`` to cover cooldown promotions. Without the
+    per-timeframe slices a weekly/monthly pick ranked below the global top-N
     would reach the digest with no chart. ``results`` is sorted by score
     descending, so a timeframe's first ``top_n`` entries are exactly its picks.
     Kept in sync with notify.select, whose pickers all default to top_n=5.
 
     When ``max_per_sector``/``sector_of`` are given the daily slice mirrors
     notify.select.daily_picks' sector cap, so a pick promoted into the daily list by
-    the cap is charted (and one capped OUT isn't needlessly rendered).
+    the cap is charted (and one capped far OUT isn't needlessly rendered).
     """
+    depth = top_n + _CHART_MARGIN
     if max_per_sector is not None and sector_of is not None:
         capped = cap_by_sector(list(enumerate(results)), lambda p: sector_of(p[1]),
-                               max_per_sector=max_per_sector, limit=top_n)
+                               max_per_sector=max_per_sector, limit=depth)
         idx = {i for i, _ in capped}
     else:
-        idx = set(range(min(top_n, len(results))))  # global top-N (daily digest)
+        idx = set(range(min(depth, len(results))))  # global top-N (daily digest)
     for tf in _DIGEST_TIMEFRAMES:
         tf_indices = [i for i, r in enumerate(results) if r.timeframe == tf]
-        idx.update(tf_indices[:top_n])
+        idx.update(tf_indices[:depth])
     return sorted(idx)
 
 
@@ -241,6 +251,17 @@ def _bar_row(frame: pd.DataFrame) -> dict[str, float | bool]:
 _SURFACE_TOP_N = 5
 
 
+def _passes_reversal_surface(pr: SignalResult, cfg: StrategyConfig) -> bool:
+    """The digest's reversal strength/tier bars (mirrors ``notify.select.reversal_picks``):
+    the filter half of surfacing, shared by the ``would_surface`` stamp and the chart
+    renderer (both must agree with the digest about WHICH reversals can reach the email)."""
+    if cfg.reversal_surface_premium_only and pr.conviction_tier != "premium":
+        return False
+    if cfg.reversal_surface_confirmed_only and pr.strength != "confirmed":
+        return False
+    return True
+
+
 def _would_surface(pr: SignalResult, rank: int, cfg: StrategyConfig) -> bool:
     """Booking-time estimate of "would the digest have surfaced this signal?".
 
@@ -252,12 +273,29 @@ def _would_surface(pr: SignalResult, rank: int, cfg: StrategyConfig) -> bool:
     upper bound of surfacing, which still removes the ~92% hidden-EARLY + rank-6+ bulk
     that made the old full-book verdicts unrepresentative (2026-07 review).
     """
-    if pr.play_type == "reversal":
-        if cfg.reversal_surface_premium_only and pr.conviction_tier != "premium":
-            return False
-        if cfg.reversal_surface_confirmed_only and pr.strength != "confirmed":
-            return False
+    if pr.play_type == "reversal" and not _passes_reversal_surface(pr, cfg):
+        return False
     return rank <= _SURFACE_TOP_N
+
+
+def _reversal_chart_indices(results: list[SignalResult], cfg: StrategyConfig, *,
+                            top_n: int, pool_n: int) -> list[int]:
+    """Indices into score-sorted reversal ``results`` to chart.
+
+    The digest picks CONFIRMED-only (per config) from a ``pool_n``-deep pool with an
+    already-ran drop and a sector-cap backfill, so a surfaced pick can sit ANYWHERE in
+    that pool -- while charts used to go to the raw top-``top_n`` by score, which EARLY
+    signals dominated: most emailed reversal picks arrived as chartless PDF sections
+    (2026-07-03 diagnosis: 4 of the 5 Jul-1 picks had no chart). Chart the digest-
+    ELIGIBLE pool first, then top up with the best remaining signals to at least
+    ``top_n`` so the dashboard still shows the leading raw signals when few are eligible.
+    """
+    eligible = [i for i, r in enumerate(results) if _passes_reversal_surface(r, cfg)]
+    idx = eligible[:pool_n]
+    if len(idx) < top_n:
+        chosen = set(idx)
+        idx += [i for i in range(len(results)) if i not in chosen][: top_n - len(idx)]
+    return sorted(idx)
 
 
 def _shadow_candidates(
@@ -466,7 +504,12 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
                                        max_per_sector=cfg.daily_max_per_sector):
             _render_and_attach(today_results[i], cont_signals[i], chart_dir, today)
             n_charts += 1
-        for i in range(min(top_charts, len(today_reversals))):
+        # Reversal charts cover the digest's whole ELIGIBLE pool (confirmed-only to pool
+        # depth, matching notify.select.reversal_picks + its backfill), not the raw
+        # top-N by score, which EARLY signals dominate -- the emailed picks used to
+        # arrive as chartless PDF sections (2026-07-03 diagnosis).
+        for i in _reversal_chart_indices(today_reversals, cfg, top_n=top_charts,
+                                         pool_n=REVERSAL_POOL_N):
             _render_and_attach(today_reversals[i], rev_signals[i], chart_dir, today)
             n_charts += 1
         s.commit()

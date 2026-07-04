@@ -96,10 +96,6 @@ SmtpSend = Callable[..., None]
 
 _PICKERS = {"daily": sel.daily_picks, "weekly": sel.weekly_picks, "monthly": sel.monthly_picks}
 
-# Reversal over-fetch depth: pull this many ranked candidates so the actionability drop
-# and the sector cap backfill the top-5 from below instead of shrinking the list.
-_REVERSAL_POOL_N = 20
-
 
 @dataclass(frozen=True)
 class DigestResult:
@@ -267,6 +263,18 @@ def _drop_already_ran(
     return out
 
 
+def _warn_chartless(kind: str, signals: list[Signal]) -> None:
+    """Loudly flag surfaced picks with no rendered chart (they reach the PDF as a
+    chartless section). The evening render selects charts BEFORE digest-time filters
+    run, so a selection-set gap between the two shows up exactly here -- the 2026-07-03
+    regression (most confirmed reversal picks chartless) was invisible for weeks
+    because nothing checked."""
+    missing = [s.ticker for s in signals if not s.chart_path]
+    if missing:
+        log.warning("digest %s: %d surfaced pick(s) have NO chart "
+                    "(render/selection gap): %s", kind, len(missing), ", ".join(missing))
+
+
 def _already_sent(session: Session, kind: str, run_date: date) -> bool:
     stmt = select(EmailLog).where(EmailLog.kind == kind, EmailLog.run_date == run_date)
     return session.scalars(stmt).first() is not None
@@ -409,6 +417,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # deep analysis so stale picks never cost an Opus call. No-op when the seam is off.
         if latest_closes_fn is not None:
             picks = _drop_already_ran(picks, latest_closes_fn)
+        _warn_chartless(kind, picks)
         already = _already_sent(session, kind, run_date)
         if already and not force:  # don't re-send the same digest (force overrides for ad-hoc resends)
             return DigestResult(n_picks=len(picks), pdf_attached=False, sent=False)
@@ -581,7 +590,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
             # the top-N instead of shrinking the list (top-5-then-filter left the Jul-2
             # digest with no room for the rotation names ranked 6th+).
             pool = sel.reversal_picks(
-                session, run_date, top_n=_REVERSAL_POOL_N, max_age_days=cooldown,
+                session, run_date, top_n=sel.REVERSAL_POOL_N, max_age_days=cooldown,
                 premium_only=scfg.reversal_surface_premium_only,
                 confirmed_only=scfg.reversal_surface_confirmed_only)
             n_fresh = len(pool)
@@ -590,6 +599,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
             n_actionable = len(pool)
             reversal_sigs = sel.cap_signals_by_sector(
                 session, pool, max_per_sector=scfg.reversal_max_per_sector, limit=5)
+            _warn_chartless("daily-reversal", reversal_sigs)
             rev_funnel = (detected, confirmed_n, n_fresh, n_actionable)
             # Overflow: names that cleared every bar but lost the top-5/sector race. On a
             # broad rotation day these ARE the story (2026-07-02: CRM/WDAY/PTC at rank

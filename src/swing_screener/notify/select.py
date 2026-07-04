@@ -71,6 +71,15 @@ def daily_picks(session: Session, run_date: date, *, top_n: int = 5,
     return [r[0] for r in capped]
 
 
+# How deep the digest's reversal pool reaches below the top-5: the actionability drop
+# and the sector cap BACKFILL from this pool, so a surfaced pick can sit anywhere in it.
+# Shared with the screen's chart renderer (pipeline.run), which must chart the whole
+# pool -- a pick the digest can surface but the evening render never charted reaches the
+# email as a chartless PDF section (2026-07-03: most confirmed reversal picks, because
+# charts went to the top-5 BY RAW SCORE, which EARLY signals dominated).
+REVERSAL_POOL_N = 20
+
+
 def reversal_picks(session: Session, run_date: date, *, top_n: int = 5,
                    max_age_days: int | None = None,
                    confirmed_only: bool = False, premium_only: bool = False) -> list[Signal]:
