@@ -104,3 +104,23 @@ def test_execution_logs_for_day_counts_live_statuses_and_excludes_canceled() -> 
         got = repo.execution_logs_for_day(
             s, run_date=date(2026, 6, 20), account="live")
         assert {r.ticker for r in got} == {"SUBLIVE", "FILLLIVE", "REC", "FILLPAPER"}
+
+
+def test_latest_recorded_stop_reads_the_newest_live_ticket() -> None:
+    """The disarm restore path re-arms a dead bracket stop leg at the ticket's RECORDED
+    stop (copied, never computed): the newest live row wins, manual/paper rows and other
+    tickers are ignored, and an unknown ticker yields None (restore refuses to guess)."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        repo.add_execution_log(s, **_fields(ticker="NVDA", stop=90.0,
+                                            idempotency_key="nvda-older"))
+        repo.add_execution_log(s, **_fields(ticker="NVDA", stop=95.0,
+                                            status="filled_live",
+                                            idempotency_key="nvda-newer"))
+        repo.add_execution_log(s, **_fields(ticker="NVDA", stop=80.0, status="recorded",
+                                            idempotency_key="nvda-manual"))  # not live
+        repo.add_execution_log(s, **_fields(ticker="AMD", stop=50.0,
+                                            idempotency_key="amd-live"))
+        assert repo.latest_recorded_stop(s, "NVDA") == 95.0
+        assert repo.latest_recorded_stop(s, "AMD") == 50.0
+        assert repo.latest_recorded_stop(s, "TSLA") is None

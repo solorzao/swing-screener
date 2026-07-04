@@ -64,6 +64,7 @@ from swing_screener.pipeline.autonomy import autonomy_gate, gate_status_line
 from swing_screener.pipeline.health import health_line
 from swing_screener.pipeline.broker import BrokerClient
 from swing_screener.pipeline.broker_alpaca import build_broker
+from swing_screener.pipeline.disarm import ensure_stop_protection, pull_entry_orders
 from swing_screener.pipeline.execution import (
     ExecutionAdapter,
     LiveAdapter,
@@ -623,8 +624,10 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # (mirrors the PDF/deep-analysis seam pattern) -- the run still sends.
         # KILL SWITCH: for a LIVE adapter we RE-READ the execution mode before each submit
         # (`_mode_reader`, default the live env); if it is no longer "live" the operator has
-        # disarmed mid-loop, so we STOP submitting the rest AND pull the resting orders via
-        # the broker's cancel_all_orders -- all inside the try/except, so it never blocks.
+        # disarmed mid-loop, so we STOP submitting the rest AND pull the ENTRY-side resting
+        # orders -- never a blanket cancel, which would strip the bracket stop legs off open
+        # positions (the 2026-07-04 disarm fix) -- all inside the try/except, so it never
+        # blocks.
         _mode_reader = mode_reader or (lambda: load_settings().execution_mode)
         tickets: dict[tuple[str, str], OrderTicketLine] = {}
         if collected_intents and not isinstance(adapter, NoOpAdapter):
@@ -632,9 +635,13 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                 for intent in collected_intents:
                     if _execution_halted(adapter, _mode_reader):
                         log.warning("execution kill switch: halting dispatch for %s %s "
-                                    "and canceling resting orders", kind, run_date)
+                                    "and pulling entry-side resting orders", kind, run_date)
                         if live_broker is not None:
-                            live_broker.cancel_all_orders()
+                            pull_entry_orders(live_broker)
+                            ensure_stop_protection(
+                                live_broker,
+                                lambda sym: repo.latest_recorded_stop(session, sym),
+                                key_suffix=f"kill-{run_date:%Y%m%d}")
                         break
                     result = adapter.submit(
                         intent, session=session, run_date=run_date, limits=limits)

@@ -123,14 +123,17 @@ consistent with steps 1–2. A `NO-GO` names the failing critical check; fix it 
 
 Before arming for real, rehearse the disarm. With a live adapter wired, the dispatch loop
 **re-reads `SWING_EXECUTION_MODE` before every submit** (`notify/run.py::_execution_halted`):
-if it is no longer `live`, the loop **halts** the rest of the batch AND calls the broker's
-`cancel_all_orders()` to pull any resting orders.
+if it is no longer `live`, the loop **halts** the rest of the batch AND pulls the
+**entry-side (buy) resting orders** — never a blanket cancel, which would strip the
+bracket's protective stop legs off open positions. Any position whose stop leg is found
+dead gets a plain GTC stop re-submitted at the ExecutionLog ticket's recorded level
+(copied, never computed); a position with no restorable level is reported `UNPROTECTED`.
 
 Rehearse it: start a run with execution armed, then mid-run set `SWING_EXECUTION_MODE=off`
 (the loop re-reads it fresh) and confirm in the logs that dispatch halted
-(`execution kill switch: halting dispatch ... and canceling resting orders`) and that
-`cancel_all_orders` fired against the broker. Satisfy yourself the abort works **before** any
-real order rests at the venue.
+(`execution kill switch: halting dispatch ... and pulling entry-side resting orders`), that
+entry orders were cancelled, and that every open position still shows a live sell stop at
+the venue. Satisfy yourself the abort works **before** any real order rests at the venue.
 
 ### 7. Flip `SWING_EXECUTION_MODE=live` — arm
 
@@ -165,8 +168,14 @@ export SWING_EXECUTION_MODE=off
 setting it to `off` (or anything other than `live`):
 
 1. stops the **next** order from being submitted, and
-2. fires `cancel_all_orders()` on the live broker to pull any **resting** orders (the
-   per-submit kill switch in `notify/run.py`).
+2. pulls the **entry-side (buy) resting orders** and verifies every open position still
+   holds its protective sell stop, restoring a dead stop leg at the ExecutionLog ticket's
+   recorded level (the per-submit kill switch in `notify/run.py`). The bracket stop and
+   target legs of open positions are **left working** — they are the protection.
+
+The standalone `python -m swing_screener.pipeline.disarm [--dry-run]` command performs the
+same entry-cancel + stop-verification sweep on demand and reports any position it had to
+leave `UNPROTECTED` (no live stop and no recorded level to copy).
 
 Setting `off` is the safe, reversible disarm — it is exactly what the step-6 drill rehearses.
 A working live order that has already **filled** is a position; reduce/close it through Alpaca
