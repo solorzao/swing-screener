@@ -41,6 +41,12 @@ class BrokerOrderSpec:
     order_type: str  # "limit"
     limit_price: float | None
     time_in_force: str  # "day"
+    # Bracket children: when BOTH are set the entry goes out as a bracket order and the
+    # venue holds the protective stop + target itself -- a filled position is protected
+    # even if the screener dies (money-safety: exits used to exist only virtually, in the
+    # nightly reconcile). None/None = a plain limit entry (legacy).
+    stop_loss: float | None = None
+    take_profit: float | None = None
 
 
 @dataclass(frozen=True)
@@ -140,11 +146,16 @@ class FakeBroker:
         # broker_order_id -> the originally-submitted qty, so a no-qty fill can default to
         # it (BrokerOrder carries filled_qty, not the requested qty).
         self._submitted_qty: dict[str, int] = {}
+        # every spec handed to submit_order, in order (tests assert on bracket legs etc.)
+        self.submitted_specs: list[BrokerOrderSpec] = []
 
     # -- BrokerClient protocol ------------------------------------------------
     def submit_order(self, spec: BrokerOrderSpec) -> BrokerOrder:
         """Submit an order. Idempotent on ``client_order_id``: a re-submit of a known
-        client order id returns the EXISTING order (no second order is created)."""
+        client order id returns the EXISTING order (no second order is created).
+        The raw spec is kept in ``submitted_specs`` so tests can assert on what the
+        adapter actually sent (e.g. the bracket stop/target legs)."""
+        self.submitted_specs.append(spec)
         existing_id = self._by_client_id.get(spec.client_order_id)
         if existing_id is not None:
             return self._orders[existing_id]

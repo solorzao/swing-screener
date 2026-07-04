@@ -451,11 +451,18 @@ class LiveAdapter:
 
         # 3. Submit to the venue, GRACEFULLY: any broker exception is logged + refused, never
         #    propagated. The idempotency key is the broker's client_order_id, so a re-submit
-        #    collapses to the same broker order.
+        #    collapses to the same broker order. BRACKET by default: the venue holds the
+        #    protective stop + target itself, so a filled position stays protected even if
+        #    the screener dies (SWING_BRACKET_ORDERS=off restores the plain limit entry
+        #    with reconcile-managed exits). Levels are the intent's deterministic stop and
+        #    target -- never computed here (North Star #4).
+        bracket = (self._settings or load_settings()).bracket_orders
         try:
             order = self._broker.submit_order(BrokerOrderSpec(
                 client_order_id=key, symbol=intent.ticker, side="buy", qty=intent.shares,
                 order_type="limit", limit_price=intent.limit_price, time_in_force="day",
+                stop_loss=intent.stop if bracket else None,
+                take_profit=intent.target if bracket else None,
             ))
         except Exception as e:  # noqa: BLE001 -- a venue boundary: any failure must not raise.
             detail = f"broker error: {e}"

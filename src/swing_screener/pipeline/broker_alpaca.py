@@ -112,11 +112,15 @@ class AlpacaBroker:
 
     # -- BrokerClient protocol ------------------------------------------------
     def submit_order(self, spec: BrokerOrderSpec) -> BrokerOrder:
-        """Place a single LIMIT order: ``POST /v2/orders``.
+        """Place a LIMIT order -- as a BRACKET when the spec carries stop/target:
+        ``POST /v2/orders``.
 
-        The exit is reconcile-managed (Task 5), so this is a plain limit entry -- no bracket
-        children. Alpaca wants ``qty`` and ``limit_price`` as STRINGS; ``client_order_id`` is
-        our idempotency key (Alpaca rejects a duplicate, so a retried submit can't double up).
+        With ``stop_loss`` + ``take_profit`` set, the venue holds the protective stop and
+        the target itself (``order_class="bracket"``): a filled position stays protected
+        even if the screener dies (the exit used to exist only virtually, enforced by
+        nothing at the venue). Without them, a plain limit entry (legacy). Alpaca wants
+        ``qty``/prices as STRINGS; ``client_order_id`` is our idempotency key (Alpaca
+        rejects a duplicate, so a retried submit can't double up).
         """
         body: dict[str, Any] = {
             "symbol": spec.symbol,
@@ -128,6 +132,10 @@ class AlpacaBroker:
         }
         if spec.limit_price is not None:
             body["limit_price"] = str(spec.limit_price)
+        if spec.stop_loss is not None and spec.take_profit is not None:
+            body["order_class"] = "bracket"
+            body["stop_loss"] = {"stop_price": str(spec.stop_loss)}
+            body["take_profit"] = {"limit_price": str(spec.take_profit)}
         return self._to_order(self._request_json("POST", "/v2/orders", json=body))
 
     def get_order(self, broker_order_id: str) -> BrokerOrder:
@@ -202,6 +210,11 @@ class AlpacaBroker:
         )
         for raw in data:
             if _STATUS_MAP.get(str(raw.get("status"))) != "filled":
+                continue
+            # SELL side only: the entry BUY is also a filled closed order for the symbol,
+            # and without this filter a vanished position would book its "exit" at the
+            # entry fill price (realized_r == 0 regardless of the real outcome).
+            if str(raw.get("side")) != "sell":
                 continue
             price = raw.get("filled_avg_price")
             qty = raw.get("filled_qty")

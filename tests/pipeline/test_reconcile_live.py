@@ -248,3 +248,36 @@ def test_advance_open_never_touches_the_live_row() -> None:
         broker.close_position("AMD", price=104.0)
         reconcile_live(s, broker, today=date(2026, 6, 24))
         assert s.query(PaperTrade).one().status == "closed"
+
+
+def test_disarmed_screen_run_still_reconciles_open_live_exposure(tmp_path):
+    """Disarm-safety: flipping execution_mode off must not orphan existing live
+    exposure. The screen run reconciles whenever a broker is in hand AND open live rows
+    exist -- the old `mode == "live"` gate went dark on the live book precisely when the
+    operator was trying to reduce risk (2026-07 review)."""
+    from swing_screener.pipeline import run as run_mod
+
+    db = f"sqlite:///{tmp_path / 'disarm.sqlite'}"
+    with Session(get_engine(db)) as s:
+        s.add(PaperTrade(
+            ticker="AMD", timeframe="1d", horizon="medium", account="live",
+            signal_score=0.8, rank=1, fill_status="filled", status="open",
+            entry_price=100.0, entry_date=RUN, opened_date=RUN,
+            stop=94.0, target=110.0, risk=5.0,
+        ))
+        s.commit()
+
+    broker = FakeBroker(real_money=False)
+    broker.close_position("AMD", price=108.0)  # the venue closed it while we were disarmed
+
+    universe = tmp_path / "universe.csv"
+    universe.write_text("ticker,name,exchange\n")  # empty: no fetching, straight to books
+    # default env: execution_mode "off" -- the disarmed state under test
+    run_mod.run_screen(universe_path=universe, db_url=db, cache_dir=tmp_path / "c",
+                       chart_dir=tmp_path / "ch", today=TODAY, broker=broker)
+
+    with Session(get_engine(db)) as s:
+        trade = s.query(PaperTrade).filter_by(account="live").one()
+        assert trade.status == "closed"                # reconciled despite mode=off
+        assert trade.exit_price == 108.0               # at the BROKER's price
+        assert s.query(ExitEvent).filter_by(is_paper=False).count() == 1
