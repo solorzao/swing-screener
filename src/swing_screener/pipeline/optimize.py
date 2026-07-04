@@ -93,10 +93,14 @@ def build_config_grid(
     ``mtr_*`` name must never reach it.
 
     Analyst-QUEUED ``ProposedVariant``s (Task 6) are MERGED in via ``to_config``: a
-    ``status == QUEUED`` variant joins the swept grid; a non-queued one is skipped; and one
+    ``status == QUEUED`` variant joins the swept grid; a non-queued one is skipped; one
     whose delta fails ``to_config`` validation (a frozen-indicator or unknown-key delta) is
-    skipped with a logged warning -- never poisoning the grid. Widening the search here is what
-    the ``OptimizeResult.n_variants_tested`` search-cost accounting then pays for.
+    skipped with a logged warning -- never poisoning the grid; and one whose delta equals the
+    incumbent config (a NO-OP -- defense in depth behind ``reflect._candidate``'s drafting
+    gate) is skipped with a warning, since it would re-sweep the base arm under a second name
+    and inflate ``n_variants_tested`` for a config already in the bake-off. Widening the
+    search here is what the ``OptimizeResult.n_variants_tested`` search-cost accounting then
+    pays for.
 
     Collision safety (honesty invariant): a proposed variant's grid key is NAMESPACED as
     ``f"{_PROPOSED_PREFIX}{pv.name}"`` so it can NEVER collide with -- and therefore never
@@ -126,12 +130,22 @@ def build_config_grid(
             )
             continue
         try:
-            grid[key] = to_config(pv, base)
+            cfg = to_config(pv, base)
         except ValueError:
             log.warning(
                 "skipping invalid proposed variant %r (delta %r): failed validation",
                 pv.name, pv.delta, exc_info=True,
             )
+            continue
+        if cfg == base:
+            # NO-OP guard: equal to the incumbent config, so it can never beat it -- it
+            # would only double-count the base arm in the honest swept-size accounting.
+            log.warning(
+                "skipping no-op proposed variant %r (delta %r): equals the incumbent config",
+                pv.name, pv.delta,
+            )
+            continue
+        grid[key] = cfg
     return grid
 
 

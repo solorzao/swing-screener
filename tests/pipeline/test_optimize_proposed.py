@@ -73,6 +73,20 @@ def test_unknown_key_variant_is_skipped_not_in_grid(caplog):
     assert any("typo_q" in r.message for r in caplog.records)
 
 
+def test_noop_delta_equal_to_incumbent_is_skipped_not_in_grid(caplog):
+    # Defense in depth behind reflect's drafting guard: a queued delta equal to the shipped
+    # defaults would re-sweep the incumbent (ext_<gate>) arm under a second name -- a wasted
+    # slot that ALSO inflates n_variants_tested for a config already in the bake-off.
+    base = StrategyConfig()
+    noop = _queued("noop_q", {"max_extension_atr": base.max_extension_atr})
+    with caplog.at_level(logging.WARNING):
+        grid = build_config_grid(base, proposed=[noop])
+    assert "proposed:noop_q" not in grid
+    # honest accounting: the grid did NOT grow for the no-op arm
+    assert len(grid) == len(build_config_grid(base))
+    assert any("noop_q" in r.message for r in caplog.records)
+
+
 def test_grid_without_proposed_is_unchanged():
     base = StrategyConfig()
     assert build_config_grid(base) == build_config_grid(base, proposed=[])
