@@ -41,4 +41,9 @@ def build_arms(base: StrategyConfig) -> dict[str, StrategyConfig]:
         "partial33_cond": replace(base, partial_frac=0.33, partial_require_softening=True),
         "partial33_chand": replace(base, partial_frac=0.33, partial_require_softening=True,
                                    trail_mode="chandelier", chandelier_atr_mult=3.0),
+        # Breakeven-at-+1R (2026-07 queue): pre-partial stops otherwise never move, so
+        # every trade rides FULL initial risk to the end. Once the prior bar's high-water
+        # clears entry + 1R the stop ratchets to breakeven -- the classic cheap
+        # high-information exit experiment, judged by paired_arm_delta vs baseline.
+        "be_1r": replace(base, partial_frac=0.0, breakeven_after_r=1.0),
     }

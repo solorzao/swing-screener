@@ -135,3 +135,69 @@ def test_band_touch_allows_pullback_into_band(bars):
     last = frame.iloc[-1]
     assert float(last["ema_slow"]) < base_ctx.swing_low <= float(last["ema_fast"])  # in the band
     assert detect_last_bar(frame, StrategyConfig(require_band_touch=True)) is not None
+
+
+def _flip_then_pause_then_breakout(bars):
+    """A valid legacy setup whose flip is followed by a green PAUSE bar (close below the
+    flip high), then a close above the flip high -- the cont_confirm_window shape."""
+    rows = []
+    p = 10.0
+    for _ in range(60):
+        rows.append({"open": p, "high": p + 1.2, "low": p, "close": p + 1.0})
+        p += 1.0
+    for _ in range(3):
+        rows.append({"open": p, "high": p + 0.05, "low": p - 1.5, "close": p - 1.2})
+        p -= 1.2
+    flip_close = p + 5.6
+    flip_high = p + 6.0
+    rows.append({"open": p, "high": flip_high, "low": p, "close": flip_close})   # the flip
+    rows.append({"open": flip_close, "high": flip_high - 0.1, "low": flip_close - 0.2,
+                 "close": flip_close + 0.2})                                     # green pause
+    rows.append({"open": flip_close + 0.2, "high": flip_high + 1.5,
+                 "low": flip_close, "close": flip_high + 1.0})                   # breakout
+    return bars(rows), flip_high
+
+
+def test_cont_confirm_window_fires_on_first_close_above_the_flip_high(bars):
+    from dataclasses import replace
+
+    df, flip_high = _flip_then_pause_then_breakout(bars)
+    frame = build_frame(df, StrategyConfig())
+    # legacy trigger: the last bar is not a flip out of a pullback -> no signal
+    assert detect_last_bar(frame, StrategyConfig()) is None
+    # the breakout came 2 bars after the flip: window=1 is too narrow, window=2 fires
+    assert detect_last_bar(frame, replace(StrategyConfig(), cont_confirm_window=1)) is None
+    ctx = detect_last_bar(frame, replace(StrategyConfig(), cont_confirm_window=2))
+    assert ctx is not None
+    assert ctx.trigger_close > flip_high        # priced at the CONFIRMATION bar
+    assert ctx.pullback_bars >= 1               # structure validated as-of the flip
+    assert ctx.swing_low < flip_high
+
+
+def test_cont_confirm_window_fires_exactly_once(bars):
+    from dataclasses import replace
+
+    import pandas as pd
+
+    df, flip_high = _flip_then_pause_then_breakout(bars)
+    last = float(df.iloc[-1]["close"])
+    extra = pd.DataFrame(
+        [{"open": last, "high": last + 1.5, "low": last - 0.2, "close": last + 1.0,
+          "volume": 1_000_000.0}],
+        index=[df.index[-1] + pd.Timedelta(days=1)],
+    )
+    frame = build_frame(pd.concat([df, extra]).astype(float), StrategyConfig())
+    # the day AFTER the first close above the flip high: an earlier run bar already
+    # confirmed -> the trigger must not re-fire (window=3 so the run length isn't the
+    # thing rejecting it)
+    assert detect_last_bar(frame, replace(StrategyConfig(), cont_confirm_window=3)) is None
+
+
+def test_cont_confirm_window_never_fires_on_the_flip_bar_itself(bars):
+    from dataclasses import replace
+
+    df = _uptrend_then_pullback_then_trigger(bars)  # ends ON the flip bar
+    frame = build_frame(df, StrategyConfig())
+    assert detect_last_bar(frame, StrategyConfig()) is not None          # legacy fires
+    # the windowed variant is a DISJOINT entry-timing cohort: it waits for confirmation
+    assert detect_last_bar(frame, replace(StrategyConfig(), cont_confirm_window=2)) is None

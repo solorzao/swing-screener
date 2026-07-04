@@ -267,6 +267,65 @@ def summarize(trades: Iterable[PaperTrade]) -> PerformanceSummary:
     )
 
 
+@dataclass(frozen=True)
+class PairedArmDelta:
+    """A same-sample arm A/B: the mean PER-PAIR R difference (arm minus baseline) with a
+    ticker-clustered lower bound. Arms duplicate every fill (identical entry economics),
+    so pairing on the fill identity removes the entry noise a two-sample comparison
+    keeps -- the honest way to judge an exit-policy arm. ``thin_clusters`` flags that the
+    clustered bootstrap could not run and the bound fell back to IID."""
+
+    n_pairs: int
+    mean_delta: float
+    delta_ci_low: float
+    n_clusters: int
+    thin_clusters: bool
+
+
+def paired_arm_delta(
+    trades: Iterable[PaperTrade], arm: str, baseline: str = "baseline"
+) -> PairedArmDelta:
+    """Pair each of ``arm``'s closed fills with its ``baseline`` twin and bound the mean
+    R difference (arm minus baseline), ticker-clustered.
+
+    The pair identity is ``(ticker, timeframe, play_type, variant, trigger_ts)`` -- 1:1
+    by construction (``open_from_signals`` writes every arm's row from the same
+    candidate). Only pairs where BOTH legs are closed-and-filled count (a pair with one
+    leg still open has no realized delta yet); rows without a ``trigger_ts``
+    (legacy/tests) carry no pair identity and are skipped. Until this existed, every arm
+    decision (flip retirement, partial bake-off) was read off bare per-arm expectancy
+    tables -- undecidable under the repo's own CI rules."""
+    trades = list(trades)
+
+    def _key(t: PaperTrade) -> tuple[str, str, str, str, object]:
+        return (t.ticker, t.timeframe, t.play_type, t.variant, t.trigger_ts)
+
+    arm_r = {_key(t): float(t.realized_r) for t in trades
+             if t.arm == arm and t.trigger_ts is not None and _is_closed_filled(t)
+             and t.realized_r is not None}
+    deltas: list[float] = []
+    deltas_by_ticker: dict[str, list[float]] = defaultdict(list)
+    for t in trades:
+        if (t.arm != baseline or t.trigger_ts is None or not _is_closed_filled(t)
+                or t.realized_r is None):
+            continue
+        other = arm_r.get(_key(t))
+        if other is None:
+            continue
+        d = other - float(t.realized_r)
+        deltas.append(d)
+        deltas_by_ticker[t.ticker].append(d)
+
+    n = len(deltas)
+    if n == 0:
+        return PairedArmDelta(0, 0.0, 0.0, 0, True)
+    mean = sum(deltas) / n
+    stderr = statistics.stdev(deltas) / (n ** 0.5) if n >= 2 else 0.0
+    iid_low = mean - _Z95 * stderr
+    low, n_clusters, thin = _clustered_ci_low(deltas_by_ticker, iid_low)
+    return PairedArmDelta(n, mean, low, n_clusters, thin)
+
+
 def breakdown(trades: Iterable[PaperTrade], key: str) -> dict[str, PerformanceSummary]:
     """Group trades by ``str(getattr(t, key))`` and summarize each group.
 

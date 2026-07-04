@@ -922,3 +922,46 @@ def test_would_surface_stamp_is_persisted_from_the_candidate():
     assert by_ticker["AAA"].would_surface is True
     assert by_ticker["BBB"].would_surface is False
     assert by_ticker["CCC"].would_surface is None
+
+
+def test_breakeven_ratchet_moves_the_stop_off_the_prior_bars_high_water(tmp_path):
+    """The be_1r arm: once the PRIOR bar's high-water clears entry + 1R, the stop rises
+    to breakeven -- never off this bar's own high (no intra-bar lookahead), never down."""
+    from dataclasses import replace as dc_replace
+
+    cfg = dc_replace(StrategyConfig(), breakeven_after_r=1.0)  # entry 101, risk 7 -> arm at 108
+    bar1 = {"low": 100.0, "high": 108.5, "close": 107.0, "shaved_head": False}
+    bar2 = {"low": 103.0, "high": 106.0, "close": 105.0, "shaved_head": False}
+    with Session(get_engine(f"sqlite:///{tmp_path / 'be.sqlite'}")) as s:
+        pt = _open_default(s)
+        # bar 1 reaches entry+1R intra-bar: PRIOR high-water is still the entry, so the
+        # ratchet must NOT fire off this bar's own high
+        advance_open(s, {("AAPL", "1d"): bar1}, cfg, today=date(2024, 1, 4))
+        pt = s.get(PaperTrade, pt.id)
+        assert pt.stop == 94.0                        # unchanged: no lookahead
+        # bar 2: the prior high-water (108.5) now clears 108 -> stop ratchets to entry
+        advance_open(s, {("AAPL", "1d"): bar2}, cfg, today=date(2024, 1, 5))
+        pt = s.get(PaperTrade, pt.id)
+        assert pt.stop == 101.0                       # breakeven, never down from here
+    # baseline config (knob off) never moves the stop pre-partial -- separate db
+    with Session(get_engine(f"sqlite:///{tmp_path / 'base.sqlite'}")) as s2:
+        pt2 = _open_default(s2)
+        advance_open(s2, {("AAPL", "1d"): bar1}, StrategyConfig(), today=date(2024, 1, 4))
+        advance_open(s2, {("AAPL", "1d"): bar2}, StrategyConfig(), today=date(2024, 1, 5))
+        assert s2.get(PaperTrade, pt2.id).stop == 94.0
+
+
+def test_low_water_tracks_the_lowest_low_since_fill():
+    cfg = StrategyConfig()
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        pt = _open_default(s)
+        assert pt.low_water is None
+        advance_open(s, {("AAPL", "1d"): {"low": 99.0, "high": 103.0, "close": 101.0,
+                                          "shaved_head": False}}, cfg,
+                     today=date(2024, 1, 4))
+        assert s.get(PaperTrade, pt.id).low_water == 99.0
+        advance_open(s, {("AAPL", "1d"): {"low": 100.5, "high": 104.0, "close": 103.0,
+                                          "shaved_head": False}}, cfg,
+                     today=date(2024, 1, 5))
+        assert s.get(PaperTrade, pt.id).low_water == 99.0  # never rises

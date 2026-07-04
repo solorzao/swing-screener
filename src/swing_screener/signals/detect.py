@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pandas as pd
 
@@ -25,10 +25,17 @@ def _quality_gates_pass(f: pd.DataFrame, last, pullback: list, swing_low: float,
     """Tier-A continuation quality gates (edge tournament round 1). Each is a detection-only
     lever, default no-op; returns False to reject the trigger. Computed from the enriched
     frame only -- no new indicators."""
-    # volume thrust: the resumption bar prints on above-average volume (real demand)
+    # volume thrust: the resumption bar prints on above-average volume (real demand).
+    # Denominator A/B (vol_thrust_excl_pullback): the legacy baseline window INCLUDES the
+    # pullback's own dried-up volume, flattering thrust ratios on longer pullbacks; the
+    # excl variant measures the window BEFORE the pullback (matching the dry-up gate).
     if cfg.vol_thrust_min > 0:
         n = cfg.vol_avg_window
-        base_vol = f["volume"].iloc[-(n + 1):-1].mean()
+        if cfg.vol_thrust_excl_pullback:
+            k = len(pullback)
+            base_vol = f["volume"].iloc[-(n + 1 + k):-(k + 1)].mean()
+        else:
+            base_vol = f["volume"].iloc[-(n + 1):-1].mean()
         rvol = float(last["volume"]) / base_vol if base_vol and base_vol > 0 else 1.0
         if rvol < cfg.vol_thrust_min:
             return False
@@ -89,13 +96,60 @@ def _quality_gates_pass(f: pd.DataFrame, last, pullback: list, swing_low: float,
     return True
 
 
+def _detect_confirmed_breakout(f: pd.DataFrame, cfg: StrategyConfig) -> PullbackContext | None:
+    """The ``cont_confirm_window`` trigger: fire on the FIRST close above the flip bar's
+    high within the window, with the setup's STRUCTURE validated as-of the flip.
+
+    The continuation analog of ``reversal_confirm_window`` (whose late-confirm cohort
+    graded +0.110R): the trailing HA-green run ending today locates the flip (its oldest
+    bar); the flip must be a fully valid LEGACY trigger on the frame ending there
+    (uptrend, pullback, quality gates -- evaluated by recursing with the window off);
+    today's close is the first of the run above the flip's high (single-fire). Trigger
+    price and the extension/freshness metric are TODAY's -- the anti-chase gate judges
+    the bar actually entered on. Never fires on the flip bar itself (g >= 2), so the
+    default and windowed variants are disjoint entry-timing cohorts.
+    """
+    g = 0
+    while g < len(f) - 1 and bool(f.iloc[-1 - g]["bullish"]):
+        g += 1
+    if g < 2 or (g - 1) > cfg.cont_confirm_window:
+        return None
+    last = f.iloc[-1]
+    flip = f.iloc[-g]
+    if float(last["close"]) <= float(flip["high"]):
+        return None
+    between = f["close"].iloc[len(f) - g + 1: len(f) - 1]
+    if len(between) and float(between.max()) > float(flip["high"]):
+        return None  # an earlier run bar already confirmed; today is not the first
+    base_ctx = detect_last_bar(f.iloc[: len(f) - g + 1],
+                               replace(cfg, cont_confirm_window=0))
+    if base_ctx is None:
+        return None
+    atr = float(last["atr"])
+    extension_atr = (float(last["close"]) - float(last["ema_fast"])) / atr if atr else 0.0
+    return PullbackContext(
+        trigger_ts=f.index[-1],
+        trigger_close=float(last["close"]),
+        atr=atr,
+        swing_low=base_ctx.swing_low,
+        pullback_bars=base_ctx.pullback_bars,
+        shaved_bottom=bool(last["shaved_bottom"]),
+        rsi=float(last["rsi"]),
+        extension_atr=extension_atr,
+    )
+
+
 def detect_last_bar(f: pd.DataFrame, cfg: StrategyConfig) -> PullbackContext | None:
     """Return a PullbackContext if the last closed bar of ``f`` is a valid
     pullback-continuation long trigger, else None.
 
     ``f`` is the enriched frame from ``build_frame`` (HA + EMAs + ATR + RSI +
-    classification). Pure: reads only, never mutates ``f``.
+    classification). Pure: reads only, never mutates ``f``. With
+    ``cont_confirm_window > 0`` the trigger is the breakout-confirmation variant
+    (see ``_detect_confirmed_breakout``); 0 is the incumbent flip-bar trigger.
     """
+    if cfg.cont_confirm_window > 0:
+        return _detect_confirmed_breakout(f, cfg)
     if len(f) < cfg.ema_slow + cfg.max_pullback_bars + 2:
         return None
 

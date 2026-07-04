@@ -37,7 +37,7 @@ _INDICATOR_FIELDS = (
 _EXIT_FIELDS = (
     "momentum_flip_exit", "reversal_momentum_flip_exit", "max_hold_bars",
     "time_stop_factor", "fill_slippage_atr", "trail_mode", "chandelier_atr_mult",
-    "partial_frac", "partial_require_softening",
+    "partial_frac", "partial_require_softening", "breakeven_after_r",
 )
 
 

@@ -41,6 +41,14 @@ class StrategyConfig:
     # actually pulled back to value rather than barely dipping while still extended. Off = the
     # incumbent behavior. DETECTION-only, so it is a legal screen variant.
     require_band_touch: bool = False
+    # Breakout-confirmation trigger window (experiment, 2026-07 queue). 0 = the incumbent
+    # trigger (fire ON the bullish flip bar out of the pullback). N >= 1 = fire instead on
+    # the FIRST close above the flip bar's high within N bars of the flip -- the
+    # continuation analog of reversal_confirm_window (whose late-confirm cohort graded
+    # +0.110R): pullback/uptrend/quality structure is measured AS-OF the flip bar, the
+    # trigger price/extension at the confirmation bar. A strictly different entry-timing
+    # cohort, single-fire by construction. DETECTION-only -> a legal screen variant.
+    cont_confirm_window: int = 0
 
     # --- continuation edge tournament, round 1 (Tier-A quality gates) -------------------
     # All DETECTION-only screen-variant levers, default no-op (0/False). Each targets the
@@ -49,6 +57,11 @@ class StrategyConfig:
     # docs/plans/2026-06-25-continuation-edge-tournament-design.md.
     vol_thrust_min: float = 0.0        # reject if trigger volume / mean(volume, vol_avg_window) < this
     vol_avg_window: int = 20           # rolling window for the volume baseline (excludes the trigger bar)
+    # Thrust-denominator A/B (2026-07 queue): the baseline above INCLUDES the pullback's
+    # own dried-up volume, flattering thrust ratios on longer pullbacks (and doubly so
+    # when combined with the dry-up gate, whose baseline EXCLUDES it). True measures the
+    # baseline over the vol_avg_window bars BEFORE the pullback, matching the dry-up gate.
+    vol_thrust_excl_pullback: bool = False
     min_ema_sep_atr: float = 0.0       # reject if (ema_fast - ema_slow) / atr < this (flat-trend filter)
     require_macd_hook: bool = False    # reject unless macd_hist > 0 AND macd_hist_rising
     rsi_min_trigger: float = 0.0       # reject if trigger rsi < this (bull-range floor)
@@ -243,6 +256,12 @@ class StrategyConfig:
     # the offline edge study found is a mild, consistent drag (it cuts trades at ~-0.3R that
     # average ~-0.13R if held) -- so it's A/B'd in the live shadow book rather than switched.
     momentum_flip_exit: bool = True
+    # Breakeven ratchet (the be_1r ARM, 2026-07 queue): once the PRIOR bar's high-water
+    # clears entry + this many R, raise the stop to breakeven (never down; same
+    # prior-bar/no-intra-bar-lookahead discipline as the Chandelier trail). 0 = off.
+    # Pre-partial trades otherwise ride FULL initial risk to the end. Arm-tested only
+    # (exit knob): the variants guard rejects it from screen variants by design.
+    breakeven_after_r: float = 0.0
     # per-play-type override for the REVERSAL book: the same 503-name replay found the eager
     # momentum-flip exit is a net drag on reversals (it converts +0.77R time-stops and target
     # runs into ~-0.19R early cuts). Default OFF for reversal; continuation keeps the flip via
