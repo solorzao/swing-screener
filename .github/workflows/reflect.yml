@@ -87,6 +87,17 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Warm the database-scope token (the OIDC assertion expires in ~5 min)
+        # The federated client assertion azure/login exchanges is only valid for ~5
+        # minutes, and az redeems it PER RESOURCE on first use. Since the 5y fetch
+        # window (2026-07-03) the reflect step spends 10+ minutes fetching bars
+        # before its first DB connection -- by then the assertion is dead and
+        # DefaultAzureCredential fails with AADSTS700024 (2026-07-04 forced run).
+        # Acquiring the database-scope token NOW, while the assertion is fresh,
+        # caches an access token (~60 min lifetime) that AzureCliCredential serves
+        # from for the rest of the job.
+        run: az account get-access-token --resource https://database.windows.net/ --output none
+
       - name: Open ephemeral SQL firewall rule for this runner
         # GitHub-hosted runner IPs are dynamic; a one-run rule (deleted below, even on
         # failure) keeps the server's standing surface at what it was. The reap pass
