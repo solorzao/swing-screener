@@ -130,7 +130,14 @@ class StrategyConfig:
     # bounce (reversal_low -> bounce_high):
     reversal_pullback_shallow: float = 0.382  # shallow end of the pullback entry zone
     reversal_pullback_deep: float = 0.618     # deep end of the pullback entry zone
-    reversal_retrace_frac: float = 0.786      # target = this retracement of the decline (toward breakdown)
+    # Target = this retracement of the prior decline. DEFAULT 1.0 (the full breakdown
+    # level) since the 2026-07-03 target-geometry sweep: same-sample across ~44k closed
+    # fills the gradient is MONOTONE (0.5 -> -0.027R, 0.618 -> -0.001R, 0.786 -> +0.024R,
+    # 1.0 -> +0.043R full book at 0.05 ATR slippage; confirmed cohort +0.057R, corrected
+    # low +0.029) -- the old 0.786 capped winners early. At 0.10 slippage the 1.0 bound
+    # is -0.002 (the same fragility profile the shipped confirmed+no-flip edge had). The
+    # legacy 0.786 stays measured forward as the `rev_retrace786` screen variant.
+    reversal_retrace_frac: float = 1.0
     reversal_target_r_multiple: float = 1.0   # measured-move fallback if the target sits below entry
     # edge-discovery wave 1: A/B the reversal flip-bar volume sign. The scorer rewards HIGH flip
     # volume, but Wyckoff/MR theory says the confirming test should be LOW volume (supply gone).

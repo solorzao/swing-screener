@@ -46,6 +46,8 @@ def test_replay_book_is_stable_golden_master():
         ("AMD", "rev_confirm1", "2018-07-06", 15.7311, 14.575, 17.4652, "time_stop", 0.6651),
         ("AMD", "rev_highvol", "2018-07-05", 15.2354, 14.5719, 16.2306, "target", 1.4489),
         ("AMD", "rev_highvol", "2018-07-06", 15.7311, 14.575, 17.4652, "time_stop", 0.6651),
+        ("AMD", "rev_retrace786", "2018-07-05", 15.2354, 14.5719, 16.2306, "target", 1.4489),
+        ("AMD", "rev_retrace786", "2018-07-06", 15.7311, 14.575, 17.4652, "time_stop", 0.6651),
     ]
     assert book == expected
 
