@@ -157,3 +157,36 @@ def test_pocket_pivot_gate(bars):
                   StrategyConfig(require_pocket_pivot=True), bars)
     assert not _fires(_pocket_rows(trig_vol=900_000, down_vol=2_000_000),
                       StrategyConfig(require_pocket_pivot=True), bars)
+
+
+def test_vol_thrust_denominator_excl_pullback_is_the_stricter_read(bars):
+    """The legacy thrust baseline INCLUDES the pullback's own dried-up volume, flattering
+    the ratio; the excl variant measures the window BEFORE the pullback (matching the
+    dry-up gate). A trigger that squeaks past the flattered legacy ratio must fail the
+    honest one."""
+    from dataclasses import replace
+
+    from swing_screener.signals.detect import detect_last_bar
+    from swing_screener.signals.frame import build_frame
+
+    rows = []
+    p = 10.0
+    for _ in range(60):
+        rows.append({"open": p, "high": p + 1.2, "low": p, "close": p + 1.0,
+                     "volume": 1_000_000.0})
+        p += 1.0
+    for _ in range(3):  # dried-up pullback (0.2x volume)
+        rows.append({"open": p, "high": p + 0.05, "low": p - 1.5, "close": p - 1.2,
+                     "volume": 200_000.0})
+        p -= 1.2
+    # trigger volume 1.15M: the legacy baseline window (last 20 bars) contains all 3
+    # dried-up bars -> (17x1M + 3x0.2M)/20 = 0.88M -> rvol 1.31 >= 1.3 passes; the excl
+    # baseline skips the CLASSIFIED pullback (>=2 bars) -> ~0.96M -> rvol ~1.20 rejects.
+    rows.append({"open": p, "high": p + 6.0, "low": p, "close": p + 5.6,
+                 "volume": 1_150_000.0})
+    frame = build_frame(bars(rows), StrategyConfig())
+
+    legacy = replace(StrategyConfig(), vol_thrust_min=1.3)
+    strict = replace(StrategyConfig(), vol_thrust_min=1.3, vol_thrust_excl_pullback=True)
+    assert detect_last_bar(frame, legacy) is not None
+    assert detect_last_bar(frame, strict) is None

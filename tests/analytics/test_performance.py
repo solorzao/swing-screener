@@ -296,3 +296,34 @@ def test_score_stamped_excludes_pre_v2_reversal_rows():
     # everything else (post-cutoff, other play types, undated) stays.
     assert old_rev not in kept
     assert new_rev in kept and old_cont in kept and undated_rev in kept
+
+
+def test_paired_arm_delta_pairs_on_fill_identity():
+    from datetime import datetime
+
+    from swing_screener.analytics.performance import paired_arm_delta
+
+    def pair(ticker, ts_day, base_r, arm_r):
+        ts = datetime(2026, 6, ts_day)
+        a = _pt(realized_r=base_r, opened_date=date(2026, 6, ts_day))
+        a.ticker, a.arm, a.trigger_ts = ticker, "baseline", ts
+        b = _pt(realized_r=arm_r, opened_date=date(2026, 6, ts_day))
+        b.ticker, b.arm, b.trigger_ts = ticker, "be_1r", ts
+        return [a, b]
+
+    trades = pair("AAA", 1, 1.0, 1.5) + pair("AAA", 2, -1.0, 0.0) + pair("BBB", 3, 0.5, 0.5)
+    # an UNPAIRED arm row (no baseline twin) and a pair with an open leg must be skipped
+    lone = _pt(realized_r=2.0)
+    lone.ticker, lone.arm, lone.trigger_ts = "CCC", "be_1r", datetime(2026, 6, 4)
+    open_base = _pt(status="open", realized_r=None)
+    open_base.ticker, open_base.arm, open_base.trigger_ts = "DDD", "baseline", datetime(2026, 6, 5)
+    open_arm = _pt(realized_r=1.0)
+    open_arm.ticker, open_arm.arm, open_arm.trigger_ts = "DDD", "be_1r", datetime(2026, 6, 5)
+
+    d = paired_arm_delta(trades + [lone, open_base, open_arm], "be_1r")
+    assert d.n_pairs == 3
+    assert abs(d.mean_delta - (0.5 + 1.0 + 0.0) / 3) < 1e-9
+    assert d.n_clusters == 2  # AAA + BBB
+    # empty input fails closed
+    empty = paired_arm_delta([], "be_1r")
+    assert empty.n_pairs == 0 and empty.thin_clusters is True

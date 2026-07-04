@@ -147,6 +147,10 @@ class PaperTrade(Base):
     # (pre-stamping) or a replay row (ticker-major replay ranks are degenerate; see
     # pipeline.run._shadow_candidates). Neither is ever graded as gold.
     would_surface: Mapped[bool | None] = mapped_column(default=None)
+    # lowest low since the fill (MAE instrumentation, mirroring high_water). Never read
+    # by any exit decision -- purely so max-adverse-excursion questions (stop width,
+    # breakeven timing, target reachability) are answerable offline. None = legacy row.
+    low_water: Mapped[float | None] = mapped_column(default=None)
     # filled / missed / invalidated / pending (a reversal resting-limit order still
     # inside its fill window; resolve_pending fills, invalidates, or expires it).
     fill_status: Mapped[str] = mapped_column(String(32))

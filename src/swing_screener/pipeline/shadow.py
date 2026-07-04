@@ -353,7 +353,20 @@ def advance_open(
         if pt.partial_done and cfg.trail_mode == "chandelier" and atr_val > 0.0:
             pt.stop = max(pt.stop, prior_high_water - cfg.chandelier_atr_mult * atr_val)
 
+        # Breakeven ratchet (the be_1r arm): once the PRIOR bar's high-water clears
+        # entry + breakeven_after_r * R, raise the stop to breakeven -- never down, and
+        # never off this bar's own high (same no-intra-bar-lookahead discipline as the
+        # Chandelier). Pre-partial only: the partial already moves the stop to breakeven.
+        if (cfg.breakeven_after_r > 0.0 and not pt.partial_done
+                and prior_high_water >= pt.entry_price + cfg.breakeven_after_r * pt.risk):
+            pt.stop = max(pt.stop, pt.entry_price)
+
         pt.high_water = max(prior_high_water, bar_high)
+        # low_water: the lowest low since the fill -- pure MAE instrumentation (never read
+        # by any exit decision), so every future stop-width/breakeven/target-reachability
+        # question is answerable offline instead of burning weeks as a new arm.
+        prior_low_water = pt.low_water if pt.low_water is not None else pt.entry_price
+        pt.low_water = min(prior_low_water, float(num_bar["low"]))
 
         partial_on = cfg.partial_frac > 0.0
         # Once partialed, the runner has NO fixed target (runs to stop/flip/time): suppress
