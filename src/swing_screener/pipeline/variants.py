@@ -87,6 +87,13 @@ def build_screen_variants(base: StrategyConfig) -> dict[str, StrategyConfig]:
         # at 0.10, while legacy-only no longer cleared the bar). If the live forward books
         # disagree with the replay, this is the variant that reverses the flip.
         "rev_confirm1": replace(base, reversal_confirm_window=1),
+        # The LEGACY 78.6% retrace target, kept as the counterfactual book after the default
+        # flipped to the full breakdown level (2026-07-03 target-geometry sweep: monotone
+        # same-sample gradient, 1.0 graded +0.043R full book / +0.057R confirmed with the
+        # corrected low +0.027/+0.029 at 0.05 slippage vs 0.786's +0.024/+0.039). Reverses
+        # the flip if the forward books disagree. Roster note: 7 books/run -- at the stated
+        # "keep this SMALL" ceiling; retire a settled variant before adding another.
+        "rev_retrace786": replace(base, reversal_retrace_frac=0.786),
     }
     for name, cfg in variants.items():
         if name != DEFAULT_VARIANT:

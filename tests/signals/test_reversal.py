@@ -284,7 +284,7 @@ def test_reversal_fallback_target_meets_r_multiple_from_ceiling():
     deliver reversal_target_r_multiple R measured from the entry CEILING (the fill/size
     anchor), not from the midpoint reference."""
     cfg = StrategyConfig()
-    # decline_high 105 puts the 0.786 retrace (~103.9) below the ceiling (~106.2), so the
+    # decline_high 105 puts the full retrace (105.0) below the ceiling (~106.2), so the
     # measured-move fallback governs the target.
     ctx = _rev_ctx(reversal_low=100.0, bounce_high=110.0, atr=4.0, decline_high=105.0)
     z = compute_reversal_zone(ctx, cfg)

@@ -114,7 +114,7 @@ def line(name: str, df: pd.DataFrame) -> str:
 
 def main() -> None:
     feats: pd.DataFrame | None = None
-    for slip in ("0.05", "0.10"):
+    for slip in ("0.05",):
         book = load_book(slip)
         if feats is None:
             feats = compute_features(book[["ticker", "opened_date"]].drop_duplicates())
