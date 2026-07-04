@@ -39,13 +39,50 @@ _WINNER_TICKERS = {f"T{i}": [1.2, 1.4, 1.0, 1.3] for i in range(10)}      # mean
 _INCUMBENT_TICKERS = {f"T{i}": [0.0, -0.2, 0.1, -0.1] for i in range(10)}  # mean ~ -0.05R
 
 
-def _result(*, winner, in_sample, out_of_sample, out_of_sample_trades=None):
+def _result(*, winner, in_sample, out_of_sample, out_of_sample_trades=None, scopes=None):
     return OptimizeResult(
         in_sample=in_sample,
         out_of_sample=out_of_sample,
         winner=winner,
         out_of_sample_trades=out_of_sample_trades or {},
+        scopes=scopes or {},
     )
+
+
+def test_gates_slice_to_the_winners_play_type_scope():
+    """A continuation-knob winner must be judged on continuation fills ONLY. Here the
+    winner's apparent edge lives entirely in REVERSAL fills -- a population its knob
+    (max_extension_atr) cannot touch, i.e. an artifact. The pooled (legacy) view
+    promotes it; the scoped gates must not (2026-07 review: play-type slicing)."""
+    flat = {f"T{i}": [0.0, 0.1, -0.1, 0.0] for i in range(10)}   # ~0R continuation, both books
+    win_cont = _trades(flat, "ext_1.5")
+    inc_cont = _trades(flat, "ext_2.0")
+    win_rev = _trades(_WINNER_TICKERS, "ext_1.5")                # fat +1.2R cohort...
+    for t in win_rev:
+        t.play_type = "reversal"                                  # ...on the UNTOUCHED path
+    win_all = win_cont + win_rev
+
+    # Legacy pooled shape (no scopes): the reversal artifact carries the pooled summary
+    # and every gate -> a FALSE promotion. This documents the failure the fix removes.
+    pooled = _result(
+        winner="ext_1.5",
+        in_sample={"ext_1.5": _summary_of(win_all), "ext_2.0": _summary_of(inc_cont)},
+        out_of_sample={"ext_1.5": _summary_of(win_all), "ext_2.0": _summary_of(inc_cont)},
+        out_of_sample_trades={"ext_1.5": win_all, "ext_2.0": inc_cont},
+    )
+    assert isinstance(propose(pooled, BASE, min_oos_trades=20), Proposal)
+
+    # Scoped shape (what optimize() now produces): the winner's summary line is its
+    # CONTINUATION book (~0R) and the trade-level gates slice both books the same way
+    # -> the reversal artifact is invisible and nothing is proposed.
+    scoped = _result(
+        winner="ext_1.5",
+        in_sample={"ext_1.5": _summary_of(win_cont), "ext_2.0": _summary_of(inc_cont)},
+        out_of_sample={"ext_1.5": _summary_of(win_cont), "ext_2.0": _summary_of(inc_cont)},
+        out_of_sample_trades={"ext_1.5": win_all, "ext_2.0": inc_cont},
+        scopes={"ext_1.5": "continuation", "ext_2.0": "continuation"},
+    )
+    assert propose(scoped, BASE, min_oos_trades=20) is None
 
 
 def test_queued_variant_win_is_loud_but_never_auto_applied(caplog):
@@ -88,10 +125,13 @@ def test_grid_with_queued_merges_the_reflection_queue(tmp_path):
         "status": "queued", "drafted_at": "2026-07-02", "provenance": "reflection-opus",
     }]), encoding="utf-8")
 
-    grid = _grid_with_queued(BASE, edge)
+    grid, scopes = _grid_with_queued(BASE, edge)
     assert "proposed:rev_min_pullback" in grid
     assert grid["proposed:rev_min_pullback"].min_pullback_bars == 3
     assert any(k.startswith("ext_") for k in grid)  # the standard sweep is still there
+    # scopes: the gate sweep scores on continuation; the queued variant on ITS play type
+    assert scopes["ext_2.0"] == "continuation"
+    assert scopes["proposed:rev_min_pullback"] == "reversal"
 
 
 def test_grid_with_queued_is_plain_sweep_when_nothing_queued(tmp_path):
@@ -99,9 +139,10 @@ def test_grid_with_queued_is_plain_sweep_when_nothing_queued(tmp_path):
 
     edge = tmp_path / "edge"
     edge.mkdir()  # no proposed.json files
-    grid = _grid_with_queued(BASE, edge)
+    grid, scopes = _grid_with_queued(BASE, edge)
     assert all(not k.startswith("proposed:") for k in grid)
     assert any(k.startswith("ext_") for k in grid)
+    assert all(v == "continuation" for v in scopes.values())
 
 
 def test_proposes_when_winner_beats_incumbent_out_of_sample():

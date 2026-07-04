@@ -1034,8 +1034,18 @@ def run_reflection(
         forward = repo.load_closed_paper_trades(
             session, play_type=pt, arm=BASELINE, variant=DEFAULT_VARIANT,
         )
+        # North Star #7 ("measure only what I'd actually trade"): the GOLD forward facet
+        # is the trades the digest would have surfaced (the booking-time would_surface
+        # stamp -- strength + top-5 rank under the live surfacing config). The full book
+        # (~92% hidden EARLY reversals + rank-6+ names) stays the research facet; grading
+        # it as gold promoted edges proven on a population the system does not trade
+        # (2026-07 review). Legacy NULL rows are excluded (None is not surfaced), so the
+        # gold book starts thin after this ships and verdicts honestly downgrade until
+        # stamped history accrues -- expected, documented, and reversible (drop the
+        # filter to restore the old behavior).
+        forward_gold = [t for t in forward if t.would_surface]
         replay_pt = [t for t in replay_all if t.play_type == pt]
-        verdicts = grade(pt, forward, replay_pt)
+        verdicts = grade(pt, forward_gold, replay_pt)
 
         # Emit the machine-readable sidecar FIRST -- it is deterministic + code-owned, so it
         # is written whether or not the (optional, fallible) LLM authoring below succeeds.

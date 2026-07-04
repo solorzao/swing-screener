@@ -232,12 +232,51 @@ def format_leaderboard(by_variant: Mapping[str, PerformanceSummary]) -> str:
     return "\n".join(lines)
 
 
-def _load_cached_daily(ticker: str, cache_dir: Path) -> pd.DataFrame | None:
-    """Most recent cached daily parquet for a ticker (``<cache>/1d/<T>_<date>.parquet``)."""
+def _cached_daily_file(ticker: str, cache_dir: Path, as_of: str | None = None) -> Path | None:
+    """The cached daily parquet a replay should read for ``ticker``.
+
+    Default: the most recent snapshot (``<cache>/1d/<T>_<date>.parquet``). With ``as_of``
+    (a ``YYYYMMDD`` string) the most recent snapshot AT OR BEFORE that fetch date -- the
+    corpus-pinning knob: promotion evidence must name a reproducible corpus, and "newest
+    per ticker" silently mixes vintages as the cache refreshes (the 2026-07-03 refresh
+    moved several prior results; pin by fetch date to reproduce a run)."""
     files = sorted((cache_dir / "1d").glob(f"{ticker}_*.parquet"))
-    if not files:
-        return None
-    return pd.read_parquet(files[-1])
+    if as_of is not None:
+        files = [f for f in files if f.stem.rsplit("_", 1)[-1] <= as_of]
+    return files[-1] if files else None
+
+
+def _load_cached_daily(
+    ticker: str, cache_dir: Path, as_of: str | None = None
+) -> pd.DataFrame | None:
+    """Cached daily OHLCV for one ticker (see ``_cached_daily_file`` for vintage choice)."""
+    f = _cached_daily_file(ticker, cache_dir, as_of)
+    return pd.read_parquet(f) if f is not None else None
+
+
+def corpus_stamp(cache_dir: Path, tickers: list[str], as_of: str | None = None) -> str:
+    """One-line provenance stamp for a replay corpus, and a mixed-vintage warning.
+
+    Reports how many tickers resolved, the distinct cache VINTAGES (fetch dates) they
+    resolved to, and warns when a single run silently mixes vintages (>1 distinct date)
+    -- expectancies and cluster counts are not comparable across such runs, and no
+    edge-file claim can name its corpus. Print/log this next to every leaderboard."""
+    vintages: dict[str, int] = {}
+    resolved = 0
+    for t in tickers:
+        f = _cached_daily_file(t, cache_dir, as_of)
+        if f is None:
+            continue
+        resolved += 1
+        v = f.stem.rsplit("_", 1)[-1]
+        vintages[v] = vintages.get(v, 0) + 1
+    hist = " ".join(f"{v}:{n}" for v, n in sorted(vintages.items()))
+    stamp = (f"corpus: {resolved}/{len(tickers)} tickers · vintage(s) {hist or 'none'}"
+             + (f" · pinned as-of {as_of}" if as_of else ""))
+    if len(vintages) > 1:
+        log.warning("MIXED-VINTAGE corpus (%d distinct fetch dates): results are not "
+                    "comparable across runs -- pin with as_of. %s", len(vintages), stamp)
+    return stamp
 
 
 def main() -> None:
@@ -245,12 +284,16 @@ def main() -> None:
         description="Replay the screener over cached daily history and rank screen variants.")
     parser.add_argument("--tickers", required=True, help="comma-separated, e.g. AMD,NVDA")
     parser.add_argument("--cache-dir", type=Path, default=Path(".cache"))
+    parser.add_argument("--as-of", default=None, metavar="YYYYMMDD",
+                        help="pin the corpus to cache snapshots at/before this fetch date "
+                             "(reproducible evidence); default = newest per ticker")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
 
+    tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
     frames: dict[str, pd.DataFrame] = {}
-    for ticker in (t.strip().upper() for t in args.tickers.split(",") if t.strip()):
-        df = _load_cached_daily(ticker, args.cache_dir)
+    for ticker in tickers:
+        df = _load_cached_daily(ticker, args.cache_dir, args.as_of)
         if df is None:
             log.warning("no cached daily data for %s; skipping", ticker)
             continue
@@ -260,6 +303,7 @@ def main() -> None:
         log.error("no data to replay (looked in %s/1d)", args.cache_dir)
         return
     board = replay(frames, timeframe="1d")
+    print(corpus_stamp(args.cache_dir, tickers, args.as_of))  # noqa: T201 -- CLI output
     print(format_leaderboard(board))  # noqa: T201 -- CLI output is the point
 
 

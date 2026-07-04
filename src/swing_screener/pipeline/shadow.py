@@ -75,6 +75,10 @@ class FillCandidate:
     # re-detected on every daily run of the week, so this is the CROSS-RUN dedup key
     # (with ticker/timeframe/play_type/variant). None = no dedup (legacy/test callers).
     trigger_ts: datetime | None = None
+    # booking-time estimate of "would the digest have surfaced this signal?" (strength +
+    # top-5 rank under the live surfacing config; see pipeline.run._shadow_candidates).
+    # None = not stamped (replay's ticker-major walk has degenerate ranks; legacy/tests).
+    would_surface: bool | None = None
 
 
 def open_from_signals(
@@ -152,6 +156,7 @@ def open_from_signals(
                 "market_trend": market_trend,
                 "market_vol": market_vol,
                 "vix_bucket": vix_bucket,
+                "would_surface": cand.would_surface,
                 "fill_status": fill.status,
                 "stop": cand.zone.stop,
                 "target": cand.zone.target,

@@ -24,6 +24,7 @@ from swing_screener.analytics.performance import (
     _CLUSTER_FLOOR,
     _is_closed_filled,
     clustered_two_sample_delta_low,
+    summarize,
 )
 from swing_screener.config import StrategyConfig
 from swing_screener.db.models import PaperTrade
@@ -32,7 +33,9 @@ from swing_screener.pipeline.optimize import (
     OptimizeResult,
     build_config_grid,
     fetch_daily,
+    grid_scopes,
     optimize,
+    scoped_trades,
 )
 from swing_screener.pipeline.proposed import load_proposed_for
 from swing_screener.pipeline.replay import format_leaderboard
@@ -161,16 +164,27 @@ def propose(
     if w_oos is None or w_oos.n_closed < min_oos_trades or w_oos.expectancy_ci_low <= 0:
         return None
 
-    inc_oos = result.out_of_sample.get(incumbent_name)
-    inc_oos_expectancy = inc_oos.expectancy_r if inc_oos is not None else 0.0
+    # Every comparison below runs on the WINNER'S SCOPE (the play type its knob touches;
+    # see optimize.grid_scopes): the pooled book's untouched-play-type fills are byte-
+    # identical across arms, so leaving them in dilutes a real single-play-type delta
+    # toward zero and the gates below become structurally near-blind (2026-07 review).
+    # The winner's own summary line is already scope-sliced by optimize(); the incumbent's
+    # line is recomputed here on the same scope so the comparison is apples-to-apples.
+    winner_trades = scoped_trades(
+        result.out_of_sample_trades.get(winner, []), winner, result.scopes)
+    incumbent_trades = scoped_trades(
+        result.out_of_sample_trades.get(incumbent_name, []), winner, result.scopes)
+
+    inc_scoped = summarize(incumbent_trades) if incumbent_trades else None
+    inc_oos_expectancy = (
+        inc_scoped.expectancy_r if inc_scoped is not None and inc_scoped.n_closed > 0 else 0.0
+    )
     if w_oos.expectancy_r <= inc_oos_expectancy:
         return None
 
     # Trade-level teeth (D1: a TWO-SAMPLE comparison of independent books, clustered by ticker --
     # the variants produce different fills, so this is NOT the paired arm A/B). The summary gates
     # above only test the winner's own line; these test the winner-vs-incumbent DIFFERENCE.
-    winner_trades = result.out_of_sample_trades.get(winner, [])
-    incumbent_trades = result.out_of_sample_trades.get(incumbent_name, [])
     if len(_closed_by_ticker(winner_trades)) < _CLUSTER_FLOOR:
         return None
     if _clustered_two_sample_delta_low(winner_trades, incumbent_trades) <= 0:
@@ -227,21 +241,24 @@ def apply_to_config(source: str, proposal: Proposal) -> str:
     return new
 
 
-def _grid_with_queued(base_cfg: StrategyConfig, edge_dir: Path) -> dict[str, StrategyConfig]:
-    """The auto-propose grid: the standard gate sweep PLUS every analyst-QUEUED variant
-    from ``edge/*.proposed.json`` (both play types -- the replay books both, and the
-    leaderboards slice honestly). This is the reflection-to-optimizer handoff the queue
-    exists for: reflection drafts candidates "for the optimizer to sweep", and until this
-    was wired the scheduled sweep never loaded them (2026-07 audit). ``to_config``
-    validates every delta inside ``build_config_grid``; an invalid one is skipped with a
-    warning, never poisoning the grid.
+def _grid_with_queued(
+    base_cfg: StrategyConfig, edge_dir: Path
+) -> tuple[dict[str, StrategyConfig], dict[str, str]]:
+    """The auto-propose grid + its play-type scopes: the standard gate sweep PLUS every
+    analyst-QUEUED variant from ``edge/*.proposed.json`` (both play types -- the replay
+    books both, and every leaderboard/gate line is sliced to the play type each knob
+    touches via the returned scopes). This is the reflection-to-optimizer handoff the
+    queue exists for: reflection drafts candidates "for the optimizer to sweep", and
+    until this was wired the scheduled sweep never loaded them (2026-07 audit).
+    ``to_config`` validates every delta inside ``build_config_grid``; an invalid one is
+    skipped with a warning, never poisoning the grid.
     """
     queued = [pv for pt in ("continuation", "reversal")
               for pv in load_proposed_for(pt, edge_dir)]
     if queued:
         log.info("sweeping %d analyst-queued variant(s): %s",
                  len(queued), ", ".join(pv.name for pv in queued))
-    return build_config_grid(base_cfg, proposed=queued)
+    return build_config_grid(base_cfg, proposed=queued), grid_scopes(queued)
 
 
 def main() -> None:
@@ -267,8 +284,9 @@ def main() -> None:
         log.error("no data fetched for %s; failing the run", tickers)
         raise SystemExit(1)
 
-    grid = _grid_with_queued(StrategyConfig(), resolve_edge_dir(args.edge_dir))
-    result = optimize(frames, timeframe="1d", grid=grid, oos_frac=args.oos_frac)
+    grid, scopes = _grid_with_queued(StrategyConfig(), resolve_edge_dir(args.edge_dir))
+    result = optimize(frames, timeframe="1d", grid=grid, oos_frac=args.oos_frac,
+                      scopes=scopes)
     proposal = propose(result, StrategyConfig(), min_oos_trades=args.min_oos_trades)
     if proposal is None:
         log.info("no config change proposed (no trusted out-of-sample winner over incumbent)")

@@ -3,8 +3,9 @@ import logging
 import math
 import random
 import time
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import yfinance as yf
@@ -12,6 +13,36 @@ import yfinance as yf
 log = logging.getLogger(__name__)
 
 _COLS = ["open", "high", "low", "close", "volume"]
+
+# The "daily bar is complete" invariant, enforced at the cache seam. The screen, the
+# dashboard, exitcheck, and market_run all share the per-day parquet cache -- so a 2pm
+# dashboard page-load used to pin TODAY'S IN-PROGRESS session bar as the day's truth, and
+# the evening screen then detected, filled, and advanced off a half-formed candle (the
+# 2026-07 audit's partial-bar contamination, previously guarded only by a docstring).
+_EASTERN = ZoneInfo("America/New_York")
+_MARKET_CLOSE_HOUR = 16  # 4pm ET; ignores half-days (a 1pm close keeps the guard active)
+
+
+def _now_eastern() -> datetime:
+    """Wall clock in US/Eastern (module-level so tests can freeze it)."""
+    return datetime.now(tz=_EASTERN)
+
+
+def _drop_in_progress_daily_bar(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    """Drop the last row of a DAILY frame when it is today's not-yet-closed session bar.
+
+    Yahoo serves the live in-progress bar during market hours; caching it per-day
+    poisons every consumer for the rest of the day. Rows for prior dates (or today's
+    row fetched after the close) pass through untouched."""
+    if not len(df):
+        return df
+    now = _now_eastern()
+    last_date = df.index[-1].date()
+    if last_date == now.date() and now.hour < _MARKET_CLOSE_HOUR:
+        log.info("dropping in-progress daily bar for %s (fetched %s ET, before the close)",
+                 ticker, now.strftime("%H:%M"))
+        return df.iloc[:-1]
+    return df
 
 
 def _cache_path(cache_dir: Path, interval: str, ticker: str, today: date) -> Path:
@@ -60,6 +91,10 @@ def fetch_bars(ticker: str, interval: str, *, cache_dir: Path, period: str = "5y
             df = _download(ticker, interval, period)
             if df is None or df.empty:
                 raise ValueError("empty frame")
+            if interval == "1d":
+                df = _drop_in_progress_daily_bar(df, ticker)
+                if df.empty:
+                    raise ValueError("empty frame after dropping the in-progress bar")
             cache_file.parent.mkdir(parents=True, exist_ok=True)
             df.to_parquet(cache_file)
             return df

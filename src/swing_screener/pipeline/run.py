@@ -236,8 +236,33 @@ def _bar_row(frame: pd.DataFrame) -> dict[str, float | bool]:
     return row
 
 
+# The digest's list depth (mirrors notify.select's top_n=5 default): the would_surface
+# stamp calls a signal surfaced when it holds a top-5 rank within its play type.
+_SURFACE_TOP_N = 5
+
+
+def _would_surface(pr: SignalResult, rank: int, cfg: StrategyConfig) -> bool:
+    """Booking-time estimate of "would the digest have surfaced this signal?".
+
+    North Star #7: the gold forward book must reflect entries a human could actually
+    take, so reflection grades only stamped-True rows. Applies the surfacing config's
+    strength/tier bars and the top-N rank within the play type. Deliberately
+    APPROXIMATE: the cooldown, the live already-ran check, and the sector cap depend on
+    digest-time state that does not exist at booking -- the stamp is the booking-time
+    upper bound of surfacing, which still removes the ~92% hidden-EARLY + rank-6+ bulk
+    that made the old full-book verdicts unrepresentative (2026-07 review).
+    """
+    if pr.play_type == "reversal":
+        if cfg.reversal_surface_premium_only and pr.conviction_tier != "premium":
+            return False
+        if cfg.reversal_surface_confirmed_only and pr.strength != "confirmed":
+            return False
+    return rank <= _SURFACE_TOP_N
+
+
 def _shadow_candidates(
     prior_list: list[tuple[SignalResult, float, float, datetime | None]],
+    surface_cfg: StrategyConfig | None = None,
 ) -> tuple[list[FillCandidate], dict[tuple[str, str], tuple[float, float]]]:
     """Build the shadow-book fill candidates + next-bar map for one variant's prior signals.
 
@@ -245,6 +270,11 @@ def _shadow_candidates(
     a ranking space distinct from the persisted ``Signal.rank``. The next-bar high/low is
     the actual traded bar, so it's config-independent across variants. Each candidate
     carries its trigger bar's timestamp for the cross-run booking dedup.
+
+    ``surface_cfg`` (the variant's screen config) turns on the ``would_surface`` stamp --
+    meaningful only when ``prior_list`` spans the whole universe, so the LIVE screen
+    passes it and the ticker-major replay leaves it None (a per-ticker walk ranks
+    everything 1, which would stamp every confirmed signal surfaced).
     """
     prior_cont = sorted((x for x in prior_list if x[0].play_type == "continuation"),
                         key=lambda x: x[0].score, reverse=True)
@@ -255,7 +285,9 @@ def _shadow_candidates(
                       pr.mtf_aligned, None, pr.zone, quality_tier=pr.quality_tier,
                       volatility_tier=pr.volatility_tier, oversold=pr.oversold,
                       play_type=pr.play_type, strength=pr.strength,
-                      conviction_tier=pr.conviction_tier, trigger_ts=trig)
+                      conviction_tier=pr.conviction_tier, trigger_ts=trig,
+                      would_surface=(_would_surface(pr, rank, surface_cfg)
+                                     if surface_cfg is not None else None))
         for group in (prior_cont, prior_rev)
         for rank, (pr, _h, _l, trig) in enumerate(group, start=1)
     ]
@@ -442,7 +474,7 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         # Parallel-arm shadow book: every fill is opened once per arm and advanced
         # under its own arm config, so breakdown(trades, "arm") is a same-sample A/B.
         arms = build_arms(cfg)
-        candidates, next_bars = _shadow_candidates(prior)
+        candidates, next_bars = _shadow_candidates(prior, cfg)
         opened = open_from_signals(s, candidates, next_bars, fill_date=today,
                                    arms=tuple(arms), variant=DEFAULT_VARIANT,
                                    market_trend=regime.trend, market_vol=regime.vol,
@@ -454,7 +486,7 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         # the screen configs head-to-head. advance_open keys exits off `arm`, so these ride
         # the baseline exit automatically -- no variant awareness needed downstream.
         for vname, vcfg in alt_variants.items():
-            vcands, vnext = _shadow_candidates(prior_variants[vname])
+            vcands, vnext = _shadow_candidates(prior_variants[vname], vcfg)
             open_from_signals(s, vcands, vnext, fill_date=today, arms=(BASELINE,),
                               variant=vname, market_trend=regime.trend,
                               market_vol=regime.vol,

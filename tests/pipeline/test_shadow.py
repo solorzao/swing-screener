@@ -899,3 +899,26 @@ def test_arm_ab_is_sliceable_by_play_type():
         rev_trades = [t for t in _all_paper_trades(s) if t.play_type == "reversal"]
         groups = breakdown(rev_trades, "arm")
         assert set(groups) == set(arms)
+
+
+def test_would_surface_stamp_is_persisted_from_the_candidate():
+    """The booking-time surfacing estimate rides the candidate into the PaperTrade row --
+    the reflection loop grades only stamped-True rows as gold (North Star #7)."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        surfaced = FillCandidate(ticker="AAA", timeframe="1d", horizon="medium",
+                                 signal_score=0.9, rank=1, mtf_aligned=False, signal_id=None,
+                                 zone=ZONE, would_surface=True)
+        hidden = FillCandidate(ticker="BBB", timeframe="1d", horizon="medium",
+                               signal_score=0.2, rank=9, mtf_aligned=False, signal_id=None,
+                               zone=ZONE, would_surface=False)
+        legacy = FillCandidate(ticker="CCC", timeframe="1d", horizon="medium",
+                               signal_score=0.5, rank=2, mtf_aligned=False, signal_id=None,
+                               zone=ZONE)  # unstamped (replay/tests) -> None
+        bars = {("AAA", "1d"): (108.0, 100.0), ("BBB", "1d"): (108.0, 100.0),
+                ("CCC", "1d"): (108.0, 100.0)}
+        open_from_signals(s, [surfaced, hidden, legacy], bars, fill_date=date(2024, 1, 3))
+        by_ticker = {t.ticker: t for t in _all_paper_trades(s)}
+    assert by_ticker["AAA"].would_surface is True
+    assert by_ticker["BBB"].would_surface is False
+    assert by_ticker["CCC"].would_surface is None

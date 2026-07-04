@@ -154,6 +154,8 @@ def test_run_reflection_writes_verdicts_json_sidecar(tmp_path):
     edge_dir = _seed_edge_dir(tmp_path)
     n = _REFLECT_TRIGGER_N + 5  # continuation is due; reversal has nothing
     forward = [_closed_trade(f"T{i}", 1.0, "continuation") for i in range(n)]
+    for t in forward:
+        t.would_surface = True  # the gold facet: reflection grades only surfaced rows
     replay_frames = {"S": _synth()}
     with _mem_session() as session:
         _seed(session, forward)
@@ -166,7 +168,8 @@ def test_run_reflection_writes_verdicts_json_sidecar(tmp_path):
         # run_reflection used (forward book + the 1d replay slice for this play type)
         # reproduces exactly the verdicts that should have been serialized.
         loaded_forward = [
-            t for t in session.query(PaperTrade).all() if t.play_type == "continuation"
+            t for t in session.query(PaperTrade).all()
+            if t.play_type == "continuation" and t.would_surface  # the graded gold facet
         ]
         replay_all = replay_book(
             replay_frames, timeframe="1d", base_cfg=_haircut_cfg(),

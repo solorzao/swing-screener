@@ -140,6 +140,13 @@ class PaperTrade(Base):
     # VIX percentile-rank bucket at fill time (trailing 252d): low/<40, mid/40-70, high/>70.
     # None = unknown (^VIX unavailable) or a legacy row. Used by breakdown(trades,"vix_bucket").
     vix_bucket: Mapped[str | None] = mapped_column(String(16), default=None)
+    # would this signal have SURFACED in the digest (booking-time estimate: strength +
+    # top-5 rank under the live surfacing config)? North Star #7: the gold forward book
+    # must reflect entries a human could actually take -- reflection grades only
+    # would_surface=True rows, the rest are the research facet. None = legacy row
+    # (pre-stamping) or a replay row (ticker-major replay ranks are degenerate; see
+    # pipeline.run._shadow_candidates). Neither is ever graded as gold.
+    would_surface: Mapped[bool | None] = mapped_column(default=None)
     # filled / missed / invalidated / pending (a reversal resting-limit order still
     # inside its fill window; resolve_pending fills, invalidates, or expires it).
     fill_status: Mapped[str] = mapped_column(String(32))
