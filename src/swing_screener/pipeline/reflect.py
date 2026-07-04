@@ -849,12 +849,14 @@ def _candidate(
     raw: dict, *, play_type: str, base: StrategyConfig, today: str, index: int,
 ) -> ProposedVariant | None:
     """Turn one untrusted raw draft dict into a VALIDATED queued ``ProposedVariant``, or return
-    ``None`` (with a warning) if it is malformed or illegal.
+    ``None`` (with a warning) if it is malformed, illegal, or a no-op.
 
-    Two gates: (1) structural -- the dict must carry a ``dict`` ``delta`` plus string
+    Three gates: (1) structural -- the dict must carry a ``dict`` ``delta`` plus string
     ``rationale`` / ``hunch_ref``; (2) semantic -- ``to_config`` must accept the delta (it
-    rejects a frozen-indicator or unknown-key delta). A failure DROPS the candidate; it is never
-    persisted and never reaches the sweep.
+    rejects a frozen-indicator or unknown-key delta); (3) no-op -- the delta must CHANGE the
+    config (a delta restating the incumbent defaults would sweep the base arm under a second
+    name, burning a slot on a settled question -- the 2026-07-02 ``max_extension_atr=2.0``
+    draft). A failure DROPS the candidate; it is never persisted and never reaches the sweep.
     """
     delta = raw.get("delta")
     rationale = raw.get("rationale")
@@ -872,11 +874,19 @@ def _candidate(
         status=QUEUED, drafted_at=today, provenance="reflection-opus",
     )
     try:
-        to_config(pv, base)   # THE GATE: drop an illegal/unknown/malformed delta.
+        cfg = to_config(pv, base)   # THE GATE: drop an illegal/unknown/malformed delta.
     except ValueError:
         log.warning(
             "dropping illegal drafted variant %r for %s (delta %r): failed to_config validation",
             pv.name, play_type, delta, exc_info=True,
+        )
+        return None
+    if cfg == base:
+        # THE NO-OP GATE: a delta equal to the incumbent config can never move the book.
+        log.warning(
+            "dropping no-op drafted variant %r for %s (delta %r): equals the incumbent "
+            "StrategyConfig defaults, so sweeping it would re-test the base arm",
+            pv.name, play_type, delta,
         )
         return None
     return pv

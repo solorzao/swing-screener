@@ -118,6 +118,62 @@ def test_reversal_picks_premium_only_surfaces_premium_tier():
         assert [p.ticker for p in sel.reversal_picks(s, RUN)] == ["AAA", "BBB", "CCC"]
 
 
+def test_reversal_surface_parity_between_screen_and_digest():
+    """The screen's ``run._passes_reversal_surface`` and the digest's ``reversal_picks``
+    are the SAME tier/strength predicate expressed twice (one over ``SignalResult``, one
+    as SQL); their divergence caused the 2026-06-28 drought (an elif let premium_only
+    silently override confirmed_only in the digest while the screen composed them).
+    Across ALL four flag combos and the four tier x strength cells, the set the screen
+    would surface must equal the set the digest surfaces.
+
+    The digest-only stages (staleness cooldown, already-ran drop, sector cap, top-N trim)
+    are neutralized -- ``max_age_days=None``, ``top_n`` above the row count, no caller-side
+    filters -- so ONLY the tier/strength predicate discriminates."""
+    from dataclasses import replace
+    from itertools import product
+
+    from swing_screener.config import StrategyConfig
+    from swing_screener.pipeline.analyze import SignalResult
+    from swing_screener.pipeline.run import _passes_reversal_surface
+
+    # One signal per tier x strength cell, mirrored as a stored Signal row (digest side)
+    # and a SignalResult (screen side) with identical tier/strength.
+    cells = [("PCON", "premium", "confirmed"), ("PEAR", "premium", "early"),
+             ("BCON", "base", "confirmed"), ("BEAR", "base", "early")]
+
+    def _sr(ticker, tier, strength):
+        return SignalResult(ticker=ticker, timeframe="1d", horizon="medium", score=0.5,
+                            mtf_aligned=False, quality_tier="", volatility_tier="",
+                            oversold=False, trigger_close=50.0, atr=2.0, rsi=22.0,
+                            entry_floor=50.0, entry_ceiling=52.0, stop=47.0, target=58.0,
+                            frame=None, ctx=None, zone=None, play_type="reversal",
+                            strength=strength, conviction_tier=tier)
+
+    results = [_sr(t, tier, strength) for t, tier, strength in cells]
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add_all([_rev(t, rank, strength, conviction_tier=tier)
+                   for rank, (t, tier, strength) in enumerate(cells, start=1)])
+        s.commit()
+        for premium_only, confirmed_only in product((False, True), repeat=2):
+            cfg = replace(StrategyConfig(),
+                          reversal_surface_premium_only=premium_only,
+                          reversal_surface_confirmed_only=confirmed_only)
+            screen = {sr.ticker for sr in results if _passes_reversal_surface(sr, cfg)}
+            digest = {p.ticker for p in sel.reversal_picks(
+                s, RUN, top_n=len(cells) + 1, max_age_days=None,
+                premium_only=cfg.reversal_surface_premium_only,
+                confirmed_only=cfg.reversal_surface_confirmed_only)}
+            assert screen == digest, (
+                f"screen/digest surfacing diverged for premium_only={premium_only}, "
+                f"confirmed_only={confirmed_only}: screen={screen}, digest={digest}"
+            )
+        # Both flags set must COMPOSE (AND) -- the exact regression the elif caused.
+        both = {p.ticker for p in sel.reversal_picks(
+            s, RUN, top_n=len(cells) + 1, premium_only=True, confirmed_only=True)}
+        assert both == {"PCON"}
+
+
 def test_reversal_filters_compose_instead_of_premium_overriding():
     """premium_only AND confirmed_only both set -> both apply (AND). The old elif let
     premium silently override confirmed_only, which is how the 2026-06-28 premium-only

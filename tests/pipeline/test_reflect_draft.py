@@ -156,6 +156,51 @@ def test_unknown_key_delta_is_dropped_and_warned(tmp_path, caplog):
     assert load_proposed_for("continuation", tmp_path) == []
 
 
+def test_noop_delta_equal_to_incumbent_default_is_dropped_and_warned(tmp_path, caplog):
+    # A delta whose values all equal the shipped StrategyConfig defaults is a NO-OP arm:
+    # sweeping it re-tests the incumbent config under a second name and burns a sweep slot
+    # on a settled question (the 2026-07-02 max_extension_atr=2.0 draft did exactly this).
+    base = StrategyConfig()
+    drafter = _fake_drafter([
+        {
+            "delta": {"max_extension_atr": base.max_extension_atr},  # == the incumbent
+            "rationale": "Tighten the freshness gate.",
+            "hunch_ref": "continuation:volatility_tier=high",
+        }
+    ])
+    with caplog.at_level(logging.WARNING):
+        written = draft_variants(
+            "continuation", [_hunch()], base, edge_dir=tmp_path,
+            today="2026-07-04", drafter=drafter,
+        )
+    assert written == []
+    # Never persisted -- the optimizer can never sweep it.
+    assert load_proposed_for("continuation", tmp_path) == []
+    assert not (tmp_path / "continuation.proposed.json").exists()
+    assert any("no-op" in r.message.lower() for r in caplog.records)
+
+
+def test_delta_differing_from_incumbent_on_any_key_is_kept(tmp_path):
+    # The no-op gate drops only a delta IDENTICAL to the incumbent config: a multi-key
+    # delta that restates one default but changes another still produces a distinct arm.
+    base = StrategyConfig()
+    drafter = _fake_drafter([
+        {
+            "delta": {"max_extension_atr": base.max_extension_atr, "min_pullback_bars": 3},
+            "rationale": "Deeper pullback at the incumbent gate.",
+            "hunch_ref": "continuation:market_trend=bull",
+        }
+    ])
+    written = draft_variants(
+        "continuation", [_hunch()], base, edge_dir=tmp_path,
+        today="2026-07-04", drafter=drafter,
+    )
+    assert len(written) == 1
+    assert load_proposed_for("continuation", tmp_path)[0].delta == {
+        "max_extension_atr": base.max_extension_atr, "min_pullback_bars": 3,
+    }
+
+
 def test_one_illegal_among_valid_drops_only_the_illegal(tmp_path):
     base = StrategyConfig()
     drafter = _fake_drafter([

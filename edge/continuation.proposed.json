@@ -5,9 +5,9 @@
     "delta": {
       "max_extension_atr": 2.0
     },
-    "rationale": "High-vol tier is the worst bucket (-0.42R, CI lower -0.68R); tightening the max extension ATR filter should reject over-extended continuation entries that dominate the high-vol losses.",
+    "rationale": "High-vol tier is the worst bucket (-0.42R, CI lower -0.68R); tightening the max extension ATR filter should reject over-extended continuation entries that dominate the high-vol losses. WITHDRAWN 2026-07-04: max_extension_atr=2.0 IS the shipped config.py default (the ext_2.0 incumbent the optimizer already sweeps) -- a literal no-op delta that cannot change the book and would burn a sweep slot re-testing a settled question.",
     "hunch_ref": "volatility_tier=high",
-    "status": "queued",
+    "status": "withdrawn",
     "drafted_at": "2026-07-02",
     "provenance": "reflection-opus"
   },
