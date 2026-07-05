@@ -1,5 +1,6 @@
 """Engine/session helpers for the screener's SQLite (later Azure SQL) store."""
 
+import os
 import struct
 
 from sqlalchemy import URL, Engine, create_engine, event, make_url
@@ -75,22 +76,43 @@ def _mssql_odbc_url(url: str) -> URL:
     return URL.create("mssql+pyodbc", query={"odbc_connect": ";".join(parts)})
 
 
+def _token_attrs(token: str) -> dict[int, bytes]:
+    """The pyodbc ``attrs_before`` payload for one Entra access token: UTF-16-LE
+    bytes, little-endian length-prefixed, under SQL_COPT_SS_ACCESS_TOKEN."""
+    raw = token.encode("utf-16-le")
+    return {_SQL_COPT_SS_ACCESS_TOKEN: struct.pack("<i", len(raw)) + raw}
+
+
 def _attach_aad_token(engine: Engine) -> None:
     """Inject an Entra access token on each connect.
 
-    Uses ``DefaultAzureCredential`` so it works with the Container Apps identity
-    endpoint in Azure (selecting the user-assigned identity via ``AZURE_CLIENT_ID``)
-    and ``az login`` locally -- where the driver's built-in MSI flow does not.
-    ``azure-identity`` is imported lazily (it ships in the optional ``azure`` extra).
+    A PRE-FETCHED token in ``SWING_DB_ACCESS_TOKEN`` wins outright: CI's federated
+    (GitHub-OIDC) assertion dies ~5 minutes after ``az login``, long before a long
+    fetch-then-connect job reaches the database, so the workflow acquires the DB
+    token while the assertion is alive and hands it over whole (2026-07-04:
+    AADSTS700024 killed two reflect runs; az's own token cache keys on the exact
+    audience string, so warming it is not deterministic). Tokens live ~60-75 min --
+    fine for a single job, never for a resident service.
+
+    Otherwise ``DefaultAzureCredential``, which works with the Container Apps
+    identity endpoint in Azure (selecting the user-assigned identity via
+    ``AZURE_CLIENT_ID``) and ``az login`` locally -- where the driver's built-in MSI
+    flow does not. ``azure-identity`` is imported lazily (optional ``azure`` extra).
     """
+    static_token = os.environ.get("SWING_DB_ACCESS_TOKEN")
+    if static_token:
+        @event.listens_for(engine, "do_connect")
+        def _provide_static_token(dialect, conn_rec, cargs, cparams):  # type: ignore[no-untyped-def]  # noqa: ARG001
+            cparams["attrs_before"] = _token_attrs(static_token)
+        return
+
     from azure.identity import DefaultAzureCredential
 
     credential = DefaultAzureCredential()
 
     @event.listens_for(engine, "do_connect")
     def _provide_token(dialect, conn_rec, cargs, cparams):  # type: ignore[no-untyped-def]  # noqa: ARG001
-        raw = credential.get_token(_DB_TOKEN_SCOPE).token.encode("utf-16-le")
-        cparams["attrs_before"] = {_SQL_COPT_SS_ACCESS_TOKEN: struct.pack("<i", len(raw)) + raw}
+        cparams["attrs_before"] = _token_attrs(credential.get_token(_DB_TOKEN_SCOPE).token)
 
 
 def make_mssql_engine(url: str, **kwargs: object) -> Engine:
