@@ -5,7 +5,7 @@ serves the API + built frontend on a localhost port in a daemon thread, then eit
 pywebview window or -- under ``--browser`` or without pywebview installed -- the default
 browser opens on it.
 
-Two constraints, stated as contract:
+Three constraints, stated as contract:
 
 * pywebview is imported LAZILY inside the window path only. ``--browser`` mode and every
   test in tests/cockpit/test_launcher.py must run on a box without the desktop extra;
@@ -14,6 +14,11 @@ Two constraints, stated as contract:
   cockpit.port`` records the live port. A second launch probes it (~1 s) and defers
   with "already running" / exit 0; a stale or garbage file is simply overwritten --
   the probe, not the file, is the source of truth.
+* Failure is VISIBLE: under ``pythonw`` (the Start-menu shortcut) there is no console,
+  so a startup failure that only printed to stderr would look like nothing happened.
+  ``_report_startup_failure`` routes it to stderr when a console exists, else to a
+  WinAPI message box -- carrying a leak-safe one-liner (exception class only, never
+  the DB URL or a path, same posture as ``api._down_summary``).
 """
 
 import argparse
@@ -124,7 +129,57 @@ def _wait_until_responsive(
     return False
 
 
+def _startup_failure_reason(exc: Exception) -> str:
+    """One leak-safe line for the box/stderr: the exception CLASS only -- driver and
+    OS messages can embed the DB URL or file paths (same posture as api._down_summary)."""
+    return f"startup failed ({type(exc).__name__})"
+
+
+def _windows_message_box(reason: str) -> None:
+    """MB_ICONERROR modal box -- the only surface a console-less pythonw process has.
+    Platform-guarded so non-Windows boxes (CI, a stray mac) degrade to a no-op:
+    pythonw itself only exists on Windows, so the guard never hides a real user."""
+    if sys.platform == "win32":
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(0, reason, "Swing Screener Cockpit", 0x10)
+
+
+def _report_startup_failure(
+    reason: str,
+    *,
+    has_console: bool | None = None,
+    messagebox: Callable[[str], None] | None = None,
+) -> None:
+    """Route a startup failure somewhere a human will actually SEE it.
+
+    Under ``pythonw`` (the Start-menu shortcut) there is no console and
+    ``sys.stderr`` is ``None`` -- a print would land nowhere and the failed
+    double-click would look like nothing happened. So: stderr when a console
+    exists, a message box when not. ``reason`` must already be leak-safe (build
+    it with ``_startup_failure_reason``). ``has_console`` and ``messagebox`` are
+    test seams for the console probe and the WinAPI call; the defaults probe
+    ``sys.stderr`` (``None`` under pythonw) and open the real box."""
+    console = has_console if has_console is not None else sys.stderr is not None
+    if console:
+        print(f"swing-screener cockpit: {reason}", file=sys.stderr)
+        return
+    (messagebox if messagebox is not None else _windows_message_box)(reason)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    """Entry point: ``_run`` wrapped in the visible-failure net (module docstring,
+    constraint 3). Any exception escaping startup or the serve loop is reported
+    class-name-only and becomes exit 1; KeyboardInterrupt still propagates --
+    Ctrl+C in ``--browser`` mode is the user stopping the server, not a failure."""
+    try:
+        return _run(argv)
+    except Exception as exc:
+        _report_startup_failure(_startup_failure_reason(exc))
+        return 1
+
+
+def _run(argv: Sequence[str] | None) -> int:
     """Thin glue over the tested parts: serve, wait, open, clean up the port-file."""
     import uvicorn
 
@@ -145,7 +200,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     thread.start()
     url = f"http://127.0.0.1:{port}"
     if not _wait_until_responsive(lambda: _probe_health(port), server_alive=thread.is_alive):
-        print(f"cockpit server failed to answer on {url} within 10s", file=sys.stderr)
+        # Port not URL in the reason: the string also feeds the pythonw message box,
+        # which carries no URLs or paths by contract.
+        _report_startup_failure(f"server did not answer on port {port} within 10s")
         return 1
 
     port_file.parent.mkdir(parents=True, exist_ok=True)

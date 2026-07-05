@@ -18,6 +18,8 @@ from swing_screener.cockpit.__main__ import (
     _choose_mode,
     _parse_args,
     _pick_free_port,
+    _report_startup_failure,
+    _startup_failure_reason,
     _wait_until_responsive,
 )
 from swing_screener.cockpit.api import create_app
@@ -134,6 +136,41 @@ def test_wait_until_responsive_polls_until_the_probe_succeeds() -> None:
 
 def test_wait_until_responsive_gives_up_after_the_deadline() -> None:
     assert _wait_until_responsive(lambda: False, timeout_s=0.05, interval_s=0.01) is False
+
+
+def test_report_startup_failure_prints_to_stderr_when_a_console_exists(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # With a console, stderr is the surface -- and the message box must NOT fire
+    # (a modal box on top of a readable console would be noise, not signal).
+    _report_startup_failure(
+        "startup failed (RuntimeError)",
+        has_console=True,
+        messagebox=lambda _reason: pytest.fail("console path must never open a box"),
+    )
+    assert "startup failed (RuntimeError)" in capsys.readouterr().err
+
+
+def test_report_startup_failure_opens_a_box_when_windowless(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Under pythonw (the Start-menu shortcut) stderr lands nowhere: a failed
+    # double-click must surface as a message box, not as silent nothing.
+    shown: list[str] = []
+    _report_startup_failure(
+        "startup failed (OperationalError)", has_console=False, messagebox=shown.append
+    )
+    assert shown == ["startup failed (OperationalError)"]
+    assert capsys.readouterr().err == ""  # nothing printed into the void
+
+
+def test_startup_failure_reason_is_class_name_only() -> None:
+    """The box/stderr string carries the exception CLASS alone -- driver and OS
+    messages can embed the DB URL or file paths (same posture as _down_summary)."""
+    reason = _startup_failure_reason(Exception("sqlite:///C:/secret/dir/local.db"))
+    assert reason == "startup failed (Exception)"
+    assert "secret" not in reason
+    assert "local.db" not in reason
 
 
 def test_wait_until_responsive_fails_fast_when_the_server_thread_dies() -> None:
