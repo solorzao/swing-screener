@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import make_url, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
@@ -53,7 +54,9 @@ def connection_label(db_url: str) -> str:
     return driver
 
 
-def create_app(db_url: str, *, edge_dir: Path | None = None) -> FastAPI:
+def create_app(
+    db_url: str, *, edge_dir: Path | None = None, static_dir: Path | None = None
+) -> FastAPI:
     """Build the cockpit API around one database URL.
 
     The engine is created lazily (per app, on first use) so an unreachable database
@@ -61,6 +64,12 @@ def create_app(db_url: str, *, edge_dir: Path | None = None) -> FastAPI:
     ``app.state.db_url`` is stored for the pywebview launcher. ``edge_dir`` is the
     heartbeats test seam: where ``collect_heartbeats`` looks for edge files; ``None``
     resolves via settings.
+
+    ``static_dir`` (default: the packaged ``cockpit/static/``, built by the Vite
+    frontend) is mounted at ``/`` AFTER the API routes, so ``/api/*`` always wins.
+    When ``index.html`` is absent -- a clone before Task 6, or a broken build --
+    ``/`` answers 200 with a JSON pointer instead: a missing frontend is a setup
+    state, not a server error, so it must not read as one.
     """
     app = FastAPI(title="swing-screener cockpit")
     app.state.db_url = db_url
@@ -133,6 +142,20 @@ def create_app(db_url: str, *, edge_dir: Path | None = None) -> FastAPI:
                 for strength in sorted(by_strength)
             )
         return {"cohorts": cohorts}
+
+    resolved_static = static_dir if static_dir is not None else Path(__file__).parent / "static"
+    if (resolved_static / "index.html").is_file():
+        # html=True serves index.html at "/" and falls through to real asset files.
+        app.mount("/", StaticFiles(directory=resolved_static, html=True), name="static")
+    else:
+
+        @app.get("/")
+        def frontend_missing() -> dict[str, str]:
+            """Friendly setup pointer while ``static/`` has no build (see factory doc)."""
+            return {
+                "detail": "frontend not built -- run `npm run build` in cockpit-ui/ "
+                "to populate swing_screener/cockpit/static/"
+            }
 
     return app
 
