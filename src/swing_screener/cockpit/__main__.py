@@ -43,12 +43,19 @@ def _pick_free_port() -> int:
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    """``--db`` (default local sqlite), ``--port`` (default: pick free), ``--browser``."""
+    """``--db`` (default: SWING_DB_URL, then local sqlite), ``--port`` (default: pick
+    free), ``--browser``. The env default matches ``settings.py``: a user who
+    configured SWING_DB_URL and double-clicks must land on THEIR database, not on a
+    silently created empty local.db. Read at parse time, not import time (test seam).
+    """
     parser = argparse.ArgumentParser(
         prog="python -m swing_screener.cockpit",
         description="Launch the swing-screener cockpit (desktop window or browser tab).",
     )
-    parser.add_argument("--db", default=DEFAULT_DB_URL, help="database URL")
+    parser.add_argument(
+        "--db", default=os.environ.get("SWING_DB_URL", DEFAULT_DB_URL),
+        help="database URL (default: $SWING_DB_URL, else sqlite:///local.db)",
+    )
     parser.add_argument(
         "--port", type=int, default=None, help="port to serve on (default: a free port)"
     )
@@ -94,12 +101,23 @@ def _probe_health(port: int, timeout_s: float = 1.0) -> bool:
 
 
 def _wait_until_responsive(
-    probe: Callable[[], bool], *, timeout_s: float = 10.0, interval_s: float = 0.2
+    probe: Callable[[], bool],
+    *,
+    timeout_s: float = 10.0,
+    interval_s: float = 0.2,
+    server_alive: Callable[[], bool] | None = None,
 ) -> bool:
     """Poll ``probe`` until it succeeds or ``timeout_s`` elapses (uvicorn needs a
-    moment between thread start and a listening socket)."""
+    moment between thread start and a listening socket).
+
+    ``server_alive`` (the server thread's ``is_alive``) short-circuits the wait: a
+    uvicorn bind failure raises SystemExit INSIDE the daemon thread, which threading
+    swallows -- without this check the loop would poll a corpse for the full timeout.
+    """
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
+        if server_alive is not None and not server_alive():
+            return False  # the server died; no probe will ever succeed
         if probe():
             return True
         time.sleep(interval_s)
@@ -126,7 +144,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     thread = threading.Thread(target=server.run, name="cockpit-uvicorn", daemon=True)
     thread.start()
     url = f"http://127.0.0.1:{port}"
-    if not _wait_until_responsive(lambda: _probe_health(port)):
+    if not _wait_until_responsive(lambda: _probe_health(port), server_alive=thread.is_alive):
         print(f"cockpit server failed to answer on {url} within 10s", file=sys.stderr)
         return 1
 

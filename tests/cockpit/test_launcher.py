@@ -6,8 +6,11 @@ to a live instance instead of racing it."""
 import importlib
 import socket
 import sys
+import threading
+import time
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from swing_screener.cockpit.__main__ import (
@@ -58,13 +61,23 @@ def test_pick_free_port_returns_a_bindable_localhost_port() -> None:
         s.bind(("127.0.0.1", port))
 
 
-def test_parse_args_defaults_and_overrides() -> None:
+def test_parse_args_defaults_and_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SWING_DB_URL", raising=False)  # isolate from the dev box's env
     defaults = _parse_args([])
     assert defaults.db == "sqlite:///local.db"
     assert defaults.port is None  # None means: pick a free port at launch
     assert defaults.browser is False
     explicit = _parse_args(["--db", "sqlite:///x.db", "--port", "8901", "--browser"])
     assert (explicit.db, explicit.port, explicit.browser) == ("sqlite:///x.db", 8901, True)
+
+
+def test_db_default_honors_swing_db_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The rest of the system reads SWING_DB_URL (settings.py); the double-click
+    # launch must follow it too, or a configured user silently gets a fresh empty
+    # local.db that looks healthy.
+    monkeypatch.setenv("SWING_DB_URL", "sqlite:///from-env.db")
+    assert _parse_args([]).db == "sqlite:///from-env.db"
+    assert _parse_args(["--db", "sqlite:///cli.db"]).db == "sqlite:///cli.db"  # CLI wins
 
 
 def test_choose_mode_prefers_window_but_never_requires_pywebview() -> None:
@@ -121,3 +134,17 @@ def test_wait_until_responsive_polls_until_the_probe_succeeds() -> None:
 
 def test_wait_until_responsive_gives_up_after_the_deadline() -> None:
     assert _wait_until_responsive(lambda: False, timeout_s=0.05, interval_s=0.01) is False
+
+
+def test_wait_until_responsive_fails_fast_when_the_server_thread_dies() -> None:
+    # A uvicorn bind failure raises SystemExit INSIDE the daemon thread, which
+    # threading swallows -- the wait must notice the corpse, not poll it for 10s.
+    corpse = threading.Thread(target=lambda: None)
+    corpse.start()
+    corpse.join()
+    started = time.monotonic()
+    ok = _wait_until_responsive(
+        lambda: False, timeout_s=10.0, interval_s=0.01, server_alive=corpse.is_alive
+    )
+    assert ok is False
+    assert time.monotonic() - started < 2.0  # bailed immediately, far under timeout_s

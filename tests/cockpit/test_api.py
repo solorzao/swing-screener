@@ -103,7 +103,7 @@ def test_cohort_stats_are_stat_objects(tmp_path: Path) -> None:
     assert rows[("reversal", "confirmed")]["n"] == 4
 
 
-def test_down_summary_drops_the_exception_message(tmp_path: Path) -> None:
+def test_down_summary_drops_the_exception_message() -> None:
     """The leak guard's wire form is the exception CLASS alone: driver messages can
     embed the DSN (host, password, file path), so none of the message may survive."""
     summary = _down_summary(Exception("Server=secret-host;PWD=hunter2"))
