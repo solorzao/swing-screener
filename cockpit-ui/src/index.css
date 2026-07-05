@@ -1,0 +1,462 @@
+/* Global cockpit styles. Dense, quiet, monospace numerals: a healthy system is dim
+   and silent; light means attention required. Colors come from tokens.css only. */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--txt);
+  font-family: var(--ui);
+  font-size: 13px;
+  /* Digits line up everywhere they render (design: monospace numerals). */
+  font-variant-numeric: tabular-nums;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+.app {
+  max-width: 1400px;
+  margin: 0 auto;
+  min-height: 100vh;
+  border-left: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  background: var(--bg);
+}
+
+/* ---------- Masthead (44px, on every screen) ---------- */
+
+.masthead {
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.mh-wordmark {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.mh-wordmark b {
+  color: var(--txt);
+  font-weight: 600;
+}
+
+.caution {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  padding: 4px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  color: var(--faint);
+  background: var(--panel2);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.caution.lit {
+  color: var(--amber);
+  border-color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 14%, var(--panel2));
+  box-shadow: 0 0 10px 1px color-mix(in srgb, var(--amber) 35%, transparent);
+}
+
+.unknown-tag {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  padding: 3px 8px;
+  border-radius: 3px;
+  border: 1px dashed var(--dim);
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.db-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  color: var(--txt);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 4px 10px;
+  background: var(--panel2);
+  white-space: nowrap;
+}
+
+.db-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.db-dot.ok {
+  background: var(--green);
+}
+
+.db-dot.bad {
+  background: var(--red);
+}
+
+.db-dot.none {
+  background: transparent;
+  border: 1.5px dashed var(--dim);
+}
+
+.mh-spacer {
+  flex: 1;
+}
+
+.mh-clock {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+/* Disabled-but-visible Phase 2 controls (visible commitments, dead controls
+   beat absent ones). */
+.mh-seg {
+  display: flex;
+}
+
+.mh-seg button {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  padding: 4px 9px;
+  background: transparent;
+  border: 1px solid var(--line2);
+  color: var(--faint);
+  cursor: not-allowed;
+}
+
+.mh-seg button + button {
+  border-left: none;
+}
+
+.mh-seg button:first-child {
+  border-radius: 3px 0 0 3px;
+}
+
+.mh-seg button:last-child {
+  border-radius: 0 3px 3px 0;
+}
+
+button.disarm {
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  padding: 4px 12px;
+  border-radius: 3px;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--red) 45%, var(--line2));
+  color: color-mix(in srgb, var(--red) 55%, var(--dim));
+  cursor: not-allowed;
+}
+
+/* ---------- Layout ---------- */
+
+.grid {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 14px;
+  padding: 14px;
+  align-items: start;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  color: var(--dim);
+}
+
+.panel-caption {
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--faint);
+  text-transform: none;
+}
+
+.panel-error {
+  padding: 8px 12px;
+  font-size: 11.5px;
+  color: var(--dim);
+  border-bottom: 1px solid var(--line);
+}
+
+.panel-wait {
+  padding: 10px 12px;
+  font-size: 11.5px;
+  color: var(--faint);
+}
+
+/* Friendly full-width card when /api/health reports connected:false —
+   matches the backend's never-a-traceback posture. */
+.db-down-card {
+  margin: 14px;
+  padding: 22px 24px;
+  background: var(--panel);
+  border: 1px solid var(--line2);
+  border-radius: 6px;
+}
+
+.db-down-title {
+  font-size: 14px;
+  color: var(--txt);
+  margin-bottom: 6px;
+}
+
+.db-down-sub {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--dim);
+  margin-bottom: 10px;
+}
+
+.db-down-hint {
+  font-size: 11.5px;
+  color: var(--faint);
+}
+
+/* ---------- Heartbeat rail ---------- */
+
+.hb-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--panel2);
+}
+
+.hb-row:last-child {
+  border-bottom: none;
+}
+
+.hb-lamp {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+}
+
+/* Shape + color, never color alone: up is a dim filled disc, late glows, down is
+   a bright filled disc with a red name, unknown is hollow + dashed. */
+.hb-up .hb-lamp {
+  background: color-mix(in srgb, var(--green) 55%, var(--panel));
+}
+
+.hb-late .hb-lamp {
+  background: var(--amber);
+  box-shadow: 0 0 8px 2px color-mix(in srgb, var(--amber) 55%, transparent);
+}
+
+.hb-down .hb-lamp {
+  background: var(--red);
+}
+
+.hb-unknown .hb-lamp {
+  background: transparent;
+  border: 1.5px dashed var(--dim);
+}
+
+.hb-name {
+  font-size: 12px;
+  color: var(--txt);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hb-late .hb-name {
+  color: var(--amber);
+}
+
+.hb-down .hb-name {
+  color: var(--red);
+}
+
+.hb-unknown .hb-name {
+  color: var(--dim);
+}
+
+.hb-age {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+/* ---------- StatChip ---------- */
+
+.statchip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.statchip-label {
+  font-size: 12px;
+  color: var(--txt);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.statchip-label.sub {
+  color: var(--dim);
+  padding-left: 14px;
+}
+
+.stat-block {
+  margin-left: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  width: 150px;
+  flex: none;
+}
+
+.stat-line {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.stat-value {
+  font-family: var(--mono);
+  font-size: 13.5px;
+  color: var(--txt);
+}
+
+.stat-value.neg {
+  color: var(--dim);
+}
+
+.stat-value.thin {
+  opacity: 0.45;
+}
+
+/* cost_level null → the hollow "not measured" tick: faint + dashed underline. */
+.stat-value.not-measured {
+  color: var(--faint);
+  border-bottom: 1px dashed var(--faint);
+}
+
+.stat-n {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--dim);
+  vertical-align: super;
+  white-space: nowrap;
+}
+
+.stat-cost {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--dim);
+  align-self: flex-end;
+}
+
+.thin-chip {
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  border: 1px solid var(--line2);
+  border-radius: 2px;
+  padding: 0 3px;
+}
+
+.noread-badge {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--dim);
+  border: 1px dashed var(--faint);
+  border-radius: 3px;
+  padding: 2px 7px;
+  white-space: nowrap;
+}
+
+.ci-track {
+  position: relative;
+  height: 4px;
+  width: 100%;
+  margin-top: 3px;
+  background: var(--panel2);
+  border-radius: 1px;
+}
+
+.ci-band {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: color-mix(in srgb, var(--blue) 16%, transparent);
+  border-radius: 1px;
+}
+
+.ci-band.b80 {
+  background: color-mix(in srgb, var(--blue) 26%, transparent);
+}
+
+.ci-band.b50 {
+  background: color-mix(in srgb, var(--blue) 40%, transparent);
+}
+
+/* thin_clusters (IID-fallback bound) → dotted underbar instead of solid bands. */
+.ci-dotted {
+  position: absolute;
+  top: 1px;
+  left: 0;
+  right: 0;
+  border-top: 2px dotted color-mix(in srgb, var(--blue) 55%, transparent);
+}
+
+.ci-tick {
+  position: absolute;
+  top: 0;
+  width: 1.5px;
+  height: 100%;
+  background: var(--txt);
+}
+
+/* ---------- Cohorts panel ---------- */
+
+.cohort-row {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--panel2);
+}
+
+.cohort-row:last-child {
+  border-bottom: none;
+}
