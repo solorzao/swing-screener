@@ -21,10 +21,10 @@ def _trade(ticker: str, r: float) -> PaperTrade:
 def test_stat_carries_full_provenance() -> None:
     s = Stat(value=0.057, n=9697, n_clusters=511, ci_low=0.028, ci_high=0.086,
              cost_level="0.05", corpus_id="pinned-20260703", facet="research",
-             unit="R", thin=False)
+             unit="R", thin_clusters=False)
     d = s.as_dict()
     for key in ("value", "n", "n_clusters", "ci_low", "ci_high", "cost_level",
-                "corpus_id", "facet", "unit", "thin"):
+                "corpus_id", "facet", "unit", "thin_clusters"):
         assert key in d
 
 
@@ -34,6 +34,9 @@ def test_stat_from_summary_maps_performance_fields() -> None:
                ("DDD", 0.3), ("EEE", 0.1), ("FFF", -0.4), ("GGG", 0.8),
                ("HHH", 0.2), ("III", -0.1)]]
     summary = summarize(trades)
+    # 9 distinct tickers >= the cluster floor, so the clustered bootstrap really ran --
+    # enforce it, or this test silently degrades to the IID-fallback path.
+    assert summary.thin_clusters is False
     s = stat_from_summary(summary, cost_level=None, corpus_id=None, facet="research")
     assert s.value == summary.expectancy_r
     assert s.n == summary.n_closed
@@ -44,4 +47,4 @@ def test_stat_from_summary_maps_performance_fields() -> None:
     assert s.corpus_id is None
     assert s.facet == "research"
     assert s.unit == "R"                 # the default unit
-    assert s.thin == summary.thin_clusters
+    assert s.thin_clusters == summary.thin_clusters

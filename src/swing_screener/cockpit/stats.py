@@ -8,17 +8,16 @@ provenance is unrepresentable, not merely discouraged. Where cost/corpus isn't p
 yet, ``cost_level``/``corpus_id`` are an explicit ``None`` and the UI renders a
 hollow "not measured" tick -- an honest unknown, never a guessed default.
 
-The CI bounds are the summary's own hardened clustered bounds, mapped 1:1 from
-``PerformanceSummary`` -- never recomputed here.
+``ci_low`` is the summary's hardened (ticker-clustered) lower bound; ``ci_high``
+stays the IID upper -- mapped 1:1, never recomputed here.
 """
 
 from dataclasses import asdict, dataclass
-from typing import Any
 
 from swing_screener.analytics.performance import PerformanceSummary
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Stat:
     """A statistic with full provenance: value + n + clusters + CI + cost + corpus."""
 
@@ -31,9 +30,9 @@ class Stat:
     corpus_id: str | None
     facet: str
     unit: str
-    thin: bool
+    thin_clusters: bool
 
-    def as_dict(self) -> dict[str, Any]:
+    def as_dict(self) -> dict[str, object]:
         """Wire form for the API: every provenance field, never just the value."""
         return asdict(self)
 
@@ -63,5 +62,5 @@ def stat_from_summary(
         corpus_id=corpus_id,
         facet=facet,
         unit=unit,
-        thin=summary.thin_clusters,
+        thin_clusters=summary.thin_clusters,
     )

@@ -75,10 +75,10 @@ def _trade(ticker: str, r: float) -> PaperTrade:
 def test_stat_carries_full_provenance() -> None:
     s = Stat(value=0.057, n=9697, n_clusters=511, ci_low=0.028, ci_high=0.086,
              cost_level="0.05", corpus_id="pinned-20260703", facet="research",
-             unit="R", thin=False)
+             unit="R", thin_clusters=False)
     d = s.as_dict()
     for key in ("value", "n", "n_clusters", "ci_low", "ci_high", "cost_level",
-                "corpus_id", "facet", "unit", "thin"):
+                "corpus_id", "facet", "unit", "thin_clusters"):
         assert key in d
 
 
@@ -94,7 +94,7 @@ def test_stat_from_summary_maps_performance_fields() -> None:
     assert s.n_clusters == summary.n_clusters
     assert s.ci_low == summary.expectancy_ci_low
     assert s.cost_level is None          # honest unknown, not a guessed default
-    assert s.thin == summary.thin_clusters
+    assert s.thin_clusters == summary.thin_clusters
 ```
 
 **Step 2:** Run: `.\.venv\Scripts\python -m pytest tests/cockpit/test_stats.py -q`
@@ -118,7 +118,7 @@ from dataclasses import asdict, dataclass
 from swing_screener.analytics.performance import PerformanceSummary
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Stat:
     value: float
     n: int
@@ -129,7 +129,7 @@ class Stat:
     corpus_id: str | None
     facet: str
     unit: str
-    thin: bool
+    thin_clusters: bool
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -155,7 +155,7 @@ def stat_from_summary(
         corpus_id=corpus_id,
         facet=facet,
         unit=unit,
-        thin=summary.thin_clusters,
+        thin_clusters=summary.thin_clusters,
     )
 ```
 
