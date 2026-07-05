@@ -89,6 +89,53 @@ def test_file_sqlite_creates_tables_without_static_pool(monkeypatch):
     assert rec_create_all.calls == 1
 
 
+import struct  # noqa: E402
+import sys  # noqa: E402
+import types  # noqa: E402
+
+from sqlalchemy import create_engine  # noqa: E402
+
+
+def test_token_attrs_packs_utf16_length_prefixed():
+    """The pyodbc access-token attribute: UTF-16-LE token bytes, little-endian
+    length-prefixed, under SQL_COPT_SS_ACCESS_TOKEN (1256)."""
+    raw = "abc".encode("utf-16-le")
+    assert session._token_attrs("abc") == {1256: struct.pack("<i", len(raw)) + raw}
+
+
+def test_static_env_token_skips_azure_identity(monkeypatch):
+    """With SWING_DB_ACCESS_TOKEN set (CI pre-fetches the DB token while the OIDC
+    assertion is still alive), the connect listener must use it directly -- no
+    azure.identity import, no credential chain. Poisoning the module proves it."""
+    monkeypatch.setenv("SWING_DB_ACCESS_TOKEN", "tok")
+    monkeypatch.setitem(sys.modules, "azure.identity", None)  # import would raise
+    engine = create_engine("sqlite://")  # never connected; just a listener target
+
+    session._attach_aad_token(engine)  # must not touch azure.identity
+
+    # do_connect is a DIALECT event: the listener migrates to the dialect dispatch.
+    assert engine.dialect.dispatch.do_connect  # the token listener is registered
+
+
+def test_without_env_token_uses_default_azure_credential(monkeypatch):
+    """The normal path (no pre-fetched token) still builds DefaultAzureCredential."""
+    monkeypatch.delenv("SWING_DB_ACCESS_TOKEN", raising=False)
+    calls = {"n": 0}
+
+    class _FakeCredential:
+        def __init__(self):
+            calls["n"] += 1
+
+    monkeypatch.setitem(sys.modules, "azure.identity",
+                        types.SimpleNamespace(DefaultAzureCredential=_FakeCredential))
+    engine = create_engine("sqlite://")
+
+    session._attach_aad_token(engine)
+
+    assert calls["n"] == 1
+    assert engine.dialect.dispatch.do_connect
+
+
 from swing_screener.db.session import _best_sql_server_driver, _resolve_driver  # noqa: E402
 
 
