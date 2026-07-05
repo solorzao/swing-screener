@@ -56,19 +56,32 @@ def _resolve_recipient(to: str | None) -> str | None:
     return None
 
 
+def _db_float(v: float | None) -> float | None:
+    """NaN -> None at the DB boundary. SQL Server rejects NaN floats at the wire (TDS
+    8023 -- the 2026-07-05 market-weather failure, a holiday-padded NaN close), and
+    NaN-as-data violates the honest-numbers rule regardless: an unavailable input is
+    an explicit NULL, never NaN. ``v != v`` is the NaN test."""
+    return None if v is None or v != v else v
+
+
 def _persist(session: Session, facts: MarketFacts, analysis: MarketAnalysis) -> None:
+    # Every float column passes _db_float: the fact gatherers already fall back to the
+    # last valid print, so this layer only fires if a future computation regresses.
     session.add(MarketReport(
         run_date=facts.as_of, ha_alignment=facts.ha_alignment,
         flipped=any(h.flipped for h in facts.ha.values()),
         spy_vs_200dma=facts.spy_vs_200dma, vol_bucket=facts.vol_bucket,
-        vix=facts.vix, vix_rank=facts.vix_rank, vix_spike=facts.vix_spike,
-        ten_year=facts.ten_year, three_month=facts.three_month,
+        vix=_db_float(facts.vix), vix_rank=_db_float(facts.vix_rank),
+        vix_spike=facts.vix_spike,
+        ten_year=_db_float(facts.ten_year), three_month=_db_float(facts.three_month),
         yield_inverted=facts.yield_inverted, bond_trend=facts.bond_trend,
-        vix_term_ratio=facts.vix_term_ratio, vix_backwardation=facts.vix_backwardation,
-        credit_chg_4w=facts.credit_chg_4w, credit_pctile=facts.credit_pctile,
-        cyc_def_trend=facts.cyc_def_trend, cyc_def_chg_4w=facts.cyc_def_chg_4w,
-        breadth_trend=facts.breadth_trend, breadth_chg_4w=facts.breadth_chg_4w,
-        recession_prob=facts.recession_prob,
+        vix_term_ratio=_db_float(facts.vix_term_ratio),
+        vix_backwardation=facts.vix_backwardation,
+        credit_chg_4w=_db_float(facts.credit_chg_4w),
+        credit_pctile=_db_float(facts.credit_pctile),
+        cyc_def_trend=facts.cyc_def_trend, cyc_def_chg_4w=_db_float(facts.cyc_def_chg_4w),
+        breadth_trend=facts.breadth_trend, breadth_chg_4w=_db_float(facts.breadth_chg_4w),
+        recession_prob=_db_float(facts.recession_prob),
         is_deep=analysis.is_deep, core=analysis.core[:512], report=analysis.report,
         created_at=datetime.now(UTC),
     ))

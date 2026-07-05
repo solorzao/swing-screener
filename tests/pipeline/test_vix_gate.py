@@ -136,3 +136,12 @@ def test_vix_bucket_is_stamped_on_fills():
                          variants={"default": base}, vix_daily=_vix_over(raw.index, rising=False))
     rev = _reversal_trades(trades)
     assert rev and all(t.vix_bucket in {"low", "mid", "high"} for t in rev)
+
+
+def test_vix_percentile_rank_ignores_nan_tail():
+    """A NaN current bar must not silently rank as the 0th percentile (every NaN
+    comparison is False): rank off the last REAL close instead; all-NaN -> None."""
+    import numpy as np
+
+    assert vix_percentile_rank(_series([10, 20, 30, np.nan])) == pytest.approx(2 / 3 * 100)
+    assert vix_percentile_rank(_series([np.nan, np.nan])) is None
