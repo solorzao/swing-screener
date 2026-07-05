@@ -55,3 +55,7 @@ infra/main.json
 
 # Claude Code agent worktrees (never repo content)
 .claude/worktrees/
+
+# Cockpit frontend: sources live in cockpit-ui/, the BUILT output is committed at
+# src/swing_screener/cockpit/static/ (zero-Node clones run). Only deps are ignored.
+cockpit-ui/node_modules/

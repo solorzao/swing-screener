@@ -1,0 +1,9 @@
+/* Validated design tokens — verbatim from the dark-cockpit mockup
+   (docs/plans/2026-07-05-desktop-ui-design.md). Do not restyle ad hoc. */
+:root{
+  --bg:#0B0E13; --panel:#111722; --panel2:#0E141D; --line:#1C2534; --line2:#26324a;
+  --txt:#C7D3E4; --dim:#57667C; --faint:#3A4658;
+  --amber:#E0A93E; --red:#E5484D; --green:#3FBF7F; --blue:#5B8DEF;
+  --mono:'Cascadia Mono','Consolas',ui-monospace,monospace;
+  --ui:'Segoe UI Variable Text','Segoe UI',system-ui,sans-serif;
+}

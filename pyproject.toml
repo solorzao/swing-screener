@@ -16,6 +16,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11", "pandas-stubs"]
+cockpit = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pywebview>=5.2",
+]
 azure = [
     "pyodbc>=5.1",
     "azure-identity>=1.17",
