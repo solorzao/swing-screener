@@ -220,6 +220,14 @@ button.disarm {
   color: var(--faint);
 }
 
+/* Stale panel body: a fetch error while the last GOOD data is still on screen.
+   Dimmed hard so stale can never pass for fresh; the panel-error line above it
+   says "showing last good data · <error>". (The masthead does NOT use this — it
+   force-nulls stale heartbeats so the caution lamp reads UNKNOWN, never dim-green.) */
+.stale {
+  opacity: 0.45;
+}
+
 /* Friendly full-width card when /api/health reports connected:false —
    matches the backend's never-a-traceback posture. */
 .db-down-card {
@@ -269,8 +277,10 @@ button.disarm {
   flex: none;
 }
 
-/* Shape + color, never color alone: up is a dim filled disc, late glows, down is
-   a bright filled disc with a red name, unknown is hollow + dashed. */
+/* Honest scope note: shape distinguishes UNKNOWN only in Phase 1 (hollow +
+   dashed vs filled); up/late/down differ by hue + brightness (dim green / glowing
+   amber / bright red + red name) — full shape redundancy for color-blind safety
+   is a Phase-2 item. */
 .hb-up .hb-lamp {
   background: color-mix(in srgb, var(--green) 55%, var(--panel));
 }

@@ -1,4 +1,6 @@
+import type { ReactNode } from 'react'
 import { getCohorts, getHealth, getHeartbeats, usePolling } from './lib/api'
+import type { Polled } from './lib/api'
 import { HeartbeatRail } from './components/HeartbeatRail'
 import { Masthead } from './components/Masthead'
 import { StatChip } from './components/StatChip'
@@ -11,6 +13,40 @@ function latest(...dates: (Date | null)[]): Date | null {
     if (d !== null && (best === null || d.getTime() > best.getTime())) best = d
   }
   return best
+}
+
+/* Shared body treatment — the template every future panel copies. While a fetch
+   error is present but the last good data is still on screen, the body dims
+   (.stale) under a "showing last good data" line: stale must LOOK different from
+   fresh, not just carry a footnote. With no data at all, the plain
+   unavailable/waiting lines stand alone. (The masthead takes the harder line and
+   force-nulls stale heartbeats instead — see below.) */
+function PanelBody<T>({
+  polled,
+  noun,
+  children,
+}: {
+  polled: Polled<T>
+  noun: string
+  children: (data: T) => ReactNode
+}) {
+  const { data, error } = polled
+  return (
+    <>
+      {error !== null && (
+        <div className="panel-error">
+          {data !== null
+            ? `showing last good data · ${error}`
+            : `${noun} unavailable — ${error}`}
+        </div>
+      )}
+      {data !== null ? (
+        <div className={error !== null ? 'stale' : undefined}>{children(data)}</div>
+      ) : (
+        error === null && <div className="panel-wait">waiting for first fetch…</div>
+      )}
+    </>
+  )
 }
 
 export default function App() {
@@ -42,44 +78,36 @@ export default function App() {
         <main className="grid">
           <section className="panel">
             <div className="panel-head">SYSTEMS</div>
-            {beats.error !== null && (
-              <div className="panel-error">heartbeats unavailable — {beats.error}</div>
-            )}
-            {beats.data !== null ? (
-              <HeartbeatRail beats={beats.data} />
-            ) : (
-              beats.error === null && <div className="panel-wait">waiting for first fetch…</div>
-            )}
+            <PanelBody polled={beats} noun="heartbeats">
+              {(data) => <HeartbeatRail beats={data} />}
+            </PanelBody>
           </section>
 
           <section className="panel">
             <div className="panel-head">
               COHORTS <span className="panel-caption">research book · replay-graded</span>
             </div>
-            {cohorts.error !== null && (
-              <div className="panel-error">cohorts unavailable — {cohorts.error}</div>
-            )}
-            {cohorts.data !== null ? (
-              cohorts.data.cohorts.length === 0 ? (
-                <div className="panel-wait">no closed research trades yet</div>
-              ) : (
-                cohorts.data.cohorts.map((row) => (
-                  <div
-                    key={`${row.key}|${row.strength ?? ''}`}
-                    className="cohort-row"
-                  >
-                    <StatChip
-                      stat={row.stat}
-                      label={row.strength === null ? row.key : `${row.key} · ${row.strength}`}
-                    />
-                  </div>
-                ))
-              )
-            ) : (
-              cohorts.error === null && (
-                <div className="panel-wait">waiting for first fetch…</div>
-              )
-            )}
+            <PanelBody polled={cohorts} noun="cohorts">
+              {(data) =>
+                data.cohorts.length === 0 ? (
+                  <div className="panel-wait">no closed research trades yet</div>
+                ) : (
+                  data.cohorts.map((row) => (
+                    <div
+                      key={`${row.key}|${row.strength ?? ''}`}
+                      className="cohort-row"
+                    >
+                      <StatChip
+                        stat={row.stat}
+                        label={
+                          row.strength === null ? row.key : `${row.key} · ${row.strength}`
+                        }
+                      />
+                    </div>
+                  ))
+                )
+              }
+            </PanelBody>
           </section>
         </main>
       )}

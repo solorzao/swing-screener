@@ -11,7 +11,10 @@ Three constraints, stated as contract:
   rather than imported because that module is slated for deletion with the dashboard.
 * A dead database is a friendly answer, never a traceback: ``/api/health`` always
   answers 200 with ``connected: false`` plus a one-line summary; data endpoints answer
-  503 with a JSON ``detail``. No stack trace and no URL in any response body.
+  503 with a JSON ``detail``. That covers MID-REQUEST failures too: a stale-schema
+  local.db passes the SELECT-1 probe and then raises inside the endpoint, so an
+  app-level ``SQLAlchemyError`` handler translates those to the same 503 posture.
+  No stack trace and no URL in any response body.
 """
 
 import threading
@@ -19,10 +22,12 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import make_url, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from swing_screener.analytics.performance import PerformanceSummary, breakdown
@@ -73,6 +78,19 @@ def create_app(
     """
     app = FastAPI(title="swing-screener cockpit")
     app.state.db_url = db_url
+
+    @app.exception_handler(SQLAlchemyError)
+    def _database_error(request: Request, exc: SQLAlchemyError) -> JSONResponse:
+        """Mid-request DB failures must not 500: a stale-schema local.db (e.g. a
+        column added after the file was created) passes the SELECT-1 probe, then
+        raises OperationalError inside the endpoint query. Same leak posture as
+        ``_down_summary`` -- class name only, the driver message can embed the SQL,
+        the file path, or the DSN. Distinct wording ('error', not 'unreachable')
+        so the two failure shapes stay tellable-apart in the UI."""
+        return JSONResponse(
+            status_code=503,
+            content={"detail": f"database error ({type(exc).__name__})"},
+        )
 
     engine_cache: list[Engine] = []
     engine_lock = threading.Lock()

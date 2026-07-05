@@ -2,7 +2,7 @@
    Every statistic arrives as a full Stat — there is deliberately NO helper here
    that returns or formats a bare number (design rule 1). */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 /** A statistic with full provenance — the wire form of cockpit/stats.py `Stat`. */
 export interface Stat {
@@ -79,7 +79,15 @@ export interface Polled<T> {
 
 /** Poll `fetcher` every `ms` (first fetch immediately). Errors — 503s, network —
  * land in `error` and never crash the tree; the last good `data` is kept so the
- * shell stays alive while the per-panel error line shows. */
+ * shell stays alive while the per-panel error line shows.
+ *
+ * This hook is the polling TEMPLATE every future component copies. Two guarantees:
+ * - The latest `fetcher` is held in a ref and the effect depends on `ms` ALONE, so
+ *   a caller passing an inline lambda re-renders the ref, not the effect — it can
+ *   never tear down/restart the interval into a fetch loop.
+ * - Every tick carries a sequence number; a slow response that resolves AFTER a
+ *   newer tick's response already landed is discarded, so state never moves
+ *   backwards in time. */
 export function usePolling<T>(fetcher: () => Promise<T>, ms: number): Polled<T> {
   const [state, setState] = useState<Polled<T>>({
     data: null,
@@ -87,19 +95,28 @@ export function usePolling<T>(fetcher: () => Promise<T>, ms: number): Polled<T> 
     lastFetched: null,
   })
 
+  const fetcherRef = useRef(fetcher)
+  fetcherRef.current = fetcher // always the latest; the effect reads through the ref
+
   useEffect(() => {
     let alive = true
+    let issued = 0 // ticks fired
+    let applied = 0 // newest tick whose response has landed in state
     const tick = () => {
-      fetcher().then(
+      const seq = ++issued
+      fetcherRef.current().then(
         (data) => {
-          if (alive) setState({ data, error: null, lastFetched: new Date() })
+          if (!alive || seq < applied) return // a newer response already landed
+          applied = seq
+          setState({ data, error: null, lastFetched: new Date() })
         },
         (err: unknown) => {
-          if (alive)
-            setState((prev) => ({
-              ...prev,
-              error: err instanceof Error ? err.message : String(err),
-            }))
+          if (!alive || seq < applied) return
+          applied = seq
+          setState((prev) => ({
+            ...prev,
+            error: err instanceof Error ? err.message : String(err),
+          }))
         },
       )
     }
@@ -109,7 +126,7 @@ export function usePolling<T>(fetcher: () => Promise<T>, ms: number): Polled<T> 
       alive = false
       clearInterval(id)
     }
-  }, [fetcher, ms])
+  }, [ms])
 
   return state
 }

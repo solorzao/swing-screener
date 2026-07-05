@@ -17,14 +17,19 @@ function clamp01(x: number): number {
   return Math.min(1, Math.max(0, x))
 }
 
-/** Sign always shown, 2–3 decimals, unit suffix — e.g. "+0.057R". */
+/** Sign always shown, 2–3 decimals, unit suffix — e.g. "+0.057R". Negative-zero
+ * guard: a tiny negative like -0.0004 rounds to all-zero digits and must render
+ * "+0.000R", never "-0.000R" — a minus on a zero reads as a real loss. */
 function formatValue(value: number, unit: string): string {
   const decimals = Math.abs(value) >= 10 ? 2 : 3
-  const sign = value >= 0 ? '+' : ''
-  return `${sign}${value.toFixed(decimals)}${unit}`
+  let fixed = value.toFixed(decimals)
+  if (Number(fixed) === 0) fixed = (0).toFixed(decimals) // strips the "-" of "-0.000"
+  const sign = fixed.startsWith('-') ? '' : '+'
+  return `${sign}${fixed}${unit}`
 }
 
-/** "@0.05" → "@05", "@0.10" → "@10"; unknown formats pass through verbatim. */
+/** Cost level arrives as the backend's raw string, e.g. "0.05" → "@05",
+ * "0.10" → "@10"; anything not matching `0.xx` is prefixed with "@" verbatim. */
 function costGlyph(costLevel: string): string {
   return `@${costLevel.replace(/^0\./, '')}`
 }

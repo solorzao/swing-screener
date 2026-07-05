@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from swing_screener.cockpit.api import _down_summary, connection_label, create_app
@@ -138,6 +139,30 @@ def test_cohorts_keep_null_strength_aggregate_and_string_None_split_distinct(
     assert [(c["key"], c["strength"]) for c in cohorts] == [
         ("continuation", None), ("continuation", "confirmed"),
         ("reversal", None), ("reversal", "None"), ("reversal", "confirmed")]
+
+
+def test_stale_schema_mid_request_is_a_friendly_503_not_a_500(tmp_path: Path) -> None:
+    """A local.db from an OLDER schema passes the SELECT-1 probe, then blows up
+    INSIDE the endpoint query (missing column -> OperationalError). That mid-request
+    failure must reach the wire in the same friendly-503 posture as a dead DB --
+    class name only -- never FastAPI's generic 500. Repro: rename a column the
+    cohorts SELECT needs (create_all only creates missing TABLES, so the app's own
+    engine leaves the mutilated table exactly as a stale local.db would be)."""
+    url = _db_url(tmp_path)
+    engine = get_engine(url)  # seeds the full current schema first
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE paper_trades RENAME COLUMN conviction_tier TO legacy"))
+    client = TestClient(create_app(url, edge_dir=tmp_path), raise_server_exceptions=False)
+    r = client.get("/api/stats/cohorts")
+    assert r.status_code == 503, f"stale schema must 503, got {r.status_code}"
+    # The exact wire form: 'error' (mid-request), distinct from 'unreachable' (probe).
+    assert r.json() == {"detail": "database error (OperationalError)"}
+    # Leak posture, same as _down_summary: the driver message embeds the SQL and
+    # sqlite may name the file -- none of it, and no traceback, may survive.
+    assert "cockpit.db" not in r.text
+    assert tmp_path.as_posix() not in r.text
+    assert "SELECT" not in r.text
+    assert "Traceback" not in r.text
 
 
 def test_db_down_is_a_friendly_503(tmp_path: Path) -> None:
