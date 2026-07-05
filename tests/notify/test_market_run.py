@@ -149,3 +149,15 @@ def test_run_market_report_skips_without_spy(tmp_path):
     out = run_market_report(db_url=f"sqlite:///{tmp_path / 'm.db'}", to="me@example.com",
                             fetch=_fake_fetch({}), smtp_send=lambda **kw: sent.append(kw), cfg=CFG)
     assert out is None and not sent
+
+
+def test_db_float_maps_nan_to_none_at_the_db_boundary():
+    """Defense in depth for the 2026-07-05 incident: even if a future fact computation
+    lets a NaN through, the persist boundary must send NULL, never NaN (SQL Server
+    rejects NaN floats at the wire -- TDS 8023)."""
+    from swing_screener.notify.market_run import _db_float
+
+    assert _db_float(float("nan")) is None
+    assert _db_float(None) is None
+    assert _db_float(16.15) == 16.15
+    assert _db_float(0.0) == 0.0          # falsy but valid -- must survive

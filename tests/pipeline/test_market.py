@@ -103,3 +103,37 @@ def test_v2_cross_asset_signals():
     assert facts.credit_pctile is not None
     assert facts.cyc_def_trend == "bull" and facts.cyc_def_chg_4w > 0
     assert facts.breadth_trend in {"bull", "bear", "neutral"}
+
+
+def test_holiday_nan_tail_falls_back_to_last_real_close():
+    """2026-07-05 incident: yfinance's July-4th ^VIX/^TNX/^IRX rows carried NaN closes;
+    float(NaN) reached the market_reports INSERT and SQL Server rejected it (TDS 8023).
+    A NaN tail must fall back to the last REAL close, never leave as NaN."""
+    # real prints ... then the holiday-padded row whose close never printed:
+    vix = _ohlcv([18.0, 17.0, 16.15, 16.15])
+    vix.loc[vix.index[-1], "close"] = np.nan
+    tnx = _ohlcv([4.3, 4.25, 4.2, 4.2])
+    tnx.loc[tnx.index[-1], "close"] = np.nan
+    irx = _ohlcv([4.5, 4.45, 4.4, 4.4])
+    irx.loc[irx.index[-1], "close"] = np.nan
+
+    facts = gather_market_facts(spy_daily=_rising(), vix_daily=vix,
+                                tnx_daily=tnx, irx_daily=irx, cfg=CFG)
+
+    assert facts.vix == 16.15                          # Thursday's real print
+    assert facts.ten_year == 4.2
+    assert facts.three_month == 4.4
+    assert facts.yield_inverted is True                # computed from the real closes
+    assert facts.vix_rank is not None and facts.vix_rank == facts.vix_rank  # not NaN
+
+
+def test_all_nan_series_degrades_to_none_not_nan():
+    """A series with no valid close at all is an honest None (missing), never NaN."""
+    vix = _ohlcv([1.0, 1.0])
+    vix["close"] = np.nan
+
+    facts = gather_market_facts(spy_daily=_rising(), vix_daily=vix, cfg=CFG)
+
+    assert facts.vix is None
+    assert facts.vix_rank is None
+    assert facts.vix_spike is False

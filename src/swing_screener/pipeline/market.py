@@ -76,6 +76,19 @@ def _last(s: pd.Series | None) -> float | None:
     return float(s.iloc[-1]) if s is not None and len(s) else None
 
 
+def _last_valid_close(frame: pd.DataFrame | None) -> float | None:
+    """Last NON-NaN close, or None when the frame is missing or has no valid close.
+
+    Holiday-padded feeds (yfinance, 2026-07-05: the July-4th ^VIX/^TNX/^IRX rows) print
+    NaN closes on the final row; ``iloc[-1]`` passed that NaN downstream and SQL Server
+    rejected the INSERT (TDS 8023 -- NaN is not NULL). Falling back to the last real
+    print is the honest read; an all-NaN series is an honest None (missing)."""
+    if frame is None or not len(frame):
+        return None
+    valid = frame["close"].dropna()
+    return float(valid.iloc[-1]) if len(valid) else None
+
+
 def _chg_4w(s: pd.Series | None, n: int = 20) -> float | None:
     """% change over the last ~4 weeks (n trading days)."""
     if s is None or len(s) <= n:
@@ -182,15 +195,12 @@ def gather_market_facts(
     reg = classify_regime(spy_daily, cfg)
     spy_vs_200dma = {"bull": "above", "bear": "below"}.get(reg.trend or "")
 
-    vix = vix_rank = None
-    vix_spike = False
-    if vix_daily is not None and len(vix_daily):
-        vix = float(vix_daily["close"].iloc[-1])
-        vix_rank = vix_percentile_rank(vix_daily["close"])
-        vix_spike = vix_rank is not None and vix_rank >= cfg.vix_spike_rank
+    vix = _last_valid_close(vix_daily)
+    vix_rank = vix_percentile_rank(vix_daily["close"]) if vix_daily is not None else None
+    vix_spike = vix_rank is not None and vix_rank >= cfg.vix_spike_rank
 
-    ten_year = float(tnx_daily["close"].iloc[-1]) if tnx_daily is not None and len(tnx_daily) else None
-    three_month = float(irx_daily["close"].iloc[-1]) if irx_daily is not None and len(irx_daily) else None
+    ten_year = _last_valid_close(tnx_daily)
+    three_month = _last_valid_close(irx_daily)
     yield_inverted = (three_month > ten_year) if (ten_year is not None and three_month is not None) else None
 
     bond_trend = None
@@ -212,7 +222,7 @@ def gather_market_facts(
 
     return MarketFacts(
         as_of=as_of or spy_daily.index[-1].date(),
-        spy_close=float(spy_daily["close"].iloc[-1]) if len(spy_daily) else None,
+        spy_close=_last_valid_close(spy_daily),
         ha=ha, ha_alignment=alignment, ha_alignment_note=note,
         spy_vs_200dma=spy_vs_200dma, vol_bucket=reg.vol,
         vix=vix, vix_rank=vix_rank, vix_spike=vix_spike,

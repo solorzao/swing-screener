@@ -68,10 +68,15 @@ _VIX_RANK_MID_MAX = 70.0        # 40-70 -> "mid"; > 70 -> "high" (panic)
 def vix_percentile_rank(vix_close: pd.Series | None) -> float | None:
     """Percentile rank (0-100) of the LAST close within the trailing ``_VIX_RANK_WINDOW``
     closes (inclusive of the current bar, so no lookahead): the fraction of the window
-    strictly below the current value. None when there is no data."""
-    if vix_close is None or len(vix_close) == 0:
+    strictly below the current value. None when there is no VALID data -- NaN rows are
+    dropped first: holiday-padded feeds print NaN closes, and ranking a NaN current bar
+    silently returned 0.0 (every NaN comparison is False -- 2026-07-05 incident)."""
+    if vix_close is None:
         return None
-    window = vix_close.tail(_VIX_RANK_WINDOW)
+    valid = vix_close.dropna()
+    if len(valid) == 0:
+        return None
+    window = valid.tail(_VIX_RANK_WINDOW)
     current = float(window.iloc[-1])
     return float((window < current).mean() * 100.0)
 
