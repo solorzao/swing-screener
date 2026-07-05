@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from swing_screener.cockpit.api import connection_label, create_app
+from swing_screener.cockpit.api import _down_summary, connection_label, create_app
 from swing_screener.db.models import EmailLog, PaperTrade
 from swing_screener.db.session import get_engine
 
@@ -15,10 +15,11 @@ STAT_KEYS = {"value", "n", "n_clusters", "ci_low", "ci_high", "cost_level",
              "corpus_id", "facet", "unit", "thin_clusters"}
 
 
-def _trade(ticker: str, r: float) -> PaperTrade:
+def _trade(ticker: str, r: float, *, play_type: str = "reversal",
+           strength: str | None = "confirmed") -> PaperTrade:
     return PaperTrade(
         ticker=ticker, timeframe="1d", horizon="medium", signal_score=0.8, rank=1,
-        account="research", play_type="reversal", strength="confirmed",
+        account="research", play_type=play_type, strength=strength,
         fill_status="filled", stop=95.0, target=110.0, risk=5.0, status="closed",
         realized_r=r,
     )
@@ -102,6 +103,43 @@ def test_cohort_stats_are_stat_objects(tmp_path: Path) -> None:
     assert rows[("reversal", "confirmed")]["n"] == 4
 
 
+def test_down_summary_drops_the_exception_message(tmp_path: Path) -> None:
+    """The leak guard's wire form is the exception CLASS alone: driver messages can
+    embed the DSN (host, password, file path), so none of the message may survive."""
+    summary = _down_summary(Exception("Server=secret-host;PWD=hunter2"))
+    assert summary == "database unreachable (Exception)"
+    assert "secret-host" not in summary
+    assert "hunter2" not in summary
+
+
+def test_cohorts_keep_null_strength_aggregate_and_string_None_split_distinct(
+    tmp_path: Path,
+) -> None:
+    """A null-strength trade yields TWO different rows: the per-play_type aggregate
+    (``strength: null``) and the ``"None"`` string-key cohort from ``breakdown``'s
+    str() coercion. Conflating them would silently pool unlike cohorts."""
+    url = _db_url(tmp_path)
+    engine = get_engine(url)
+    with Session(engine) as s:
+        s.add_all([_trade(t, r) for t, r in
+                   [("AAA", 1.0), ("BBB", -0.5), ("CCC", 0.3), ("DDD", 0.8)]])
+        s.add(_trade("EEE", 0.5, strength=None))
+        s.add(_trade("FFF", 0.2, play_type="continuation"))
+        s.commit()
+    r = TestClient(create_app(url, edge_dir=tmp_path)).get("/api/stats/cohorts")
+    assert r.status_code == 200
+    cohorts = r.json()["cohorts"]
+    rows = {(c["key"], c["strength"]): c["stat"] for c in cohorts}
+    assert ("reversal", None) in rows and ("reversal", "None") in rows
+    assert rows[("reversal", None)]["n"] == 5  # aggregate pools ALL reversal trades
+    assert rows[("reversal", "None")]["n"] == 1  # the null-strength cohort alone
+    # Endpoint docstring's ordering contract: play_type-major, aggregate first,
+    # then the per-strength split alphabetically.
+    assert [(c["key"], c["strength"]) for c in cohorts] == [
+        ("continuation", None), ("continuation", "confirmed"),
+        ("reversal", None), ("reversal", "None"), ("reversal", "confirmed")]
+
+
 def test_db_down_is_a_friendly_503(tmp_path: Path) -> None:
     # Z: is not a mapped drive on this box, so sqlite genuinely cannot open the file.
     url = "sqlite:///Z:/definitely/nope/x.db"
@@ -114,15 +152,12 @@ def test_db_down_is_a_friendly_503(tmp_path: Path) -> None:
     body = r.json()
     assert body["connected"] is False
     assert body["label"] == "Local SQLite · x.db"
-    assert isinstance(body["error"], str) and body["error"]
-    assert "Traceback" not in body["error"]
+    # The exact wire form: sqlalchemy raises OperationalError for an unopenable
+    # sqlite file, and the leak guard forwards ONLY that class name.
+    assert body["error"] == "database unreachable (OperationalError)"
     assert url not in body["error"]
-    assert "Z:/definitely" not in body["error"]
 
     for path in ("/api/heartbeats", "/api/stats/cohorts"):
         r = client.get(path)
         assert r.status_code == 503, f"{path} must 503, got {r.status_code}"
-        detail = r.json()["detail"]
-        assert isinstance(detail, str)
-        assert "Traceback" not in detail
-        assert "Z:/definitely" not in detail
+        assert r.json()["detail"] == "database unreachable (OperationalError)"

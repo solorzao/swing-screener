@@ -14,6 +14,7 @@ Three constraints, stated as contract:
   503 with a JSON ``detail``. No stack trace and no URL in any response body.
 """
 
+import threading
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -57,18 +58,24 @@ def create_app(db_url: str, *, edge_dir: Path | None = None) -> FastAPI:
 
     The engine is created lazily (per app, on first use) so an unreachable database
     surfaces per-request as ``connected: false`` / 503 -- never as a factory-time crash.
-    ``app.state.db_url`` is stored for the pywebview launcher.
+    ``app.state.db_url`` is stored for the pywebview launcher. ``edge_dir`` is the
+    heartbeats test seam: where ``collect_heartbeats`` looks for edge files; ``None``
+    resolves via settings.
     """
     app = FastAPI(title="swing-screener cockpit")
     app.state.db_url = db_url
 
     engine_cache: list[Engine] = []
+    engine_lock = threading.Lock()
 
     def _engine() -> Engine:
         # Cached only on success so a down DB is re-probed per request, not latched.
-        if not engine_cache:
-            engine_cache.append(get_engine(db_url))
-        return engine_cache[0]
+        # Locked: uvicorn runs sync endpoints on a threadpool and the frontend fires
+        # its first requests concurrently, so the empty-cache check-and-append races.
+        with engine_lock:
+            if not engine_cache:
+                engine_cache.append(get_engine(db_url))
+            return engine_cache[0]
 
     def _session() -> Iterator[Session]:
         # Engine creation + connectivity probe stay OUTSIDE the yield's try-scope:
