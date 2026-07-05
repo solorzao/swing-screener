@@ -1,0 +1,154 @@
+"""The cockpit's HTTP API: an app factory serving health, heartbeats, and Stats.
+
+Three constraints, stated as contract:
+
+* Every statistic leaves this API as a full ``Stat`` dict -- value plus n, n_clusters,
+  both CI bounds, cost level, corpus id, facet (docs/plans/2026-07-05-desktop-ui-design.md,
+  "The three mechanical rules", rule 1: the frontend has NO renderer for a bare float,
+  so a number without provenance is unrepresentable).
+* The connection label NEVER contains the URL, host, or credentials -- the Streamlit
+  sidebar chip's guarantee (``dashboard/ui.py connection_label``), reimplemented here
+  rather than imported because that module is slated for deletion with the dashboard.
+* A dead database is a friendly answer, never a traceback: ``/api/health`` always
+  answers 200 with ``connected: false`` plus a one-line summary; data endpoints answer
+  503 with a JSON ``detail``. No stack trace and no URL in any response body.
+"""
+
+from collections.abc import Iterator
+from datetime import UTC, datetime
+from pathlib import Path
+
+from fastapi import Depends, FastAPI, HTTPException
+from sqlalchemy import make_url, text
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
+
+from swing_screener.analytics.performance import PerformanceSummary, breakdown
+from swing_screener.cockpit.heartbeats import Heartbeat, collect_heartbeats
+from swing_screener.cockpit.stats import stat_from_summary
+from swing_screener.db.repo import load_research_paper_trades
+from swing_screener.db.session import get_engine
+
+
+def connection_label(db_url: str) -> str:
+    """Human-readable DB target WITHOUT host or credentials (the ported chip semantics).
+
+    'sqlite:///C:/data/swing.db'                            -> 'Local SQLite · swing.db'
+    'mssql+pyodbc://u:p@srv.database.windows.net/swing?...' -> 'Azure SQL · swing'
+    unparseable                                             -> 'Database'
+    """
+    try:
+        u = make_url(db_url)
+    except Exception:  # unparseable input: still never echo it back
+        return "Database"
+    driver = u.drivername.split("+", 1)[0]
+    if driver == "sqlite":
+        db = u.database
+        if not db or db == ":memory:":
+            return "Local SQLite"
+        return f"Local SQLite · {Path(db).name}"  # filename only, never the directory
+    if driver == "mssql":
+        return f"Azure SQL · {u.database or '?'}"
+    return driver
+
+
+def create_app(db_url: str, *, edge_dir: Path | None = None) -> FastAPI:
+    """Build the cockpit API around one database URL.
+
+    The engine is created lazily (per app, on first use) so an unreachable database
+    surfaces per-request as ``connected: false`` / 503 -- never as a factory-time crash.
+    ``app.state.db_url`` is stored for the pywebview launcher.
+    """
+    app = FastAPI(title="swing-screener cockpit")
+    app.state.db_url = db_url
+
+    engine_cache: list[Engine] = []
+
+    def _engine() -> Engine:
+        # Cached only on success so a down DB is re-probed per request, not latched.
+        if not engine_cache:
+            engine_cache.append(get_engine(db_url))
+        return engine_cache[0]
+
+    def _session() -> Iterator[Session]:
+        # Engine creation + connectivity probe stay OUTSIDE the yield's try-scope:
+        # a broad except wrapped around the yield would also swallow endpoint errors
+        # (they propagate back through generator dependencies).
+        try:
+            engine = _engine()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=_down_summary(exc)) from exc
+        with Session(engine) as session:
+            try:
+                session.execute(text("SELECT 1"))
+            except Exception as exc:
+                raise HTTPException(status_code=503, detail=_down_summary(exc)) from exc
+            yield session
+
+    @app.get("/api/health")
+    def health() -> dict[str, object]:
+        """Connectivity + safe label. Always 200; ``connected`` carries the truth."""
+        label = connection_label(db_url)
+        try:
+            with _engine().connect() as conn:
+                conn.execute(text("SELECT 1"))
+        except Exception as exc:
+            return {"connected": False, "label": label, "error": _down_summary(exc)}
+        return {"connected": True, "label": label, "error": None}
+
+    @app.get("/api/heartbeats")
+    def heartbeats(session: Session = Depends(_session)) -> list[dict[str, object]]:
+        """Every job's pulse, evaluated against the wall clock at request time."""
+        beats = collect_heartbeats(session, now=datetime.now(UTC), edge_dir=edge_dir)
+        return [_beat_dict(b) for b in beats]
+
+    @app.get("/api/stats/cohorts")
+    def cohort_stats(session: Session = Depends(_session)) -> dict[str, object]:
+        """Research-grid cohort expectancies; every number is a full Stat dict (rule 1).
+
+        Shape (stable contract): ``{"cohorts": [{"key": <play_type>, "strength":
+        <str | null>, "stat": {<10-key Stat>}}, ...]}``, play_type-major: each
+        play_type's aggregate row first (``strength: null``), then its per-strength
+        split, both alphabetically. Strength-split keys come from ``breakdown``'s
+        ``str()`` coercion, so a null-strength cohort appears as the string ``"None"``
+        -- distinct from the aggregate row's ``null``. ``cost_level``/``corpus_id``
+        are an explicit null (not persisted yet); facet is ``"research"``.
+        """
+        trades = load_research_paper_trades(session)
+        by_play = breakdown(trades, "play_type")
+        cohorts: list[dict[str, object]] = []
+        for play_type in sorted(by_play):
+            cohorts.append(_cohort(play_type, None, by_play[play_type]))
+            subset = [t for t in trades if str(t.play_type) == play_type]
+            by_strength = breakdown(subset, "strength")
+            cohorts.extend(
+                _cohort(play_type, strength, by_strength[strength])
+                for strength in sorted(by_strength)
+            )
+        return {"cohorts": cohorts}
+
+    return app
+
+
+def _down_summary(exc: Exception) -> str:
+    """One safe line for a dead DB: the exception CLASS only -- driver messages can
+    embed the file path or DSN, so the message itself never reaches a response."""
+    return f"database unreachable ({type(exc).__name__})"
+
+
+def _cohort(key: str, strength: str | None, summary: PerformanceSummary) -> dict[str, object]:
+    stat = stat_from_summary(summary, cost_level=None, corpus_id=None, facet="research")
+    return {"key": key, "strength": strength, "stat": stat.as_dict()}
+
+
+def _beat_dict(b: Heartbeat) -> dict[str, object]:
+    """Explicit wire form -- ``Heartbeat`` has no ``as_dict`` by design, so the
+    serialization contract (ISO-8601-or-null ``last``) lives here, visibly."""
+    return {
+        "name": b.name,
+        "state": b.state,
+        "last": b.last.isoformat() if b.last is not None else None,
+        "period_s": b.period_s,
+        "grace_s": b.grace_s,
+        "detail": b.detail,
+    }
