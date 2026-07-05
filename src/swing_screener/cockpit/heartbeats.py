@@ -14,12 +14,17 @@ cockpit-view concerns, not domain CRUD, so they do NOT belong in ``db/repo.py``.
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
+from typing import Literal
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from swing_screener.db.models import EmailLog, MarketReport, Signal
 from swing_screener.settings import resolve_edge_dir
+
+# The closed four-state set (same convention as signals/actionability.py's Status):
+# mypy rejects a fifth state at the source, not in some downstream renderer.
+BeatState = Literal["up", "late", "down", "unknown"]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -28,12 +33,14 @@ class Heartbeat:
 
     ``period_s``/``grace_s`` travel with the state so the UI can show WHY a beat is
     late on hover; ``last`` is UTC-aware (or None) so the frontend formats ages
-    itself. Unconfigured pollers carry ``period_s == grace_s == 0`` -- an honest
+    itself. ``detail`` is a hover/debug diagnostic channel only -- the frontend
+    formats ages from ``last``, so ``detail`` is not a display contract.
+    Unconfigured pollers carry ``period_s == grace_s == 0`` -- an honest
     "no contract stated", never a guessed schedule.
     """
 
     name: str
-    state: str
+    state: BeatState
     last: datetime | None
     period_s: int
     grace_s: int
@@ -42,9 +49,11 @@ class Heartbeat:
 
 def beat_state(
     last: datetime | None, now: datetime, period: timedelta, grace: timedelta
-) -> str:
+) -> BeatState:
     """The state machine: None -> unknown; within period -> up; within period+grace ->
     late; else down. A naive ``last`` is assumed UTC (SQLite drops tzinfo on round-trip).
+    A ``last`` ahead of ``now`` reads "up" intentionally: EOD-anchored run dates
+    legitimately sit ahead of the clock until their date is over.
     """
     if last is None:
         return "unknown"
