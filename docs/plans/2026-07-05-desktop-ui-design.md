@@ -151,3 +151,7 @@ config deltas with the code gate's verdict inline) · `ConvictionChip` · `Event
   hash + date.
 - Two build systems in one repo (Python + Vite) → committed `dist/`, UI changes are the
   only thing that need Node; CI treats `cockpit-ui/` as an independent job.
+- Phase-1 posture: stale panels dim (opacity + "showing last good data" line) rather
+  than blank — data visibility over blankness; the masthead alone force-nulls to UNKNOWN.
+- Phase-1 posture: lamp shape-redundancy covers UNKNOWN only (hollow/dashed vs filled);
+  up/late/down are hue+brightness until full shape coding lands in Phase 2.

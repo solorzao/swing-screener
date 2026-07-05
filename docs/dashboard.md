@@ -1,5 +1,11 @@
 # Local dashboard (Phase 3)
 
+> **Superseded by the desktop cockpit.** New work happens in the cockpit
+> ([docs/cockpit.md](cockpit.md); design:
+> [docs/plans/2026-07-05-desktop-ui-design.md](plans/2026-07-05-desktop-ui-design.md)).
+> These Streamlit pages retire as native equivalents land, per the design doc's
+> migration plan; until then this dashboard keeps running untouched.
+
 A private **Streamlit** dashboard over the same SQLite store the pipeline writes — browse
 the day's candidates, log and track real trades with live unrealized P/L, and review the
 shadow book's screener-performance stats. It runs **locally only** (no public access).
