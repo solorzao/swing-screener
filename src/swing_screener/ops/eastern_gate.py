@@ -7,7 +7,7 @@ image ENTRYPOINT -- inspects the current Eastern time and either ``exec``\\ s th
 real command or exits 0 (a clean skip for the non-matching cron firings).
 
 The image runs ``python -m swing_screener.ops.eastern_gate <command...>`` where
-``<command...>`` is e.g. ``-m swing_screener.pipeline.run``. Two env vars steer
+``<command...>`` is e.g. ``-m swing_screener.pipeline.run``. Three env vars steer
 the gate:
 
 * ``RUN_IF_ET_HOUR`` -- a comma list of Eastern hours (0-23) at which to run,
@@ -15,6 +15,18 @@ the gate:
   on hour".
 * ``RUN_IF_LAST_BUSINESS_DAY`` -- ``"1"`` to require that today (Eastern) be the
   last Mon-Fri of its month (the monthly digest cadence).
+* ``RUN_GATE_FORCE`` -- the literal ``"1"`` bypasses BOTH conditions and runs the
+  command now: the manual-backfill path (``az containerapp job update
+  --set-env-vars RUN_GATE_FORCE=1`` -> ``job start`` -> revert). During the
+  2026-07-05 market-weather backfill, a manual ``job start`` outside the gate
+  hour exited 0 having done nothing -- indistinguishable from success. Only the
+  literal ``"1"`` forces, so a stale leftover value can't silently disarm the gate.
+
+A skip prints one ``eastern_gate: skip (...)`` marker line and a forced run prints
+``eastern_gate: FORCED run ...`` -- both greppable in Log Analytics, so "Succeeded"
+executions that did no work are diagnosable (and a future liveness poller can tell
+gate-skips from real runs). A normal matching run stays silent: the gate ``exec``\\ s
+and the real command owns the output.
 
 The clock and the ``exec`` syscall are injectable seams so tests never touch the
 wall clock, the host timezone, or really replace the process.
@@ -97,8 +109,19 @@ def main(
 
     hours = os.environ.get("RUN_IF_ET_HOUR")
     require_last_bday = os.environ.get("RUN_IF_LAST_BUSINESS_DAY") == "1"
+    forced = os.environ.get("RUN_GATE_FORCE") == "1"  # literal "1" only, never truthiness
 
-    if not should_run(now_et_fn(), hours=hours, require_last_bday=require_last_bday):
+    now = now_et_fn()
+    if forced:
+        print("eastern_gate: FORCED run, bypassing RUN_IF_ET_HOUR/"
+              "RUN_IF_LAST_BUSINESS_DAY", flush=True)
+    elif not should_run(now, hours=hours, require_last_bday=require_last_bday):
+        # The marker makes a gated no-op diagnosable: a skipped execution still ends
+        # "Succeeded", and a silent one is indistinguishable from a real run
+        # (2026-07-05 backfill). One line, greppable, then the clean skip.
+        print(f"eastern_gate: skip (ET {now:%Y-%m-%d %H:%M}, hour {now.hour} vs "
+              f"RUN_IF_ET_HOUR={hours!r}, RUN_IF_LAST_BUSINESS_DAY="
+              f"{'1' if require_last_bday else 'unset'})", flush=True)
         raise SystemExit(0)  # clean skip: the cron fired at a non-matching ET hour/day
     if not argv:
         raise SystemExit("eastern_gate: no command given")

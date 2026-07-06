@@ -117,13 +117,23 @@ Wait a few minutes for Entra propagation.
 > rate-limited or blocked, which can make a cloud screen produce **zero signals**. A local
 > dry-run will *not* surface this — it only appears from an Azure IP.
 
-Run the evening screen manually (override the gate hour so it doesn't wait for cron):
+Run the evening screen manually. **Do not pass `--env-vars` to `job start`** — a
+single-execution container override replaces the template env (dropping the secret
+refs), and `TZ=America/New_York date +%H` silently returns the UTC hour on Git Bash
+for Windows (both bit the 2026-07-05 market-weather backfill). The supported path is
+the gate's force flag, set on the template and reverted after:
 
 ```bash
-az containerapp job start --name evening-screen -g <rg> \
-  --env-vars RUN_IF_ET_HOUR=$(TZ=America/New_York date +%H)
+az containerapp job update --name evening-screen -g <rg> --set-env-vars RUN_GATE_FORCE=1
+az containerapp job start  --name evening-screen -g <rg>
 az containerapp job execution list --name evening-screen -g <rg> -o table
+az containerapp job update --name evening-screen -g <rg> --remove-env-vars RUN_GATE_FORCE
 ```
+
+A forced run prints `eastern_gate: FORCED run ...` and a gated skip prints
+`eastern_gate: skip (...)` in Log Analytics — an execution that "Succeeded" without
+either marker (or with the skip marker) did no work. Verify the duration too: a gate
+skip is ~30 s of container spin-up; a real run takes minutes.
 
 Verify in the logs (Log Analytics `ContainerAppConsoleLogs_CL`): Alembic created the six
 tables, signals persisted, chart PNGs landed in the private `charts` container, **and read
@@ -132,11 +142,16 @@ and fix before wiring the cadence live**: route yfinance through an outbound pro
 a non-Azure egress IP, or swap the data source behind the existing `data.fetch` seam. The
 fetch layer already retries with jittered backoff, but that alone won't beat a hard block.
 
-Then smoke the digest + exit paths:
+Then smoke the digest + exit paths (same force-then-revert pattern):
 
 ```bash
-az containerapp job start --name daily-digest  -g <rg> --env-vars RUN_IF_ET_HOUR=$(TZ=America/New_York date +%H)
-az containerapp job start --name intraday-exit -g <rg> --env-vars RUN_IF_ET_HOUR=$(TZ=America/New_York date +%H)  # against a seeded open real trade
+az containerapp job update --name daily-digest  -g <rg> --set-env-vars RUN_GATE_FORCE=1
+az containerapp job start  --name daily-digest  -g <rg>
+az containerapp job update --name daily-digest  -g <rg> --remove-env-vars RUN_GATE_FORCE
+
+az containerapp job update --name intraday-exit -g <rg> --set-env-vars RUN_GATE_FORCE=1
+az containerapp job start  --name intraday-exit -g <rg>   # against a seeded open real trade
+az containerapp job update --name intraday-exit -g <rg> --remove-env-vars RUN_GATE_FORCE
 ```
 
 ## Step 5 — Point the local dashboard at Azure SQL

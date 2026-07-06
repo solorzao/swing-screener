@@ -167,3 +167,81 @@ def test_main_no_command_after_passing_gate_is_an_error(monkeypatch):
 
     assert excinfo.value.code != 0  # a string message -> truthy/non-zero exit
     assert rec.calls == []
+
+
+# --------------------------------------------------------------------------- #
+# RUN_GATE_FORCE -- the manual-backfill bypass (2026-07-05 incident)
+# --------------------------------------------------------------------------- #
+
+
+def test_main_forced_run_bypasses_both_gates_and_logs(monkeypatch, capsys):
+    """RUN_GATE_FORCE=1 execs the real command at the WRONG hour on the WRONG day,
+    and announces itself loudly so a forced run is always identifiable in logs."""
+    monkeypatch.setenv("RUN_IF_ET_HOUR", "9")
+    monkeypatch.setenv("RUN_IF_LAST_BUSINESS_DAY", "1")
+    monkeypatch.setenv("RUN_GATE_FORCE", "1")
+    rec = _RecordingExec()
+
+    # 2026-05-28 (NOT the last business day) at 20:00 (NOT hour 9) -> still execs.
+    gate.main(PIPELINE_ARGV, now_et_fn=lambda: _at(2026, 5, 28, 20, 0), exec_fn=rec)
+
+    assert rec.calls == [(sys.executable, [sys.executable, *PIPELINE_ARGV])]
+    assert "eastern_gate: FORCED run" in capsys.readouterr().out
+
+
+def test_main_force_only_honors_the_literal_1(monkeypatch):
+    """RUN_GATE_FORCE=0 (or any non-'1' value) must NOT bypass -- a stale falsy-ish
+    value left on the template can't silently disable the gate."""
+    monkeypatch.setenv("RUN_IF_ET_HOUR", "9")
+    monkeypatch.delenv("RUN_IF_LAST_BUSINESS_DAY", raising=False)
+    monkeypatch.setenv("RUN_GATE_FORCE", "0")
+    rec = _RecordingExec()
+
+    with pytest.raises(SystemExit) as excinfo:
+        gate.main(PIPELINE_ARGV, now_et_fn=lambda: _at(2026, 6, 15, 20, 0), exec_fn=rec)
+
+    assert excinfo.value.code == 0
+    assert rec.calls == []
+
+
+def test_main_forced_run_with_no_command_is_still_an_error(monkeypatch):
+    monkeypatch.setenv("RUN_GATE_FORCE", "1")
+    rec = _RecordingExec()
+
+    with pytest.raises(SystemExit) as excinfo:
+        gate.main([], now_et_fn=lambda: _at(2026, 6, 15, 20, 0), exec_fn=rec)
+
+    assert excinfo.value.code != 0
+    assert rec.calls == []
+
+
+def test_main_skip_prints_a_marker_line(monkeypatch, capsys):
+    """A gate skip must not be silent: 'Succeeded but did nothing' was
+    indistinguishable from a real run during the 2026-07-05 backfill."""
+    monkeypatch.setenv("RUN_IF_ET_HOUR", "9")
+    monkeypatch.delenv("RUN_IF_LAST_BUSINESS_DAY", raising=False)
+    monkeypatch.delenv("RUN_GATE_FORCE", raising=False)
+    rec = _RecordingExec()
+
+    with pytest.raises(SystemExit) as excinfo:
+        gate.main(PIPELINE_ARGV, now_et_fn=lambda: _at(2026, 6, 15, 20, 30), exec_fn=rec)
+
+    assert excinfo.value.code == 0
+    out = capsys.readouterr().out
+    assert "eastern_gate: skip" in out
+    assert "20" in out          # the current ET hour is named
+    assert "'9'" in out or "9" in out  # the configured hours are named
+
+
+def test_main_matching_run_stays_quiet_on_stdout(monkeypatch, capsys):
+    """A normal matching run adds no gate chatter -- the dark-cockpit rule: silence
+    means the gate passed; only skips and forces announce themselves."""
+    monkeypatch.setenv("RUN_IF_ET_HOUR", "16")
+    monkeypatch.delenv("RUN_IF_LAST_BUSINESS_DAY", raising=False)
+    monkeypatch.delenv("RUN_GATE_FORCE", raising=False)
+    rec = _RecordingExec()
+
+    gate.main(PIPELINE_ARGV, now_et_fn=lambda: _at(2026, 6, 15, 16, 0), exec_fn=rec)
+
+    assert len(rec.calls) == 1
+    assert "eastern_gate" not in capsys.readouterr().out
