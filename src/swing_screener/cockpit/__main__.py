@@ -254,11 +254,13 @@ def _run(argv: Sequence[str] | None) -> int:
         if mode == "window":
             import webview  # lazy: only the window path may require the desktop extra
 
-            with contextlib.suppress(Exception):  # cosmetic: own taskbar identity,
-                import ctypes                     # not python.exe's
+            if sys.platform == "win32":  # same guard as _windows_message_box: the
+                # attribute only exists on Windows and CI type-checks on Linux
+                with contextlib.suppress(Exception):  # cosmetic: own taskbar identity,
+                    import ctypes                     # not python.exe's
 
-                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                    "SwingScreener.Cockpit")
+                    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                        "SwingScreener.Cockpit")
             webview.create_window(WINDOW_TITLE, url, width=WINDOW_SIZE[0], height=WINDOW_SIZE[1])
             webview.start()  # blocks until the window closes
         else:
