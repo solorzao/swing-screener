@@ -37,7 +37,6 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     import uvicorn
-    import webview
     from fastapi import FastAPI
 
 # True once _ensure_streams replaced a None stderr: the process is headless (pythonw)
@@ -183,22 +182,12 @@ def _window_icon_path() -> Path | None:
     One identity everywhere: the SHORTCUT icon (make_cockpit_shortcut.ps1 sets
     IconLocation) covers the Start menu, but the RUNNING window's title-bar/taskbar
     icon comes from the process exe (pythonw's snake) unless the form itself is
-    given one -- pywebview's ``start(icon=...)`` is GTK/QT-only."""
+    given one. ``webview.start(icon=...)``'s docstring says GTK/QT-only, but that
+    doc is stale: the winforms backend applies ``_state['icon']`` in the Form
+    constructor (pywebview 6.2.1, platforms/winforms.py) -- on the GUI thread,
+    which is the only safe place for it."""
     ico = Path(__file__).parent / "assets" / "cockpit.ico"
     return ico if ico.is_file() else None
-
-
-def _set_winforms_icon(window: "webview.Window", ico: Path) -> None:
-    """Set the WinForms form's Icon after the window is shown (the Windows route to a
-    title-bar/taskbar icon under pywebview). Cosmetic and best-effort: the pythonnet
-    ``System.Drawing`` namespace only exists once pywebview's winforms backend loaded,
-    and a backend change must degrade to the stock icon, never to a crash."""
-    with contextlib.suppress(Exception):
-        from System.Drawing import Icon  # pythonnet; loaded by pywebview/winforms
-
-        native = window.native  # None until the GUI loop starts; shown fires after
-        if native is not None:
-            native.Icon = Icon(str(ico))
 
 
 def _windows_message_box(reason: str) -> None:
@@ -286,12 +275,15 @@ def _run(argv: Sequence[str] | None) -> int:
 
                     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
                         "SwingScreener.Cockpit")
-            window = webview.create_window(
+            webview.create_window(
                 WINDOW_TITLE, url, width=WINDOW_SIZE[0], height=WINDOW_SIZE[1])
             ico = _window_icon_path()
-            if sys.platform == "win32" and window is not None and ico is not None:
-                window.events.shown += lambda: _set_winforms_icon(window, ico)
-            webview.start()  # blocks until the window closes
+            # The icon rides start(): the winforms Form ctor applies it on the GUI
+            # thread. Never wire window.events.* handlers that touch window.native --
+            # pywebview fires handlers on a worker thread (webview/event.py), and a
+            # cross-thread WinForms call from there can deadlock the GUI thread
+            # against the GIL (the 2026-07-06 white-window hang, closed as AppHangB1).
+            webview.start(icon=str(ico) if ico is not None else None)  # blocks until closed
         else:
             webbrowser.open(url)
             thread.join()  # serve until Ctrl+C -- the browser tab owns no lifecycle
