@@ -122,6 +122,32 @@ body {
   border: 1.5px dashed var(--dim);
 }
 
+/* Amber = attention-you-can-act-on; an ENABLED masthead button is new (disarm is
+   dead until Phase 3) so it must read as live, unlike the dashed Phase-2 stubs. */
+button.db-login {
+  font-size: 10.5px;
+  padding: 3px 9px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--amber) 12%, var(--panel2));
+  border: 1px solid color-mix(in srgb, var(--amber) 55%, var(--line2));
+  color: var(--amber);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button.db-login:disabled {
+  color: var(--dim);
+  border-color: var(--line2);
+  background: transparent;
+  cursor: wait;
+}
+
+.db-login-note {
+  font-size: 10.5px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
 .mh-spacer {
   flex: 1;
 }
