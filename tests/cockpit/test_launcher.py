@@ -248,8 +248,9 @@ def test_failure_report_still_reaches_messagebox_after_stream_shim(monkeypatch):
 
 def test_window_icon_path_points_at_the_packaged_ico():
     """The runtime window icon reuses the committed shortcut .ico -- one identity.
-    (pywebview's start(icon=...) is GTK/QT-only; on Windows the launcher sets the
-    WinForms form Icon from this path after the window is shown.)"""
+    (The path feeds webview.start(icon=...); the winforms backend applies it in the
+    Form constructor, on the GUI thread -- never from an events.* handler, which
+    pywebview runs on a worker thread and which deadlocked the 2026-07-06 launch.)"""
     from swing_screener.cockpit import __main__ as launcher
 
     ico = launcher._window_icon_path()
