@@ -65,6 +65,18 @@ read-only. The in-app Local ⇄ Azure switcher chip is Phase 2; today the env va
 session variables, so set `SWING_DB_URL` at the **user** level (System Properties →
 Environment Variables) if you want the double-click to land on Azure by default.
 
+When the Azure credential expires, the DB chip turns red and grows a **Sign in to
+Azure** button — it runs `az login` (system browser) and the chip recovers on the
+next health poll; nothing else to do. Terminal `az login` still works as the
+fallback, and the button only exists in Azure mode (it can't fix a local file).
+
+## Troubleshooting: expired Azure credential
+
+If the DB chip is red with **`database unreachable (…)`** while pointed at Azure,
+the cached credential has almost certainly expired. Click the chip's **Sign in to
+Azure** button — or run `az login` in any terminal — and the chip goes green on the
+next health poll.
+
 ## Troubleshooting: stale `local.db`
 
 If the COHORTS panel shows **`database error (OperationalError)`** while the DB chip
