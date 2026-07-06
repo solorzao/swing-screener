@@ -185,3 +185,62 @@ def test_wait_until_responsive_fails_fast_when_the_server_thread_dies() -> None:
     )
     assert ok is False
     assert time.monotonic() - started < 2.0  # bailed immediately, far under timeout_s
+
+
+# --------------------------------------------------------------------------- #
+# pythonw: sys.stdout / sys.stderr are None -- the window path must survive it
+# (2026-07-05 field failure: "startup failed (ValueError)" from uvicorn's
+# logging dictConfig against a None stream; console mode worked fine).
+# --------------------------------------------------------------------------- #
+
+
+def test_uvicorn_server_builds_with_none_streams(monkeypatch):
+    """Building the server must not run logging config against sys.stderr=None."""
+    from swing_screener.cockpit import __main__ as launcher
+
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "stderr", None)
+
+    server = launcher._uvicorn_server(create_app("sqlite:///:memory:"), port=1)
+
+    assert server.config.port == 1  # built without raising
+
+
+def test_ensure_streams_shims_none_to_devnull(monkeypatch):
+    """Under pythonw every print/write must go somewhere harmless, not AttributeError
+    (the already-running message and library writes are unconditional prints)."""
+    from swing_screener.cockpit import __main__ as launcher
+
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "stderr", None)
+
+    launcher._ensure_streams()
+
+    print("must not raise")                      # stdout usable
+    print("must not raise", file=sys.stderr)     # stderr usable
+
+
+def test_ensure_streams_leaves_real_streams_alone(capsys):
+    from swing_screener.cockpit import __main__ as launcher
+
+    launcher._ensure_streams()
+
+    print("still visible")
+    assert "still visible" in capsys.readouterr().out
+
+
+def test_failure_report_still_reaches_messagebox_after_stream_shim(monkeypatch):
+    """The shim must not fool the console probe: with shimmed (originally-None)
+    streams, a startup failure still routes to the message box -- printing it to
+    devnull would recreate the silent-failure the box exists to prevent."""
+    from swing_screener.cockpit import __main__ as launcher
+
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "stderr", None)
+    monkeypatch.setattr(launcher, "_shimmed_headless", False, raising=False)
+    launcher._ensure_streams()
+
+    seen: list[str] = []
+    launcher._report_startup_failure("startup failed (ValueError)", messagebox=seen.append)
+
+    assert seen == ["startup failed (ValueError)"]

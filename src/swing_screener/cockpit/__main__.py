@@ -33,7 +33,48 @@ import urllib.request
 import webbrowser
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    import uvicorn
+    from fastapi import FastAPI
+
+# True once _ensure_streams replaced a None stderr: the process is headless (pythonw)
+# even though sys.stderr is no longer None -- the failure reporter must keep routing
+# to the message box, not print into devnull.
+_shimmed_headless = False
+
+
+def _ensure_streams() -> None:
+    """Bind ``sys.stdout``/``sys.stderr`` to devnull when the interpreter has none.
+
+    Under ``pythonw`` both are ``None``: any bare ``print`` (the already-running
+    notice, library writes) raises, and uvicorn's logging setup ``ValueError``\\ s
+    against a ``None`` stream -- the 2026-07-05 "startup failed (ValueError)" field
+    report from the Start-menu shortcut. Real console streams are left untouched;
+    shimming records ``_shimmed_headless`` so the console probe stays truthful."""
+    global _shimmed_headless
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115 -- lives for the process
+        _shimmed_headless = True
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115 -- lives for the process
+
+
+def _uvicorn_server(app: "FastAPI", port: int) -> "uvicorn.Server":
+    """A uvicorn server with uvicorn's OWN logging config disabled (``log_config=None``).
+
+    The default config dictConfigs handlers onto ``sys.stderr`` at ``Config()``
+    construction time -- ``ValueError`` before the server ever starts when the stream
+    is ``None`` (pythonw). A desktop app has no audience for uvicorn's banner or
+    access log either way."""
+    import uvicorn
+
+    return uvicorn.Server(uvicorn.Config(
+        app, host="127.0.0.1", port=port,
+        log_level="warning", log_config=None, access_log=False,
+    ))
+
 
 DEFAULT_DB_URL = "sqlite:///local.db"
 WINDOW_TITLE = "Swing Screener"
@@ -160,7 +201,8 @@ def _report_startup_failure(
     it with ``_startup_failure_reason``). ``has_console`` and ``messagebox`` are
     test seams for the console probe and the WinAPI call; the defaults probe
     ``sys.stderr`` (``None`` under pythonw) and open the real box."""
-    console = has_console if has_console is not None else sys.stderr is not None
+    console = (has_console if has_console is not None
+               else sys.stderr is not None and not _shimmed_headless)
     if console:
         print(f"swing-screener cockpit: {reason}", file=sys.stderr)
         return
@@ -172,6 +214,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     constraint 3). Any exception escaping startup or the serve loop is reported
     class-name-only and becomes exit 1; KeyboardInterrupt still propagates --
     Ctrl+C in ``--browser`` mode is the user stopping the server, not a failure."""
+    _ensure_streams()  # before anything can print: pythonw ships None streams
     try:
         return _run(argv)
     except Exception as exc:
@@ -181,8 +224,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _run(argv: Sequence[str] | None) -> int:
     """Thin glue over the tested parts: serve, wait, open, clean up the port-file."""
-    import uvicorn
-
     from swing_screener.cockpit.api import create_app
 
     args = _parse_args(argv)
@@ -193,9 +234,7 @@ def _run(argv: Sequence[str] | None) -> int:
         return 0
 
     port = args.port if args.port is not None else _pick_free_port()
-    server = uvicorn.Server(
-        uvicorn.Config(create_app(args.db), host="127.0.0.1", port=port, log_level="warning")
-    )
+    server = _uvicorn_server(create_app(args.db), port)
     thread = threading.Thread(target=server.run, name="cockpit-uvicorn", daemon=True)
     thread.start()
     url = f"http://127.0.0.1:{port}"
@@ -215,6 +254,11 @@ def _run(argv: Sequence[str] | None) -> int:
         if mode == "window":
             import webview  # lazy: only the window path may require the desktop extra
 
+            with contextlib.suppress(Exception):  # cosmetic: own taskbar identity,
+                import ctypes                     # not python.exe's
+
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                    "SwingScreener.Cockpit")
             webview.create_window(WINDOW_TITLE, url, width=WINDOW_SIZE[0], height=WINDOW_SIZE[1])
             webview.start()  # blocks until the window closes
         else:

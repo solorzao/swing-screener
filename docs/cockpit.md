@@ -42,6 +42,29 @@ tab:
 One instance runs at a time: a second launch finds the live one (via a port-file +
 health probe) and defers politely.
 
+The Start-menu icon is the committed `src/swing_screener/cockpit/assets/cockpit.ico`
+(regenerate with `scripts/make_cockpit_icon.py`, then re-run the shortcut script).
+
+## Pointing at Azure (your real data)
+
+The cockpit reads whatever database `SWING_DB_URL` names — the same variable the
+dashboard and pipeline use. To run it over production Azure SQL:
+
+```powershell
+az login                       # DefaultAzureCredential picks this up
+$env:SWING_DB_URL = "mssql+pyodbc://@<server>.database.windows.net/swing?driver=ODBC+Driver+18+for+SQL+Server"
+.\.venv\Scripts\python -m swing_screener.cockpit --browser
+```
+
+(Same URL form as the dashboard's Azure mode — see `docs/dashboard.md`; your client
+IP must be allowed on the SQL server firewall, and the ODBC driver is auto-detected.)
+Against prod, the heartbeat rail reads the REAL cadence (digest sends, market
+weather, screen runs) and COHORTS grades the real forward book. Everything is
+read-only. The in-app Local ⇄ Azure switcher chip is Phase 2; today the env var /
+`--db` flag is the switch — note the Start-menu shortcut runs without your shell's
+session variables, so set `SWING_DB_URL` at the **user** level (System Properties →
+Environment Variables) if you want the double-click to land on Azure by default.
+
 ## Troubleshooting: stale `local.db`
 
 If the COHORTS panel shows **`database error (OperationalError)`** while the DB chip
