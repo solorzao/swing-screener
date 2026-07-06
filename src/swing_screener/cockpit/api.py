@@ -59,6 +59,17 @@ def connection_label(db_url: str) -> str:
     return driver
 
 
+def _is_azure(db_url: str) -> bool:
+    """True iff the URL names an mssql database -- the only backend whose credential
+    ``az login`` refreshes, and the gate for the sign-in affordance (design doc
+    2026-07-06). URL-shaped, not connectivity-shaped: an unreachable Azure DB is
+    exactly the case the button exists for."""
+    try:
+        return make_url(db_url).drivername.split("+", 1)[0] == "mssql"
+    except Exception:  # unparseable: no affordance, same posture as connection_label
+        return False
+
+
 def create_app(
     db_url: str, *, edge_dir: Path | None = None, static_dir: Path | None = None
 ) -> FastAPI:
@@ -127,8 +138,9 @@ def create_app(
             with _engine().connect() as conn:
                 conn.execute(text("SELECT 1"))
         except Exception as exc:
-            return {"connected": False, "label": label, "error": _down_summary(exc)}
-        return {"connected": True, "label": label, "error": None}
+            return {"connected": False, "label": label, "error": _down_summary(exc),
+                    "azure": _is_azure(db_url)}
+        return {"connected": True, "label": label, "error": None, "azure": _is_azure(db_url)}
 
     @app.get("/api/heartbeats")
     def heartbeats(session: Session = Depends(_session)) -> list[dict[str, object]]:

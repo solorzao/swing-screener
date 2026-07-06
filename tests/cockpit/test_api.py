@@ -186,3 +186,18 @@ def test_db_down_is_a_friendly_503(tmp_path: Path) -> None:
         r = client.get(path)
         assert r.status_code == 503, f"{path} must 503, got {r.status_code}"
         assert r.json()["detail"] == "database unreachable (OperationalError)"
+
+
+def test_health_carries_the_azure_flag(tmp_path: Path) -> None:
+    # The flag describes the URL, not reachability: the frontend gates the sign-in
+    # button on it, and an az login can never fix a sqlite file.
+    assert _client(tmp_path).get("/api/health").json()["azure"] is False
+    azure_client = TestClient(create_app(
+        "mssql+pyodbc://@srv.database.windows.net/swing?driver=ODBC+Driver+18",
+        edge_dir=tmp_path,
+    ))
+    body = azure_client.get("/api/health").json()
+    assert body["azure"] is True
+    # Still 200 and truthful even where pyodbc isn't installed (CI has no [azure]
+    # extra): connectivity may be down, the flag must not care.
+    assert body["label"] == "Azure SQL · swing"
