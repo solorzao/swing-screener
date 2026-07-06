@@ -47,12 +47,18 @@ export function Masthead({
 
   const onSignIn = () => {
     setPhase('waiting')
+    // Both callbacks transition only OUT OF 'waiting': a slow rejection landing
+    // after recovery already reset the phase must not resurrect a stale
+    // 'retry'/'no-cli' for the next outage's first render.
     postAzureLogin().then(
       (r) => {
         if (r.started || r.already_running) return // health decides from here
-        setPhase(r.error === 'az-not-found' ? 'no-cli' : 'retry')
+        setPhase((p) =>
+          p === 'waiting' ? (r.error === 'az-not-found' ? 'no-cli' : 'retry') : p,
+        )
       },
-      () => setPhase('retry'), // 403/409/network: chip already shows the down line
+      // 403/409/network: chip already shows the down line
+      () => setPhase((p) => (p === 'waiting' ? 'retry' : p)),
     )
   }
 

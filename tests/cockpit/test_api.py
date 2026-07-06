@@ -11,7 +11,13 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from swing_screener.cockpit.api import _down_summary, connection_label, create_app
+from swing_screener.cockpit.api import (
+    _LOGIN_TTL_S,
+    _down_summary,
+    _LoginFlight,
+    connection_label,
+    create_app,
+)
 from swing_screener.db.models import EmailLog, PaperTrade
 from swing_screener.db.session import get_engine
 
@@ -217,10 +223,10 @@ def test_health_carries_the_azure_flag(
     # network, and sys.modules stays azure-free for tests/test_config_secrets.py's
     # never-imports-azure invariant. Health catches it: connected stays truthful.
     monkeypatch.setitem(sys.modules, "azure", None)
-    azure_client = TestClient(create_app(
-        "mssql+pyodbc://@srv.database.windows.net/swing?driver=ODBC+Driver+18",
-        edge_dir=tmp_path,
-    ))
+    # A dev box exporting SWING_DB_ACCESS_TOKEN would take the static-token branch
+    # (poison never consulted) and really dial out -- close that side door too.
+    monkeypatch.delenv("SWING_DB_ACCESS_TOKEN", raising=False)
+    azure_client = TestClient(create_app(_AZURE_URL, edge_dir=tmp_path))
     body = azure_client.get("/api/health").json()
     assert body["azure"] is True
     # Still 200 and truthful even where pyodbc isn't installed (CI has no [azure]
@@ -279,3 +285,12 @@ def test_azure_login_reports_a_missing_cli(tmp_path: Path) -> None:
         _AZURE_URL, edge_dir=tmp_path, login_spawner=lambda: None))
     assert client.post("/api/azure-login", headers=_HDR).json() == {
         "started": False, "error": "az-not-found"}
+
+
+def test_login_flight_ttl_expires_a_wedged_process() -> None:
+    # The TTL half of the liveness check: a wedged CLI that never exits stops
+    # blocking re-spawn once it outlives _LOGIN_TTL_S. (The poll() half is covered
+    # by the single-flight test above; no clock seam -- active() takes `now`.)
+    flight = _LoginFlight(proc=_FakeProc(), started=1000.0)
+    assert flight.active(1000.0 + _LOGIN_TTL_S - 0.1) is True
+    assert flight.active(1000.0 + _LOGIN_TTL_S) is False
