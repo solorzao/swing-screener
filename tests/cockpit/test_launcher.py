@@ -244,3 +244,16 @@ def test_failure_report_still_reaches_messagebox_after_stream_shim(monkeypatch):
     launcher._report_startup_failure("startup failed (ValueError)", messagebox=seen.append)
 
     assert seen == ["startup failed (ValueError)"]
+
+
+def test_window_icon_path_points_at_the_packaged_ico():
+    """The runtime window icon reuses the committed shortcut .ico -- one identity.
+    (pywebview's start(icon=...) is GTK/QT-only; on Windows the launcher sets the
+    WinForms form Icon from this path after the window is shown.)"""
+    from swing_screener.cockpit import __main__ as launcher
+
+    ico = launcher._window_icon_path()
+
+    assert ico is not None
+    assert ico.name == "cockpit.ico"
+    assert ico.is_file()
