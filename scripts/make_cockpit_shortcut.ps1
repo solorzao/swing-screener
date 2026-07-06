@@ -21,12 +21,18 @@ if (-not (Test-Path $pythonw)) {
 }
 
 $lnk = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Swing Screener Cockpit.lnk'
+$icon = Join-Path $repoRoot 'src\swing_screener\cockpit\assets\cockpit.ico'
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($lnk)
 $shortcut.TargetPath = $pythonw
 $shortcut.Arguments = '-m swing_screener.cockpit'
 $shortcut.WorkingDirectory = $repoRoot
 $shortcut.Description = 'Swing Screener Cockpit -- native window over the local screener database'
+if (Test-Path $icon) {
+    # The committed cockpit identity (scripts/make_cockpit_icon.py regenerates it);
+    # without this the shortcut wears pythonw's generic icon.
+    $shortcut.IconLocation = "$icon,0"
+}
 $shortcut.Save()
 
 Write-Output "Created: $lnk"
