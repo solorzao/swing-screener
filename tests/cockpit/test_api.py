@@ -1,6 +1,7 @@
 """Cockpit API contract: health never lies or leaks, heartbeats and stats are typed,
 and a dead database is a friendly 503 -- never a traceback, never the URL."""
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -35,6 +36,20 @@ def _client(tmp_path: Path) -> TestClient:
     url = _db_url(tmp_path)
     get_engine(url)  # seed the file + schema; the app builds its OWN engine from the URL
     return TestClient(create_app(url, edge_dir=tmp_path))
+
+
+class _FakeProc:
+    """Stands in for subprocess.Popen behind the spawner seam: poll() is the whole
+    contract the endpoint reads."""
+    def __init__(self) -> None:
+        self.exited: int | None = None
+
+    def poll(self) -> int | None:
+        return self.exited
+
+
+_HDR = {"X-Cockpit": "1"}
+_AZURE_URL = "mssql+pyodbc://@srv.database.windows.net/swing?driver=ODBC+Driver+18"
 
 
 def test_health_reports_connection_label_without_credentials(tmp_path: Path) -> None:
@@ -201,3 +216,56 @@ def test_health_carries_the_azure_flag(tmp_path: Path) -> None:
     # Still 200 and truthful even where pyodbc isn't installed (CI has no [azure]
     # extra): connectivity may be down, the flag must not care.
     assert body["label"] == "Azure SQL · swing"
+
+
+def _counting_spawner(calls: list[int]) -> Callable[[], _FakeProc]:
+    def spawner() -> _FakeProc:
+        calls.append(1)
+        return _FakeProc()
+
+    return spawner
+
+
+def test_azure_login_requires_the_cockpit_header(tmp_path: Path) -> None:
+    # Any webpage can fire a simple POST at localhost; the custom header forces a
+    # failing CORS preflight cross-origin. No header -> 403 and NOTHING spawns.
+    calls: list[int] = []
+    client = TestClient(create_app(
+        _AZURE_URL, edge_dir=tmp_path, login_spawner=_counting_spawner(calls),
+    ))
+    assert client.post("/api/azure-login").status_code == 403
+    assert calls == []
+
+
+def test_azure_login_409s_on_a_local_database(tmp_path: Path) -> None:
+    calls: list[int] = []
+    client = TestClient(create_app(
+        _db_url(tmp_path), edge_dir=tmp_path, login_spawner=_counting_spawner(calls),
+    ))
+    assert client.post("/api/azure-login", headers=_HDR).status_code == 409
+    assert calls == []
+
+
+def test_azure_login_is_single_flight_until_the_process_exits(tmp_path: Path) -> None:
+    procs: list[_FakeProc] = []
+
+    def spawner() -> _FakeProc:
+        procs.append(_FakeProc())
+        return procs[-1]
+
+    client = TestClient(create_app(_AZURE_URL, edge_dir=tmp_path, login_spawner=spawner))
+    assert client.post("/api/azure-login", headers=_HDR).json() == {"started": True}
+    # In-flight: a double-click must not open a second browser tab.
+    assert client.post("/api/azure-login", headers=_HDR).json() == {
+        "started": False, "already_running": True}
+    assert len(procs) == 1
+    procs[0].exited = 1  # the browser dance ended (success or not -- health decides)
+    assert client.post("/api/azure-login", headers=_HDR).json() == {"started": True}
+    assert len(procs) == 2
+
+
+def test_azure_login_reports_a_missing_cli(tmp_path: Path) -> None:
+    client = TestClient(create_app(
+        _AZURE_URL, edge_dir=tmp_path, login_spawner=lambda: None))
+    assert client.post("/api/azure-login", headers=_HDR).json() == {
+        "started": False, "error": "az-not-found"}
