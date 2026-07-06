@@ -4,8 +4,10 @@ and a dead database is a friendly 503 -- never a traceback, never the URL."""
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+import sys
 
 from fastapi.testclient import TestClient
+import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -203,10 +205,18 @@ def test_db_down_is_a_friendly_503(tmp_path: Path) -> None:
         assert r.json()["detail"] == "database unreachable (OperationalError)"
 
 
-def test_health_carries_the_azure_flag(tmp_path: Path) -> None:
+def test_health_carries_the_azure_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # The flag describes the URL, not reachability: the frontend gates the sign-in
     # button on it, and an az login can never fix a sqlite file.
     assert _client(tmp_path).get("/api/health").json()["azure"] is False
+    # Poison the whole azure package (not just azure.identity: `from azure.identity
+    # import ...` would still import the parent for real) so the probe's lazy AAD
+    # import raises fast on boxes WITH the [azure] extra -- no credential chain, no
+    # network, and sys.modules stays azure-free for tests/test_config_secrets.py's
+    # never-imports-azure invariant. Health catches it: connected stays truthful.
+    monkeypatch.setitem(sys.modules, "azure", None)
     azure_client = TestClient(create_app(
         "mssql+pyodbc://@srv.database.windows.net/swing?driver=ODBC+Driver+18",
         edge_dir=tmp_path,
