@@ -17,10 +17,16 @@ Three constraints, stated as contract:
   No stack trace and no URL in any response body.
 """
 
+import shutil
+import subprocess
+import sys
 import threading
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -59,8 +65,69 @@ def connection_label(db_url: str) -> str:
     return driver
 
 
+def _is_azure(db_url: str) -> bool:
+    """True iff the URL names an mssql database -- the only backend whose credential
+    ``az login`` refreshes, and the gate for the sign-in affordance (design doc
+    2026-07-06). URL-shaped, not connectivity-shaped: an unreachable Azure DB is
+    exactly the case the button exists for."""
+    try:
+        return make_url(db_url).drivername.split("+", 1)[0] == "mssql"
+    except Exception:  # unparseable: no affordance, same posture as connection_label
+        return False
+
+
+_LOGIN_TTL_S = 120.0  # matches the frontend's re-arm deadline (design doc 2026-07-06)
+
+
+class _LoginProc(Protocol):
+    """What the endpoint needs from a login process: liveness. Popen satisfies it;
+    tests pass a fake -- the suite must run without spawning anything."""
+
+    def poll(self) -> int | None: ...
+
+
+def _spawn_az_login() -> _LoginProc | None:
+    """Detached ``az login`` with a FIXED argv (never shell, nothing user-supplied
+    ever reaches the command line) or None when the CLI is absent. Output goes to
+    devnull: az drives the system browser itself and the cockpit may be console-less
+    (pythonw). CREATE_NO_WINDOW keeps a cmd box from flashing over the window."""
+    az = shutil.which("az")
+    if az is None:
+        return None
+    flags = 0
+    if sys.platform == "win32":  # attr exists only on Windows; Linux CI type-checks
+        flags = subprocess.CREATE_NO_WINDOW
+    return subprocess.Popen(  # noqa: S603 -- fixed argv by contract
+        [az, "login"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        creationflags=flags,
+    )
+
+
+@dataclass
+class _LoginFlight:
+    """The one in-flight ``az login``; read and mutated only under the app's login
+    lock, so plain attributes are race-free."""
+
+    proc: _LoginProc | None = None
+    started: float = 0.0
+
+    def active(self, now: float) -> bool:
+        # poll() replaces a watcher thread (same observable contract, less
+        # machinery); the TTL covers a wedged CLI that never exits.
+        return (
+            self.proc is not None
+            and self.proc.poll() is None
+            and (now - self.started) < _LOGIN_TTL_S
+        )
+
+
 def create_app(
-    db_url: str, *, edge_dir: Path | None = None, static_dir: Path | None = None
+    db_url: str,
+    *,
+    edge_dir: Path | None = None,
+    static_dir: Path | None = None,
+    login_spawner: Callable[[], _LoginProc | None] | None = None,
 ) -> FastAPI:
     """Build the cockpit API around one database URL.
 
@@ -68,7 +135,8 @@ def create_app(
     surfaces per-request as ``connected: false`` / 503 -- never as a factory-time crash.
     ``app.state.db_url`` is stored for the pywebview launcher. ``edge_dir`` is the
     heartbeats test seam: where ``collect_heartbeats`` looks for edge files; ``None``
-    resolves via settings.
+    resolves via settings. ``login_spawner`` is the ``az login`` test seam; ``None``
+    spawns the real CLI.
 
     ``static_dir`` (default: the packaged ``cockpit/static/``, built by the Vite
     frontend) is mounted at ``/`` AFTER the API routes, so ``/api/*`` always wins.
@@ -127,8 +195,9 @@ def create_app(
             with _engine().connect() as conn:
                 conn.execute(text("SELECT 1"))
         except Exception as exc:
-            return {"connected": False, "label": label, "error": _down_summary(exc)}
-        return {"connected": True, "label": label, "error": None}
+            return {"connected": False, "label": label, "error": _down_summary(exc),
+                    "azure": _is_azure(db_url)}
+        return {"connected": True, "label": label, "error": None, "azure": _is_azure(db_url)}
 
     @app.get("/api/heartbeats")
     def heartbeats(session: Session = Depends(_session)) -> list[dict[str, object]]:
@@ -160,6 +229,33 @@ def create_app(
                 for strength in sorted(by_strength)
             )
         return {"cohorts": cohorts}
+
+    spawner = login_spawner if login_spawner is not None else _spawn_az_login
+    login_lock = threading.Lock()
+    login_flight = _LoginFlight()
+
+    @app.post("/api/azure-login")
+    def azure_login(request: Request) -> dict[str, object]:
+        """Spawn ``az login`` to refresh the AAD credential (design doc 2026-07-06).
+
+        Contract: header-guarded (the custom header turns cross-origin calls into
+        failed CORS preflights), Azure-mode only (a login cannot fix a sqlite file),
+        single-flight, and NO success signal -- ``/api/health`` is the sole recovery
+        oracle; the per-connection token fetch picks up the new credential on the
+        next poll. Never touches the engine."""
+        if request.headers.get("x-cockpit") != "1":
+            raise HTTPException(status_code=403, detail="missing X-Cockpit header")
+        if not _is_azure(db_url):
+            raise HTTPException(status_code=409, detail="not an Azure database")
+        with login_lock:
+            if login_flight.active(time.monotonic()):
+                return {"started": False, "already_running": True}
+            proc = spawner()
+            if proc is None:
+                return {"started": False, "error": "az-not-found"}
+            login_flight.proc = proc
+            login_flight.started = time.monotonic()
+        return {"started": True}
 
     resolved_static = static_dir if static_dir is not None else Path(__file__).parent / "static"
     if (resolved_static / "index.html").is_file():

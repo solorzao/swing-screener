@@ -1,14 +1,23 @@
 """Cockpit API contract: health never lies or leaks, heartbeats and stats are typed,
 and a dead database is a friendly 503 -- never a traceback, never the URL."""
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+import sys
 
 from fastapi.testclient import TestClient
+import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from swing_screener.cockpit.api import _down_summary, connection_label, create_app
+from swing_screener.cockpit.api import (
+    _LOGIN_TTL_S,
+    _down_summary,
+    _LoginFlight,
+    connection_label,
+    create_app,
+)
 from swing_screener.db.models import EmailLog, PaperTrade
 from swing_screener.db.session import get_engine
 
@@ -35,6 +44,20 @@ def _client(tmp_path: Path) -> TestClient:
     url = _db_url(tmp_path)
     get_engine(url)  # seed the file + schema; the app builds its OWN engine from the URL
     return TestClient(create_app(url, edge_dir=tmp_path))
+
+
+class _FakeProc:
+    """Stands in for subprocess.Popen behind the spawner seam: poll() is the whole
+    contract the endpoint reads."""
+    def __init__(self) -> None:
+        self.exited: int | None = None
+
+    def poll(self) -> int | None:
+        return self.exited
+
+
+_HDR = {"X-Cockpit": "1"}
+_AZURE_URL = "mssql+pyodbc://@srv.database.windows.net/swing?driver=ODBC+Driver+18"
 
 
 def test_health_reports_connection_label_without_credentials(tmp_path: Path) -> None:
@@ -186,3 +209,88 @@ def test_db_down_is_a_friendly_503(tmp_path: Path) -> None:
         r = client.get(path)
         assert r.status_code == 503, f"{path} must 503, got {r.status_code}"
         assert r.json()["detail"] == "database unreachable (OperationalError)"
+
+
+def test_health_carries_the_azure_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The flag describes the URL, not reachability: the frontend gates the sign-in
+    # button on it, and an az login can never fix a sqlite file.
+    assert _client(tmp_path).get("/api/health").json()["azure"] is False
+    # Poison the whole azure package (not just azure.identity: `from azure.identity
+    # import ...` would still import the parent for real) so the probe's lazy AAD
+    # import raises fast on boxes WITH the [azure] extra -- no credential chain, no
+    # network, and sys.modules stays azure-free for tests/test_config_secrets.py's
+    # never-imports-azure invariant. Health catches it: connected stays truthful.
+    monkeypatch.setitem(sys.modules, "azure", None)
+    # A dev box exporting SWING_DB_ACCESS_TOKEN would take the static-token branch
+    # (poison never consulted) and really dial out -- close that side door too.
+    monkeypatch.delenv("SWING_DB_ACCESS_TOKEN", raising=False)
+    azure_client = TestClient(create_app(_AZURE_URL, edge_dir=tmp_path))
+    body = azure_client.get("/api/health").json()
+    assert body["azure"] is True
+    # Still 200 and truthful even where pyodbc isn't installed (CI has no [azure]
+    # extra): connectivity may be down, the flag must not care.
+    assert body["label"] == "Azure SQL · swing"
+
+
+def _counting_spawner(calls: list[int]) -> Callable[[], _FakeProc]:
+    def spawner() -> _FakeProc:
+        calls.append(1)
+        return _FakeProc()
+
+    return spawner
+
+
+def test_azure_login_requires_the_cockpit_header(tmp_path: Path) -> None:
+    # Any webpage can fire a simple POST at localhost; the custom header forces a
+    # failing CORS preflight cross-origin. No header -> 403 and NOTHING spawns.
+    calls: list[int] = []
+    client = TestClient(create_app(
+        _AZURE_URL, edge_dir=tmp_path, login_spawner=_counting_spawner(calls),
+    ))
+    assert client.post("/api/azure-login").status_code == 403
+    assert calls == []
+
+
+def test_azure_login_409s_on_a_local_database(tmp_path: Path) -> None:
+    calls: list[int] = []
+    client = TestClient(create_app(
+        _db_url(tmp_path), edge_dir=tmp_path, login_spawner=_counting_spawner(calls),
+    ))
+    assert client.post("/api/azure-login", headers=_HDR).status_code == 409
+    assert calls == []
+
+
+def test_azure_login_is_single_flight_until_the_process_exits(tmp_path: Path) -> None:
+    procs: list[_FakeProc] = []
+
+    def spawner() -> _FakeProc:
+        procs.append(_FakeProc())
+        return procs[-1]
+
+    client = TestClient(create_app(_AZURE_URL, edge_dir=tmp_path, login_spawner=spawner))
+    assert client.post("/api/azure-login", headers=_HDR).json() == {"started": True}
+    # In-flight: a double-click must not open a second browser tab.
+    assert client.post("/api/azure-login", headers=_HDR).json() == {
+        "started": False, "already_running": True}
+    assert len(procs) == 1
+    procs[0].exited = 1  # the browser dance ended (success or not -- health decides)
+    assert client.post("/api/azure-login", headers=_HDR).json() == {"started": True}
+    assert len(procs) == 2
+
+
+def test_azure_login_reports_a_missing_cli(tmp_path: Path) -> None:
+    client = TestClient(create_app(
+        _AZURE_URL, edge_dir=tmp_path, login_spawner=lambda: None))
+    assert client.post("/api/azure-login", headers=_HDR).json() == {
+        "started": False, "error": "az-not-found"}
+
+
+def test_login_flight_ttl_expires_a_wedged_process() -> None:
+    # The TTL half of the liveness check: a wedged CLI that never exits stops
+    # blocking re-spawn once it outlives _LOGIN_TTL_S. (The poll() half is covered
+    # by the single-flight test above; no clock seam -- active() takes `now`.)
+    flight = _LoginFlight(proc=_FakeProc(), started=1000.0)
+    assert flight.active(1000.0 + _LOGIN_TTL_S - 0.1) is True
+    assert flight.active(1000.0 + _LOGIN_TTL_S) is False

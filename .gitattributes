@@ -1,0 +1,3 @@
+# The committed Vite build is a byte-for-byte artifact: no eol normalization,
+# or every rebuild flips index.html LF<->CRLF and churns the diff.
+src/swing_screener/cockpit/static/** -text

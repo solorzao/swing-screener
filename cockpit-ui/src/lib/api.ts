@@ -32,6 +32,8 @@ export interface Health {
   connected: boolean
   label: string
   error: string | null
+  /** True iff the DB URL is Azure — gates the sign-in affordance. */
+  azure: boolean
 }
 
 export type HeartbeatState = 'up' | 'late' | 'down' | 'unknown'
@@ -46,8 +48,8 @@ export interface Heartbeat {
   detail: string
 }
 
-async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url)
+async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init)
   if (!res.ok) {
     // The backend 503s with {"detail": "database unreachable (...)"} — surface
     // that one safe line; anything else keeps the bare status.
@@ -69,6 +71,22 @@ export const getHeartbeats = (): Promise<Heartbeat[]> =>
   fetchJson<Heartbeat[]>('/api/heartbeats')
 
 export const getCohorts = (): Promise<Cohorts> => fetchJson<Cohorts>('/api/stats/cohorts')
+
+export interface AzureLoginResponse {
+  started: boolean
+  already_running?: boolean
+  error?: string
+}
+
+/** Kick off `az login` on the backend. The response only says whether a login
+ * process STARTED — recovery is observed via /api/health, never via this call.
+ * X-Cockpit is the guard header: it forces cross-origin callers into a failing
+ * CORS preflight; same-origin us attaches it trivially. */
+export const postAzureLogin = (): Promise<AzureLoginResponse> =>
+  fetchJson<AzureLoginResponse>('/api/azure-login', {
+    method: 'POST',
+    headers: { 'X-Cockpit': '1' },
+  })
 
 export interface Polled<T> {
   data: T | null

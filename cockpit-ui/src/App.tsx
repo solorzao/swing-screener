@@ -71,7 +71,9 @@ export default function App() {
           <div className="db-down-title">{health.data.label} — not reachable</div>
           <div className="db-down-sub">{health.data.error ?? 'database unreachable'}</div>
           <div className="db-down-hint">
-            The cockpit keeps retrying every 60 seconds; nothing below is lost.
+            {health.data.azure
+              ? 'The cockpit keeps retrying every 60 seconds — if your Azure sign-in expired, use “Sign in to Azure” in the masthead.'
+              : 'The cockpit keeps retrying every 60 seconds; nothing below is lost.'}
           </div>
         </div>
       ) : (
