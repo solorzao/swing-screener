@@ -54,6 +54,37 @@ def _tier_stamped(trades: Iterable[PaperTrade]) -> list[PaperTrade]:
             if t.opened_date is None or t.opened_date >= TIER_STAMPED_FROM]
 
 
+# fill_slippage_atr's default flipped 0.0 -> 0.05 on 2026-07-02 (0e3a1e8, PR #75: the
+# net-of-cost book fix of the 2026-07 audit). realized_r is baked net-at-exit, so rows
+# exited BEFORE this date are gross of costs with no per-row marker distinguishing them.
+COST_STAMPED_FROM = date(2026, 7, 2)
+
+
+def cost_level_for(trades: Iterable[PaperTrade]) -> str | None:
+    """The slippage level a cohort's realized R provably carries: ``"0.05"`` iff there is
+    at least one closed-filled trade and EVERY closed-filled trade exited on/after
+    ``COST_STAMPED_FROM``; otherwise ``None``.
+
+    Honesty rules, do not weaken:
+
+    - The book is mixed gross/net: slippage is applied AT EXIT, and rows exited before
+      the 0.05 default shipped realized gross R with no per-row marker. The only honest
+      aggregate stamp is "every trade in this cohort provably exited after the cutoff",
+      so ONE pre-cutoff exit (or an unprovable one) poisons the whole cohort to ``None``.
+    - A closed row with ``exit_date is None`` cannot prove its cost level -> ``None``.
+    - Even ``"0.05"`` means level-exits-only: momentum_flip/time_stop exits use the bar
+      close and are never haircut, so "net @0.05" must not be overclaimed in tooltips.
+
+    Open/unfilled rows carry no realized cost yet and neither earn nor block the stamp.
+    """
+    closed = [t for t in trades if _is_closed_filled(t)]
+    if not closed:
+        return None
+    if all(t.exit_date is not None and t.exit_date >= COST_STAMPED_FROM for t in closed):
+        return "0.05"
+    return None
+
+
 # signal_score's DEFINITION changed for the reversal book on 2026-07-03 (score v2:
 # confirmation-lag + volume weights replaced the falsified legacy vector -- see
 # docs/plans/2026-07-03-reversal-score-overhaul.md). FORWARD rows scored before then
@@ -273,11 +304,20 @@ class PairedArmDelta:
     ticker-clustered lower bound. Arms duplicate every fill (identical entry economics),
     so pairing on the fill identity removes the entry noise a two-sample comparison
     keeps -- the honest way to judge an exit-policy arm. ``thin_clusters`` flags that the
-    clustered bootstrap could not run and the bound fell back to IID."""
+    clustered bootstrap could not run and the bound fell back to IID.
+
+    Mirroring ``PerformanceSummary``: only the LOWER bound is hardened by the clustered
+    bootstrap (every retire/promote gate keys off it); ``delta_ci_high`` stays the plain
+    IID normal approximation (``mean_delta + 1.96 * stderr``) and consumers label it so
+    (the settlement card's futility check reads it as 'iid'). ``stderr`` is the raw IID
+    standard error of the mean delta; 0.0 with fewer than 2 pairs (the interval
+    collapses to the point -- ``n_pairs`` is what flags it as untrustworthy)."""
 
     n_pairs: int
     mean_delta: float
+    stderr: float
     delta_ci_low: float
+    delta_ci_high: float
     n_clusters: int
     thin_clusters: bool
 
@@ -318,12 +358,15 @@ def paired_arm_delta(
 
     n = len(deltas)
     if n == 0:
-        return PairedArmDelta(0, 0.0, 0.0, 0, True)
+        return PairedArmDelta(n_pairs=0, mean_delta=0.0, stderr=0.0, delta_ci_low=0.0,
+                              delta_ci_high=0.0, n_clusters=0, thin_clusters=True)
     mean = sum(deltas) / n
     stderr = statistics.stdev(deltas) / (n ** 0.5) if n >= 2 else 0.0
     iid_low = mean - _Z95 * stderr
     low, n_clusters, thin = _clustered_ci_low(deltas_by_ticker, iid_low)
-    return PairedArmDelta(n, mean, low, n_clusters, thin)
+    return PairedArmDelta(n_pairs=n, mean_delta=mean, stderr=stderr, delta_ci_low=low,
+                          delta_ci_high=mean + _Z95 * stderr, n_clusters=n_clusters,
+                          thin_clusters=thin)
 
 
 def breakdown(trades: Iterable[PaperTrade], key: str) -> dict[str, PerformanceSummary]:
@@ -471,4 +514,38 @@ def equity_curve(trades: Iterable[PaperTrade]) -> list[tuple[date, float]]:
     for exit_date, realized_r in points:
         cum += realized_r
         curve.append((exit_date, cum))
+    return curve
+
+
+def trailing_expectancy(
+    trades: Iterable[PaperTrade], *, window: int = 20
+) -> list[tuple[date, float]]:
+    """Rolling mean realized R over the trailing ``window`` closes, ordered by
+    ``exit_date`` -- the settlement cards' sparkline of whether the edge is drifting.
+
+    Same filtering/ordering as ``equity_curve``: closed-filled trades with an
+    ``exit_date``, ascending. One value is computed per closing trade (with fewer than
+    ``window`` closes so far, the mean of what exists), then same-date closes collapse
+    to a single point carrying the LAST value of that date. Bootstrap-free point
+    estimates only: a card grid calling the 1000-draw bootstrap per point would be
+    ruinous, and the sparkline shows drift, not certification -- gates keep reading the
+    hardened CI bounds, never this curve.
+    """
+    points: list[tuple[date, float]] = [
+        (t.exit_date, t.realized_r)
+        for t in trades
+        if _is_closed_filled(t) and t.exit_date is not None and t.realized_r is not None
+    ]
+    points.sort(key=lambda p: p[0])
+
+    curve: list[tuple[date, float]] = []
+    values: list[float] = []
+    for exit_date, realized_r in points:
+        values.append(realized_r)
+        tail = values[-window:]
+        point = (exit_date, sum(tail) / len(tail))
+        if curve and curve[-1][0] == exit_date:
+            curve[-1] = point
+        else:
+            curve.append(point)
     return curve
