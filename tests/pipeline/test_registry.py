@@ -49,6 +49,8 @@ def test_registry_matches_code_rosters() -> None:
     base = StrategyConfig()
     exps = load_experiments(REPO_EDGE)
     assert len(exps) == len({e.name for e in exps})  # exactly one entry per experiment
+    # A malformed kind would slip BOTH per-kind set equalities below; close that gap.
+    assert {e.kind for e in exps} <= {"arm", "variant"}
     active = [e for e in exps if e.status == "active"]
     assert {e.name for e in active if e.kind == "arm"} == set(build_arms(base)) - {BASELINE}
     assert {e.name for e in active if e.kind == "variant"} == (
