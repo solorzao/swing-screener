@@ -3,8 +3,10 @@
 Every forward experiment (exit arm or screen variant) has exactly one registry entry
 carrying its hypothesis, stopping rule verbatim, MDE, and the git sha it was registered
 under -- the solo pre-registration-theater mitigation. The registry and the code rosters
-(pipeline/arms.py, pipeline/variants.py) must never drift: a roster entry without a
-registry row (or vice versa) is a test failure, not a rendering surprise.
+(pipeline/arms.py, pipeline/variants.py) must never drift: a roster entry without an
+ACTIVE registry row (or vice versa) is a test failure, not a rendering surprise.
+Retirement deletes the roster line but never the registry row -- the row is the audit
+record, so a retired row must keep its decided_at/decision.
 """
 
 from pathlib import Path
@@ -37,10 +39,22 @@ def test_missing_file_is_empty(tmp_path: Path) -> None:
 
 
 def test_registry_matches_code_rosters() -> None:
-    """Bidirectional lockstep with the real committed registry."""
+    """Bidirectional lockstep with the real committed registry, per kind.
+
+    Only ACTIVE entries must match the rosters (retirement deletes the roster line, never
+    the registry row). Kind matters: the settlement engine picks paired-vs-clustered delta
+    machinery off ``kind``, so an arm registered as a variant (or vice versa) is exactly
+    the dishonesty this test exists to catch.
+    """
     base = StrategyConfig()
-    roster = (set(build_arms(base)) - {BASELINE}) | (
+    exps = load_experiments(REPO_EDGE)
+    assert len(exps) == len({e.name for e in exps})  # exactly one entry per experiment
+    active = [e for e in exps if e.status == "active"]
+    assert {e.name for e in active if e.kind == "arm"} == set(build_arms(base)) - {BASELINE}
+    assert {e.name for e in active if e.kind == "variant"} == (
         set(build_screen_variants(base)) - {DEFAULT_VARIANT}
     )
-    registered = {e.name for e in load_experiments(REPO_EDGE)}
-    assert registered == roster
+    for exp in exps:
+        if exp.status == "retired":
+            assert exp.decided_at is not None, f"{exp.name}: retired without decided_at"
+            assert exp.decision is not None, f"{exp.name}: retired without decision"
