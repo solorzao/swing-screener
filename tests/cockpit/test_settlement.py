@@ -265,6 +265,58 @@ def test_n_needed_scales_inverse_square() -> None:
     assert card.n_needed is None
     assert card.eta is None
 
+    # Tight interval but only 10 pairs: the width projection alone says ~1 close, yet
+    # the settlement rule cannot fire below n >= 20 -- n_needed floors at the n gate.
+    tight = _paired_trades(
+        [(f"T{i:02d}", 0.5 + ((i % 3) - 1) * 0.01) for i in range(10)], arm="a_tight"
+    )
+    [card] = build_cards([_exp("a_tight", kind="arm")], book_loader=_loader(tight), now=NOW)
+    assert card.n_accrued == 10
+    halfwidth = (card.delta.ci_high - card.delta.ci_low) / 2
+    assert 0 < halfwidth <= 0.15  # the width condition is already met...
+    assert card.n_needed == 20    # ...so the n >= MIN_LEADERBOARD_N gate is what binds
+
+
+def test_futility_needs_a_real_interval() -> None:
+    """A >= 20-close book vs an EMPTY control collapses the bounds to the point
+    estimate -- an interval no bootstrap produced. However far below the MDE the
+    numbers sit, no verdict may be issued from an untrusted bound: still accruing."""
+    trades = [
+        _trade(f"T{i % 10:02d}", -0.5 + (i % 3 - 1) * 0.01, variant="rev_orphan")
+        for i in range(20)
+    ]
+    exp = _exp("rev_orphan", kind="variant")  # mde_r=0.10; no 'default' rows exist
+
+    [card] = build_cards([exp], book_loader=_loader(trades), now=NOW)
+
+    assert card.n_accrued == 20
+    assert card.delta.ci_high < exp.mde_r        # the numbers alone would read futile
+    assert card.delta.ci_low == card.delta.ci_high  # ...but the interval is collapsed
+    assert card.state == "accruing"
+
+
+def test_thin_control_side_blocks_settlement() -> None:
+    """The weaker-side rules: a two-sample delta is only as trustworthy as its thinner
+    book. Book on 10 tickers, control on 2 -> thin blocks settlement even with a tight
+    interval, and the delta's n_clusters reports min(book, control)."""
+    trades: list[PaperTrade] = []
+    for k in range(10):  # book: 10 tickers x 2 closes, per-ticker means tightly spread
+        for _ in range(2):
+            trades.append(_trade(f"T{k:02d}", 0.5 + k * 0.01, variant="rev_thinctl"))
+    for k in range(2):   # control: only 2 tickers -- below the cluster floor
+        for _ in range(2):
+            trades.append(_trade(f"T{k:02d}", 0.1 + k * 0.01, variant=DEFAULT_VARIANT))
+    exp = _exp("rev_thinctl", kind="variant")
+
+    [card] = build_cards([exp], book_loader=_loader(trades), now=NOW)
+
+    assert card.n_accrued == 20
+    assert (card.delta.ci_high - card.delta.ci_low) / 2 <= 0.15  # width alone would settle
+    assert card.delta.ci_high > exp.mde_r                        # and futility is not in play
+    assert card.delta.thin_clusters is True
+    assert card.delta.n_clusters == 2
+    assert card.state == "accruing"
+
 
 def test_gold_facet_filters_would_surface_truthy() -> None:
     """The gold facet is entries a human could actually have taken: would_surface must

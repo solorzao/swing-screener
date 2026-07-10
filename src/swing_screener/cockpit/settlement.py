@@ -17,10 +17,13 @@ accruing. A book can be simultaneously settled-by-width AND futile (a tight inte
 sitting entirely below the MDE); futility wins because it is the more decision-forcing
 signal -- "this experiment cannot reach its minimum detectable effect" demands an
 answer, while "the interval is tight" merely permits one. Futility tests the UPPER
-bound against ``mde_r`` (never "lower bound < 0"), and settlement additionally refuses
-a thin (too-few-clusters) bound: a tight interval the clustered bootstrap could not
-harden is not evidence. Retired experiments still produce cards -- falsified history
-stays legible, with the registry's decision text shown verbatim.
+bound against ``mde_r`` (never "lower bound < 0"). Both verdicts share one trust bar:
+NO verdict -- settled or futile -- is ever issued from an untrusted bound. A thin
+(too-few-clusters) bound, or an interval that collapsed to the point because a side
+was empty, keeps the card accruing no matter what its numbers say -- an interval the
+clustered bootstrap could not harden (or never produced) is not evidence in either
+direction. Retired experiments still produce cards -- falsified history stays legible,
+with the registry's decision text shown verbatim.
 
 Pure module: no DB session, no FastAPI. The injected ``book_loader`` is the only data
 seam (the API layer binds it to ``load_closed_paper_trades(session, ...)``), so the
@@ -37,6 +40,7 @@ from swing_screener.analytics.performance import (
     MIN_LEADERBOARD_N,
     PerformanceSummary,
     _is_closed_filled,
+    closed_by_ticker,
     clustered_two_sample_delta_low,
     cost_level_for,
     paired_arm_delta,
@@ -98,46 +102,51 @@ def _facet_filter(trades: list[PaperTrade], facet: str) -> list[PaperTrade]:
     return trades
 
 
-def _closed_by_ticker(trades: list[PaperTrade]) -> dict[str, list[float]]:
-    """Realized R per ticker over closed-filled trades -- the two-sample bootstrap's
-    clusters, grouped exactly the way ``propose.py`` does."""
-    d: dict[str, list[float]] = {}
-    for t in trades:
-        if _is_closed_filled(t) and t.realized_r is not None:
-            d.setdefault(t.ticker, []).append(t.realized_r)
-    return d
-
-
 def _scope(play_type: str) -> str | None:
     """Registry scope -> loader filter: 'all' means the whole book (no filter)."""
     return None if play_type == "all" else play_type
 
 
 def _state(
-    exp: Experiment, *, n_accrued: int, halfwidth: float, upper: float, thin: bool
+    exp: Experiment,
+    *,
+    n_accrued: int,
+    halfwidth: float,
+    upper: float,
+    thin: bool,
+    collapsed: bool,
 ) -> str:
     """The uniform settlement rule (scope decision 3), precedence retired > futile >
-    settled > accruing -- see the module docstring for why futile beats settled."""
+    settled > accruing -- see the module docstring for why futile beats settled.
+
+    One trust bar for BOTH verdicts: thin clusters or a collapsed (no-bootstrap)
+    interval keep the card accruing -- a >= 20-close book vs an empty control must
+    never read futile off an interval no bootstrap produced."""
     if exp.status == "retired":
         return "retired"
-    if n_accrued >= MIN_LEADERBOARD_N and upper < exp.mde_r:
+    trusted = n_accrued >= MIN_LEADERBOARD_N and not thin and not collapsed
+    if trusted and upper < exp.mde_r:
         return "futile-awaiting-decision"
-    if (
-        n_accrued >= MIN_LEADERBOARD_N
-        and halfwidth <= exp.target_ci_halfwidth_r
-        and not thin
-    ):
+    if trusted and halfwidth <= exp.target_ci_halfwidth_r:
         return "settled-awaiting-decision"
     return "accruing"
 
 
 def _n_needed(n_accrued: int, halfwidth: float, target: float) -> int | None:
-    """Closes needed for the CI half-width to shrink to ``target``, by the shrinkage
-    law halfwidth ~ 1/sqrt(n). Unprojectable (n too small, interval already collapsed)
-    is ``None`` -- never 0, which would read as "done"."""
+    """Closes needed to settle, by the CI-shrinkage law halfwidth ~ 1/sqrt(n).
+    Unprojectable (n too small, interval already collapsed) is ``None`` -- never 0,
+    which would read as "done".
+
+    Caveat: the inverse-square projection is a first-order IID approximation --
+    clustered-bootstrap halfwidths shrink with CLUSTER count, not close count, so
+    distinct tickers may bind later than this projects (and for variants the
+    projection tracks the treatment book only)."""
     if n_accrued < _MIN_N_FOR_PROJECTION or halfwidth <= 0:
         return None
-    return math.ceil(n_accrued * (halfwidth / target) ** 2)
+    # n_needed is the wider of the two binding constraints: the width projection and
+    # the settlement rule's own n >= MIN_LEADERBOARD_N gate (a tight-but-small book
+    # must not read "needs fewer than it has").
+    return max(math.ceil(n_accrued * (halfwidth / target) ** 2), MIN_LEADERBOARD_N)
 
 
 def _eta(
@@ -145,9 +154,12 @@ def _eta(
 ) -> str | None:
     """Projected settlement date from the trailing-30-calendar-day close rate of the
     book. No projectable n_needed or a zero rate -> ``None`` (accrual has stalled;
-    a made-up date would be worse than none)."""
+    a made-up date would be worse than none). Inherits ``_n_needed``'s first-order
+    IID caveat: the real settle date can lag this when clusters, not closes, bind."""
     if n_needed is None:
         return None
+    # now.date() is the UTC calendar date: after ~8pm ET it already reads tomorrow,
+    # skewing the anchor a day late -- accepted; the eta is a projection, not a deadline.
     cutoff = now.date() - timedelta(days=_ACCRUAL_WINDOW_DAYS)
     closes = sum(
         1 for t in book
@@ -172,23 +184,27 @@ def _spark(book: list[PaperTrade]) -> list[tuple[str, float]]:
 def _variant_numbers(
     book: list[PaperTrade], control: list[PaperTrade],
     book_s: PerformanceSummary, ctrl_s: PerformanceSummary,
-) -> tuple[float, float, float, int, int, bool]:
-    """(value, ci_low, ci_high, n_accrued, n_clusters, thin) for a VARIANT: the
-    clustered two-sample bootstrap, called twice for both bounds.
+) -> tuple[float, float, float, int, int, bool, bool]:
+    """(value, ci_low, ci_high, n_accrued, n_clusters, thin, collapsed) for a VARIANT:
+    the clustered two-sample bootstrap, called twice for both bounds.
 
     ``n_clusters`` is min(book, control) and ``thin`` is either side's flag: a
     two-sample bound is only as trustworthy as its weaker side. An empty side makes the
     bootstrap return -inf ("cannot certify"); that must never reach the wire, so the
     interval collapses to the point estimate -- ``n`` is what flags it as untrustworthy
-    (mirroring ``summarize``'s < 2-closes behavior)."""
+    (mirroring ``summarize``'s < 2-closes behavior). The collapse is tracked EXPLICITLY
+    (``collapsed=True``) rather than inferred from low == high, and ``_state`` treats a
+    collapsed interval as untrusted: a verdict needs an interval a bootstrap produced."""
     value = book_s.expectancy_r - ctrl_s.expectancy_r
-    a, b = _closed_by_ticker(book), _closed_by_ticker(control)
+    a, b = closed_by_ticker(book), closed_by_ticker(control)
     low = clustered_two_sample_delta_low(a, b, lower_pct=2.5)
     high = clustered_two_sample_delta_low(a, b, lower_pct=97.5)
-    if not math.isfinite(low) or not math.isfinite(high):
+    collapsed = not math.isfinite(low) or not math.isfinite(high)
+    if collapsed:
         low = high = value
     thin = book_s.thin_clusters or ctrl_s.thin_clusters
-    return value, low, high, book_s.n_closed, min(book_s.n_clusters, ctrl_s.n_clusters), thin
+    return (value, low, high, book_s.n_closed,
+            min(book_s.n_clusters, ctrl_s.n_clusters), thin, collapsed)
 
 
 def _card(
@@ -203,10 +219,13 @@ def _card(
             book_loader(play_type=scope, arm=BASELINE, variant=exp.control), facet
         )
         book_s, ctrl_s = summarize(book), summarize(control)
-        value, low, high, n_accrued, n_clusters, thin = _variant_numbers(
+        value, low, high, n_accrued, n_clusters, thin, collapsed = _variant_numbers(
             book, control, book_s, ctrl_s
         )
         upper_bound_type = "clustered"
+        # The delta compares both sides, so its cost stamp must cover both: claiming
+        # net@0.05 with a gross control side would be an overclaim.
+        delta_cost_pool = [*book, *control]
     elif exp.kind == "arm":
         trades = _facet_filter(
             book_loader(
@@ -223,6 +242,11 @@ def _card(
         # own closed count (the card's sub-line explains why).
         n_accrued, n_clusters, thin = pad.n_pairs, pad.n_clusters, pad.thin_clusters
         upper_bound_type = "iid"
+        # The paired interval is always computed from real pairs (0 pairs reads
+        # thin_clusters=True, which the trust bar already blocks) -- never collapsed.
+        collapsed = False
+        # Both delta sides come from this one pooled load (arms share fills).
+        delta_cost_pool = trades
     else:  # pragma: no cover -- the registry lockstep test keeps kinds well-formed
         raise ValueError(f"unknown experiment kind {exp.kind!r} for {exp.name!r}")
 
@@ -230,14 +254,15 @@ def _card(
     n_needed = _n_needed(n_accrued, halfwidth, exp.target_ci_halfwidth_r)
     delta = Stat(
         value=value, n=n_accrued, n_clusters=n_clusters, ci_low=low, ci_high=high,
-        cost_level=cost_level_for(book), corpus_id=None, facet=facet, unit="R",
-        thin_clusters=thin,
+        cost_level=cost_level_for(delta_cost_pool), corpus_id=None, facet=facet,
+        unit="R", thin_clusters=thin,
     )
     return SettlementCard(
         name=exp.name,
         kind=exp.kind,
         play_type=exp.play_type,
-        state=_state(exp, n_accrued=n_accrued, halfwidth=halfwidth, upper=high, thin=thin),
+        state=_state(exp, n_accrued=n_accrued, halfwidth=halfwidth, upper=high,
+                     thin=thin, collapsed=collapsed),
         n_accrued=n_accrued,
         n_needed=n_needed,
         eta=_eta(book, n_accrued=n_accrued, n_needed=n_needed, now=now),

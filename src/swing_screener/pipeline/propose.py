@@ -23,6 +23,7 @@ from swing_screener.analytics.performance import (
     MIN_LEADERBOARD_N,
     _CLUSTER_FLOOR,
     _is_closed_filled,
+    closed_by_ticker,
     clustered_two_sample_delta_low,
     summarize,
 )
@@ -62,17 +63,6 @@ def _incumbent_name(base_cfg: StrategyConfig) -> str:
     return f"ext_{base_cfg.max_extension_atr:.1f}"
 
 
-def _closed_by_ticker(trades: list[PaperTrade]) -> dict[str, list[float]]:
-    """Realized R per ticker over closed-filled trades (the bootstrap's clusters)."""
-    d: dict[str, list[float]] = {}
-    for t in trades:
-        # The second clause is redundant at runtime (_is_closed_filled already requires it)
-        # but narrows realized_r from float | None to float for mypy.
-        if _is_closed_filled(t) and t.realized_r is not None:
-            d.setdefault(t.ticker, []).append(t.realized_r)
-    return d
-
-
 def _clustered_two_sample_delta_low(
     winner: list[PaperTrade], incumbent: list[PaperTrade],
 ) -> float:
@@ -81,7 +71,7 @@ def _clustered_two_sample_delta_low(
     variants are not same-sample, D1). Delegates to the shared
     ``clustered_two_sample_delta_low`` primitive over each book's per-ticker R."""
     return clustered_two_sample_delta_low(
-        _closed_by_ticker(winner), _closed_by_ticker(incumbent)
+        closed_by_ticker(winner), closed_by_ticker(incumbent)
     )
 
 
@@ -185,7 +175,7 @@ def propose(
     # Trade-level teeth (D1: a TWO-SAMPLE comparison of independent books, clustered by ticker --
     # the variants produce different fills, so this is NOT the paired arm A/B). The summary gates
     # above only test the winner's own line; these test the winner-vs-incumbent DIFFERENCE.
-    if len(_closed_by_ticker(winner_trades)) < _CLUSTER_FLOOR:
+    if len(closed_by_ticker(winner_trades)) < _CLUSTER_FLOOR:
         return None
     if _clustered_two_sample_delta_low(winner_trades, incumbent_trades) <= 0:
         return None

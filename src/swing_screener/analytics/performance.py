@@ -215,6 +215,19 @@ def _clustered_ci_low(
     return min(iid_low, clustered_low), n_clusters, False
 
 
+def closed_by_ticker(trades: Iterable[PaperTrade]) -> dict[str, list[float]]:
+    """Realized R per ticker over closed-filled trades -- the bootstrap-cluster input
+    shape ``clustered_two_sample_delta_low`` consumes. Shared by ``propose`` (config
+    deltas) and the cockpit settlement engine (variant cards)."""
+    d: dict[str, list[float]] = {}
+    for t in trades:
+        # The second clause is redundant at runtime (_is_closed_filled already requires it)
+        # but narrows realized_r from float | None to float for mypy.
+        if _is_closed_filled(t) and t.realized_r is not None:
+            d.setdefault(t.ticker, []).append(t.realized_r)
+    return d
+
+
 def clustered_two_sample_delta_low(
     a_by_ticker: Mapping[str, Sequence[float]],
     b_by_ticker: Mapping[str, Sequence[float]],
