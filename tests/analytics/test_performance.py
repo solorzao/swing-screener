@@ -1,6 +1,8 @@
 import statistics
 from datetime import date
 
+import pytest
+
 from swing_screener.analytics.performance import (
     _clustered_ci_low,
     breakdown,
@@ -393,6 +395,21 @@ def test_trailing_expectancy_windows_by_exit_date() -> None:
     assert trailing_expectancy(trades + noise, window=10) == curve
     assert trailing_expectancy([], window=10) == []
 
+    # deterministic under caller iteration order: same-date closes are ordered by row id,
+    # so a same-date block straddling the window boundary cannot shuffle the mean
+    same_day: list[PaperTrade] = []
+    for i in range(12):
+        t = _pt(realized_r=float(i), exit_date=base)
+        t.id = i + 1
+        same_day.append(t)
+    expected_point = [(base, sum(range(2, 12)) / 10)]  # last 10 by id carry values 2..11
+    assert trailing_expectancy(same_day, window=10) == expected_point
+    assert trailing_expectancy(list(reversed(same_day)), window=10) == expected_point
+
+    # window is a count of closes; zero or negative is a caller bug, not all-history
+    with pytest.raises(ValueError):
+        trailing_expectancy(trades, window=0)
+
 
 def test_cost_stamped_from_gates_cost_level() -> None:
     from datetime import timedelta
@@ -415,3 +432,18 @@ def test_cost_stamped_from_gates_cost_level() -> None:
     assert cost_level_for(net + [_pt(realized_r=1.0)]) is None
     # empty -> None
     assert cost_level_for([]) is None
+
+    # a STRADDLER -- partialed before the cutoff (gross partial leg, priced at partial
+    # time), exited after -- carries a gross component blended into realized_r; no
+    # partial date is persisted, so only opened_date >= cutoff proves the partial's vintage
+    straddler = _pt(realized_r=1.0, exit_date=after, opened_date=before)
+    straddler.partial_done = True
+    assert cost_level_for(net + [straddler]) is None
+    # a partial on a trade OPENED on/after the cutoff can only have happened after it
+    proven = _pt(realized_r=1.0, exit_date=after, opened_date=after)
+    proven.partial_done = True
+    assert cost_level_for(net + [proven]) == "0.05"
+    # a partialed trade with no opened_date cannot prove its partial's vintage -> None
+    undated_partial = _pt(realized_r=1.0, exit_date=after)
+    undated_partial.partial_done = True
+    assert cost_level_for(net + [undated_partial]) is None

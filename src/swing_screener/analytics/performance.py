@@ -57,6 +57,8 @@ def _tier_stamped(trades: Iterable[PaperTrade]) -> list[PaperTrade]:
 # fill_slippage_atr's default flipped 0.0 -> 0.05 on 2026-07-02 (0e3a1e8, PR #75: the
 # net-of-cost book fix of the 2026-07 audit). realized_r is baked net-at-exit, so rows
 # exited BEFORE this date are gross of costs with no per-row marker distinguishing them.
+# A second default flip would turn this single constant into an epoch list of
+# (date, level) pairs; one constant suffices while there is one epoch boundary.
 COST_STAMPED_FROM = date(2026, 7, 2)
 
 
@@ -72,15 +74,30 @@ def cost_level_for(trades: Iterable[PaperTrade]) -> str | None:
       aggregate stamp is "every trade in this cohort provably exited after the cutoff",
       so ONE pre-cutoff exit (or an unprovable one) poisons the whole cohort to ``None``.
     - A closed row with ``exit_date is None`` cannot prove its cost level -> ``None``.
+    - A PARTIALED trade's partial leg was priced at partial time with the then-live slip
+      and blended into ``realized_r``, and no partial date is persisted -- so a straddler
+      (partialed before the cutoff, exited after) would smuggle a gross leg into a
+      "0.05" cohort. Only ``opened_date`` can prove the partial's vintage (a trade
+      opened on/after the cutoff can only have partialed after it), so partialed rows
+      additionally require ``opened_date >= COST_STAMPED_FROM``.
     - Even ``"0.05"`` means level-exits-only: momentum_flip/time_stop exits use the bar
       close and are never haircut, so "net @0.05" must not be overclaimed in tooltips.
+
+    FORWARD-book only: do NOT apply to a REPLAY book -- a replay walk applies the
+    current haircut uniformly, so its (historical) exit dates say nothing about cost
+    vintage (mirrors ``score_stamped``'s caveat).
 
     Open/unfilled rows carry no realized cost yet and neither earn nor block the stamp.
     """
     closed = [t for t in trades if _is_closed_filled(t)]
     if not closed:
         return None
-    if all(t.exit_date is not None and t.exit_date >= COST_STAMPED_FROM for t in closed):
+    if all(
+        t.exit_date is not None and t.exit_date >= COST_STAMPED_FROM
+        and (not t.partial_done
+             or (t.opened_date is not None and t.opened_date >= COST_STAMPED_FROM))
+        for t in closed
+    ):
         return "0.05"
     return None
 
@@ -526,21 +543,25 @@ def trailing_expectancy(
     Same filtering/ordering as ``equity_curve``: closed-filled trades with an
     ``exit_date``, ascending. One value is computed per closing trade (with fewer than
     ``window`` closes so far, the mean of what exists), then same-date closes collapse
-    to a single point carrying the LAST value of that date. Bootstrap-free point
-    estimates only: a card grid calling the 1000-draw bootstrap per point would be
-    ruinous, and the sparkline shows drift, not certification -- gates keep reading the
-    hardened CI bounds, never this curve.
+    to a single point carrying the LAST value of that date. Same-date closes are
+    tie-broken by row ``id`` so the output cannot depend on caller iteration order when
+    a same-date block straddles the window boundary (unpersisted rows, ``id None``,
+    sort first). Bootstrap-free point estimates only: a card grid calling the 1000-draw
+    bootstrap per point would be ruinous, and the sparkline shows drift, not
+    certification -- gates keep reading the hardened CI bounds, never this curve.
     """
-    points: list[tuple[date, float]] = [
-        (t.exit_date, t.realized_r)
+    if window < 1:
+        raise ValueError(f"window must be >= 1, got {window}")
+    points: list[tuple[date, int, float]] = [
+        (t.exit_date, t.id or 0, t.realized_r)
         for t in trades
         if _is_closed_filled(t) and t.exit_date is not None and t.realized_r is not None
     ]
-    points.sort(key=lambda p: p[0])
+    points.sort(key=lambda p: (p[0], p[1]))
 
     curve: list[tuple[date, float]] = []
     values: list[float] = []
-    for exit_date, realized_r in points:
+    for exit_date, _, realized_r in points:
         values.append(realized_r)
         tail = values[-window:]
         point = (exit_date, sum(tail) / len(tail))
