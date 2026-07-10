@@ -47,8 +47,11 @@ it). New API routes must be registered BEFORE the static mount inside `create_ap
 3. **Settlement rule (uniform):** a card is `settled-awaiting-decision` when the delta
    CI half-width ≤ `target_ci_halfwidth_r` AND `n_accrued ≥ MIN_LEADERBOARD_N (20)` AND
    the bound is trustworthy (`not thin_clusters`). `futile-awaiting-decision` when the
-   delta UPPER bound < `mde_r` AND `n_accrued ≥ 20` (design doc: futility tests
-   "upper bound < MDE", never "lower bound < 0"). Arms and variants use DIFFERENT delta
+   delta UPPER bound < `mde_r` AND `n_accrued ≥ 20` AND the same trust bar holds (not
+   thin, and the interval is a real bootstrap product, not an empty-side collapse) —
+   NO verdict, settled or futile, is ever issued from an untrusted bound; an untrusted
+   book stays `accruing` no matter what its numbers say. (Design doc: futility tests
+   "upper bound < MDE", never "lower bound < 0".) Arms and variants use DIFFERENT delta
    machinery (paired vs clustered two-sample) — see Task 3; a card that applied one
    primitive to both kinds would be statistically dishonest by the repo's own rules.
 4. **Cost stamping is a date-cutoff derivation, not a re-pricer and not a new column.**
@@ -299,8 +302,10 @@ repo's own rules; the card also refuses to settle on an untrustworthy (thin) bou
 - `test_states` — accruing (wide CI), settled-awaiting-decision (tight CI, n≥20, not
   thin), futile-awaiting-decision (upper < mde), retired (registry status). Thin
   clusters → NEVER settled even with a tight interval.
-- `test_n_needed_scales_inverse_square` — `n_needed ≈ ceil(n_accrued *
-  (halfwidth_now / target)**2)`; `None` when `n_accrued < 5` or halfwidth is 0.
+- `test_n_needed_scales_inverse_square` — `n_needed ≈ max(ceil(n_accrued *
+  (halfwidth_now / target)**2), MIN_LEADERBOARD_N)` (n_needed is the wider of the two
+  binding constraints — a tight-but-small book must not read "settle today");
+  `None` when `n_accrued < 5` or halfwidth is 0.
 - `test_gold_facet_filters_would_surface_truthy` — `None` and `False` rows excluded.
 
 **Step 2:** FAIL. **Step 3: Implement:**
@@ -341,8 +346,9 @@ variant)` is injected (the API layer binds it to `load_closed_paper_trades(sessi
   n_pairs (smaller than either arm's n_closed — the card's sub-line explains why:
   "pairs where both legs closed").
 - Delta Stat: `value=mean_delta, n=n_accrued, n_clusters, ci_low, ci_high,
-  cost_level=cost_level_for(book), corpus_id=None, facet=facet, unit="R",
-  thin_clusters`. Book/control Stats via `stat_from_summary`.
+  cost_level=cost_level_for([*book, *control]), corpus_id=None, facet=facet, unit="R",
+  thin_clusters` — the cost stamp covers BOTH sides (a delta claiming net@0.05 with a
+  gross control side is an overclaim). Book/control Stats via `stat_from_summary`.
 - Facet `gold`: filter every loaded list to `t.would_surface` truthy BEFORE any math.
 - States per scope decision 3; retired experiments still produce cards (state
   'retired', decision text shown) — falsified history stays legible.
