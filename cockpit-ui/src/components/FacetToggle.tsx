@@ -18,6 +18,7 @@ export function FacetToggle({
       <button
         type="button"
         className={facet === 'gold' ? 'seg-on' : undefined}
+        aria-pressed={facet === 'gold'}
         title="what production actually surfaced (would_surface)"
         onClick={() => onFacet('gold')}
       >
@@ -26,6 +27,7 @@ export function FacetToggle({
       <button
         type="button"
         className={facet === 'research' ? 'seg-on' : undefined}
+        aria-pressed={facet === 'research'}
         title="the wide research grid, replay-graded"
         onClick={() => onFacet('research')}
       >

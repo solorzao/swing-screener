@@ -139,6 +139,7 @@ export function Masthead({
         <button
           type="button"
           className={cost === '0.05' ? 'seg-on' : undefined}
+          aria-pressed={cost === '0.05'}
           title="every level exit haircut 0.05 ATR at exit; flip/time-stop exits are never haircut"
           onClick={() => onCost('0.05')}
         >
@@ -147,6 +148,7 @@ export function Masthead({
         <button
           type="button"
           disabled
+          aria-pressed={cost === '0.10'}
           title="not measured — replay-only level, no re-priced book exists"
         >
           @0.10

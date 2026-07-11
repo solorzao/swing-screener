@@ -1,6 +1,31 @@
 /* Global cockpit styles. Dense, quiet, monospace numerals: a healthy system is dim
    and silent; light means attention required. Colors come from tokens.css only. */
 
+/* Derived tokens (compositions over tokens.css primitives — the primitives file
+   itself stays verbatim-from-mockup). */
+:root {
+  /* THE amber "lamp lit" treatment — hb-late is the reference; every lit-amber
+     element (late lamp, awaiting-decision state chip, needs-hand item) uses this
+     one set of numbers. --lamp-amber-drop is the same glow for clip-path shapes:
+     drop-shadow has no spread radius, so it needs a tighter blur + higher alpha
+     (3px/70% vs 8px 2px/55%) to read as the same light. */
+  --lamp-amber-border: color-mix(in srgb, var(--amber) 55%, var(--line2));
+  --lamp-amber-bg: color-mix(in srgb, var(--amber) 14%, var(--panel2));
+  --lamp-amber-glow: 0 0 8px 2px color-mix(in srgb, var(--amber) 55%, transparent);
+  --lamp-amber-drop: drop-shadow(
+    0 0 3px color-mix(in srgb, var(--amber) 70%, transparent)
+  );
+  /* The "not fully counted" hatch cue (research facet tag, funnel drop segments;
+     Phase 3 reuses it). */
+  --hatch: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 3px,
+    color-mix(in srgb, var(--faint) 40%, transparent) 3px,
+    color-mix(in srgb, var(--faint) 40%, transparent) 6px
+  );
+}
+
 * {
   box-sizing: border-box;
 }
@@ -243,12 +268,12 @@ button.disarm {
   color: var(--faint);
 }
 
-/* Pending decisions ARE lamps — the same amber-glow treatment as hb-late. */
+/* Pending decisions ARE lamps — the shared lit-amber treatment. */
 .needs-hand-item {
   color: var(--amber);
-  border: 1px solid color-mix(in srgb, var(--amber) 55%, var(--line2));
-  background: color-mix(in srgb, var(--amber) 12%, var(--panel2));
-  box-shadow: 0 0 8px 2px color-mix(in srgb, var(--amber) 35%, transparent);
+  border: 1px solid var(--lamp-amber-border);
+  background: var(--lamp-amber-bg);
+  box-shadow: var(--lamp-amber-glow);
   border-radius: 3px;
   padding: 2px 8px;
   white-space: nowrap;
@@ -285,13 +310,7 @@ button.disarm {
 }
 
 .facet-tag.hatched {
-  background: repeating-linear-gradient(
-    45deg,
-    transparent,
-    transparent 3px,
-    color-mix(in srgb, var(--faint) 40%, transparent) 3px,
-    color-mix(in srgb, var(--faint) 40%, transparent) 6px
-  );
+  background: var(--hatch);
 }
 
 .panel {
@@ -401,8 +420,8 @@ button.disarm {
   background: var(--amber);
   border-radius: 0;
   clip-path: polygon(50% 0, 100% 100%, 0 100%);
-  /* box-shadow would be clipped away with the triangle — drop-shadow tracks the shape. */
-  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--amber) 70%, transparent));
+  /* box-shadow would be clipped away with the triangle — the drop variant tracks the shape. */
+  filter: var(--lamp-amber-drop);
 }
 
 .hb-down .hb-lamp {
@@ -644,12 +663,12 @@ button.disarm {
   border: 1px solid var(--line2);
 }
 
-/* Awaiting-decision: the hb-late amber-glow treatment — a pending decision is a lamp. */
+/* Awaiting-decision: the shared lit-amber treatment — a pending decision is a lamp. */
 .scard-state.awaiting {
   color: var(--amber);
-  border: 1px solid color-mix(in srgb, var(--amber) 55%, var(--line2));
-  background: color-mix(in srgb, var(--amber) 14%, var(--panel2));
-  box-shadow: 0 0 8px 2px color-mix(in srgb, var(--amber) 55%, transparent);
+  border: 1px solid var(--lamp-amber-border);
+  background: var(--lamp-amber-bg);
+  box-shadow: var(--lamp-amber-glow);
 }
 
 .scard-state.retired {
@@ -818,13 +837,7 @@ button.disarm {
   position: absolute;
   top: 0;
   height: 100%;
-  background: repeating-linear-gradient(
-    45deg,
-    transparent,
-    transparent 3px,
-    color-mix(in srgb, var(--faint) 40%, transparent) 3px,
-    color-mix(in srgb, var(--faint) 40%, transparent) 6px
-  );
+  background: var(--hatch);
 }
 
 .funnel-count {

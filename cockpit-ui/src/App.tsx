@@ -19,6 +19,7 @@ import { Masthead } from './components/Masthead'
 import type { CostLevel } from './components/Masthead'
 import { NeedsHandStrip } from './components/NeedsHandStrip'
 import { PerformancePanel } from './components/PerformancePanel'
+import type { BreakdownTab } from './components/PerformancePanel'
 import { SettlementCard } from './components/SettlementCard'
 import { StatChip } from './components/StatChip'
 
@@ -128,16 +129,20 @@ function PerformanceSection({
   facet,
   win,
   playType,
+  tab,
   wake,
   onWin,
   onPlayType,
+  onTab,
 }: {
   facet: Facet
   win: Window
   playType: PlayType
+  tab: BreakdownTab
   wake: number
   onWin: (win: Window) => void
   onPlayType: (playType: PlayType) => void
+  onTab: (tab: BreakdownTab) => void
 }) {
   const perf = usePolling(() => getPerformance(playType, win, facet), POLL_MS, wake)
   return (
@@ -151,6 +156,7 @@ function PerformanceSection({
               key={p}
               type="button"
               className={p === playType ? 'seg-on' : undefined}
+              aria-pressed={p === playType}
               onClick={() => onPlayType(p)}
             >
               {p === 'continuation' ? 'cont' : p === 'reversal' ? 'rev' : 'all'}
@@ -163,6 +169,7 @@ function PerformanceSection({
               key={w}
               type="button"
               className={w === win ? 'seg-on' : undefined}
+              aria-pressed={w === win}
               onClick={() => onWin(w)}
             >
               {w === 'all' ? 'all' : `${w}d`}
@@ -171,7 +178,7 @@ function PerformanceSection({
         </span>
       </div>
       <PanelBody polled={perf} noun="performance">
-        {(data) => <PerformancePanel data={data} />}
+        {(data) => <PerformancePanel data={data} tab={tab} onTab={onTab} />}
       </PanelBody>
     </section>
   )
@@ -184,6 +191,9 @@ export default function App() {
   const [cost, setCost] = useState<CostLevel>('0.05')
   const [win, setWin] = useState<Window>('all')
   const [playType, setPlayType] = useState<PlayType>('all')
+  // Lives here, not in PerformancePanel: local state would be reset by the
+  // key-remount blast every time facet/window/play-type flips.
+  const [tab, setTab] = useState<BreakdownTab>('timeframe')
 
   const health = usePolling(getHealth, POLL_MS, wake)
   const beats = usePolling(getHeartbeats, POLL_MS, wake)
@@ -232,7 +242,13 @@ export default function App() {
         <WithForwardBooks key={`fb|${facet}`} facet={facet} wake={wake}>
           {(fb) => (
             <>
-              <NeedsHandStrip cards={fb.data?.cards ?? null} />
+              {/* The masthead's hard line, not PanelBody's stale-dim: on a fetch
+                  error the strip sees null and shows "…" — last-good content at
+                  full brightness could be a stale EMPTY state reading as a fresh
+                  "nothing needs your hand" while a book settled during the outage. */}
+              <NeedsHandStrip
+                cards={fb.error === null ? (fb.data?.cards ?? null) : null}
+              />
 
               <main className="grid">
                 <section className="panel">
@@ -288,9 +304,11 @@ export default function App() {
                     facet={facet}
                     win={win}
                     playType={playType}
+                    tab={tab}
                     wake={wake}
                     onWin={setWin}
                     onPlayType={setPlayType}
+                    onTab={setTab}
                   />
                 </div>
               </main>

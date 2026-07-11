@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import type { BreakdownRow, Performance } from '../lib/api'
 import { Sparkline } from './Sparkline'
 import { StatChip } from './StatChip'
@@ -10,7 +9,9 @@ import { StatChip } from './StatChip'
    leaderboard only with >1 variant, arms only with >1 arm, score section only
    when >1 band has closes. */
 
-type BreakdownTab = 'timeframe' | 'rank' | 'score' | 'regime'
+/** Breakdown-tab selection. State lives in App next to window/play-type — local
+ * state here would be reset by the key-remount blast on every param flip. */
+export type BreakdownTab = 'timeframe' | 'rank' | 'score' | 'regime'
 
 /** Percentage of counts (0..1 fraction on the wire) — plain by design. */
 const pct = (v: number): string => `${Math.round(v * 100)}%`
@@ -60,8 +61,15 @@ function BreakdownTable({ caption, rows }: { caption?: string; rows: BreakdownRo
   )
 }
 
-export function PerformancePanel({ data }: { data: Performance }) {
-  const [tab, setTab] = useState<BreakdownTab>('timeframe')
+export function PerformancePanel({
+  data,
+  tab,
+  onTab,
+}: {
+  data: Performance
+  tab: BreakdownTab
+  onTab: (tab: BreakdownTab) => void
+}) {
   // The score section exists only when >1 band has closes (page parity); if the
   // data thins out from under a selected score tab, fall back rather than blank.
   const scoreAvailable = data.breakdowns.score.length > 1
@@ -145,7 +153,8 @@ export function PerformancePanel({ data }: { data: Performance }) {
                 key={t}
                 type="button"
                 className={t === activeTab ? 'seg-on' : undefined}
-                onClick={() => setTab(t)}
+                aria-pressed={t === activeTab}
+                onClick={() => onTab(t)}
               >
                 {t}
               </button>
