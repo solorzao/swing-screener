@@ -18,6 +18,7 @@ Three constraints, stated as contract:
 """
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -53,6 +54,7 @@ from swing_screener.analytics.performance import (
     score_stamped,
     summarize,
 )
+from swing_screener.cockpit.gh import latest_workflow_run
 from swing_screener.cockpit.heartbeats import (
     Heartbeat,
     collect_heartbeats,
@@ -186,9 +188,17 @@ def create_app(
     When ``index.html`` is absent -- a clone before Task 6, or a broken build --
     ``/`` answers 200 with a JSON pointer instead: a missing frontend is a setup
     state, not a server error, so it must not read as one.
+
+    The GH workflow poller is opt-in: ``SWING_GH_TOKEN`` + ``SWING_GH_REPO``
+    (both, read once here) wire ``cockpit.gh`` into the heartbeats; with either
+    missing the three GH beats stay explicit UNKNOWN placeholders.
     """
     app = FastAPI(title="swing-screener cockpit")
     app.state.db_url = db_url
+
+    gh_token = os.environ.get("SWING_GH_TOKEN")
+    gh_repo = os.environ.get("SWING_GH_REPO")
+    gh_latest = _gh_poller(gh_repo, gh_token) if gh_token and gh_repo else None
 
     @app.exception_handler(SQLAlchemyError)
     def _database_error(request: Request, exc: SQLAlchemyError) -> JSONResponse:
@@ -245,7 +255,9 @@ def create_app(
     @app.get("/api/heartbeats")
     def heartbeats(session: Session = Depends(_session)) -> list[dict[str, object]]:
         """Every job's pulse, evaluated against the wall clock at request time."""
-        beats = collect_heartbeats(session, now=datetime.now(UTC), edge_dir=edge_dir)
+        beats = collect_heartbeats(
+            session, now=datetime.now(UTC), edge_dir=edge_dir, gh_latest=gh_latest
+        )
         return [_beat_dict(b) for b in beats]
 
     @app.get("/api/stats/cohorts")
@@ -580,6 +592,19 @@ def _down_summary(exc: Exception) -> str:
     """One safe line for a dead DB: the exception CLASS only -- driver messages can
     embed the file path or DSN, so the message itself never reaches a response."""
     return f"database unreachable ({type(exc).__name__})"
+
+
+def _gh_poller(repo: str, token: str) -> Callable[[str], tuple[datetime, str] | None]:
+    """Bind the GH poller to one repo + token (read once at create_app time). A
+    named closure rather than a lambda over the env reads: mypy's Optional
+    narrowing does not survive into a nested scope, so the strings are re-bound
+    as parameters here. Failure posture lives in ``gh.latest_workflow_run``
+    itself (any error -> None -> UNKNOWN beat)."""
+
+    def poll(workflow: str) -> tuple[datetime, str] | None:
+        return latest_workflow_run(repo, workflow, token)
+
+    return poll
 
 
 # One cadence for the wake channel: the token poll AND sse-starlette's keepalive

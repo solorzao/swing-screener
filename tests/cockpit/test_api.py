@@ -149,6 +149,33 @@ def test_heartbeats_endpoint_returns_states(tmp_path: Path) -> None:
     assert beats["daily digest"]["last"] is not None
 
 
+def test_heartbeats_wire_the_gh_poller_from_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SWING_GH_TOKEN + SWING_GH_REPO (both set, read once at create_app time) turn
+    the GH placeholder rows into real beats via cockpit.gh's latest_workflow_run,
+    called once per workflow file with the configured repo + token."""
+    calls: list[tuple[str, str, str]] = []
+
+    def fake_latest(repo: str, workflow: str, token: str) -> tuple[datetime, str] | None:
+        calls.append((repo, workflow, token))
+        return (datetime.now(UTC) - timedelta(days=1), "success")
+
+    monkeypatch.setattr("swing_screener.cockpit.api.latest_workflow_run", fake_latest)
+    monkeypatch.setenv("SWING_GH_TOKEN", "tok")
+    monkeypatch.setenv("SWING_GH_REPO", "oliver/swing-screener")
+    beats = {b["name"]: b for b in _client(tmp_path).get("/api/heartbeats").json()}
+    for name in ("GH · optimizer", "GH · reflection", "GH · CI"):
+        assert beats[name]["state"] == "up"
+        assert beats[name]["period_s"] == 7 * 86400
+        assert beats[name]["last"] is not None
+    assert sorted(calls) == [
+        ("oliver/swing-screener", "ci.yml", "tok"),
+        ("oliver/swing-screener", "optimize.yml", "tok"),
+        ("oliver/swing-screener", "reflect.yml", "tok"),
+    ]
+
+
 def test_cohort_stats_are_stat_objects(tmp_path: Path) -> None:
     url = _db_url(tmp_path)
     engine = get_engine(url)

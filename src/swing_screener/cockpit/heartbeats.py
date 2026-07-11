@@ -11,6 +11,7 @@ Queries stay local to this module: latest-run lookups for a status rail are
 cockpit-view concerns, not domain CRUD, so they do NOT belong in ``db/repo.py``.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -25,6 +26,40 @@ from swing_screener.settings import resolve_edge_dir
 # The closed four-state set (same convention as signals/actionability.py's Status):
 # mypy rejects a fifth state at the source, not in some downstream renderer.
 BeatState = Literal["up", "late", "down", "unknown"]
+
+# NYSE full-day market holidays, 2026-2027, STATIC by design: no trading-calendar
+# helper exists anywhere in this repo, and ops/eastern_gate.py already rejected the
+# dependency ("an exchange-holiday calendar is not worth the dependency here") --
+# the cockpit follows that precedent. Without this set every market holiday would
+# light a false LATE lamp on the weekday beats, and false lights erode the only
+# thing the panel sells: trust in silence.
+# ANNUAL REFRESH OBLIGATION: append the next year's NYSE dates each December (the
+# exchange publishes them years ahead); a stale list degrades to one false LATE
+# lamp per unlisted holiday, never a crash.
+_MARKET_HOLIDAYS: frozenset[date] = frozenset({
+    # 2026
+    date(2026, 1, 1),    # New Year's Day
+    date(2026, 1, 19),   # Martin Luther King Jr. Day
+    date(2026, 2, 16),   # Washington's Birthday
+    date(2026, 4, 3),    # Good Friday
+    date(2026, 5, 25),   # Memorial Day
+    date(2026, 6, 19),   # Juneteenth
+    date(2026, 7, 3),    # Independence Day (observed; Jul 4 is a Saturday)
+    date(2026, 9, 7),    # Labor Day
+    date(2026, 11, 26),  # Thanksgiving Day
+    date(2026, 12, 25),  # Christmas Day
+    # 2027
+    date(2027, 1, 1),    # New Year's Day
+    date(2027, 1, 18),   # Martin Luther King Jr. Day
+    date(2027, 2, 15),   # Washington's Birthday
+    date(2027, 3, 26),   # Good Friday
+    date(2027, 5, 31),   # Memorial Day
+    date(2027, 6, 18),   # Juneteenth (observed; Jun 19 is a Saturday)
+    date(2027, 7, 5),    # Independence Day (observed; Jul 4 is a Sunday)
+    date(2027, 9, 6),    # Labor Day
+    date(2027, 11, 25),  # Thanksgiving Day
+    date(2027, 12, 24),  # Christmas Day (observed; Dec 25 is a Saturday)
+})
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -66,25 +101,35 @@ def beat_state(
 
 
 def collect_heartbeats(
-    session: Session, *, now: datetime, edge_dir: Path | None = None
+    session: Session,
+    *,
+    now: datetime,
+    edge_dir: Path | None = None,
+    gh_latest: Callable[[str], tuple[datetime, str] | None] | None = None,
 ) -> list[Heartbeat]:
-    """Assemble the Phase-1 heartbeat roster from the DB + the edge dir.
+    """Assemble the heartbeat roster from the DB, the edge dir, and (optionally) GH.
 
-    The 72h flat period on the evening screen / daily digest is deliberate weekend
-    slack: a Friday run must not read LATE on Sunday. Phase-2 TODO: a business-day
-    calendar so a missed Monday run reads late Tuesday morning instead of hiding
-    inside the flat 72h window. ``edge_dir`` is a test seam; ``None`` resolves via
-    ``settings.resolve_edge_dir`` (the ONE shared resolution). GitHub Actions beats
-    ship as explicit UNKNOWN until the Phase-2 poller exists.
+    The two weekday jobs (evening screen, daily digest) measure against a
+    BUSINESS-DAY period (``_business_period``): the next weekday after the last
+    run, skipping ``_MARKET_HOLIDAYS`` -- a Friday run reads up all weekend and
+    goes late only past Monday's expected run + grace, while a missed Tuesday
+    reads late Tuesday night instead of hiding inside the old flat-72h weekend
+    slack. ``edge_dir`` is a test seam; ``None`` resolves via
+    ``settings.resolve_edge_dir`` (the ONE shared resolution). ``gh_latest`` is
+    the optional GitHub Actions poller (``cockpit/gh.py``, wired by ``create_app``
+    from SWING_GH_TOKEN/SWING_GH_REPO): given a workflow file it answers
+    ``(completed_at, conclusion)`` or None; without it -- or when it answers None
+    -- the three GH beats stay explicit UNKNOWN placeholders.
     """
     resolved_edge = resolve_edge_dir(edge_dir)
-    screen_last: date | None = session.scalar(select(func.max(Signal.run_date)))
+    screen_last = _eod_utc(session.scalar(select(func.max(Signal.run_date))))
+    digest_last = _latest_email(session, "daily")
     weather_last: date | None = session.scalar(select(func.max(MarketReport.run_date)))
     beats = [
-        _beat("evening screen", _eod_utc(screen_last), now,
-              timedelta(hours=72), timedelta(minutes=45)),
-        _beat("daily digest", _latest_email(session, "daily"), now,
-              timedelta(hours=72), timedelta(minutes=45)),
+        _beat("evening screen", screen_last, now,
+              _business_period(screen_last), timedelta(minutes=45)),
+        _beat("daily digest", digest_last, now,
+              _business_period(digest_last), timedelta(minutes=45)),
         _beat("weekly digest", _latest_email(session, "weekly"), now,
               timedelta(days=7), timedelta(hours=3)),
         _beat("monthly digest", _latest_email(session, "monthly"), now,
@@ -94,12 +139,71 @@ def collect_heartbeats(
         _beat("reflection verdicts", newest_verdicts_mtime(resolved_edge), now,
               timedelta(days=7), timedelta(hours=3)),
     ]
-    beats += [
-        Heartbeat(name=name, state="unknown", last=None, period_s=0, grace_s=0,
-                  detail="poller not configured")
-        for name in ("GH · optimizer", "GH · reflection", "GH · CI")
-    ]
+    beats += [_gh_beat(name, wf, gh_latest, now) for name, wf in _GH_WORKFLOWS]
     return beats
+
+
+# Heartbeat name -> workflow file, the mapping the poller is asked about. The names
+# are the roster contract (pinned by tests); the files are the repo's actual
+# .github/workflows entries.
+_GH_WORKFLOWS: tuple[tuple[str, str], ...] = (
+    ("GH · optimizer", "optimize.yml"),
+    ("GH · reflection", "reflect.yml"),
+    ("GH · CI", "ci.yml"),
+)
+_GH_PERIOD = timedelta(days=7)
+_GH_GRACE = timedelta(hours=3)
+
+
+def _gh_beat(
+    name: str,
+    workflow: str,
+    gh_latest: Callable[[str], tuple[datetime, str] | None] | None,
+    now: datetime,
+) -> Heartbeat:
+    """One GH-workflow beat. No poller, or a poller answering None (unreachable
+    API, no completed run): the explicit UNKNOWN placeholder -- 0/0, 'no contract
+    stated'. CI is the one conclusion-driven beat: a failed latest run reads DOWN
+    however fresh it is -- a red CI lamp signals the conclusion, not staleness --
+    with the conclusion in ``detail``; optimizer/reflection stay purely time-based
+    (their failure mode is 'stopped running', which 7d/3h already catches)."""
+    run = gh_latest(workflow) if gh_latest is not None else None
+    if run is None:
+        return Heartbeat(name=name, state="unknown", last=None, period_s=0, grace_s=0,
+                         detail="poller not configured")
+    completed_at, conclusion = run
+    if name == "GH · CI" and conclusion != "success":
+        return Heartbeat(
+            name=name, state="down", last=_as_utc(completed_at),
+            period_s=int(_GH_PERIOD.total_seconds()),
+            grace_s=int(_GH_GRACE.total_seconds()),
+            detail=f"latest run: {conclusion}",
+        )
+    return _beat(name, completed_at, now, _GH_PERIOD, _GH_GRACE)
+
+
+def _next_expected(last: datetime) -> datetime:
+    """The next business day after ``last`` -- skipping Sat/Sun and
+    ``_MARKET_HOLIDAYS`` -- at the same time-of-day. Holidays are looked up on the
+    UTC calendar date: the 23:59 UTC anchor is 18:59/19:59 ET of the SAME calendar
+    date, so the UTC date already equals the ET trading date and a tz conversion
+    would buy nothing."""
+    last = _as_utc(last)
+    d = last.date() + timedelta(days=1)
+    while d.weekday() >= 5 or d in _MARKET_HOLIDAYS:
+        d += timedelta(days=1)
+    return datetime.combine(d, last.timetz())
+
+
+def _business_period(last: datetime | None) -> timedelta:
+    """Period for a business-day job: the gap from the last run to the next
+    expected one -- 1 day midweek, 3 over a weekend, 4 over a holiday weekend.
+    With no run ever there is no anchor to compute from, so fall back to the flat
+    72h outer bound (the beat reads UNKNOWN then anyway; the period only states
+    the contract)."""
+    if last is None:
+        return timedelta(hours=72)
+    return _next_expected(last) - _as_utc(last)
 
 
 def _beat(
