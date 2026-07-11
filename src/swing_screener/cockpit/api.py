@@ -17,24 +17,27 @@ Three constraints, stated as contract:
   No stack trace and no URL in any response body.
 """
 
+import json
 import shutil
 import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Literal, Protocol
 
+import anyio.to_thread
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import make_url, select, text
+from sqlalchemy import func, make_url, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
+from sse_starlette.sse import EventSourceResponse
 
 from swing_screener.analytics.performance import (
     SCORE_EDGES,
@@ -50,7 +53,11 @@ from swing_screener.analytics.performance import (
     score_stamped,
     summarize,
 )
-from swing_screener.cockpit.heartbeats import Heartbeat, collect_heartbeats
+from swing_screener.cockpit.heartbeats import (
+    Heartbeat,
+    _newest_verdicts_mtime,
+    collect_heartbeats,
+)
 from swing_screener.cockpit.settlement import (
     STATES,
     SettlementCard,
@@ -58,7 +65,13 @@ from swing_screener.cockpit.settlement import (
     facet_filter,
 )
 from swing_screener.cockpit.stats import stat_from_paired_delta, stat_from_summary
-from swing_screener.db.models import AnalystCall, PaperTrade
+from swing_screener.db.models import (
+    AnalystCall,
+    EmailLog,
+    MarketReport,
+    PaperTrade,
+    Signal,
+)
 from swing_screener.db.repo import (
     latest_reversal_funnel,
     load_closed_paper_trades,
@@ -514,6 +527,32 @@ def create_app(
             login_flight.started = time.monotonic()
         return {"started": True}
 
+    @app.get("/api/events")
+    async def events() -> EventSourceResponse:
+        """The SSE wake channel: one ``change`` event whenever the change token moves.
+
+        Data changes come from EXTERNAL processes (scheduled jobs, git pulls), so
+        server-side polling is the only correct driver -- there is no in-process
+        write to hook. The endpoint is async so the infinite generator never pins a
+        threadpool worker; each token read hops through ``anyio.to_thread`` (the DB
+        probe is sync) and no Session survives across the sleeps. The frontend's 60s
+        poll stays the floor -- this channel only wakes it early. GET under /api
+        (covered by the dev vite proxy); no X-Cockpit header: it mutates nothing.
+        """
+
+        async def stream() -> AsyncIterator[dict[str, str]]:
+            last: dict[str, str] | None = None
+            while True:
+                token = await anyio.to_thread.run_sync(
+                    _safe_change_token, _engine, edge_dir
+                )
+                if token != last:
+                    last = token
+                    yield {"event": "change", "data": json.dumps(token)}
+                await anyio.sleep(15)
+
+        return EventSourceResponse(stream(), ping=15)
+
     resolved_static = static_dir if static_dir is not None else Path(__file__).parent / "static"
     if (resolved_static / "index.html").is_file():
         # html=True serves index.html at "/" and falls through to real asset files.
@@ -535,6 +574,54 @@ def _down_summary(exc: Exception) -> str:
     """One safe line for a dead DB: the exception CLASS only -- driver messages can
     embed the file path or DSN, so the message itself never reaches a response."""
     return f"database unreachable ({type(exc).__name__})"
+
+
+def _watermark(value: object | None) -> str:
+    """One watermark's wire form: ISO for dates/datetimes, ``str()`` for ids, the
+    literal ``"none"`` for an empty table -- strings only, so token equality is a
+    plain dict compare and ``json.dumps`` never meets a date object."""
+    if value is None:
+        return "none"
+    if isinstance(value, date):  # datetime is a date subclass; isoformat covers both
+        return value.isoformat()
+    return str(value)
+
+
+def _change_token(engine: Engine, edge_dir: Path) -> dict[str, str]:
+    """The wake channel's change token: cheap max-watermarks over every store the
+    cockpit renders -- screen run, paper-trade write, sent email, market report,
+    funnel snapshot, newest reflection verdicts file. Equality means "nothing worth
+    refetching"; the values are opaque to the frontend. One short-lived Session per
+    call, never held across the stream loop's sleeps. ``edge_dir`` is the RESOLVED
+    edge directory (the caller threads ``resolve_edge_dir`` -- same seam as the
+    heartbeats)."""
+    with Session(engine) as session:
+        funnel = latest_reversal_funnel(session)
+        token = {
+            "signal": _watermark(session.scalar(select(func.max(Signal.run_date)))),
+            "trade": _watermark(session.scalar(select(func.max(PaperTrade.id)))),
+            "email": _watermark(session.scalar(select(func.max(EmailLog.sent_at)))),
+            "weather": _watermark(
+                session.scalar(select(func.max(MarketReport.run_date)))
+            ),
+            "funnel": _watermark(funnel.run_date if funnel is not None else None),
+        }
+    token["verdicts"] = _watermark(_newest_verdicts_mtime(edge_dir))
+    return token
+
+
+def _safe_change_token(
+    engine_factory: Callable[[], Engine], edge_dir: Path | None
+) -> dict[str, str]:
+    """``_change_token`` with the down-DB posture: ANY failure (engine creation,
+    query, filesystem) collapses to the sentinel ``{"db": "down"}`` -- the stream
+    loop must never die, and recovery reads as a change (the sentinel can never
+    equal a real token). The factory is the app's cached ``_engine`` accessor, so
+    the down case is re-probed per tick, never latched."""
+    try:
+        return _change_token(engine_factory(), resolve_edge_dir(edge_dir))
+    except Exception:
+        return {"db": "down"}
 
 
 def _stat_dict(

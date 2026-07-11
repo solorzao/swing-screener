@@ -1,14 +1,17 @@
 """Cockpit API contract: health never lies or leaks, heartbeats and stats are typed,
 and a dead database is a friendly 503 -- never a traceback, never the URL."""
 
-from collections.abc import Callable
+from collections.abc import Callable, MutableMapping
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 import sys
+from typing import Any
 
+import anyio
 from fastapi.testclient import TestClient
 import pytest
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from swing_screener.analytics.calibration import _CLUSTER_FLOOR, MIN_LEADERBOARD_N
@@ -16,8 +19,10 @@ from swing_screener.analytics.performance import COST_STAMPED_FROM, SCORE_STAMPE
 from swing_screener.cockpit.api import (
     _LOGIN_TTL_S,
     _STATE_RANK,
+    _change_token,
     _down_summary,
     _LoginFlight,
+    _safe_change_token,
     connection_label,
     create_app,
 )
@@ -931,3 +936,78 @@ def test_gate_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         for pt in ("continuation", "reversal"))
     assert body["execution_mode"] == "manual"
     assert body["analyst_spend_today_usd"] == pytest.approx(0.42)
+
+
+# --- /api/events (SSE wake channel) ---------------------------------------------------
+
+def test_change_token_moves_on_new_trade(tmp_path: Path) -> None:
+    """The wake channel's whole contract lives in the token: stable while nothing
+    changes, different after a write. The SSE loop itself stays a thin
+    compare-and-emit, so THIS is where the behavior is pinned."""
+    url = _db_url(tmp_path)
+    engine = get_engine(url)
+    before = _change_token(engine, tmp_path)
+    assert all(isinstance(v, str) for v in before.values())  # strings only on the wire
+    assert _change_token(engine, tmp_path) == before  # no writes -> identical token
+    with Session(engine) as s:
+        s.add(_trade("AAA", 1.0))
+        s.commit()
+    assert _change_token(engine, tmp_path) != before
+
+
+def test_change_token_survives_db_down(tmp_path: Path) -> None:
+    """A dead DB must never kill the stream loop: the safe wrapper answers the
+    sentinel token instead of raising -- recovery then reads as a change (the
+    sentinel can never equal a real token). Both failure shapes are covered: the
+    engine dies at query time, and the factory itself raises."""
+    bad = create_engine("sqlite:///Z:/definitely/nope/x.db")  # unopenable at query time
+    assert _safe_change_token(lambda: bad, tmp_path) == {"db": "down"}
+
+    def boom() -> Engine:
+        raise RuntimeError("engine factory failed")
+
+    assert _safe_change_token(boom, tmp_path) == {"db": "down"}
+
+
+def test_events_route_exists(tmp_path: Path) -> None:
+    """GET /api/events answers 200 text/event-stream.
+
+    Deliberately NOT via TestClient: its transport runs the ASGI app to completion
+    and buffers the whole body (testclient.py handle_request ->
+    ``portal.call(self.app, ...)``), so an infinite SSE stream never yields headers
+    -- ``client.stream()`` would hang, not stream. Instead this drives the raw ASGI
+    app: capture ``http.response.start``, then answer the next ``receive()`` with
+    ``http.disconnect``, which sse-starlette's disconnect listener turns into a
+    task-group cancel -- the app call returns cleanly, first event unconsumed.
+    """
+    url = _db_url(tmp_path)
+    get_engine(url)  # seed the file + schema; the app builds its OWN engine
+    app = create_app(url, edge_dir=tmp_path)
+
+    async def _head() -> tuple[int, dict[str, str]]:
+        start: dict[str, Any] = {}
+        got_start = anyio.Event()
+
+        async def receive() -> dict[str, Any]:
+            await got_start.wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message: MutableMapping[str, Any]) -> None:
+            if message["type"] == "http.response.start":
+                start.update(message)
+                got_start.set()
+
+        scope: dict[str, Any] = {
+            "type": "http", "http_version": "1.1", "method": "GET",
+            "path": "/api/events", "raw_path": b"/api/events", "root_path": "",
+            "scheme": "http", "query_string": b"", "headers": [],
+            "client": ("testclient", 50000), "server": ("testserver", 80),
+        }
+        with anyio.fail_after(10):  # a wedged stream FAILS the test, never hangs it
+            await app(scope, receive, send)
+        headers = {k.decode(): v.decode() for k, v in start["headers"]}
+        return start["status"], headers
+
+    status, headers = anyio.run(_head)
+    assert status == 200
+    assert headers["content-type"].startswith("text/event-stream")
