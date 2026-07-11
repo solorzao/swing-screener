@@ -137,15 +137,24 @@ def _seed_edge_dir(tmp_path: Path) -> Path:
 
 # --- A tiny synthetic 1d replay frame (a steady uptrend, shallow dips -> continuation
 # setups), adapted from test_replay_no_lookahead's _synth so the screened tier has data.
-def _synth(n=400) -> pd.DataFrame:
+# ``phase`` shifts the dip cycle so a multi-ticker universe isn't 8 copies of one series.
+def _synth(n=400, phase=0.0) -> pd.DataFrame:
     idx = pd.bdate_range("2022-01-01", periods=n)
     t = np.arange(n)
-    close = 50 + 0.15 * t + 1.2 * np.sin(t / 5.0)
+    close = 50 + 0.15 * t + 1.2 * np.sin(t / 5.0 + phase)
     open_ = np.r_[close[0], close[:-1]]
     high = np.maximum(open_, close) + 0.05
     low = np.minimum(open_, close) - 0.3
     return pd.DataFrame({"open": open_, "high": high, "low": low, "close": close,
                          "volume": np.full(n, 1e6)}, index=idx)
+
+
+# A replay universe RICH enough to mint a replay_screened (source=="replay") verdict for
+# continuation -- >= 20 closed, >= 8 distinct tickers (the cluster floor), a strongly
+# positive corrected bound. A single-ticker fixture grades every cell "none" (thin), which
+# makes any per-source stamp assertion vacuous.
+def _confirming_replay_frames() -> dict[str, pd.DataFrame]:
+    return {f"S{i}": _synth(n=300, phase=0.7 * i) for i in range(8)}
 
 
 # =====================================================================================
@@ -419,14 +428,21 @@ def test_run_reflection_verdicts_only_writes_sidecars_and_nothing_else(tmp_path:
         _seed(session, [_closed_trade("T0", 1.0, "continuation")])  # far below the trigger
         assert due_play_types(session, edge_dir=edge_dir) == []
         reflected = run_reflection(
-            session, replay_frames={"S": _synth()}, spy_daily=None, edge_dir=edge_dir,
+            session, replay_frames=_confirming_replay_frames(), spy_daily=None,
+            edge_dir=edge_dir,
             client=_FakeClient("MUST NOT APPEAR"), today="2026-07-11", drafter=_drafter,
-            corpus_id="corpus: 1/1 tickers · vintage(s) 20260703:1 · pinned as-of 20260703",
+            corpus_id="corpus: 8/8 tickers · vintage(s) 20260703:8 · pinned as-of 20260703",
             verdicts_only=True,
         )
 
     # implies force-all-play-types: both reflected despite neither being due.
     assert set(reflected) == {"continuation", "reversal"}
+    # NON-VACUOUS by construction: the confirming fixture must mint at least one
+    # replay-sourced continuation verdict, or the per-source stamp assertions below
+    # never execute and the corpus-id-threads-into-sidecar-rows link is unfalsifiable.
+    cont_rows = json.loads(
+        (edge_dir / "continuation.verdicts.json").read_text(encoding="utf-8"))
+    assert any(r["source"] == "replay" for r in cont_rows)
     for pt in ("continuation", "reversal"):
         # the sidecar is (re)written and carries the threaded corpus id on replay rows...
         rows = json.loads((edge_dir / f"{pt}.verdicts.json").read_text(encoding="utf-8"))
@@ -454,10 +470,14 @@ def _write_vintage_parquet(cache_dir: Path, name: str, rows: int) -> None:
     df.to_parquet(cache_dir / "1d" / f"{name}.parquet")
 
 
-def test_main_as_of_loads_pinned_cache_only_and_threads_corpus_id(monkeypatch, tmp_path: Path):
+def test_main_as_of_loads_pinned_cache_only_and_threads_corpus_id(
+    monkeypatch, tmp_path: Path, caplog,
+):
     """--as-of is the pinned-loading path: frames come from the cached snapshot at/before
     the pin (the OLDER vintage here), NEVER the network, and the corpus stamp naming the
     pin is threaded through to run_reflection as corpus_id."""
+    import logging
+
     import swing_screener.pipeline.reflect as reflect
 
     cache = tmp_path / ".cache"
@@ -484,18 +504,47 @@ def test_main_as_of_loads_pinned_cache_only_and_threads_corpus_id(monkeypatch, t
     monkeypatch.setattr(reflect, "run_reflection", _fake_run)
     monkeypatch.setattr("sys.argv", [
         "reflect", "--tickers", "AMD,MISSING", "--edge-dir", str(edge_dir),
-        "--cache-dir", str(cache), "--as-of", "20260615", "--verdicts-only",
+        "--cache-dir", str(cache), "--as-of", "20260615",
     ])
-    reflect.main()
+    with caplog.at_level(logging.WARNING, logger="swing_screener.pipeline.reflect"):
+        reflect.main()
 
     # AMD resolved to the pinned (older, 3-row) vintage; MISSING skipped with a warning.
     assert set(captured["replay_frames"]) == {"AMD"}
     assert len(captured["replay_frames"]["AMD"]) == 3
-    assert captured["spy_daily"] is None  # no cached SPY at the pin -> none, not a fetch
+    # No cached SPY at the pin -> None (never a fetch), and the degradation is LOUD:
+    # regime goes unstamped for the whole regen, unlike a single skipped ticker.
+    assert captured["spy_daily"] is None
+    assert any("no cached SPY" in r.message for r in caplog.records)
     # the corpus stamp records the pin and is threaded as corpus_id.
     assert "pinned as-of 20260615" in captured["corpus_id"]
     assert "1/2 tickers" in captured["corpus_id"]
-    # --verdicts-only reaches run_reflection, and the drafter is withheld outright.
+
+
+def test_main_verdicts_only_withholds_the_drafter(monkeypatch, tmp_path: Path):
+    """--verdicts-only reaches run_reflection AND main withholds the drafter outright
+    (belt-and-braces on top of the in-run carve, which already skips drafting)."""
+    import swing_screener.pipeline.reflect as reflect
+
+    edge_dir = _seed_edge_dir(tmp_path)
+    engine = get_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(reflect, "get_engine", lambda url: engine)
+    monkeypatch.setattr(reflect, "fetch_daily", lambda tickers, cache_dir: {"S": _synth()})
+    monkeypatch.setattr(reflect, "fetch_bars", lambda *a, **k: None)  # no SPY
+
+    captured: dict = {}
+
+    def _fake_run(session, **kw):
+        captured.update(kw)
+        return []
+
+    monkeypatch.setattr(reflect, "run_reflection", _fake_run)
+    monkeypatch.setattr("sys.argv", [
+        "reflect", "--tickers", "S", "--edge-dir", str(edge_dir),
+        "--cache-dir", str(tmp_path / ".cache"), "--verdicts-only",
+    ])
+    reflect.main()
     assert captured["verdicts_only"] is True
     assert captured["drafter"] is None
 

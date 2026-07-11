@@ -1060,7 +1060,10 @@ def run_reflection(
 
     ``corpus_id`` is the ``replay.corpus_stamp`` line for ``replay_frames``' cache
     vintages; it is stamped (with each verdict's cost level) onto the graded verdicts
-    post-``grade`` via ``_stamp_provenance``, so the sidecar names its evidence.
+    post-``grade`` via ``_stamp_provenance``, so the sidecar names its evidence. The
+    stamp resolves from the CACHE: unpinned, a fetch-failed ticker with a stale leftover
+    snapshot is counted resolved though it was not graded -- pinned mode has no such
+    divergence (loading and stamping both read ``cached_daily_file(as_of)``).
 
     ``verdicts_only=True`` is the SIDECAR-ONLY regen (e.g. re-stamping provenance onto
     existing verdicts): it implies force-all-play-types (the due-gate would no-op a
@@ -1212,14 +1215,22 @@ def main() -> None:
                 continue
             replay_frames[ticker] = df
         spy_daily = load_cached_daily("SPY", args.cache_dir, args.as_of)
+        if spy_daily is None:
+            # Louder than a skipped ticker: no SPY degrades the WHOLE regen (regime
+            # unstamped -> the market_trend replay dimension grades empty).
+            log.warning("no cached SPY at/before %s; regime unstamped for this regen",
+                        args.as_of)
     else:
         replay_frames = fetch_daily(tickers, args.cache_dir)
         spy_daily = fetch_bars("SPY", "1d", cache_dir=args.cache_dir)
     if not replay_frames:
         log.warning("no replay data fetched for %s; screened tier will be empty", tickers)
     # The stamp is computed in BOTH modes, AFTER loading: --as-of changes what is LOADED;
-    # the stamp always records the corpus reality (a pinned single vintage, or the actual
-    # -- possibly mixed -- vintages an unpinned run graded against).
+    # the stamp resolves from the CACHE. Pinned, that is exactly what was graded (loading
+    # and stamping both read cached_daily_file(as_of)). Unpinned it can overclaim:
+    # fetch_daily skips a ticker on persistent fetch failure, but the stamp re-resolves
+    # from the cache and counts a stale leftover snapshot as resolved though it was not
+    # graded -- pinned mode has no such divergence.
     corpus_id = corpus_stamp(args.cache_dir, tickers, args.as_of)
     log.info("%s", corpus_id)
 
@@ -1228,6 +1239,7 @@ def main() -> None:
         reflected = run_reflection(
             session, replay_frames=replay_frames, spy_daily=spy_daily,
             edge_dir=resolve_edge_dir(args.edge_dir), today=date.today().isoformat(),
+            # belt-and-braces; the carve already skips drafting
             drafter=None if args.verdicts_only else _opus_drafter(), force=args.force,
             corpus_id=corpus_id, verdicts_only=args.verdicts_only,
         )
