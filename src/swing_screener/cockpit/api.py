@@ -60,6 +60,7 @@ from swing_screener.cockpit.heartbeats import (
     collect_heartbeats,
     newest_verdicts_mtime,
 )
+from swing_screener.cockpit.livedata import BrokerSnapshot, QuoteCache
 from swing_screener.cockpit.settlement import (
     STATES,
     SettlementCard,
@@ -67,6 +68,7 @@ from swing_screener.cockpit.settlement import (
     facet_filter,
 )
 from swing_screener.cockpit.stats import stat_from_paired_delta, stat_from_summary
+from swing_screener.data import quotes
 from swing_screener.db.models import (
     AnalystCall,
     EmailLog,
@@ -83,6 +85,8 @@ from swing_screener.db.repo import (
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.arms import BASELINE
 from swing_screener.pipeline.autonomy import autonomy_gate, gate_countdown
+from swing_screener.pipeline.broker import BrokerClient
+from swing_screener.pipeline.broker_alpaca import build_broker
 from swing_screener.pipeline.registry import load_experiments
 from swing_screener.pipeline.variants import DEFAULT_VARIANT
 from swing_screener.settings import load_settings, resolve_edge_dir
@@ -173,6 +177,8 @@ def create_app(
     edge_dir: Path | None = None,
     static_dir: Path | None = None,
     login_spawner: Callable[[], _LoginProc | None] | None = None,
+    latest_closes_fn: Callable[[list[str]], dict[str, float]] | None = None,
+    broker_factory: Callable[[], BrokerClient | None] | None = None,
 ) -> FastAPI:
     """Build the cockpit API around one database URL.
 
@@ -182,6 +188,13 @@ def create_app(
     heartbeats test seam: where ``collect_heartbeats`` looks for edge files; ``None``
     resolves via settings. ``login_spawner`` is the ``az login`` test seam; ``None``
     spawns the real CLI.
+
+    ``latest_closes_fn`` / ``broker_factory`` are the livedata test seams: ``None``
+    binds the real ``data.quotes.latest_closes`` (over the settings bar-cache dir)
+    and the real ``build_broker`` resolution. Each is wrapped in its TTL cache
+    (``cockpit.livedata``) and parked on ``app.state.quote_cache`` /
+    ``app.state.broker_snapshot`` -- Tasks 6/9/10 consume them from there; nothing
+    in THIS factory calls them, so building an app never touches yfinance or a venue.
 
     ``static_dir`` (default: the packaged ``cockpit/static/``, built by the Vite
     frontend) is mounted at ``/`` AFTER the API routes, so ``/api/*`` always wins.
@@ -199,6 +212,16 @@ def create_app(
     gh_token = os.environ.get("SWING_GH_TOKEN")
     gh_repo = os.environ.get("SWING_GH_REPO")
     gh_latest = _gh_poller(gh_repo, gh_token) if gh_token and gh_repo else None
+
+    # Livedata instances (Phase 3 Task 4): constructed here, consumed by Tasks
+    # 6/9/10 from app.state (the FastAPI-idiomatic home for per-app singletons).
+    # Construction is inert -- neither cache calls upstream until a consumer asks.
+    app.state.quote_cache = QuoteCache(
+        latest_closes_fn if latest_closes_fn is not None else _default_quote_fetch()
+    )
+    app.state.broker_snapshot = BrokerSnapshot(
+        broker_factory if broker_factory is not None else _default_broker_factory
+    )
 
     @app.exception_handler(SQLAlchemyError)
     def _database_error(request: Request, exc: SQLAlchemyError) -> JSONResponse:
@@ -605,6 +628,28 @@ def _gh_poller(repo: str, token: str) -> Callable[[str], tuple[datetime, str] | 
         return latest_workflow_run(repo, workflow, token)
 
     return poll
+
+
+def _default_quote_fetch() -> Callable[[list[str]], dict[str, float]]:
+    """Bind ``data.quotes.latest_closes`` over the settings bar-cache dir. The
+    cache_dir is read ONCE, at create_app time -- it is env-backed and stable for
+    the life of the process, so a per-call ``load_settings()`` would buy nothing.
+    ``quotes.latest_closes`` resolves at CALL time (module attribute), keeping the
+    documented monkeypatch seam in ``data/quotes.py`` intact."""
+    cache_dir = load_settings().cache_dir
+
+    def fetch(tickers: list[str]) -> dict[str, float]:
+        return quotes.latest_closes(tickers, cache_dir=cache_dir)
+
+    return fetch
+
+
+def _default_broker_factory() -> BrokerClient | None:
+    """The real broker resolution -- the same ``build_broker(load_settings())``
+    one-liner every pipeline entrypoint uses. Settings are read at CALL time (each
+    snapshot refresh; they are cheap env reads). No broker configured -> None,
+    which ``BrokerSnapshot`` caches as a None snapshot for its TTL."""
+    return build_broker(load_settings())
 
 
 # One cadence for the wake channel: the token poll AND sse-starlette's keepalive
