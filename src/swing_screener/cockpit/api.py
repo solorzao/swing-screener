@@ -367,7 +367,7 @@ def create_app(
     ) -> dict[str, object]:
         """The Streamlit Screener Performance page as data -- every aggregate a Stat.
 
-        Replicates ``dashboard/app.py::_render_performance``'s load-bearing order
+        Replicates the retired Streamlit Screener Performance page's load-bearing order
         EXACTLY: (1) ``facet`` (``facet_filter``) then the ``play_type`` filter over
         the research grid; (2) the strategy leaderboard over the ``arm == BASELINE``
         subset, with the trailing ``window`` cut (days back from today, on

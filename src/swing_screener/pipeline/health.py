@@ -11,9 +11,11 @@ helpers turn a last-seen date into an at-a-glance badge:
   autonomy-gate verdict into ONE line for the digest footer -- pushed every day, so a
   dead cron is visible without opening the dashboard.
 
-Both are PURE: ``today`` is passed explicitly (no clock), and they touch no DB/IO. The
-dashboard's System Health page reuses ``_freshness`` for its red/green stale badge so the
-pushed line and the pulled page agree by construction.
+Both are PURE: ``today`` is passed explicitly (no clock), and they touch no DB/IO. (The
+Streamlit System Health page that reused ``_freshness`` for its stale badge retired to the
+cockpit, whose heartbeat rail -- ``cockpit/heartbeats.py`` -- measures liveness against
+each job's own period instead; the digest footer's ``health_line`` remains this module's
+consumer.)
 """
 
 from datetime import date

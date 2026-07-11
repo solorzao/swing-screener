@@ -8,7 +8,7 @@
 
 A private **Streamlit** dashboard over the same SQLite store the pipeline writes — browse
 the day's candidates, log and track real trades with live unrealized P/L, and review the
-shadow book's screener-performance stats. It runs **locally only** (no public access).
+analyst's calibration. It runs **locally only** (no public access).
 
 ## Run it
 
@@ -41,6 +41,12 @@ trace, in keeping with the read-mostly, never-crashes design.
 A **left sidebar radio** switches between ten pages (grouped here for orientation; the
 sidebar lists them in this order). **Overview** is the default landing page.
 
+> The **Screener Performance** and **System Health** pages retired to the cockpit
+> ([docs/cockpit.md](cockpit.md)): performance stats live at `/api/stats/performance`
+> (the Performance panel); the autonomy gate, execution mode, and analyst spend at
+> `/api/gate` (the gate chip); and run freshness on the heartbeat rail
+> (`/api/heartbeats`).
+
 **Overview** — a KPI dashboard: open positions, total unrealized P/L, today's candidate
 count, and the screener's win rate, plus a **recent activity** feed of the latest exit
 events. The one-glance "where do I stand" page.
@@ -70,10 +76,10 @@ events. The one-glance "where do I stand" page.
 
 **Analytics**
 
-- **Screener Performance** — the shadow book's QC as KPI metrics (fill rate, win rate,
-  expectancy R, profit factor, count closed) plus charts: win-rate breakdowns by timeframe
-  and **rank bucket**, and the cumulative-R equity curve. This is how you tell whether the
-  screener — and your ranking — actually works.
+- **Analyst Calibration** — the LLM analyst's scored conviction calls per play type: is
+  its judgment earning R? A table of scored-call counts and mean R by conviction grade,
+  plus the mean R of its **nudges** (calls where the final conviction differs from the
+  baseline).
 - **Exit Log** — exit events recorded by the nightly run, **filterable** by reason and by
   paper/real book.
 

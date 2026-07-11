@@ -57,5 +57,5 @@ confirming first.** The whole point is a vetted recommendation the human approve
 - Be conservative: under-recommending beats shipping an overfit gate against real money. The
   out-of-sample + non-thin checks are deliberate; respect them.
 - For the *live* picture (what the deployed screener's shadow book is actually finding across
-  variants and market regimes), point the user at the dashboard's **Screener Performance** page
+  variants and market regimes), point the user at the desktop cockpit's **Performance** panel
   (strategy leaderboard, score calibration, regime cut) rather than this offline sweep.

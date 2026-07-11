@@ -14,7 +14,7 @@ test can monkeypatch that seam and avoid the network.
 """
 
 from collections.abc import Callable
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 from typing import cast
 
@@ -30,8 +30,6 @@ from swing_screener.db import repo
 from swing_screener.db.models import AnalystCall, ExitEvent, PaperTrade, Signal, Trade
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.arms import BASELINE
-from swing_screener.pipeline.autonomy import autonomy_gate, gate_countdown
-from swing_screener.pipeline.health import _freshness
 from swing_screener.pipeline.reflect import analyst_calibration
 from swing_screener.pipeline.variants import DEFAULT_VARIANT
 from swing_screener.settings import load_settings
@@ -481,228 +479,6 @@ def _render_closed(session: Session) -> None:
         st.altair_chart(ui.line(points, "Exit date", "Cumulative $"), width="stretch")
 
 
-def _render_performance(session: Session) -> None:
-    ui.page_header("Screener Performance")
-    # research grid only -- the curated intent book (account="paper") must never inflate
-    # the leaderboards.
-    paper_trades = repo.load_research_paper_trades(session)
-    if not paper_trades:
-        ui.empty_state("No shadow-book data yet.")
-        return
-
-    # Play-type filter (continuation vs reversal). The partial/trail arms span both
-    # engines, so scope the arm A/B to one play type to judge it there in isolation.
-    if len({t.play_type for t in paper_trades}) > 1:
-        choice = st.segmented_control("Play type", ["All", "Continuation", "Reversal"],
-                                      default="All")
-        if choice == "Continuation":
-            paper_trades = [t for t in paper_trades if t.play_type == "continuation"]
-        elif choice == "Reversal":
-            paper_trades = [t for t in paper_trades if t.play_type == "reversal"]
-        if not paper_trades:
-            ui.empty_state(f"No {choice} shadow-book trades.")
-            return
-
-    # Strategy leaderboard: rank ENTRY/screen variants head-to-head under a fixed exit
-    # (the baseline arm) -- the complement of the exit-arm A/B below. Variants are NOT
-    # same-sample (each screens its own fills), so this compares strategies, not exits.
-    if len({t.variant for t in paper_trades}) > 1:
-        st.markdown("**Strategy leaderboard** — same exit (baseline), different screen config")
-        baseline = [t for t in paper_trades if t.arm == BASELINE]
-        # Trailing-window cut: judge variants on recent setups (by open date), not all
-        # history. "All" keeps everything; None (bare test mode) is treated as "All".
-        window = st.segmented_control("Window", ["All", "90d", "180d", "365d"], default="All")
-        if window in ("90d", "180d", "365d"):
-            cutoff = date.today() - timedelta(days=int(window[:-1]))
-            baseline = [t for t in baseline if t.opened_date and t.opened_date >= cutoff]
-        by_variant = performance.breakdown(baseline, "variant")
-        # Shared trust-tiered ranking: trusted samples above thin, then by lower CI bound.
-        var_order = performance.leaderboard_order(by_variant)
-        var_df = pd.DataFrame(
-            [
-                {
-                    "variant": v,
-                    "expectancy_r": by_variant[v].expectancy_r,
-                    "ci_low": by_variant[v].expectancy_ci_low,
-                    "ci_high": by_variant[v].expectancy_ci_high,
-                    "win_rate": by_variant[v].win_rate,
-                    # Fill visibility (2026-07-01 audit): a variant that 'wins' by rarely
-                    # filling must show it where the ranking is read.
-                    "fill_rate": by_variant[v].fill_rate,
-                    "total": by_variant[v].n_total,
-                    "closed": by_variant[v].n_closed,
-                    "clusters": by_variant[v].n_clusters,
-                    "sample": performance.leaderboard_flag(by_variant[v]),
-                }
-                for v in var_order
-            ]
-        )
-        st.dataframe(
-            var_df,
-            width="stretch",
-            hide_index=True,
-            column_config={
-                "variant": st.column_config.TextColumn("Variant"),
-                "expectancy_r": st.column_config.NumberColumn("Expectancy R", format="%.2f"),
-                "ci_low": st.column_config.NumberColumn("95% low", format="%.2f"),
-                "ci_high": st.column_config.NumberColumn("95% high", format="%.2f"),
-                "win_rate": st.column_config.NumberColumn("Win rate", format="percent"),
-                "fill_rate": st.column_config.NumberColumn("Fill rate", format="percent"),
-                "total": st.column_config.NumberColumn("Signals (n)", format="%d"),
-                "closed": st.column_config.NumberColumn("Closed (n)", format="%d"),
-                "clusters": st.column_config.NumberColumn("Tickers", format="%d"),
-                "sample": st.column_config.TextColumn("Sample"),
-            },
-        )
-        st.caption(
-            f"Trusted samples (≥ {performance.MIN_LEADERBOARD_N} closed trades) rank above 'thin' ones, "
-            "then by the lower 95% bound of expectancy — so a lucky thin sample can't win. "
-            "'iid' flags rows with too few distinct tickers to ticker-cluster the bound, "
-            "so their 95% low is the weaker IID-fallback estimate."
-        )
-        # The exit-arm A/B below is only honest on ONE screen (its arms share fills),
-        # so scope everything downstream to the default (live) screen variant.
-        paper_trades = [t for t in paper_trades if t.variant == DEFAULT_VARIANT]
-
-    # Parallel-arm shadow book: when more than one experiment arm is present, lead
-    # with the same-sample A/B (every arm saw the identical fills) and let the user
-    # drill into one arm's detail below. With a single arm the view is unchanged.
-    by_arm = performance.breakdown(paper_trades, "arm")
-    arms = sorted(by_arm)
-    if len(arms) > 1:
-        st.markdown("**Experiment arms** — same fills, different exit management")
-        arm_df = pd.DataFrame(
-            [
-                {
-                    "arm": a,
-                    "expectancy_r": by_arm[a].expectancy_r,
-                    "win_rate": by_arm[a].win_rate,
-                    "fill_rate": by_arm[a].fill_rate,
-                    "total": by_arm[a].n_total,
-                    "closed": by_arm[a].n_closed,
-                }
-                for a in arms
-            ]
-        )
-        st.dataframe(
-            arm_df,
-            width="stretch",
-            hide_index=True,
-            column_config={
-                "arm": st.column_config.TextColumn("Arm"),
-                "expectancy_r": st.column_config.NumberColumn("Expectancy R", format="%.2f"),
-                "win_rate": st.column_config.NumberColumn("Win rate", format="percent"),
-                "fill_rate": st.column_config.NumberColumn("Fill rate", format="percent"),
-                "total": st.column_config.NumberColumn("Signals (n)", format="%d"),
-                "closed": st.column_config.NumberColumn("Closed", format="%d"),
-            },
-        )
-        default_idx = arms.index(BASELINE) if BASELINE in arms else 0
-        arm = st.radio("Arm detail", arms, index=default_idx, horizontal=True)
-        trades = [t for t in paper_trades if t.arm == arm]
-    else:
-        trades = paper_trades
-
-    summary = performance.summarize(trades)
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Fill rate", f"{summary.fill_rate * 100:.0f}%")
-    c2.metric("Win rate", f"{summary.win_rate * 100:.0f}%")
-    c3.metric("Expectancy R", f"{summary.expectancy_r:.2f}")
-    pf = summary.profit_factor
-    c4.metric("Profit factor", "∞" if pf == float("inf") else f"{pf:.2f}")
-    c5.metric("Closed", str(summary.n_closed))
-
-    by_tf = performance.breakdown(trades, "timeframe")
-    if by_tf:
-        st.markdown("**Win rate by timeframe**")
-        st.altair_chart(
-            ui.bar({k: v.win_rate for k, v in by_tf.items()}, "Timeframe", "Win rate"),
-            width="stretch",
-        )
-
-    by_rank = performance.rank_bucket(trades, [5, 10])
-    if by_rank:
-        st.markdown("**Win rate by rank bucket**")
-        st.altair_chart(
-            ui.bar({k: v.win_rate for k, v in by_rank.items()}, "Rank bucket", "Win rate"),
-            width="stretch",
-        )
-
-    # Score calibration: does a higher composite score actually earn more? Expectancy by
-    # score band should trend up; a flat/inverted curve means the score needs rework. Chart
-    # only bands that have closed trades (an empty band would read as a spurious 0).
-    # score_stamped: forward rows scored before a score-definition change (score v2,
-    # 2026-07-03) measure a different quantity and would pool two definitions per band.
-    by_score = performance.score_bucket(performance.score_stamped(trades), [0.5, 0.6, 0.7, 0.8])
-    scored = {k: v for k, v in by_score.items() if v.n_closed > 0}
-    if len(scored) > 1:
-        st.markdown("**Score calibration** — expectancy by signal-score band")
-        st.altair_chart(
-            ui.bar({k: v.expectancy_r for k, v in scored.items()}, "Score band", "Expectancy R"),
-            width="stretch",
-        )
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {"band": k, "expectancy_r": v.expectancy_r, "win_rate": v.win_rate,
-                     "closed": v.n_closed}
-                    for k, v in scored.items()
-                ]
-            ),
-            width="stretch",
-            hide_index=True,
-            column_config={
-                "band": st.column_config.TextColumn("Score band"),
-                "expectancy_r": st.column_config.NumberColumn("Expectancy R", format="%.2f"),
-                "win_rate": st.column_config.NumberColumn("Win rate", format="percent"),
-                "closed": st.column_config.NumberColumn("Closed (n)", format="%d"),
-            },
-        )
-        st.caption("A predictive score trends upward across bands; a flat or inverted curve "
-                   "means it isn't separating winners from losers (revisit the weights).")
-
-    # Regime attribution: how the engine does by market context (SPY proxy). Continuation
-    # wants uptrends, reversals want washouts -- this shows whether the book agrees. Skip
-    # unknown-regime trades (legacy / SPY unavailable); show a cut only when it has > 1 bucket.
-    by_trend = performance.breakdown(
-        [t for t in trades if t.market_trend is not None], "market_trend")
-    by_vol = performance.breakdown(
-        [t for t in trades if t.market_vol is not None], "market_vol")
-    if len(by_trend) > 1 or len(by_vol) > 1:
-        st.markdown("**Performance by market regime** — SPY trend (vs 200-day) & volatility")
-        if len(by_trend) > 1:
-            st.altair_chart(
-                ui.bar({k: v.expectancy_r for k, v in by_trend.items()},
-                       "Market trend", "Expectancy R"),
-                width="stretch",
-            )
-        regime_rows = (
-            [{"regime": f"trend: {k}", "expectancy_r": v.expectancy_r,
-              "win_rate": v.win_rate, "closed": v.n_closed} for k, v in by_trend.items()]
-            + [{"regime": f"vol: {k}", "expectancy_r": v.expectancy_r,
-                "win_rate": v.win_rate, "closed": v.n_closed} for k, v in by_vol.items()]
-        )
-        st.dataframe(
-            pd.DataFrame(regime_rows),
-            width="stretch",
-            hide_index=True,
-            column_config={
-                "regime": st.column_config.TextColumn("Regime"),
-                "expectancy_r": st.column_config.NumberColumn("Expectancy R", format="%.2f"),
-                "win_rate": st.column_config.NumberColumn("Win rate", format="percent"),
-                "closed": st.column_config.NumberColumn("Closed (n)", format="%d"),
-            },
-        )
-
-    curve = performance.equity_curve(trades)
-    if curve:
-        st.markdown("**Equity curve (cumulative R)**")
-        # ui.line wants list[tuple[object, float]]; list is invariant, so widen the
-        # date-keyed curve to the expected element type for the type checker.
-        points: list[tuple[object, float]] = [(d, r) for d, r in curve]
-        st.altair_chart(ui.line(points, "Exit date", "Cumulative R"), width="stretch")
-
-
 def _render_exits(session: Session) -> None:
     ui.page_header("Exit Log")
     events = list(
@@ -996,71 +772,6 @@ def _render_calibration(session: Session) -> None:
             st.caption("Nudges (final != baseline): none scored yet.")
 
 
-_FRESH_BADGE = {"fresh": "🟢", "stale": "🔴", "no-data": "⚪"}
-
-
-def _render_health(session: Session) -> None:
-    """The at-a-glance ops surface: is the cron alive, and what's the money posture?
-
-    Three read-only panels: (i) FRESHNESS -- the latest screen run + the latest digest send
-    per kind, each with a red/green stale badge (the load-bearing "is the cron dead" signal,
-    via the pure :func:`_freshness`); (ii) the autonomy-gate COUNTDOWN (progress toward the
-    calibration floors); (iii) the EXECUTION-MODE chip (the money posture, always visible).
-    Plus today's analyst spend as a metric. Degrades gracefully: no runs -> a clear no-data
-    state, never a crash. READ-ONLY: it only SELECTs."""
-    ui.page_header(
-        "System Health",
-        caption="Is the screener alive? Freshness, the autonomy gate, and the money posture.",
-    )
-    today = date.today()
-
-    # --- (iii) Execution-mode chip: the money posture, always visible -----------------
-    mode = load_settings().execution_mode
-    c1, c2 = st.columns(2)
-    c1.metric("Execution mode", mode)
-    # --- (iv) Today's analyst spend (sum of est_cost_usd over today's calls) -----------
-    today_calls = list(
-        session.scalars(select(AnalystCall).where(AnalystCall.created_date == today))
-    )
-    spend = sum(c.est_cost_usd or 0.0 for c in today_calls)
-    c2.metric("Analyst spend (today)", ui.fmt_money(spend))
-
-    # --- (i) Freshness / last-run table: latest screen + latest digest per kind --------
-    st.subheader("Freshness")
-    run_date = repo.latest_run_date(session)
-    rows = [_freshness_row("Screen run", run_date, today)]
-    emails = repo.list_email_log(session)
-    # The latest send per kind (list_email_log is newest-first, so the first seen per kind
-    # is its latest). A kind that has never sent simply doesn't appear -- the screen-run row
-    # is always present so the table is never empty.
-    seen: set[str] = set()
-    for e in emails:
-        if e.kind in seen:
-            continue
-        seen.add(e.kind)
-        last_send = e.sent_at.date() if e.sent_at is not None else None
-        rows.append(_freshness_row(f"Digest: {e.kind}", last_send, today))
-    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
-    if run_date is None:
-        ui.empty_state("No screener runs recorded yet — the screen hasn't run.")
-
-    # --- (ii) Gate countdown: per-play-type progress toward the calibration floors -----
-    st.subheader("Autonomy gate")
-    report = autonomy_gate(session)
-    st.caption("READY (advisory)" if report.ready else "NOT READY")
-    st.code(gate_countdown(report))
-
-
-def _freshness_row(label: str, latest: date | None, today: date) -> dict[str, object]:
-    """One freshness-table row: the source, its last-seen date, and a badged state."""
-    badge_label, state = _freshness(latest, today)
-    return {
-        "source": label,
-        "last_seen": latest,
-        "status": f"{_FRESH_BADGE[state]} {state}",
-    }
-
-
 # label -> renderer. Order defines sidebar order; first entry is the default
 # landing page. Radio nav (not st.navigation) so AppTest can drive page switches.
 PAGES: dict[str, Callable[[Session], None]] = {
@@ -1070,12 +781,10 @@ PAGES: dict[str, Callable[[Session], None]] = {
     "Active Trades": _render_active,
     "Trade Entry": _render_entry,
     "Closed Trades": _render_closed,
-    "Screener Performance": _render_performance,
     "Analyst Calibration": _render_calibration,
     "Exit Log": _render_exits,
     "Universe": _render_universe,
     "Digest Log": _render_digests,
-    "System Health": _render_health,
 }
 
 
