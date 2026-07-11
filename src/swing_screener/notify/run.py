@@ -264,6 +264,22 @@ def _drop_already_ran(
     return out
 
 
+def _bounded_overflow(tickers: list[str], limit: int = 512) -> str:
+    """Comma-join ``tickers`` bounded to ``limit`` chars WITHOUT cutting mid-ticker.
+
+    A naive ``[:limit]`` slice could leave a phantom fragment ("...,WDA") that a
+    comma-splitting reader (the cockpit funnel view) would render as a real ticker.
+    Truncate at the last comma inside the bound instead -- and if the bound holds no
+    comma at all, persist nothing rather than an invented name. Practically
+    unreachable (pool cap 20 x 16-char tickers), but the persisted record must never
+    carry a ticker that doesn't exist."""
+    joined = ",".join(tickers)
+    if len(joined) <= limit:
+        return joined
+    head = joined[:limit]
+    return head.rsplit(",", 1)[0] if "," in head else ""
+
+
 def _warn_chartless(kind: str, signals: list[Signal]) -> None:
     """Loudly flag surfaced picks with no rendered chart (they reach the PDF as a
     chartless section). The evening render selects charts BEFORE digest-time filters
@@ -615,7 +631,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
             repo.save_reversal_funnel(
                 session, run_date=run_date, detected=detected, confirmed=confirmed_n,
                 fresh=n_fresh, actionable=n_actionable, surfaced=len(reversal_sigs),
-                overflow_tickers=",".join(reversal_overflow)[:512],
+                overflow_tickers=_bounded_overflow(reversal_overflow),
                 pool_n=sel.REVERSAL_POOL_N,
                 confirmed_only=scfg.reversal_surface_confirmed_only,
                 premium_only=scfg.reversal_surface_premium_only,

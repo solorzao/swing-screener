@@ -384,5 +384,8 @@ class ReversalFunnel(Base):
     pool_n: Mapped[int] = mapped_column(default=20)
     confirmed_only: Mapped[bool] = mapped_column(default=True)
     premium_only: Mapped[bool] = mapped_column(default=False)
+    # seam wired at digest time (a live-quote fn was injected) -- NOT "the check ran":
+    # _drop_already_ran fails open on a quote outage, so True can coexist with
+    # actionable == fresh on an outage day.
     already_ran_checked: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime | None] = mapped_column(default=None)

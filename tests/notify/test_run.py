@@ -247,6 +247,20 @@ def test_weekly_digest_persists_no_reversal_funnel(tmp_path):
         assert list(s.scalars(select(ReversalFunnel))) == []
 
 
+def test_bounded_overflow_never_cuts_mid_ticker():
+    """The 512-char overflow bound must truncate at a COMMA: a naive slice could leave
+    a phantom fragment ("...,WDA") that the cockpit's comma-splitting reader would
+    render as a real ticker."""
+    assert run._bounded_overflow(["AAPL", "MSFT"]) == "AAPL,MSFT"  # under the bound
+    tickers = [f"TICK{i:04d}" for i in range(80)]  # joined length 719 > 512
+    out = run._bounded_overflow(tickers)
+    assert len(out) <= 512
+    parts = out.split(",")
+    assert parts == tickers[: len(parts)]  # every persisted name is a REAL ticker
+    # a bound too tight for even one full name persists nothing, not a fragment
+    assert run._bounded_overflow(["ABCDEFGH"], limit=4) == ""
+
+
 def test_send_digest_keeps_picks_when_quotes_unavailable(tmp_path):
     """Fail-open: when live quotes can't be fetched, no pick is dropped -- a quote outage
     must never silence the digest."""

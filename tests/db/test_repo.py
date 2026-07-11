@@ -1,6 +1,8 @@
 from datetime import date
 
+import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from swing_screener.db import repo
@@ -271,8 +273,8 @@ def _save_funnel(s: Session, run_date: date, **overrides: object) -> None:
 
 def test_save_reversal_funnel_idempotent_per_run_date() -> None:
     """A forced digest resend re-executes the funnel write for the same run_date: one
-    row must remain, carrying the SECOND write's values (delete-then-insert, mirroring
-    the EmailLog dedup posture)."""
+    row must remain, carrying the SECOND write's values (delete-then-insert, the
+    delete_signals_for rewrite posture)."""
     engine = get_engine("sqlite:///:memory:")
     with Session(engine) as s:
         _save_funnel(s, date(2026, 7, 9))
@@ -302,6 +304,38 @@ def test_latest_reversal_funnel_returns_newest() -> None:
         assert got is not None
         assert got.run_date == date(2026, 7, 9)  # newest run_date wins
         assert got.detected == 9
+
+
+def test_save_reversal_funnel_survives_concurrent_replica_race(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two concurrent same-run_date runs (the Sunday double-fire that bit market_run
+    in 2026-06) both pass the delete and both insert; the loser's commit hits the
+    unique index AFTER real work is done. Losing is benign -- the winner's row was
+    computed from the same DB state -- so no exception may escape and the winner's
+    row must survive. Simulated by making the loser's commit raise IntegrityError."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        _save_funnel(s, date(2026, 7, 9))  # the winner's row (detected=31)
+
+        real_commit = s.commit
+        state = {"raised": False}
+
+        def losing_commit() -> None:
+            if not state["raised"]:
+                state["raised"] = True
+                raise IntegrityError("stmt", None, Exception("UNIQUE constraint failed"))
+            real_commit()
+
+        monkeypatch.setattr(s, "commit", losing_commit)
+        got = repo.save_reversal_funnel(  # the loser: same run_date, different counts
+            s, run_date=date(2026, 7, 9), detected=99, confirmed=99, fresh=99,
+            actionable=99, surfaced=99, overflow_tickers="XXX", pool_n=20,
+            confirmed_only=True, premium_only=False, already_ran_checked=True)
+
+        assert got.detected == 31  # the loser got the WINNER's row back, not its own
+        rows = list(s.scalars(select(ReversalFunnel)))
+        assert len(rows) == 1
+        assert rows[0].detected == 31  # the winner's row survived the race
 
 
 def test_complete_and_fail():

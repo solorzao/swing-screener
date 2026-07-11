@@ -1,5 +1,6 @@
 """Thin CRUD layer over the SQLAlchemy models for signals and trades."""
 
+import logging
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
@@ -25,6 +26,8 @@ from swing_screener.pipeline.variants import DEFAULT_VARIANT
 
 if TYPE_CHECKING:
     from swing_screener.data.universe import UniverseEntry
+
+log = logging.getLogger(__name__)
 
 
 def save_signals(session: Session, signals: Sequence[Signal]) -> None:
@@ -523,12 +526,18 @@ def save_reversal_funnel(
 ) -> ReversalFunnel:
     """Persist the daily digest's reversal funnel snapshot, ONE row per ``run_date``.
 
-    Delete-then-insert (mirroring the EmailLog dedup posture): a forced digest resend
-    re-executes the funnel write for the same run_date, and the latest execution's
-    counts must win -- not raise on the unique index or pile up duplicates. The
-    fresh/actionable/surfaced stages are digest-time state (cooldown, live quotes,
-    sector cap) and are unrecoverable later, so this row is the only record.
-    ``created_at`` is stamped in UTC at save time (mirrors MarketReport)."""
+    Delete-then-insert (the ``delete_signals_for`` rewrite posture): a forced digest
+    resend re-executes the funnel write for the same run_date, and the latest
+    execution's counts must win -- not raise on the unique index or pile up
+    duplicates. The fresh/actionable/surfaced stages are digest-time state (cooldown,
+    live quotes, sector cap) and are unrecoverable later, so this row is the only
+    record. ``created_at`` is stamped in UTC at save time (mirrors MarketReport).
+
+    CONCURRENT-REPLICA race (the Sunday double-fire that bit market_run in 2026-06):
+    two same-run_date runs can both pass the delete and both insert; the loser hits
+    the unique index HERE, after real work (the continuation Opus spend) is done.
+    Losing is benign -- the winner's row was computed from the same DB state -- so
+    the loser rolls back, logs, and returns the winner's row instead of dying."""
     session.execute(delete(ReversalFunnel).where(ReversalFunnel.run_date == run_date))
     row = ReversalFunnel(
         run_date=run_date, detected=detected, confirmed=confirmed, fresh=fresh,
@@ -537,7 +546,15 @@ def save_reversal_funnel(
         already_ran_checked=already_ran_checked, created_at=datetime.now(UTC),
     )
     session.add(row)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:  # lost the concurrent-replica race; keep the winner's row
+        session.rollback()
+        log.warning("reversal funnel for %s already recorded by a concurrent run; "
+                    "keeping the existing row", run_date)
+        return session.scalars(
+            select(ReversalFunnel).where(ReversalFunnel.run_date == run_date)
+        ).one()
     session.refresh(row)
     return row
 
