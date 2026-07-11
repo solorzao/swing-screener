@@ -18,12 +18,16 @@ This module is the validated DATA layer (no LLM, no network):
     and (b) an UNKNOWN ``StrategyConfig`` field (``dataclasses.replace`` raises ``TypeError``;
     we re-raise a clear ``ValueError``).
   * ``load_proposed_for`` -- reads one play type's ``edge/<pt>.proposed.json`` (missing -> []).
+  * ``decide_proposal`` -- the human decision (approve / withdraw) as a code-owned transition
+    (Phase 3): the cockpit's replacement for the 2026-07 hand-edited ``WITHDRAWN <date>: ...``
+    convention, with the same rationale-append audit trail.
 """
 
 import dataclasses
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Literal
 
 from swing_screener.config import StrategyConfig
 from swing_screener.pipeline import variants
@@ -31,6 +35,11 @@ from swing_screener.pipeline import variants
 # A queued variant is ready for the sweep; other statuses (e.g. "draft", "promoted",
 # "rejected") are NOT swept. The optimizer merges only ``QUEUED`` variants.
 QUEUED = "queued"
+# The two DECIDED statuses ``decide_proposal`` writes (Phase 3). Both retire the row from
+# the sweep (only ``QUEUED`` is swept); an approved row's promotion path is the human-gated
+# ``propose()`` PR, never another walk-forward slot.
+APPROVED = "approved"
+WITHDRAWN = "withdrawn"
 
 
 @dataclass(frozen=True)
@@ -109,3 +118,53 @@ def load_proposed_for(play_type: str, edge_dir: Path) -> list[ProposedVariant]:
     if not path.exists():
         return []
     return load_proposed(path.read_text(encoding="utf-8"))
+
+
+def decide_proposal(
+    edge_dir: Path,
+    play_type: str,
+    name: str,
+    *,
+    decision: Literal["approved", "withdrawn"],
+    reason: str,
+    today: str,
+) -> ProposedVariant:
+    """Record a human decision on ONE proposal -- the first TOOL-written status transition.
+
+    The 2026-07 convention was a hand edit: flip ``status`` and append ``WITHDRAWN <date>:
+    <reason>`` to the rationale. Phase 3's cockpit writes the same record through code, and
+    the data layer owns the state machine:
+
+      * approve  -- requires ``status == QUEUED`` (only a still-queued idea can be approved);
+      * withdraw -- requires ``status`` in ``(QUEUED, APPROVED)`` (an approval can be walked
+        back; a withdrawal is final until a human hand-edits it).
+
+    An unknown ``name`` raises ``KeyError``; a refused transition raises ``ValueError`` naming
+    the current status, and the store is left untouched. On success the ONE row is replaced
+    (``dataclasses.replace``: new ``status``, rationale + `` {DECISION} {today}: {reason}`` --
+    byte-compatible with the hand-edit convention) and the WHOLE file is rewritten with every
+    other row and the row order preserved. Returns the updated row. The decided row then stays
+    in the file as the audit record (``draft_variants``' merge preserves non-queued rows) until
+    git captures it.
+    """
+    items = load_proposed_for(play_type, edge_dir)
+    index = next((i for i, pv in enumerate(items) if pv.name == name), None)
+    if index is None:
+        raise KeyError(name)
+    current = items[index]
+    allowed = (QUEUED,) if decision == APPROVED else (QUEUED, APPROVED)
+    if current.status not in allowed:
+        raise ValueError(
+            f"cannot mark proposal {name!r} {decision}: its status is {current.status!r} "
+            f"(allowed from: {', '.join(allowed)})"
+        )
+    updated = dataclasses.replace(
+        current,
+        status=decision,
+        rationale=current.rationale + f" {decision.upper()} {today}: {reason}",
+    )
+    items[index] = updated
+    (edge_dir / f"{play_type}.proposed.json").write_text(
+        proposed_to_json(items), encoding="utf-8"
+    )
+    return updated

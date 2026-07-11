@@ -48,6 +48,7 @@ from swing_screener.pipeline.optimize import fetch_daily
 from swing_screener.pipeline.proposed import (
     QUEUED,
     ProposedVariant,
+    load_proposed_for,
     proposed_to_json,
     to_config,
 )
@@ -916,13 +917,22 @@ def draft_variants(
 
     The flow: ask the (injectable, fallible) ``drafter`` for raw candidate dicts; validate each
     via ``_candidate`` (``to_config`` is the hard gate -- illegal/malformed drafts are DROPPED +
-    warned); and, IF any survive, REWRITE ``edge/<pt>.proposed.json`` with the new queued set
-    (queued drafts are machine-owned, so a fresh successful run replaces the prior set).
+    warned); and, IF any survive, MERGE them into ``edge/<pt>.proposed.json``.
+
+    The merge (Phase 3): ONLY the ``QUEUED`` rows are machine-owned, so only THEY are replaced
+    by the fresh set (a redraft supersedes stale queued ideas). Every non-queued row -- an
+    ``approved``/``withdrawn`` decision the cockpit's ``decide_proposal`` wrote (or the older
+    hand-edited kind), a ``draft``, anything -- is PRESERVED verbatim, in its original order,
+    ahead of the fresh queued set: the decision is the audit record, and it lives in this file
+    until git captures it, so a Sunday reflection redraft must not clobber it. And because
+    ``_draft_name`` is deterministic (a durable hunch re-drafts at the same index -> the same
+    name), a fresh draft whose name matches a preserved row is DROPPED with a log: decided rows
+    win; a withdrawn idea is not silently re-queued.
 
     Fail-safe like ``author_edge_file``: with no hunches the drafter is not even asked; and on
     ANY failure (drafter raises, returns empty, or every candidate is dropped) the store is left
-    UNTOUCHED -- a prior valid queued set survives. Returns the list of variants written ([] if
-    nothing was queued).
+    UNTOUCHED -- a prior valid queued set survives. Returns the fresh queued variants written
+    ([] if nothing was queued).
     """
     if not hunches:
         return []
@@ -941,11 +951,26 @@ def draft_variants(
     ]
     if not valid:
         return []
+    preserved = [pv for pv in load_proposed_for(play_type, edge_dir) if pv.status != QUEUED]
+    decided_status = {pv.name: pv.status for pv in preserved}
+    fresh: list[ProposedVariant] = []
+    for pv in valid:
+        if pv.name in decided_status:
+            log.info(
+                "dropping fresh draft %r for %s: its deterministic name matches a prior "
+                "%s row -- decided rows win; a withdrawn idea is not silently re-queued",
+                pv.name, play_type, decided_status[pv.name],
+            )
+            continue
+        fresh.append(pv)
     (edge_dir / f"{play_type}.proposed.json").write_text(
-        proposed_to_json(valid), encoding="utf-8"
+        proposed_to_json(preserved + fresh), encoding="utf-8"
     )
-    log.info("drafted %d queued variant(s) for %s", len(valid), play_type)
-    return valid
+    log.info(
+        "drafted %d queued variant(s) for %s (%d non-queued row(s) preserved)",
+        len(fresh), play_type, len(preserved),
+    )
+    return fresh
 
 
 # ===========================================================================

@@ -18,6 +18,7 @@ returns canned drafts), mirroring ``author_edge_file``'s injectable client.
 """
 
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -25,7 +26,10 @@ from swing_screener.config import StrategyConfig
 from swing_screener.pipeline.optimize import build_config_grid
 from swing_screener.pipeline.proposed import (
     QUEUED,
+    ProposedVariant,
+    decide_proposal,
     load_proposed_for,
+    proposed_to_json,
     to_config,
 )
 from swing_screener.pipeline.reflect import (
@@ -277,7 +281,7 @@ def test_no_hunches_writes_nothing(tmp_path):
 
 
 def test_rewrites_the_queued_set_each_run(tmp_path):
-    # Queued drafts are machine-owned: a fresh successful draft REPLACES the prior queued set
+    # QUEUED drafts are machine-owned: a fresh successful draft REPLACES the prior queued set
     # (documented behavior), so a stale candidate doesn't accumulate forever.
     base = StrategyConfig()
     draft_variants(
@@ -311,3 +315,123 @@ def test_structurally_malformed_draft_is_dropped(tmp_path, bad_draft):
     )
     assert written == []
     assert load_proposed_for("continuation", tmp_path) == []
+
+
+# =====================================================================================
+# MERGE (Phase 3): a redraft replaces only the QUEUED set -- decided rows survive it,
+# and a fresh draft colliding with a decided row's name is BLOCKED (decided rows win).
+# =====================================================================================
+def _seeded_row(
+    *,
+    name: str,
+    status: str,
+    delta: dict[str, float | int | str | bool] | None = None,
+) -> ProposedVariant:
+    return ProposedVariant(
+        name=name, play_type="continuation",
+        delta={"min_pullback_bars": 2} if delta is None else delta,
+        rationale="seeded", hunch_ref="continuation:seeded", status=status,
+        drafted_at="2026-06-01", provenance="reflection-opus",
+    )
+
+
+def test_redraft_preserves_non_queued_rows_beside_the_fresh_queued_set(tmp_path: Path) -> None:
+    # Phase 3 cockpit decisions (approved/withdrawn) are an audit record living in the file
+    # until git captures it. A Sunday reflection redraft must NOT clobber them: the new file
+    # is (non-queued rows, original order, untouched) + (fresh queued); ONLY the stale
+    # QUEUED rows are superseded.
+    base = StrategyConfig()
+    withdrawn = _seeded_row(name="continuation_old_idea_0_q", status="withdrawn")
+    approved = _seeded_row(
+        name="continuation_kept_idea_1_q", status="approved", delta={"min_pullback_bars": 3},
+    )
+    draft = _seeded_row(
+        name="continuation_half_baked_2_q", status="draft", delta={"max_extension_atr": 1.8},
+    )
+    stale_queued = _seeded_row(
+        name="continuation_stale_3_q", status=QUEUED, delta={"max_extension_atr": 1.2},
+    )
+    (tmp_path / "continuation.proposed.json").write_text(
+        proposed_to_json([withdrawn, approved, draft, stale_queued]), encoding="utf-8"
+    )
+    written = draft_variants(
+        "continuation", [_hunch()], base, edge_dir=tmp_path, today="2026-07-12",
+        drafter=_fake_drafter([
+            {"delta": {"max_extension_atr": 1.5}, "rationale": "fresh", "hunch_ref": "h_new"}
+        ]),
+    )
+    assert len(written) == 1
+    stored = load_proposed_for("continuation", tmp_path)
+    # Non-queued rows first, in their original order, preserved verbatim (the round-trip is
+    # lossless, so dataclass equality IS byte-level fidelity of every field).
+    assert stored[:3] == [withdrawn, approved, draft]
+    # Then the fresh queued set; the stale queued row is superseded (gone).
+    assert stored[3:] == written
+    assert all(pv.name != stale_queued.name for pv in stored)
+
+
+def test_collision_with_a_decided_row_blocks_the_fresh_draft(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A REAL collision via _draft_name determinism: a durable hunch re-drafts the same idea
+    # at the same index -> the SAME deterministic name. Once that row is DECIDED (withdrawn
+    # here), the redraft must not resurrect it: decided rows win, the fresh draft is dropped
+    # with a log, and a withdrawn idea is not silently re-queued.
+    base = StrategyConfig()
+    drafts = [{
+        "delta": {"max_extension_atr": 1.5},
+        "rationale": "A tighter freshness gate.",
+        "hunch_ref": "continuation:market_trend=bull",
+    }]
+    first = draft_variants(
+        "continuation", [_hunch()], base, edge_dir=tmp_path, today="2026-07-05",
+        drafter=_fake_drafter(drafts),
+    )
+    assert len(first) == 1
+    withdrawn = decide_proposal(
+        tmp_path, "continuation", first[0].name,
+        decision="withdrawn", reason="not worth a sweep slot", today="2026-07-08",
+    )
+    # The SAME drafter output a week later -> the same play_type + hunch_ref + index.
+    with caplog.at_level(logging.INFO):
+        second = draft_variants(
+            "continuation", [_hunch()], base, edge_dir=tmp_path, today="2026-07-12",
+            drafter=_fake_drafter(drafts),
+        )
+    assert second == []
+    # The decision survives; the idea is NOT re-queued.
+    assert load_proposed_for("continuation", tmp_path) == [withdrawn]
+    assert any("decided rows win" in r.message for r in caplog.records)
+
+
+def test_collision_blocks_only_the_colliding_fresh_draft(tmp_path: Path) -> None:
+    # Two fresh drafts: the durable hunch re-drafts at index 0 (same name as the withdrawn
+    # row -> blocked); a genuinely new idea at index 1 gets a new name -> queued beside it.
+    base = StrategyConfig()
+    durable = {
+        "delta": {"max_extension_atr": 1.5},
+        "rationale": "A tighter freshness gate.",
+        "hunch_ref": "continuation:market_trend=bull",
+    }
+    first = draft_variants(
+        "continuation", [_hunch()], base, edge_dir=tmp_path, today="2026-07-05",
+        drafter=_fake_drafter([durable]),
+    )
+    withdrawn = decide_proposal(
+        tmp_path, "continuation", first[0].name,
+        decision="withdrawn", reason="overlaps the ext sweep", today="2026-07-08",
+    )
+    new_idea = {
+        "delta": {"min_pullback_bars": 3},
+        "rationale": "Deeper pullback.",
+        "hunch_ref": "continuation:volatility_tier=high",
+    }
+    second = draft_variants(
+        "continuation", [_hunch()], base, edge_dir=tmp_path, today="2026-07-12",
+        drafter=_fake_drafter([durable, new_idea]),
+    )
+    assert [pv.delta for pv in second] == [{"min_pullback_bars": 3}]
+    stored = load_proposed_for("continuation", tmp_path)
+    # Decided row first, then the surviving fresh queued draft.
+    assert stored == [withdrawn, *second]
+    assert [pv.status for pv in stored] == ["withdrawn", QUEUED]
