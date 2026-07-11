@@ -84,7 +84,7 @@ export interface SettlementCard {
   delta: Stat
   /** How the delta's CI was built — 'clustered' (variants) | 'iid' (arms). */
   upper_bound_type: 'clustered' | 'iid'
-  /** Cumulative-R spark points as (ISO date, R) pairs. */
+  /** Trailing-expectancy spark points as (ISO date, R) pairs — drift, not cumulative R. */
   spark: [string, number][]
   decision: string | null
 }
