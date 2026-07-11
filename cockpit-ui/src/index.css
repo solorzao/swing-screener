@@ -159,8 +159,23 @@ button.db-login:disabled {
   white-space: nowrap;
 }
 
-/* Disabled-but-visible Phase 2 controls (visible commitments, dead controls
-   beat absent ones). */
+/* Autonomy gate + execution mode: both dim, NEVER green — operational readiness
+   must not read as edge-exists (the tier chip owns the green claim, Phase 3). */
+.gate-chip,
+.mode-chip {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  padding: 4px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  color: var(--dim);
+  background: var(--panel2);
+  white-space: nowrap;
+}
+
+/* Segmented controls (masthead + panel heads): buttons in a bordered span.
+   Enabled segments are live; disabled ones stay the Phase-2 "visible commitments,
+   dead controls beat absent ones" treatment. */
 .mh-seg {
   display: flex;
 }
@@ -171,8 +186,20 @@ button.db-login:disabled {
   padding: 4px 9px;
   background: transparent;
   border: 1px solid var(--line2);
+  color: var(--dim);
+  cursor: pointer;
+}
+
+.mh-seg button:disabled {
   color: var(--faint);
   cursor: not-allowed;
+}
+
+/* Selected segment: blue-tinted, never green (blue is the neutral-info accent). */
+.mh-seg button.seg-on {
+  color: var(--txt);
+  background: color-mix(in srgb, var(--blue) 14%, var(--panel2));
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
 }
 
 .mh-seg button + button {
@@ -198,14 +225,73 @@ button.disarm {
   cursor: not-allowed;
 }
 
+/* ---------- Needs-Your-Hand strip (under the masthead) ---------- */
+
+.needs-hand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+  padding: 5px 14px;
+  background: var(--panel2);
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+  flex-wrap: wrap;
+}
+
+.needs-hand-empty {
+  color: var(--faint);
+}
+
+/* Pending decisions ARE lamps — the same amber-glow treatment as hb-late. */
+.needs-hand-item {
+  color: var(--amber);
+  border: 1px solid color-mix(in srgb, var(--amber) 55%, var(--line2));
+  background: color-mix(in srgb, var(--amber) 12%, var(--panel2));
+  box-shadow: 0 0 8px 2px color-mix(in srgb, var(--amber) 35%, transparent);
+  border-radius: 3px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+
 /* ---------- Layout ---------- */
 
+/* Mission Control: SYSTEMS rail | FORWARD BOOKS (dominant) | COHORTS + PERFORMANCE. */
 .grid {
   display: grid;
-  grid-template-columns: 320px 1fr;
+  grid-template-columns: 320px 1fr 380px;
   gap: 14px;
   padding: 14px;
   align-items: start;
+}
+
+.col-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+/* The research facet's hatch cue: one small hatched tag per panel caption,
+   not per-chip noise. */
+.facet-tag {
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--faint);
+  border: 1px solid var(--line2);
+  border-radius: 2px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.facet-tag.hatched {
+  background: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 3px,
+    color-mix(in srgb, var(--faint) 40%, transparent) 3px,
+    color-mix(in srgb, var(--faint) 40%, transparent) 6px
+  );
 }
 
 .panel {
@@ -303,21 +389,25 @@ button.disarm {
   flex: none;
 }
 
-/* Honest scope note: shape distinguishes UNKNOWN only in Phase 1 (hollow +
-   dashed vs filled); up/late/down differ by hue + brightness (dim green / glowing
-   amber / bright red + red name) — full shape redundancy for color-blind safety
-   is a Phase-2 item. */
+/* Full shape redundancy (closes the Phase-1 deferral): every state has its own
+   shape so red/amber never ride on hue alone — up filled circle, late triangle,
+   down square, unknown dashed hollow circle. Pure CSS on the existing state
+   classes; HeartbeatRail.tsx logic is untouched. */
 .hb-up .hb-lamp {
   background: color-mix(in srgb, var(--green) 55%, var(--panel));
 }
 
 .hb-late .hb-lamp {
   background: var(--amber);
-  box-shadow: 0 0 8px 2px color-mix(in srgb, var(--amber) 55%, transparent);
+  border-radius: 0;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+  /* box-shadow would be clipped away with the triangle — drop-shadow tracks the shape. */
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--amber) 70%, transparent));
 }
 
 .hb-down .hb-lamp {
   background: var(--red);
+  border-radius: 0;
 }
 
 .hb-unknown .hb-lamp {
@@ -495,4 +585,446 @@ button.disarm {
 
 .cohort-row:last-child {
   border-bottom: none;
+}
+
+/* ---------- Forward Books: settlement cards ---------- */
+
+.scard-wall {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(285px, 1fr));
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.scard {
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 10px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.scard.retired {
+  opacity: 0.55;
+}
+
+.scard-head {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.scard-name {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--txt);
+}
+
+.scard-kind {
+  font-size: 10px;
+  color: var(--faint);
+  white-space: nowrap;
+}
+
+.scard-state {
+  margin-left: auto;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  border-radius: 3px;
+  padding: 2px 7px;
+  white-space: nowrap;
+}
+
+.scard-state.accruing {
+  color: var(--dim);
+  border: 1px solid var(--line2);
+}
+
+/* Awaiting-decision: the hb-late amber-glow treatment — a pending decision is a lamp. */
+.scard-state.awaiting {
+  color: var(--amber);
+  border: 1px solid color-mix(in srgb, var(--amber) 55%, var(--line2));
+  background: color-mix(in srgb, var(--amber) 14%, var(--panel2));
+  box-shadow: 0 0 8px 2px color-mix(in srgb, var(--amber) 55%, transparent);
+}
+
+.scard-state.retired {
+  color: var(--dim);
+  border: 1px solid var(--line2);
+  text-decoration: line-through;
+}
+
+/* SettlementBar: solid fill = accrual progress toward n_needed; dashed "peek
+   wings" flank the fill edge while accruing (Statsig-style: you are peeking at
+   an unsettled interval). Indeterminate (n_needed null) = dim dashed track, no
+   fill — null means "cannot project", never "done". */
+.sbar {
+  position: relative;
+  height: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.sbar.indet {
+  border-style: dashed;
+  border-color: var(--faint);
+  background: transparent;
+}
+
+.sbar-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: color-mix(in srgb, var(--blue) 35%, var(--panel2));
+}
+
+.sbar-wing {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  border-top: 1px dashed var(--dim);
+  border-bottom: 1px dashed var(--dim);
+}
+
+/* IID upper bound (arms): dotted-top marker on the upper wing — the same dotted
+   "unhardened bound" convention as StatChip's ci-dotted underbar. */
+.sbar-wing.iid {
+  border-top: 2px dotted color-mix(in srgb, var(--blue) 70%, transparent);
+}
+
+.scard-accrual {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
+.scard-eta {
+  margin-left: auto;
+  color: var(--faint);
+  text-align: right;
+}
+
+.scard-chips {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* The pre-registered stopping rule, VERBATIM and never truncated — the rule is
+   the point of the card; cards grow instead. */
+.scard-rule {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--dim);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 7px 8px;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.scard-meta {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--faint);
+}
+
+.scard-decision {
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
+.scard-spark {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.scard-spark-cap {
+  font-size: 9.5px;
+  color: var(--faint);
+  white-space: nowrap;
+}
+
+/* ---------- Reversal FunnelBar ---------- */
+
+.funnel {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.funnel-date {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--faint);
+  align-self: flex-end;
+}
+
+.funnel-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.funnel-label {
+  width: 110px;
+  flex: none;
+  font-size: 11px;
+  color: var(--txt);
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.funnel-unchecked {
+  font-size: 9.5px;
+  color: var(--amber);
+}
+
+.funnel-track {
+  position: relative;
+  flex: 1;
+  height: 12px;
+  background: var(--panel2);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.funnel-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: color-mix(in srgb, var(--blue) 30%, transparent);
+}
+
+/* The hatched drop segment: what the previous stage's gate removed. */
+.funnel-drop {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 3px,
+    color-mix(in srgb, var(--faint) 40%, transparent) 3px,
+    color-mix(in srgb, var(--faint) 40%, transparent) 6px
+  );
+}
+
+.funnel-count {
+  width: 36px;
+  flex: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+  text-align: right;
+}
+
+.funnel-overflow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+
+.funnel-chip {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+  border: 1px solid var(--line2);
+  border-radius: 2px;
+  padding: 1px 6px;
+}
+
+.funnel-note {
+  font-size: 10px;
+  color: var(--faint);
+}
+
+/* ---------- Performance panel ---------- */
+
+.perf {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.perf-head .mh-seg + .mh-seg {
+  margin-left: 8px;
+}
+
+.perf-head .mh-seg button {
+  font-size: 9.5px;
+  padding: 3px 6px;
+}
+
+.perf-kpis {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.perf-kpi-cells {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.perf-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.perf-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--dim);
+  border-bottom: 1px solid var(--panel2);
+  padding-bottom: 4px;
+}
+
+.perf-tabs {
+  margin-left: auto;
+}
+
+.perf-tabs button {
+  font-size: 9.5px;
+  padding: 2px 6px;
+  letter-spacing: normal;
+}
+
+.perf-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.perf-table caption {
+  caption-side: top;
+  text-align: left;
+  font-size: 10px;
+  color: var(--faint);
+  padding-bottom: 3px;
+}
+
+.perf-table th {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+  text-align: right;
+  font-weight: 400;
+  padding: 2px 4px;
+}
+
+.perf-table th:first-child {
+  text-align: left;
+}
+
+.perf-table td {
+  padding: 3px 4px;
+  border-top: 1px solid var(--panel2);
+  vertical-align: middle;
+}
+
+.perf-table .cell-name {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--txt);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 90px;
+}
+
+.perf-table .cell-stat {
+  width: 155px;
+}
+
+.perf-table .cell-num {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* Flag badges reuse the trust conventions: THIN = the thin-chip look; IID = the
+   dotted "unhardened bound" cue. */
+.flag-badge {
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  border: 1px solid var(--line2);
+  border-radius: 2px;
+  padding: 0 3px;
+  white-space: nowrap;
+}
+
+.flag-badge.iid {
+  border-style: dotted;
+  border-color: color-mix(in srgb, var(--blue) 55%, transparent);
+}
+
+.arm-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px 0;
+  border-top: 1px solid var(--panel2);
+}
+
+.arm-row:first-of-type {
+  border-top: none;
+}
+
+.arm-name {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--txt);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.arm-n {
+  font-size: 9.5px;
+  color: var(--faint);
+}
+
+.arm-baseline {
+  font-size: 10px;
+  color: var(--faint);
+  text-align: right;
+}
+
+.perf-equity {
+  display: flex;
+  justify-content: center;
+}
+
+.sparkline {
+  display: block;
+  flex: none;
 }
