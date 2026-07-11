@@ -54,6 +54,54 @@ def _tier_stamped(trades: Iterable[PaperTrade]) -> list[PaperTrade]:
             if t.opened_date is None or t.opened_date >= TIER_STAMPED_FROM]
 
 
+# fill_slippage_atr's default flipped 0.0 -> 0.05 on 2026-07-02 (0e3a1e8, PR #75: the
+# net-of-cost book fix of the 2026-07 audit). realized_r is baked net-at-exit, so rows
+# exited BEFORE this date are gross of costs with no per-row marker distinguishing them.
+# A second default flip would turn this single constant into an epoch list of
+# (date, level) pairs; one constant suffices while there is one epoch boundary.
+COST_STAMPED_FROM = date(2026, 7, 2)
+
+
+def cost_level_for(trades: Iterable[PaperTrade]) -> str | None:
+    """The slippage level a cohort's realized R provably carries: ``"0.05"`` iff there is
+    at least one closed-filled trade and EVERY closed-filled trade exited on/after
+    ``COST_STAMPED_FROM``; otherwise ``None``.
+
+    Honesty rules, do not weaken:
+
+    - The book is mixed gross/net: slippage is applied AT EXIT, and rows exited before
+      the 0.05 default shipped realized gross R with no per-row marker. The only honest
+      aggregate stamp is "every trade in this cohort provably exited after the cutoff",
+      so ONE pre-cutoff exit (or an unprovable one) poisons the whole cohort to ``None``.
+    - A closed row with ``exit_date is None`` cannot prove its cost level -> ``None``.
+    - A PARTIALED trade's partial leg was priced at partial time with the then-live slip
+      and blended into ``realized_r``, and no partial date is persisted -- so a straddler
+      (partialed before the cutoff, exited after) would smuggle a gross leg into a
+      "0.05" cohort. Only ``opened_date`` can prove the partial's vintage (a trade
+      opened on/after the cutoff can only have partialed after it), so partialed rows
+      additionally require ``opened_date >= COST_STAMPED_FROM``.
+    - Even ``"0.05"`` means level-exits-only: momentum_flip/time_stop exits use the bar
+      close and are never haircut, so "net @0.05" must not be overclaimed in tooltips.
+
+    FORWARD-book only: do NOT apply to a REPLAY book -- a replay walk applies the
+    current haircut uniformly, so its (historical) exit dates say nothing about cost
+    vintage (mirrors ``score_stamped``'s caveat).
+
+    Open/unfilled rows carry no realized cost yet and neither earn nor block the stamp.
+    """
+    closed = [t for t in trades if _is_closed_filled(t)]
+    if not closed:
+        return None
+    if all(
+        t.exit_date is not None and t.exit_date >= COST_STAMPED_FROM
+        and (not t.partial_done
+             or (t.opened_date is not None and t.opened_date >= COST_STAMPED_FROM))
+        for t in closed
+    ):
+        return "0.05"
+    return None
+
+
 # signal_score's DEFINITION changed for the reversal book on 2026-07-03 (score v2:
 # confirmation-lag + volume weights replaced the falsified legacy vector -- see
 # docs/plans/2026-07-03-reversal-score-overhaul.md). FORWARD rows scored before then
@@ -167,6 +215,19 @@ def _clustered_ci_low(
     return min(iid_low, clustered_low), n_clusters, False
 
 
+def closed_by_ticker(trades: Iterable[PaperTrade]) -> dict[str, list[float]]:
+    """Realized R per ticker over closed-filled trades -- the bootstrap-cluster input
+    shape ``clustered_two_sample_delta_low`` consumes. Shared by ``propose`` (config
+    deltas) and the cockpit settlement engine (variant cards)."""
+    d: dict[str, list[float]] = {}
+    for t in trades:
+        # The second clause is redundant at runtime (_is_closed_filled already requires it)
+        # but narrows realized_r from float | None to float for mypy.
+        if _is_closed_filled(t) and t.realized_r is not None:
+            d.setdefault(t.ticker, []).append(t.realized_r)
+    return d
+
+
 def clustered_two_sample_delta_low(
     a_by_ticker: Mapping[str, Sequence[float]],
     b_by_ticker: Mapping[str, Sequence[float]],
@@ -273,11 +334,20 @@ class PairedArmDelta:
     ticker-clustered lower bound. Arms duplicate every fill (identical entry economics),
     so pairing on the fill identity removes the entry noise a two-sample comparison
     keeps -- the honest way to judge an exit-policy arm. ``thin_clusters`` flags that the
-    clustered bootstrap could not run and the bound fell back to IID."""
+    clustered bootstrap could not run and the bound fell back to IID.
+
+    Mirroring ``PerformanceSummary``: only the LOWER bound is hardened by the clustered
+    bootstrap (every retire/promote gate keys off it); ``delta_ci_high`` stays the plain
+    IID normal approximation (``mean_delta + 1.96 * stderr``) and consumers label it so
+    (the settlement card's futility check reads it as 'iid'). ``stderr`` is the raw IID
+    standard error of the mean delta; 0.0 with fewer than 2 pairs (the interval
+    collapses to the point -- ``n_pairs`` is what flags it as untrustworthy)."""
 
     n_pairs: int
     mean_delta: float
+    stderr: float
     delta_ci_low: float
+    delta_ci_high: float
     n_clusters: int
     thin_clusters: bool
 
@@ -318,12 +388,15 @@ def paired_arm_delta(
 
     n = len(deltas)
     if n == 0:
-        return PairedArmDelta(0, 0.0, 0.0, 0, True)
+        return PairedArmDelta(n_pairs=0, mean_delta=0.0, stderr=0.0, delta_ci_low=0.0,
+                              delta_ci_high=0.0, n_clusters=0, thin_clusters=True)
     mean = sum(deltas) / n
     stderr = statistics.stdev(deltas) / (n ** 0.5) if n >= 2 else 0.0
     iid_low = mean - _Z95 * stderr
     low, n_clusters, thin = _clustered_ci_low(deltas_by_ticker, iid_low)
-    return PairedArmDelta(n, mean, low, n_clusters, thin)
+    return PairedArmDelta(n_pairs=n, mean_delta=mean, stderr=stderr, delta_ci_low=low,
+                          delta_ci_high=mean + _Z95 * stderr, n_clusters=n_clusters,
+                          thin_clusters=thin)
 
 
 def breakdown(trades: Iterable[PaperTrade], key: str) -> dict[str, PerformanceSummary]:
@@ -382,15 +455,14 @@ def _rank_labels(edges: Sequence[int]) -> list[str]:
     return labels
 
 
-def rank_bucket(
+def _bucket_trades_by_rank(
     trades: Iterable[PaperTrade], edges: Sequence[int]
-) -> dict[str, PerformanceSummary]:
-    """Bucket trades by ``rank`` into ranges defined by ``edges`` and summarize each.
-
-    Buckets are inclusive ranges ``1..edges[0]``, ``edges[0]+1..edges[1]``, ...,
-    with a final open-ended ``edges[-1]+1 +`` bucket. Every bucket label appears
-    in the result even when it has no trades.
-    """
+) -> dict[str, list[PaperTrade]]:
+    """Group trades into rank buckets (inclusive ranges -- see ``rank_bucket``). The
+    single source of the rank-bucket MEMBERSHIP rule, shared by ``rank_bucket`` (which
+    summarizes each group) and the cockpit API (which needs the raw trade lists to
+    stamp each bucket's cost level), mirroring ``_bucket_trades_by_score``. Every
+    label appears even when its group is empty."""
     labels = _rank_labels(edges)
     groups: dict[str, list[PaperTrade]] = {label: [] for label in labels}
     for t in trades:
@@ -400,7 +472,32 @@ def rank_bucket(
                 idx = i
                 break
         groups[labels[idx]].append(t)
-    return {label: summarize(groups[label]) for label in labels}
+    return groups
+
+
+def rank_bucket(
+    trades: Iterable[PaperTrade], edges: Sequence[int]
+) -> dict[str, PerformanceSummary]:
+    """Bucket trades by ``rank`` into ranges defined by ``edges`` and summarize each.
+
+    Buckets are inclusive ranges ``1..edges[0]``, ``edges[0]+1..edges[1]``, ...,
+    with a final open-ended ``edges[-1]+1 +`` bucket. Every bucket label appears
+    in the result even when it has no trades.
+    """
+    return {
+        label: summarize(group)
+        for label, group in _bucket_trades_by_rank(trades, edges).items()
+    }
+
+
+# The repo's ONE set of score-calibration band edges, shared by the reflection's
+# pre-registered "score" dimension (pipeline/reflect.py -- its verdict buckets are
+# tuple(_score_labels(SCORE_EDGES)), so changing these edges is a deliberate,
+# git-visible family change that resets its Bonferroni K), the insight engine's
+# score-band lookup, and the cockpit API's score breakdown. All consumers must
+# bucket identically or a verdict's band label stops naming the band the user
+# reads it against.
+SCORE_EDGES: tuple[float, ...] = (0.5, 0.6, 0.7, 0.8)
 
 
 def _score_labels(edges: Sequence[float]) -> list[str]:
@@ -471,4 +568,42 @@ def equity_curve(trades: Iterable[PaperTrade]) -> list[tuple[date, float]]:
     for exit_date, realized_r in points:
         cum += realized_r
         curve.append((exit_date, cum))
+    return curve
+
+
+def trailing_expectancy(
+    trades: Iterable[PaperTrade], *, window: int = 20
+) -> list[tuple[date, float]]:
+    """Rolling mean realized R over the trailing ``window`` closes, ordered by
+    ``exit_date`` -- the settlement cards' sparkline of whether the edge is drifting.
+
+    Same filtering/ordering as ``equity_curve``: closed-filled trades with an
+    ``exit_date``, ascending. One value is computed per closing trade (with fewer than
+    ``window`` closes so far, the mean of what exists), then same-date closes collapse
+    to a single point carrying the LAST value of that date. Same-date closes are
+    tie-broken by row ``id`` so the output cannot depend on caller iteration order when
+    a same-date block straddles the window boundary (unpersisted rows, ``id None``,
+    sort first). Bootstrap-free point estimates only: a card grid calling the 1000-draw
+    bootstrap per point would be ruinous, and the sparkline shows drift, not
+    certification -- gates keep reading the hardened CI bounds, never this curve.
+    """
+    if window < 1:
+        raise ValueError(f"window must be >= 1, got {window}")
+    points: list[tuple[date, int, float]] = [
+        (t.exit_date, t.id or 0, t.realized_r)
+        for t in trades
+        if _is_closed_filled(t) and t.exit_date is not None and t.realized_r is not None
+    ]
+    points.sort(key=lambda p: (p[0], p[1]))
+
+    curve: list[tuple[date, float]] = []
+    values: list[float] = []
+    for exit_date, _, realized_r in points:
+        values.append(realized_r)
+        tail = values[-window:]
+        point = (exit_date, sum(tail) / len(tail))
+        if curve and curve[-1][0] == exit_date:
+            curve[-1] = point
+        else:
+            curve.append(point)
     return curve

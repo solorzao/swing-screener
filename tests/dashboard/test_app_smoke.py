@@ -1,11 +1,11 @@
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
 from sqlalchemy.orm import Session
 from streamlit.testing.v1 import AppTest
 
 from swing_screener.dashboard import quotes
-from swing_screener.db.models import AnalystCall, EmailLog, PaperTrade, Signal, Trade
+from swing_screener.db.models import AnalystCall, PaperTrade, Signal, Trade
 from swing_screener.db.session import get_engine
 
 APP = str(Path(__file__).parents[2] / "src" / "swing_screener" / "dashboard" / "app.py")
@@ -26,9 +26,8 @@ def _seed(url):
 
 
 ALL_PAGES = ["Overview", "Today's Candidates", "Deep Analysis", "Active Trades",
-             "Trade Entry", "Closed Trades", "Screener Performance",
-             "Analyst Calibration", "Exit Log", "Universe", "Digest Log",
-             "System Health"]
+             "Trade Entry", "Closed Trades", "Analyst Calibration", "Exit Log",
+             "Universe", "Digest Log"]
 
 
 def test_app_renders_on_empty_db(tmp_path, monkeypatch):
@@ -198,48 +197,6 @@ def test_active_trades_formats_and_colors_positive_pl(tmp_path, monkeypatch):
     assert "unrealized_$" in df.columns
     pl_values = [v for v in df["unrealized_$"].tolist() if v is not None]
     assert pl_values and pl_values[0] > 0
-
-
-def test_system_health_shows_freshness_and_execution_mode(tmp_path, monkeypatch):
-    # Seed a recent screen run + a digest send, arm paper mode; the System Health page
-    # surfaces the fresh screen run-date, the digest send, and the execution-mode chip.
-    url = f"sqlite:///{tmp_path / 'health.sqlite'}"
-    monkeypatch.setenv("SWING_DB_URL", url)
-    monkeypatch.setenv("SWING_EXECUTION_MODE", "paper")
-    engine = get_engine(url)
-    with Session(engine) as s:
-        s.add(Signal(run_date=date.today(), ticker="AMD", timeframe="1d", horizon="medium",
-                     score=0.9, rank=1, trigger_close=100.0, atr=4.0, rsi=55.0,
-                     entry_floor=96.0, entry_ceiling=101.0, stop=95.0, target=110.0))
-        s.add(EmailLog(sent_at=datetime.now(UTC), kind="daily", subject="Daily Picks",
-                       run_date=date.today()))
-        s.commit()
-    at = AppTest.from_file(APP).run()
-    at.sidebar.radio[0].set_value("System Health").run()
-    assert not at.exception
-
-    rendered = " ".join(str(getattr(el, "value", "")) for el in at.markdown)
-    tables = " ".join(df.value.to_string() for df in at.dataframe)
-    blob = rendered + " " + tables
-    assert "fresh" in blob  # the recent run shows a fresh badge
-    assert today_iso() in blob  # the freshness table carries the latest run date
-    # The execution-mode chip surfaces the money posture; it can land in a metric or markdown.
-    metric_blob = " ".join(str(getattr(m, "value", "")) + str(getattr(m, "label", ""))
-                           for m in at.metric)
-    assert "paper" in (blob + " " + metric_blob).lower()
-
-
-def test_system_health_degrades_on_empty_db(tmp_path, monkeypatch):
-    # No runs recorded: the page must render a clear no-data state, never crash.
-    url = f"sqlite:///{tmp_path / 'empty_health.sqlite'}"
-    monkeypatch.setenv("SWING_DB_URL", url)
-    at = AppTest.from_file(APP).run()
-    at.sidebar.radio[0].set_value("System Health").run()
-    assert not at.exception
-
-
-def today_iso() -> str:
-    return date.today().isoformat()
 
 
 def test_active_trades_survives_malformed_trade(tmp_path, monkeypatch):

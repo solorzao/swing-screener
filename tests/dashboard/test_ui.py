@@ -34,12 +34,9 @@ def test_fmt_compact_usd_abbreviates_magnitude():
     assert ui.fmt_compact_usd(float("nan")) == "—"
 
 
-def test_bar_and_line_build_charts():
+def test_line_builds_chart():
     import altair as alt
     from datetime import date
-    c = ui.bar({"1d": 0.5, "1wk": 0.7}, "Timeframe", "Win rate")
-    assert isinstance(c, alt.Chart)
-    assert len(c.data) == 2
     lc = ui.line([(date(2026, 1, 1), 1.0), (date(2026, 1, 2), 2.0)], "Date", "Cum R")
     assert isinstance(lc, alt.Chart)
     assert len(lc.data) == 2

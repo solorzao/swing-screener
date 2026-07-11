@@ -265,9 +265,9 @@ Full run instructions, flags, and how to inspect results:
 **Dashboard** — a sidebar app: Overview, Today's Candidates (continuation/reversal filter + a
 live **actionability** status — each pick graded against its latest price as ✅ actionable /
 🏃 already ran / ⛔ stopped), Deep Analysis (request on-demand reports), Active Trades (inline
-close + live P/L), Trade Entry, Closed Trades (equity curve), Screener Performance (strategy-
-variant leaderboard + per-arm exit A/B + score calibration + market-regime cut), Exit Log
-(research/paper/live account facet), Analyst Calibration, Universe, Digest Log.
+close + live P/L), Trade Entry, Closed Trades (equity curve), Analyst Calibration, Exit Log
+(research/paper/live account facet), Universe, Digest Log. The Screener Performance and
+System Health pages retired to the desktop cockpit ([docs/cockpit.md](docs/cockpit.md)).
 
 ```powershell
 .\.venv\Scripts\python -m streamlit run src\swing_screener\dashboard\app.py --server.address 127.0.0.1
@@ -301,7 +301,7 @@ tuning** — but a human approves the change that ships. Auto-deploying a backte
 ship overfit changes against real money, so the approval gate is deliberate. You engage it three
 ways, in increasing automation:
 
-1. **See what's working** — open the dashboard's **Screener Performance** page: the strategy
+1. **See what's working** — open the desktop cockpit's **Performance** panel: the strategy
    leaderboard (with confidence + sample size), score calibration, and the market-regime breakdown.
 2. **Ask for a recommendation now** — in Claude Code, run **`/tune-screener`** (optionally with
    tickers). It runs the optimizer and tells you in plain language whether a gate change is worth

@@ -107,21 +107,6 @@ def empty_state(message: str) -> None:
     st.info(message, icon="📭")
 
 
-def bar(data: dict[str, float], x_title: str, y_title: str) -> alt.Chart:
-    """Vertical bar chart from a {label: value} mapping, in the accent color."""
-    df = pd.DataFrame({"k": list(data), "v": list(data.values())})
-    return (
-        alt.Chart(df)
-        .mark_bar(color=ACCENT)
-        .encode(
-            x=alt.X("k:N", title=x_title, sort=None),
-            y=alt.Y("v:Q", title=y_title),
-            tooltip=["k", "v"],
-        )
-        .properties(height=240)
-    )
-
-
 def line(points: list[tuple[object, float]], x_title: str, y_title: str) -> alt.Chart:
     """Line chart with points from a list of (x, y) tuples, in the accent color."""
     df = pd.DataFrame(points, columns=["x", "y"])

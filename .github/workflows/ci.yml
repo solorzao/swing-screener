@@ -27,3 +27,40 @@ jobs:
 
       - name: Tests (pytest)
         run: pytest -q
+
+  cockpit-ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: cockpit-ui/package-lock.json
+
+      - name: Install
+        run: npm ci
+        working-directory: cockpit-ui
+
+      - name: Lint (oxlint)
+        run: npm run lint
+        working-directory: cockpit-ui
+
+      - name: Build
+        run: npm run build
+        working-directory: cockpit-ui
+
+      # Drift check: the build output committed under cockpit/static must match
+      # what the source produces. Byte-identical rebuilds hold because
+      # .gitattributes disables EOL normalization on static/** and npm ci pins
+      # exact dep versions. If this ever flakes on cross-OS hash
+      # nondeterminism, downgrade to build-succeeds and file the flake -- do
+      # not delete the job.
+      #   - git diff catches modified/deleted files
+      #   - git status catches brand-new untracked assets (e.g. a renamed
+      #     hash: diff sees the deletion, status sees the addition)
+      - name: committed static matches source
+        run: |
+          git diff --exit-code -- src/swing_screener/cockpit/static
+          test -z "$(git status --porcelain -- src/swing_screener/cockpit/static)"

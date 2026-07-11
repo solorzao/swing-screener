@@ -17,30 +17,75 @@ Three constraints, stated as contract:
   No stack trace and no URL in any response body.
 """
 
+import json
+import os
 import shutil
 import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
+import anyio.to_thread
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import make_url, text
+from sqlalchemy import func, make_url, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
+from sse_starlette.sse import EventSourceResponse
 
-from swing_screener.analytics.performance import PerformanceSummary, breakdown
-from swing_screener.cockpit.heartbeats import Heartbeat, collect_heartbeats
-from swing_screener.cockpit.stats import stat_from_summary
-from swing_screener.db.repo import load_research_paper_trades
+from swing_screener.analytics.performance import (
+    SCORE_EDGES,
+    PerformanceSummary,
+    _bucket_trades_by_rank,
+    _bucket_trades_by_score,
+    breakdown,
+    cost_level_for,
+    equity_curve,
+    leaderboard_flag,
+    leaderboard_order,
+    paired_arm_delta,
+    score_stamped,
+    summarize,
+)
+from swing_screener.cockpit.gh import latest_workflow_run
+from swing_screener.cockpit.heartbeats import (
+    Heartbeat,
+    collect_heartbeats,
+    newest_verdicts_mtime,
+)
+from swing_screener.cockpit.settlement import (
+    STATES,
+    SettlementCard,
+    build_cards,
+    facet_filter,
+)
+from swing_screener.cockpit.stats import stat_from_paired_delta, stat_from_summary
+from swing_screener.db.models import (
+    AnalystCall,
+    EmailLog,
+    ExitEvent,
+    MarketReport,
+    PaperTrade,
+    Signal,
+)
+from swing_screener.db.repo import (
+    latest_reversal_funnel,
+    load_closed_paper_trades,
+    load_research_paper_trades,
+)
 from swing_screener.db.session import get_engine
+from swing_screener.pipeline.arms import BASELINE
+from swing_screener.pipeline.autonomy import autonomy_gate, gate_countdown
+from swing_screener.pipeline.registry import load_experiments
+from swing_screener.pipeline.variants import DEFAULT_VARIANT
+from swing_screener.settings import load_settings, resolve_edge_dir
 
 
 def connection_label(db_url: str) -> str:
@@ -143,9 +188,17 @@ def create_app(
     When ``index.html`` is absent -- a clone before Task 6, or a broken build --
     ``/`` answers 200 with a JSON pointer instead: a missing frontend is a setup
     state, not a server error, so it must not read as one.
+
+    The GH workflow poller is opt-in: ``SWING_GH_TOKEN`` + ``SWING_GH_REPO``
+    (both, read once here) wire ``cockpit.gh`` into the heartbeats; with either
+    missing the three GH beats stay explicit UNKNOWN placeholders.
     """
     app = FastAPI(title="swing-screener cockpit")
     app.state.db_url = db_url
+
+    gh_token = os.environ.get("SWING_GH_TOKEN")
+    gh_repo = os.environ.get("SWING_GH_REPO")
+    gh_latest = _gh_poller(gh_repo, gh_token) if gh_token and gh_repo else None
 
     @app.exception_handler(SQLAlchemyError)
     def _database_error(request: Request, exc: SQLAlchemyError) -> JSONResponse:
@@ -202,11 +255,16 @@ def create_app(
     @app.get("/api/heartbeats")
     def heartbeats(session: Session = Depends(_session)) -> list[dict[str, object]]:
         """Every job's pulse, evaluated against the wall clock at request time."""
-        beats = collect_heartbeats(session, now=datetime.now(UTC), edge_dir=edge_dir)
+        beats = collect_heartbeats(
+            session, now=datetime.now(UTC), edge_dir=edge_dir, gh_latest=gh_latest
+        )
         return [_beat_dict(b) for b in beats]
 
     @app.get("/api/stats/cohorts")
-    def cohort_stats(session: Session = Depends(_session)) -> dict[str, object]:
+    def cohort_stats(
+        facet: Literal["research", "gold"] = "research",
+        session: Session = Depends(_session),
+    ) -> dict[str, object]:
         """Research-grid cohort expectancies; every number is a full Stat dict (rule 1).
 
         Shape (stable contract): ``{"cohorts": [{"key": <play_type>, "strength":
@@ -214,21 +272,246 @@ def create_app(
         play_type's aggregate row first (``strength: null``), then its per-strength
         split, both alphabetically. Strength-split keys come from ``breakdown``'s
         ``str()`` coercion, so a null-strength cohort appears as the string ``"None"``
-        -- distinct from the aggregate row's ``null``. ``cost_level``/``corpus_id``
-        are an explicit null (not persisted yet); facet is ``"research"``.
+        -- distinct from the aggregate row's ``null``. ``cost_level`` is derived per
+        cohort SUBSET by ``cost_level_for``'s cutoff rule: ``"0.05"`` iff every closed
+        trade provably exited on/after the cost epoch, else an honest null (one
+        pre-cutoff exit poisons its whole cohort). ``corpus_id`` stays an explicit
+        null (not persisted yet). ``facet`` selects the book -- ``gold`` keeps only
+        would_surface-truthy rows -- and is echoed on every Stat; anything else is
+        FastAPI's 422 via the ``Literal``.
         """
-        trades = load_research_paper_trades(session)
+        trades = facet_filter(load_research_paper_trades(session), facet)
         by_play = breakdown(trades, "play_type")
         cohorts: list[dict[str, object]] = []
         for play_type in sorted(by_play):
-            cohorts.append(_cohort(play_type, None, by_play[play_type]))
             subset = [t for t in trades if str(t.play_type) == play_type]
+            cohorts.append(_cohort(play_type, None, by_play[play_type], subset, facet))
             by_strength = breakdown(subset, "strength")
             cohorts.extend(
-                _cohort(play_type, strength, by_strength[strength])
+                _cohort(play_type, strength, by_strength[strength],
+                        [t for t in subset if str(t.strength) == strength], facet)
                 for strength in sorted(by_strength)
             )
         return {"cohorts": cohorts}
+
+    @app.get("/api/forward-books")
+    def forward_books(
+        facet: Literal["research", "gold"] = "research",
+        session: Session = Depends(_session),
+    ) -> dict[str, object]:
+        """One settlement card per registered experiment (edge/experiments.json).
+
+        Cards order decision-forcing first: awaiting-decision (settled or futile),
+        then accruing, then retired -- stable by name within each group. The ordering
+        is a presentation concern, so it lives here, not in settlement's math. A
+        missing or empty registry is a normal setup state: ``{"cards": []}``, never
+        an error. ``facet`` threads through to ``build_cards`` (it filters each
+        loaded book internally, before any math). Budget: ~1.1s of bootstrap math per
+        request at the real 9-experiment registry shape -- ~2% duty cycle at the
+        frontend's 60s poll; revisit (cache across requests) if wall time approaches
+        the poll interval or a second polling client appears.
+        """
+        experiments = load_experiments(resolve_edge_dir(edge_dir))
+
+        # Per-request memo: the registry shares books heavily (every arm card hydrates
+        # the identical default-variant pool; variant cards share the default control),
+        # so the distinct loads are roughly half the raw count. Copied on the way out
+        # so no consumer can mutate a list another card is about to read.
+        books: dict[tuple[str | None, str | None, str], list[PaperTrade]] = {}
+
+        def _load(
+            *, play_type: str | None, arm: str | None, variant: str
+        ) -> list[PaperTrade]:
+            key = (play_type, arm, variant)
+            if key not in books:
+                books[key] = load_closed_paper_trades(
+                    session, play_type=play_type, arm=arm, variant=variant
+                )
+            return list(books[key])
+
+        cards = build_cards(
+            experiments, book_loader=_load, now=datetime.now(UTC), facet=facet
+        )
+        cards.sort(key=lambda c: (_STATE_RANK[c.state], c.name))
+        return {"cards": [_card_dict(c) for c in cards]}
+
+    @app.get("/api/funnel")
+    def funnel(session: Session = Depends(_session)) -> dict[str, object]:
+        """The latest daily digest's reversal funnel snapshot -- the row with the
+        newest ``run_date``; ``{"funnel": null}`` before the first digest records
+        one. ``overflow`` is the comma-joined column split back into a ticker list,
+        empties dropped (the empty string means "no overflow", never ``[""]``)."""
+        row = latest_reversal_funnel(session)
+        if row is None:
+            return {"funnel": None}
+        return {"funnel": {
+            "run_date": row.run_date.isoformat(),
+            "detected": row.detected,
+            "confirmed": row.confirmed,
+            "fresh": row.fresh,
+            "actionable": row.actionable,
+            "surfaced": row.surfaced,
+            "overflow": [t for t in row.overflow_tickers.split(",") if t],
+            "pool_n": row.pool_n,
+            "confirmed_only": row.confirmed_only,
+            "premium_only": row.premium_only,
+            "already_ran_checked": row.already_ran_checked,
+        }}
+
+    @app.get("/api/stats/performance")
+    def performance_stats(
+        play_type: Literal["all", "continuation", "reversal"] = "all",
+        window: Literal["all", "90", "180", "365"] = "all",
+        facet: Literal["research", "gold"] = "research",
+        session: Session = Depends(_session),
+    ) -> dict[str, object]:
+        """The Streamlit Screener Performance page as data -- every aggregate a Stat.
+
+        Replicates the retired Streamlit Screener Performance page's load-bearing order
+        EXACTLY: (1) ``facet`` (``facet_filter``) then the ``play_type`` filter over
+        the research grid; (2) the strategy leaderboard over the ``arm == BASELINE``
+        subset, with the trailing ``window`` cut (days back from today, on
+        ``opened_date`` -- an undated row drops from windowed views) applied to THAT
+        subset; the window scopes ONLY the leaderboard, like the page's segmented
+        control; (3) everything downstream -- arms, KPIs, breakdowns, equity curve --
+        scopes to ``variant == DEFAULT_VARIANT`` (the exit-arm A/B is only honest
+        within one screen variant), with the page's arm-detail radio pinned at its
+        default (the BASELINE arm when several arms exist).
+
+        Where the page HID degenerate sections (single variant / single arm / < 2
+        populated score bands), the API always returns every key with whatever data
+        exists (empty lists when there is none) -- the FRONTEND decides rendering.
+        The one data-shaping exception: score bands with no closes are omitted so
+        they don't read as spurious zeros (rank buckets keep their fixed labels,
+        page parity). The score cut goes through ``score_stamped`` (forward book
+        only); regime cuts skip unknown-regime rows. ``profit_factor`` serializes an
+        all-winner book as null -- JSON has no Infinity (the page's ∞ glyph).
+
+        Budget: ~1.25s per request at a realistic 6k-row book (~25 clustered
+        bootstraps across the five breakdown families plus the per-arm paired
+        deltas; measured 0.6s median on the dev box -- the budget leaves headroom
+        for slower boxes and Azure round-trips). Combined with /api/forward-books
+        the 60s poll cycle carries ~2.4s (~4% duty); revisit (cache across requests)
+        if wall time approaches the poll interval or a second polling client appears.
+        """
+        trades = facet_filter(load_research_paper_trades(session), facet)
+        if play_type != "all":
+            trades = [t for t in trades if t.play_type == play_type]
+
+        # (2) Variant leaderboard: judged on the BASELINE exit arm, window cut applied
+        # AFTER the arm filter. The `t.opened_date and ...` truthiness is deliberate
+        # page parity: an undated row drops from windowed views, stays in "all".
+        baseline = [t for t in trades if t.arm == BASELINE]
+        if window != "all":
+            cutoff = date.today() - timedelta(days=int(window))
+            baseline = [t for t in baseline if t.opened_date and t.opened_date >= cutoff]
+        by_variant = breakdown(baseline, "variant")
+        leaderboard = [
+            _leaderboard_row(
+                v, by_variant[v], [t for t in baseline if str(t.variant) == v], facet
+            )
+            for v in leaderboard_order(by_variant)
+        ]
+
+        # (3) Everything downstream is ONE screen variant: the arms share fills only
+        # within a single screen config, so a second variant would pollute the A/B.
+        scoped = [t for t in trades if t.variant == DEFAULT_VARIANT]
+        by_arm = breakdown(scoped, "arm")
+        arm_names = sorted(by_arm)
+        arms = [_arm_row(a, by_arm[a], scoped, facet) for a in arm_names]
+
+        # KPI/breakdown subset: the page's arm-detail radio pinned at its default --
+        # the BASELINE arm when several arms exist (else the first alphabetically;
+        # with a single arm the book passes through unchanged, exactly like the page).
+        if len(arm_names) > 1:
+            detail = BASELINE if BASELINE in arm_names else arm_names[0]
+            detail_trades = [t for t in scoped if str(t.arm) == detail]
+        else:
+            detail_trades = scoped
+
+        summary = summarize(detail_trades)
+        pf = summary.profit_factor
+        kpis: dict[str, object] = {
+            "expectancy": _stat_dict(summary, detail_trades, facet),
+            "win_rate": summary.win_rate,
+            "fill_rate": summary.fill_rate,
+            "profit_factor": None if pf == float("inf") else pf,
+            "n_closed": summary.n_closed,
+        }
+
+        by_tf = breakdown(detail_trades, "timeframe")
+        score_rows: list[dict[str, object]] = []
+        for label, group in _bucket_trades_by_score(
+            score_stamped(detail_trades), SCORE_EDGES
+        ).items():
+            band = summarize(group)
+            if band.n_closed > 0:  # an empty band would read as a spurious zero
+                score_rows.append(_breakdown_row(label, band, group, facet))
+        trend_pool = [t for t in detail_trades if t.market_trend is not None]
+        vol_pool = [t for t in detail_trades if t.market_vol is not None]
+        by_trend = breakdown(trend_pool, "market_trend")
+        by_vol = breakdown(vol_pool, "market_vol")
+        breakdowns: dict[str, object] = {
+            "timeframe": [
+                _breakdown_row(
+                    k, by_tf[k],
+                    [t for t in detail_trades if str(t.timeframe) == k], facet,
+                )
+                for k in sorted(by_tf)
+            ],
+            "rank": [
+                _breakdown_row(label, summarize(group), group, facet)
+                for label, group in _bucket_trades_by_rank(
+                    detail_trades, _RANK_EDGES
+                ).items()
+            ],
+            "score": score_rows,
+            "market_trend": [
+                _breakdown_row(
+                    k, by_trend[k],
+                    [t for t in trend_pool if str(t.market_trend) == k], facet,
+                )
+                for k in sorted(by_trend)
+            ],
+            "market_vol": [
+                _breakdown_row(
+                    k, by_vol[k],
+                    [t for t in vol_pool if str(t.market_vol) == k], facet,
+                )
+                for k in sorted(by_vol)
+            ],
+        }
+
+        return {
+            "kpis": kpis,
+            "leaderboard": leaderboard,
+            "arms": arms,
+            "breakdowns": breakdowns,
+            "equity_curve": [[d.isoformat(), r] for d, r in equity_curve(detail_trades)],
+        }
+
+    @app.get("/api/gate")
+    def gate(session: Session = Depends(_session)) -> dict[str, object]:
+        """The advisory autonomy gate + today's analyst spend, as one status object.
+
+        ``ready`` and ``countdown`` come from ``pipeline.autonomy`` VERBATIM -- the
+        countdown's line format is pinned by tests/pipeline/test_autonomy_countdown.py,
+        so the arithmetic is never reimplemented here. A missing verdicts sidecar
+        reads as not-ready (the gate's own missing-file posture), never an error.
+        ``execution_mode`` reads the env-backed settings at request time;
+        ``analyst_spend_today_usd`` sums ``est_cost_usd`` over TODAY's AnalystCall
+        rows (NULL costs -- the deterministic/fallback path -- count 0.0).
+        """
+        report = autonomy_gate(session, edge_dir=resolve_edge_dir(edge_dir))
+        calls = session.scalars(
+            select(AnalystCall).where(AnalystCall.created_date == date.today())
+        )
+        return {
+            "ready": report.ready,
+            "countdown": gate_countdown(report),
+            "execution_mode": load_settings().execution_mode,
+            "analyst_spend_today_usd": sum((c.est_cost_usd or 0.0 for c in calls), 0.0),
+        }
 
     spawner = login_spawner if login_spawner is not None else _spawn_az_login
     login_lock = threading.Lock()
@@ -257,6 +540,37 @@ def create_app(
             login_flight.started = time.monotonic()
         return {"started": True}
 
+    @app.get("/api/events")
+    async def events() -> EventSourceResponse:
+        """The SSE wake channel: a ``change`` event whenever the change token moves
+        -- plus ALWAYS one on (re)connect, since ``last`` starts None. Consumers
+        (Task 9's useEventWake) must treat an event as a refetch trigger, never as
+        evidence something changed.
+
+        Data changes come from EXTERNAL processes (scheduled jobs, git pulls), so
+        server-side polling is the only correct driver -- there is no in-process
+        write to hook. The endpoint is async so the infinite generator never pins a
+        threadpool worker; each token read hops through ``anyio.to_thread`` (the DB
+        probe is sync) and no Session survives across the sleeps. The frontend's 60s
+        poll stays the floor -- this channel only wakes it early: the poll is the
+        defense against dropped SSE connections and change classes the token doesn't
+        watch. GET under /api (covered by the dev vite proxy); no X-Cockpit header:
+        it mutates nothing.
+        """
+
+        async def stream() -> AsyncIterator[dict[str, str]]:
+            last: dict[str, str] | None = None
+            while True:
+                token = await anyio.to_thread.run_sync(
+                    _safe_change_token, _engine, edge_dir
+                )
+                if token != last:
+                    last = token
+                    yield {"event": "change", "data": json.dumps(token)}
+                await anyio.sleep(_WAKE_POLL_S)
+
+        return EventSourceResponse(stream(), ping=_WAKE_POLL_S)
+
     resolved_static = static_dir if static_dir is not None else Path(__file__).parent / "static"
     if (resolved_static / "index.html").is_file():
         # html=True serves index.html at "/" and falls through to real asset files.
@@ -280,9 +594,194 @@ def _down_summary(exc: Exception) -> str:
     return f"database unreachable ({type(exc).__name__})"
 
 
-def _cohort(key: str, strength: str | None, summary: PerformanceSummary) -> dict[str, object]:
-    stat = stat_from_summary(summary, cost_level=None, corpus_id=None, facet="research")
-    return {"key": key, "strength": strength, "stat": stat.as_dict()}
+def _gh_poller(repo: str, token: str) -> Callable[[str], tuple[datetime, str] | None]:
+    """Bind the GH poller to one repo + token (read once at create_app time). A
+    named closure rather than a lambda over the env reads: mypy's Optional
+    narrowing does not survive into a nested scope, so the strings are re-bound
+    as parameters here. Failure posture lives in ``gh.latest_workflow_run``
+    itself (any error -> None -> UNKNOWN beat)."""
+
+    def poll(workflow: str) -> tuple[datetime, str] | None:
+        return latest_workflow_run(repo, workflow, token)
+
+    return poll
+
+
+# One cadence for the wake channel: the token poll AND sse-starlette's keepalive
+# ping tick together, deliberately -- a ping without a fresh token read (or vice
+# versa) buys nothing, so the two must not drift apart.
+_WAKE_POLL_S = 15
+
+
+def _watermark(value: object | None) -> str:
+    """One watermark's wire form: ISO for dates/datetimes, ``str()`` for ids, the
+    literal ``"none"`` for an empty table -- strings only, so token equality is a
+    plain dict compare and ``json.dumps`` never meets a date object."""
+    if value is None:
+        return "none"
+    if isinstance(value, date):  # datetime is a date subclass; isoformat covers both
+        return value.isoformat()
+    return str(value)
+
+
+def _change_token(engine: Engine, edge_dir: Path) -> dict[str, str]:
+    """The wake channel's change token: cheap max-watermarks over every store the
+    cockpit renders -- screen run, paper-trade write, trade close, sent email,
+    market report, funnel snapshot, newest reflection verdicts file. Equality means
+    "nothing worth refetching"; the values are opaque to the frontend. The ``exit``
+    watermark exists because a close is an UPDATE on paper_trades (no new id, no
+    updated_at column) -- invisible to ``max(PaperTrade.id)`` -- but every close
+    path (shadow.py, reconcile.py, exitcheck.py) INSERTS an ExitEvent. One
+    short-lived Session per call, never held across the stream loop's sleeps.
+    ``edge_dir`` is the RESOLVED edge directory (the caller threads
+    ``resolve_edge_dir`` -- same seam as the heartbeats)."""
+    with Session(engine) as session:
+        funnel = latest_reversal_funnel(session)
+        token = {
+            "signal": _watermark(session.scalar(select(func.max(Signal.run_date)))),
+            "trade": _watermark(session.scalar(select(func.max(PaperTrade.id)))),
+            "exit": _watermark(session.scalar(select(func.max(ExitEvent.id)))),
+            "email": _watermark(session.scalar(select(func.max(EmailLog.sent_at)))),
+            "weather": _watermark(
+                session.scalar(select(func.max(MarketReport.run_date)))
+            ),
+            "funnel": _watermark(funnel.run_date if funnel is not None else None),
+        }
+    token["verdicts"] = _watermark(newest_verdicts_mtime(edge_dir))
+    return token
+
+
+def _safe_change_token(
+    engine_factory: Callable[[], Engine], edge_dir: Path | None
+) -> dict[str, str]:
+    """``_change_token`` with the down-DB posture: ANY failure (engine creation,
+    query, filesystem) collapses to the sentinel ``{"db": "down"}`` -- the stream
+    loop must never die, and recovery reads as a change (the sentinel can never
+    equal a real token). The factory is the app's cached ``_engine`` accessor, so
+    the down case is re-probed per tick, never latched."""
+    try:
+        return _change_token(engine_factory(), resolve_edge_dir(edge_dir))
+    except Exception:
+        return {"db": "down"}
+
+
+def _stat_dict(
+    summary: PerformanceSummary, subset: list[PaperTrade], facet: str
+) -> dict[str, object]:
+    """The one Stat-building call every aggregate row shares: the summary's expectancy
+    wrapped with the SUBSET's provable cost level (the cutoff rule in
+    ``cost_level_for`` -- ``subset`` must be exactly the rows ``summary`` was computed
+    from), an explicit null ``corpus_id`` (not persisted yet), and the facet the row
+    was computed under."""
+    return stat_from_summary(
+        summary, cost_level=cost_level_for(subset), corpus_id=None, facet=facet
+    ).as_dict()
+
+
+def _cohort(
+    key: str,
+    strength: str | None,
+    summary: PerformanceSummary,
+    trades: list[PaperTrade],
+    facet: str,
+) -> dict[str, object]:
+    """One cohort row -- see ``_stat_dict`` for the Stat posture."""
+    return {"key": key, "strength": strength, "stat": _stat_dict(summary, trades, facet)}
+
+
+# The Streamlit performance page's fixed rank-bucket edges (1-5 / 6-10 / 11+),
+# ported as-is -- they are the parity contract. The score-band edges are the shared
+# SCORE_EDGES constant (analytics.performance): the reflection's verdict buckets and
+# this breakdown must band identically.
+_RANK_EDGES: tuple[int, ...] = (5, 10)
+
+
+def _leaderboard_row(
+    variant: str, summary: PerformanceSummary, subset: list[PaperTrade], facet: str
+) -> dict[str, object]:
+    """One strategy-leaderboard row. The Stat guards the EDGE claim (expectancy + CI);
+    win/fill rates and the signal count ride as plain context fields -- same posture
+    as the cohort rows' ``key``/``strength``. ``fill_rate``/``n_total`` are the fill
+    visibility rule (2026-07-01 audit): a variant that 'wins' by rarely filling must
+    show it where the ranking is read. ``flag`` is ``leaderboard_flag``'s shared
+    trust label (iid beats thin/ok: an unclustered bound is the first thing to see)."""
+    return {
+        "variant": variant,
+        "stat": _stat_dict(summary, subset, facet),
+        "win_rate": summary.win_rate,
+        "fill_rate": summary.fill_rate,
+        "n_total": summary.n_total,
+        "flag": leaderboard_flag(summary),
+    }
+
+
+def _arm_row(
+    arm: str, summary: PerformanceSummary, pooled: list[PaperTrade], facet: str
+) -> dict[str, object]:
+    """One experiment-arm row. ``pooled`` is the whole DEFAULT_VARIANT book (every
+    arm): the paired delta needs both legs of each fill. The delta Stat is built by
+    ``stat_from_paired_delta`` -- the one home for the mapping, shared with
+    settlement.py's arm branch -- with the cost level stamped over the POOLED book
+    (both delta sides). The baseline row carries ``delta: null`` (there is no
+    self-delta) with ``n_pairs: 0`` -- no pairs back a delta claim there."""
+    subset = [t for t in pooled if str(t.arm) == arm]
+    row: dict[str, object] = {"arm": arm, "stat": _stat_dict(summary, subset, facet)}
+    if arm == BASELINE:
+        row["n_pairs"] = 0
+        row["delta"] = None
+        return row
+    pad = paired_arm_delta(pooled, arm=arm)
+    row["n_pairs"] = pad.n_pairs
+    row["delta"] = stat_from_paired_delta(
+        pad, cost_level=cost_level_for(pooled), facet=facet
+    ).as_dict()
+    return row
+
+
+def _breakdown_row(
+    key: str, summary: PerformanceSummary, subset: list[PaperTrade], facet: str
+) -> dict[str, object]:
+    """One breakdown row (timeframe / rank / score / regime): the Stat guards the
+    expectancy claim; win rate and the closed count ride as plain context fields."""
+    return {
+        "key": key,
+        "stat": _stat_dict(summary, subset, facet),
+        "win_rate": summary.win_rate,
+        "n_closed": summary.n_closed,
+    }
+
+
+# Forward Books wall order: decision-forcing cards first (settled and futile both
+# await a human), then still-accruing books, then retired history. Built FROM
+# settlement's STATES tuple so the two modules cannot drift: a fifth state breaks
+# this unpacking at import time -- loudly, in tests -- never as a request-time 500.
+_RETIRED, _FUTILE, _SETTLED, _ACCRUING = STATES
+_STATE_RANK = {_SETTLED: 0, _FUTILE: 0, _ACCRUING: 1, _RETIRED: 2}
+
+
+def _card_dict(c: SettlementCard) -> dict[str, object]:
+    """Explicit wire form for a settlement card -- hand-rolled like ``_beat_dict``
+    (never ``dataclasses.asdict`` on the wire): Stats serialize via their own
+    ``as_dict`` and the spark's (date, value) tuples become JSON pairs here, visibly."""
+    return {
+        "name": c.name,
+        "kind": c.kind,
+        "play_type": c.play_type,
+        "state": c.state,
+        "n_accrued": c.n_accrued,
+        "n_needed": c.n_needed,
+        "eta": c.eta,
+        "stopping_rule": c.stopping_rule,
+        "registered_sha": c.registered_sha,
+        "registered_at": c.registered_at,
+        "mde_r": c.mde_r,
+        "book": c.book.as_dict(),
+        "control": c.control.as_dict(),
+        "delta": c.delta.as_dict(),
+        "upper_bound_type": c.upper_bound_type,
+        "spark": [[d, v] for d, v in c.spark],
+        "decision": c.decision,
+    }
 
 
 def _beat_dict(b: Heartbeat) -> dict[str, object]:

@@ -14,7 +14,7 @@ stays the IID upper -- mapped 1:1, never recomputed here.
 
 from dataclasses import asdict, dataclass
 
-from swing_screener.analytics.performance import PerformanceSummary
+from swing_screener.analytics.performance import PairedArmDelta, PerformanceSummary
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -63,4 +63,37 @@ def stat_from_summary(
         facet=facet,
         unit=unit,
         thin_clusters=summary.thin_clusters,
+    )
+
+
+def stat_from_paired_delta(
+    pad: PairedArmDelta,
+    *,
+    cost_level: str | None,
+    facet: str,
+    unit: str = "R",
+) -> Stat:
+    """Wrap a ``PairedArmDelta`` as a ``Stat``, 1:1 -- the ONE home for the mapping,
+    shared by the settlement engine's arm branch and the performance endpoint's arm
+    rows so the two can never drift.
+
+    ``value`` is the mean per-pair delta and ``n`` the PAIR count (both legs closed --
+    smaller than either arm's own closed count); ``delta_ci_low`` is the hardened
+    (ticker-clustered) lower bound with ``thin_clusters`` flagging its IID fallback,
+    ``delta_ci_high`` the IID upper -- all passed through untouched. ``cost_level``
+    is keyword-only with no default so the caller must state what it knows about the
+    POOLED book (a paired delta reads both sides, so the stamp must cover both);
+    ``corpus_id`` stays an explicit ``None`` (not persisted yet).
+    """
+    return Stat(
+        value=pad.mean_delta,
+        n=pad.n_pairs,
+        n_clusters=pad.n_clusters,
+        ci_low=pad.delta_ci_low,
+        ci_high=pad.delta_ci_high,
+        cost_level=cost_level,
+        corpus_id=None,
+        facet=facet,
+        unit=unit,
+        thin_clusters=pad.thin_clusters,
     )

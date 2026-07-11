@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react'
 import { postAzureLogin } from '../lib/api'
-import type { Health, Heartbeat } from '../lib/api'
+import type { Facet, Gate, Health, Heartbeat } from '../lib/api'
+import { FacetToggle } from './FacetToggle'
+
+/** The one selectable cost level. `@0.10` is disabled-honest: replay-only, no
+ * re-priced book exists (plan scope decision 4). */
+export type CostLevel = '0.05' | '0.10'
 
 /* The 44px bar on every screen. Dark-cockpit doctrine: the MASTER CAUTION lamp is
    dark when everything is clear; light means attention required. Pass `beats: null`
@@ -21,11 +26,22 @@ const LOGIN_DEADLINE_MS = 120_000
 export function Masthead({
   health,
   beats,
+  gate,
   asOf,
+  facet,
+  onFacet,
+  cost,
+  onCost,
 }: {
   health: Health | null
   beats: Heartbeat[] | null
+  /** Pass null while gate data is unavailable — the chip shows "…", never a guess. */
+  gate: Gate | null
   asOf: Date | null
+  facet: Facet
+  onFacet: (facet: Facet) => void
+  cost: CostLevel
+  onCost: (cost: CostLevel) => void
 }) {
   const anyLit =
     beats !== null && beats.some((b) => b.state === 'late' || b.state === 'down')
@@ -101,16 +117,47 @@ export function Masthead({
 
       <span className="mh-clock">data as of {fmtClock(asOf)}</span>
 
-      {/* Phase 2 commitments, deliberately visible but dead. */}
+      {/* Autonomy gate: advisory, and NEVER green — operational readiness must not
+          read as edge-exists (the tier chip owns the green claim, Phase 3). */}
+      <span
+        className="gate-chip"
+        title={gate !== null ? gate.countdown : 'gate status unavailable'}
+      >
+        {gate === null
+          ? '…'
+          : gate.ready
+            ? 'READY'
+            : `NOT READY · ${gate.countdown.split('\n')[0] ?? ''}`}
+      </span>
+      {gate !== null && (
+        <span className="mode-chip" title="execution mode">
+          {gate.execution_mode}
+        </span>
+      )}
+
       <span className="mh-seg">
-        <button type="button" disabled title="Phase 2">
+        <button
+          type="button"
+          className={cost === '0.05' ? 'seg-on' : undefined}
+          aria-pressed={cost === '0.05'}
+          title="every level exit haircut 0.05 ATR at exit; flip/time-stop exits are never haircut"
+          onClick={() => onCost('0.05')}
+        >
           net @0.05
         </button>
-        <button type="button" disabled title="Phase 2">
+        <button
+          type="button"
+          disabled
+          aria-pressed={cost === '0.10'}
+          title="not measured — replay-only level, no re-priced book exists"
+        >
           @0.10
         </button>
       </span>
-      <button type="button" className="disarm" disabled title="Phase 2">
+
+      <FacetToggle facet={facet} onFacet={onFacet} />
+
+      <button type="button" className="disarm" disabled title="Phase 3">
         DISARM
       </button>
     </header>

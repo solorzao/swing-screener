@@ -1,3 +1,9 @@
 # The committed Vite build is a byte-for-byte artifact: no eol normalization,
 # or every rebuild flips index.html LF<->CRLF and churns the diff.
 src/swing_screener/cockpit/static/** -text
+
+# Vite copies index.html into the build nearly verbatim, so its working-tree
+# EOLs leak into the committed static artifact. Pin it LF so Windows and the
+# Linux CI runner build byte-identical output (the 2026-07-11 PR #110 drift-check
+# failure was exactly this: CRLF checkout -> CRLF build vs CI's LF).
+cockpit-ui/index.html text eol=lf

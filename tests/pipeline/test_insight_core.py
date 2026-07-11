@@ -2,7 +2,7 @@
 
 No LLM, no I/O: the baseline conviction maps a pick's buckets onto the playbook
 verdicts, and the R-based sizing scales 1R by conviction. The score band MUST key
-off the real published labels (``_score_labels(_SCORE_EDGES)``) -- never a duplicated
+off the real published labels (``_score_labels(SCORE_EDGES)``) -- never a duplicated
 banding -- so a calibration-table rename can't silently desync the grader.
 """
 

@@ -355,3 +355,37 @@ class MarketReport(Base):
     core: Mapped[str] = mapped_column(String(512), default="")
     report: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime | None] = mapped_column(default=None)
+
+
+class ReversalFunnel(Base):
+    """One row per daily digest: the reversal funnel snapshot (detected -> confirmed ->
+    fresh -> actionable -> surfaced), plus the config bars that did the filtering.
+
+    fresh/actionable/surfaced are DIGEST-TIME state (repeat cooldown vs the signals
+    history, live quotes for the already-ran drop, sector cap) and are UNRECOVERABLE
+    later -- this table is the only record. detected/confirmed are recomputable from
+    signals only until a re-screen rewrites the run_date. Strings stay bounded so
+    Azure SQL can index them (NVARCHAR(max) is un-indexable)."""
+
+    __tablename__ = "reversal_funnels"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # unique: ONE funnel row per run_date -- a forced digest resend re-executes the
+    # write, which delete-then-inserts (migration d7e4b2f9a1c6 adds the uq index).
+    run_date: Mapped[date] = mapped_column(index=True, unique=True)
+    detected: Mapped[int]                                # all reversal signals stored
+    confirmed: Mapped[int]                               # strength == "confirmed"
+    fresh: Mapped[int]                                   # strength bar + cooldown + pool cap
+    actionable: Mapped[int]                              # after the already-ran drop
+    surfaced: Mapped[int]                                # after the sector cap + top-5
+    # comma-joined tickers that cleared every bar but lost the top-5/sector race.
+    overflow_tickers: Mapped[str] = mapped_column(String(512), default="")
+    # the config bars in force when the snapshot was taken.
+    pool_n: Mapped[int] = mapped_column(default=20)
+    confirmed_only: Mapped[bool] = mapped_column(default=True)
+    premium_only: Mapped[bool] = mapped_column(default=False)
+    # seam wired at digest time (a live-quote fn was injected) -- NOT "the check ran":
+    # _drop_already_ran fails open on a quote outage, so True can coexist with
+    # actionable == fresh on an outage day.
+    already_ran_checked: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime | None] = mapped_column(default=None)

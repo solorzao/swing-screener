@@ -1,6 +1,8 @@
 import statistics
 from datetime import date
 
+import pytest
+
 from swing_screener.analytics.performance import (
     _clustered_ci_low,
     breakdown,
@@ -298,20 +300,25 @@ def test_score_stamped_excludes_pre_v2_reversal_rows():
     assert new_rev in kept and old_cont in kept and undated_rev in kept
 
 
+def _arm_pair(ticker: str, ts_day: int, base_r: float, arm_r: float) -> list[PaperTrade]:
+    """A closed baseline/be_1r twin sharing one fill identity, for paired-delta tests."""
+    from datetime import datetime
+
+    ts = datetime(2026, 6, ts_day)
+    a = _pt(realized_r=base_r, opened_date=date(2026, 6, ts_day))
+    a.ticker, a.arm, a.trigger_ts = ticker, "baseline", ts
+    b = _pt(realized_r=arm_r, opened_date=date(2026, 6, ts_day))
+    b.ticker, b.arm, b.trigger_ts = ticker, "be_1r", ts
+    return [a, b]
+
+
 def test_paired_arm_delta_pairs_on_fill_identity():
     from datetime import datetime
 
     from swing_screener.analytics.performance import paired_arm_delta
 
-    def pair(ticker, ts_day, base_r, arm_r):
-        ts = datetime(2026, 6, ts_day)
-        a = _pt(realized_r=base_r, opened_date=date(2026, 6, ts_day))
-        a.ticker, a.arm, a.trigger_ts = ticker, "baseline", ts
-        b = _pt(realized_r=arm_r, opened_date=date(2026, 6, ts_day))
-        b.ticker, b.arm, b.trigger_ts = ticker, "be_1r", ts
-        return [a, b]
-
-    trades = pair("AAA", 1, 1.0, 1.5) + pair("AAA", 2, -1.0, 0.0) + pair("BBB", 3, 0.5, 0.5)
+    trades = (_arm_pair("AAA", 1, 1.0, 1.5) + _arm_pair("AAA", 2, -1.0, 0.0)
+              + _arm_pair("BBB", 3, 0.5, 0.5))
     # an UNPAIRED arm row (no baseline twin) and a pair with an open leg must be skipped
     lone = _pt(realized_r=2.0)
     lone.ticker, lone.arm, lone.trigger_ts = "CCC", "be_1r", datetime(2026, 6, 4)
@@ -327,3 +334,116 @@ def test_paired_arm_delta_pairs_on_fill_identity():
     # empty input fails closed
     empty = paired_arm_delta([], "be_1r")
     assert empty.n_pairs == 0 and empty.thin_clusters is True
+
+
+def test_paired_arm_delta_carries_upper_bound_and_stderr() -> None:
+    # The settlement card's futility check needs the UPPER bound and the raw stderr.
+    # Only the LOWER bound is hardened by the clustered bootstrap; the upper stays the
+    # plain IID normal approximation (mean + 1.96 * stderr) and is labeled as such.
+    from swing_screener.analytics.performance import paired_arm_delta
+
+    trades = (_arm_pair("AAA", 1, 1.0, 1.5) + _arm_pair("AAA", 2, -1.0, 0.0)
+              + _arm_pair("BBB", 3, 0.5, 0.5))
+    d = paired_arm_delta(trades, "be_1r")
+    assert isinstance(d.stderr, float) and isinstance(d.delta_ci_high, float)
+    # deltas are (0.5, 1.0, 0.0): stderr = stdev / sqrt(n), upper = mean + 1.96 * stderr
+    expected_se = statistics.stdev([0.5, 1.0, 0.0]) / (3 ** 0.5)
+    assert abs(d.stderr - expected_se) < 1e-9
+    assert abs(d.delta_ci_high - (d.mean_delta + 1.96 * d.stderr)) < 1e-9
+    assert d.delta_ci_low < d.mean_delta < d.delta_ci_high
+
+    # a single pair has no computable stderr -> the interval collapses to the point
+    single = paired_arm_delta(_arm_pair("AAA", 1, 1.0, 1.5), "be_1r")
+    assert single.stderr == 0.0 and single.delta_ci_high == single.mean_delta
+    # empty input fails closed with zeros
+    empty = paired_arm_delta([], "be_1r")
+    assert empty.stderr == 0.0 and empty.delta_ci_high == 0.0
+
+
+def test_trailing_expectancy_windows_by_exit_date() -> None:
+    from datetime import timedelta
+
+    from swing_screener.analytics.performance import trailing_expectancy
+
+    # 30 closed trades with staggered exit_dates; trades 14 and 15 close on the SAME day
+    # (a two-close date must collapse to one point carrying the LAST trailing value).
+    base = date(2026, 1, 1)
+    days = list(range(30))
+    days[15] = 14
+    trades = [_pt(realized_r=float(i), exit_date=base + timedelta(days=d))
+              for i, d in enumerate(days)]
+
+    curve = trailing_expectancy(trades, window=10)
+
+    # one point per DATE, ascending (30 closes -> 29 points: the shared day collapses)
+    assert [d for d, _ in curve] == sorted({base + timedelta(days=d) for d in days})
+    # each point = mean realized_r of the trailing 10 closes in exit_date order; with
+    # fewer than 10 closes so far, the mean of what exists. Same-date closes collapse
+    # to the value AFTER the last close of that date.
+    values = [float(i) for i in range(30)]
+    expected: dict[date, float] = {}
+    for k, d in enumerate(days):
+        tail = values[max(0, k - 9):k + 1]
+        expected[base + timedelta(days=d)] = sum(tail) / len(tail)
+    for point_date, point_value in curve:
+        assert abs(point_value - expected[point_date]) < 1e-9
+
+    # equity_curve's filtering rules: open / unfilled / dateless rows contribute nothing
+    noise = [_pt(status="open", realized_r=None),
+             _pt(fill_status="missed", realized_r=None),
+             _pt(realized_r=9.0)]  # closed but no exit_date
+    assert trailing_expectancy(trades + noise, window=10) == curve
+    assert trailing_expectancy([], window=10) == []
+
+    # deterministic under caller iteration order: same-date closes are ordered by row id,
+    # so a same-date block straddling the window boundary cannot shuffle the mean
+    same_day: list[PaperTrade] = []
+    for i in range(12):
+        t = _pt(realized_r=float(i), exit_date=base)
+        t.id = i + 1
+        same_day.append(t)
+    expected_point = [(base, sum(range(2, 12)) / 10)]  # last 10 by id carry values 2..11
+    assert trailing_expectancy(same_day, window=10) == expected_point
+    assert trailing_expectancy(list(reversed(same_day)), window=10) == expected_point
+
+    # window is a count of closes; zero or negative is a caller bug, not all-history
+    with pytest.raises(ValueError):
+        trailing_expectancy(trades, window=0)
+
+
+def test_cost_stamped_from_gates_cost_level() -> None:
+    from datetime import timedelta
+
+    from swing_screener.analytics.performance import COST_STAMPED_FROM, cost_level_for
+
+    after = COST_STAMPED_FROM
+    before = COST_STAMPED_FROM - timedelta(days=1)
+
+    # every closed trade provably exited on/after the 0.05 default shipping -> "0.05"
+    net = [_pt(realized_r=1.0, exit_date=after),
+           _pt(realized_r=-0.5, exit_date=after)]
+    assert cost_level_for(net) == "0.05"
+    # open / unfilled rows carry no realized cost yet and do not block the stamp
+    assert cost_level_for(net + [_pt(status="open", realized_r=None)]) == "0.05"
+
+    # ONE pre-cutoff exit poisons the aggregate (gross rows carry no per-row marker)
+    assert cost_level_for(net + [_pt(realized_r=1.0, exit_date=before)]) is None
+    # a closed trade with NO exit_date cannot prove its cost level -> None
+    assert cost_level_for(net + [_pt(realized_r=1.0)]) is None
+    # empty -> None
+    assert cost_level_for([]) is None
+
+    # a STRADDLER -- partialed before the cutoff (gross partial leg, priced at partial
+    # time), exited after -- carries a gross component blended into realized_r; no
+    # partial date is persisted, so only opened_date >= cutoff proves the partial's vintage
+    straddler = _pt(realized_r=1.0, exit_date=after, opened_date=before)
+    straddler.partial_done = True
+    assert cost_level_for(net + [straddler]) is None
+    # a partial on a trade OPENED on/after the cutoff can only have happened after it
+    proven = _pt(realized_r=1.0, exit_date=after, opened_date=after)
+    proven.partial_done = True
+    assert cost_level_for(net + [proven]) == "0.05"
+    # a partialed trade with no opened_date cannot prove its partial's vintage -> None
+    undated_partial = _pt(realized_r=1.0, exit_date=after)
+    undated_partial.partial_done = True
+    assert cost_level_for(net + [undated_partial]) is None
