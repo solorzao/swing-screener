@@ -43,7 +43,7 @@ jobs:
         run: npm ci
         working-directory: cockpit-ui
 
-      - name: Lint (eslint)
+      - name: Lint (oxlint)
         run: npm run lint
         working-directory: cockpit-ui
 
