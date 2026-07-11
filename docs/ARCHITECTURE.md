@@ -6,10 +6,13 @@ until a rename earns its cost.
 
 ## What this system is
 
-A personal trading **suite**: independent strategy **modules** built on a shared **platform**
-of data access, persistence, evidence/learning machinery, a desktop cockpit, and (future)
-execution infrastructure. The suite exists to find and validate trading edges with honest
-statistics, then — only after evidence — route capital to them.
+A personal trading **suite**: interchangeable strategy **modules** built on a shared
+**platform** of data access, persistence, evidence/learning machinery, trade observability &
+journaling, a desktop cockpit, and (future) execution infrastructure. The suite exists to find
+and validate trading edges with honest statistics — in the system's behavior AND the trader's
+— then, only after evidence, route capital to them. Strategies come and go; the observability
+of every trade, the P&L record, and the journal that feeds insight analysis are permanent
+core infrastructure.
 
 Current modules:
 
@@ -36,15 +39,22 @@ does not bind module 2, and vice versa. This document governs only what is *shar
    playbooks. Each module declares its own **cluster key** (swing: ticker; GEX lab: session)
    and its own reflection family. Numbers cross module boundaries only as clearly-labeled
    comparisons, never pooled.
-4. **Cockpit** — the desktop shell (pywebview + FastAPI factory + React). Each module ships a
+4. **Journal & observability** — the trader-facing record across ALL books: entry/exit theses
+   captured at time-of-knowledge (machine-written at open, narrative at settlement), tags and
+   mistakes with provenance (`screener | analyst | human`), the daily notebook, P&L calendar /
+   equity curves / MAE-MFE / discipline metrics, and the Session-Review + auto-tagger agents.
+   Design: [plans/2026-07-11-journal-layer-design.md](plans/2026-07-11-journal-layer-design.md)
+   (TradeZella feature survey × Meridian concept mining). Unit-honest and never pooled across
+   books for inference; every derived artifact carries a staleness stamp.
+5. **Cockpit** — the desktop shell (pywebview + FastAPI factory + React). Each module ships a
    router factory (mounted before the static catch-all) and a view registered in the module
    nav. Shared contracts: Stat-dict for statistics, plain values for deterministic facts,
    503-with-friendly-detail, no URL/credential leaks, SSE watermarks for every table a view
    renders.
-5. **Ops** — env-first `Settings`, the Azure container-job chassis (one image, eastern-gate
+6. **Ops** — env-first `Settings`, the Azure container-job chassis (one image, eastern-gate
    entrypoint, heartbeats, email transport). Modules opt in per job; a module with no cloud
    footprint (GEX lab Phase 1) simply doesn't register one.
-6. **Execution (future platform layer)** — today the broker adapters, execution locks, caps,
+7. **Execution (future platform layer)** — today the broker adapters, execution locks, caps,
    and disarm ceremony live inside module 1. They are *designed* to be promoted to the
    platform when a second module earns execution; the money-safety spine (off-by-default,
    independent locks, mandatory caps, human gate) is a suite-level invariant already.
