@@ -503,7 +503,8 @@ self-migrating mssql run. No manual step for either.
 mount; sessions via the existing `Depends(_session)`; the SQLAlchemyError→503 handler
 covers stale-schema DBs automatically):
 
-- Shared helper `_facet_filter(trades, facet)`; validate `facet` with a
+- Shared helper `facet_filter(trades, facet)` (public — it carries the user-facing
+  gold contract and is imported cross-module); validate `facet` with a
   `Literal["research", "gold"]` query param (FastAPI 422s the rest).
 - `/api/stats/cohorts`: thread `facet` + replace the hardcoded `cost_level=None` in
   `_cohort` with `cost_level_for(subset)` per cohort subset.
