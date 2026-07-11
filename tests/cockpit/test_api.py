@@ -11,13 +11,16 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from swing_screener.analytics.performance import COST_STAMPED_FROM
 from swing_screener.cockpit.api import (
     _LOGIN_TTL_S,
+    _STATE_RANK,
     _down_summary,
     _LoginFlight,
     connection_label,
     create_app,
 )
+from swing_screener.cockpit.settlement import STATES
 from swing_screener.db.models import EmailLog, PaperTrade
 from swing_screener.db.repo import save_reversal_funnel
 from swing_screener.db.session import get_engine
@@ -44,15 +47,16 @@ def _trade(ticker: str, r: float, *, play_type: str = "reversal",
 
 
 def _book_trade(ticker: str, r: float, *, arm: str = "baseline", variant: str = "default",
-                trigger_ts: datetime | None = None,
-                exit_date: date | None = None) -> PaperTrade:
+                trigger_ts: datetime | None = None, exit_date: date | None = None,
+                would_surface: bool | None = None) -> PaperTrade:
     """A closed research-grid row for the forward-books loader: arm/variant/trigger_ts
     are the loader's filter keys and (for arms) the pair identity."""
     return PaperTrade(
         ticker=ticker, timeframe="1d", horizon="medium", signal_score=0.8, rank=1,
         account="research", play_type="reversal", strength="confirmed", arm=arm,
-        variant=variant, trigger_ts=trigger_ts, fill_status="filled", stop=95.0,
-        target=110.0, risk=5.0, status="closed", realized_r=r, exit_date=exit_date,
+        variant=variant, trigger_ts=trigger_ts, would_surface=would_surface,
+        fill_status="filled", stop=95.0, target=110.0, risk=5.0, status="closed",
+        realized_r=r, exit_date=exit_date,
     )
 
 
@@ -236,12 +240,15 @@ def test_cohorts_accepts_facet_param(tmp_path: Path) -> None:
 
 def test_cohort_stats_carry_cost_level_after_cutoff(tmp_path: Path) -> None:
     """``cost_level`` derives from the cutoff rule per cohort subset: ``"0.05"`` iff
-    EVERY closed trade provably exited on/after COST_STAMPED_FROM (2026-07-02); a
-    single pre-cutoff exit poisons the whole cohort back to null."""
+    EVERY closed trade provably exited on/after COST_STAMPED_FROM; a single
+    pre-cutoff exit poisons the whole cohort back to null. Dates derive from the
+    constant itself so an epoch change cannot silently invert this test."""
+    post_cutoff = COST_STAMPED_FROM + timedelta(days=1)
+    pre_cutoff = COST_STAMPED_FROM - timedelta(days=1)
     url = _db_url(tmp_path)
     engine = get_engine(url)
     with Session(engine) as s:
-        s.add_all([_trade(t, r, exit_date=date(2026, 7, 3)) for t, r in
+        s.add_all([_trade(t, r, exit_date=post_cutoff) for t, r in
                    [("AAA", 1.0), ("BBB", -0.5), ("CCC", 0.3), ("DDD", 0.8)]])
         s.commit()
     client = TestClient(create_app(url, edge_dir=tmp_path))
@@ -250,7 +257,7 @@ def test_cohort_stats_carry_cost_level_after_cutoff(tmp_path: Path) -> None:
     assert all(c["stat"]["cost_level"] == "0.05" for c in cohorts)
 
     with Session(engine) as s:
-        s.add(_trade("EEE", 0.2, exit_date=date(2026, 6, 30)))  # pre-cutoff: gross R
+        s.add(_trade("EEE", 0.2, exit_date=pre_cutoff))  # pre-cutoff: gross R
         s.commit()
     cohorts = client.get("/api/stats/cohorts").json()["cohorts"]
     assert all(c["stat"]["cost_level"] is None for c in cohorts)
@@ -266,13 +273,16 @@ def test_forward_books_shape(tmp_path: Path) -> None:
     exit_d = date(2026, 7, 3)
     trades: list[PaperTrade] = []
     # a_settle: 24 pairs on 10 tickers with tight ~0.5R deltas -> settled-awaiting-decision.
+    # Mixed would_surface (10 gold pairs, 14 unstamped) so the gold facet is a real subset.
     for i in range(24):
         ts = datetime(2026, 6, 1, tzinfo=UTC) + timedelta(hours=i)
         ticker = f"T{i % 10:02d}"
         jitter = ((i % 3) - 1) * 0.01
-        trades.append(_book_trade(ticker, 0.0, trigger_ts=ts, exit_date=exit_d))
+        gold_row = True if i < 10 else None
+        trades.append(_book_trade(ticker, 0.0, trigger_ts=ts, exit_date=exit_d,
+                                  would_surface=gold_row))
         trades.append(_book_trade(ticker, 0.5 + jitter, arm="a_settle", trigger_ts=ts,
-                                  exit_date=exit_d))
+                                  exit_date=exit_d, would_surface=gold_row))
     # rev_small: a 3-ticker variant book vs the default control -> accruing (n < 20).
     for i, r in enumerate([0.6, -0.2, 0.3]):
         trades.append(_book_trade(f"V{i:02d}", r, variant="rev_small", exit_date=exit_d))
@@ -311,6 +321,19 @@ def test_forward_books_shape(tmp_path: Path) -> None:
     assert cards[1]["upper_bound_type"] == "clustered"  # variant: two-sample bootstrap
     assert cards[2]["decision"] == "falsified"       # retired history stays legible
     assert client.get("/api/forward-books?facet=bogus").status_code == 422
+
+    # The gold facet threads through to build_cards: only the would_surface-truthy
+    # pairs accrue (10 of the 24), and the cards say which facet produced them.
+    gold_cards = client.get("/api/forward-books?facet=gold").json()["cards"]
+    gold = {c["name"]: c for c in gold_cards}
+    assert 0 < gold["a_settle"]["n_accrued"] < settle["n_accrued"]
+    assert gold["a_settle"]["delta"]["facet"] == "gold"
+
+
+def test_forward_books_state_rank_locksteps_with_settlement() -> None:
+    """Lockstep guard: a new settlement state must teach the wall ordering about
+    itself before it can ship -- /api/forward-books must never 500 on a KeyError."""
+    assert set(_STATE_RANK) == set(STATES)
 
 
 def test_forward_books_empty_registry(tmp_path: Path) -> None:

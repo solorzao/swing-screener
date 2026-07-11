@@ -42,7 +42,12 @@ from swing_screener.analytics.performance import (
     cost_level_for,
 )
 from swing_screener.cockpit.heartbeats import Heartbeat, collect_heartbeats
-from swing_screener.cockpit.settlement import SettlementCard, _facet_filter, build_cards
+from swing_screener.cockpit.settlement import (
+    STATES,
+    SettlementCard,
+    build_cards,
+    facet_filter,
+)
 from swing_screener.cockpit.stats import stat_from_summary
 from swing_screener.db.models import PaperTrade
 from swing_screener.db.repo import (
@@ -237,7 +242,7 @@ def create_app(
         would_surface-truthy rows -- and is echoed on every Stat; anything else is
         FastAPI's 422 via the ``Literal``.
         """
-        trades = _facet_filter(load_research_paper_trades(session), facet)
+        trades = facet_filter(load_research_paper_trades(session), facet)
         by_play = breakdown(trades, "play_type")
         cohorts: list[dict[str, object]] = []
         for play_type in sorted(by_play):
@@ -263,16 +268,28 @@ def create_app(
         is a presentation concern, so it lives here, not in settlement's math. A
         missing or empty registry is a normal setup state: ``{"cards": []}``, never
         an error. ``facet`` threads through to ``build_cards`` (it filters each
-        loaded book internally, before any math).
+        loaded book internally, before any math). Budget: ~1.1s of bootstrap math per
+        request at the real 9-experiment registry shape -- ~2% duty cycle at the
+        frontend's 60s poll; revisit (cache across requests) if wall time approaches
+        the poll interval or a second polling client appears.
         """
         experiments = load_experiments(resolve_edge_dir(edge_dir))
+
+        # Per-request memo: the registry shares books heavily (every arm card hydrates
+        # the identical default-variant pool; variant cards share the default control),
+        # so the distinct loads are roughly half the raw count. Copied on the way out
+        # so no consumer can mutate a list another card is about to read.
+        books: dict[tuple[str | None, str | None, str], list[PaperTrade]] = {}
 
         def _load(
             *, play_type: str | None, arm: str | None, variant: str
         ) -> list[PaperTrade]:
-            return load_closed_paper_trades(
-                session, play_type=play_type, arm=arm, variant=variant
-            )
+            key = (play_type, arm, variant)
+            if key not in books:
+                books[key] = load_closed_paper_trades(
+                    session, play_type=play_type, arm=arm, variant=variant
+                )
+            return list(books[key])
 
         cards = build_cards(
             experiments, book_loader=_load, now=datetime.now(UTC), facet=facet
@@ -282,10 +299,10 @@ def create_app(
 
     @app.get("/api/funnel")
     def funnel(session: Session = Depends(_session)) -> dict[str, object]:
-        """The latest daily digest's reversal funnel snapshot, newest ``run_date``
-        first; ``{"funnel": null}`` before the first digest records one. ``overflow``
-        is the comma-joined column split back into a ticker list, empties dropped
-        (the empty string means "no overflow", never ``[""]``)."""
+        """The latest daily digest's reversal funnel snapshot -- the row with the
+        newest ``run_date``; ``{"funnel": null}`` before the first digest records
+        one. ``overflow`` is the comma-joined column split back into a ticker list,
+        empties dropped (the empty string means "no overflow", never ``[""]``)."""
         row = latest_reversal_funnel(session)
         if row is None:
             return {"funnel": None}
@@ -371,14 +388,11 @@ def _cohort(
 
 
 # Forward Books wall order: decision-forcing cards first (settled and futile both
-# await a human), then still-accruing books, then retired history. A closed set --
-# an unknown state from settlement should fail loudly, not sort somewhere quiet.
-_STATE_RANK = {
-    "settled-awaiting-decision": 0,
-    "futile-awaiting-decision": 0,
-    "accruing": 1,
-    "retired": 2,
-}
+# await a human), then still-accruing books, then retired history. Built FROM
+# settlement's STATES tuple so the two modules cannot drift: a fifth state breaks
+# this unpacking at import time -- loudly, in tests -- never as a request-time 500.
+_RETIRED, _FUTILE, _SETTLED, _ACCRUING = STATES
+_STATE_RANK = {_SETTLED: 0, _FUTILE: 0, _ACCRUING: 1, _RETIRED: 2}
 
 
 def _card_dict(c: SettlementCard) -> dict[str, object]:

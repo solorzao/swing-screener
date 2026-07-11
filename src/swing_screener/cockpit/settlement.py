@@ -59,6 +59,18 @@ _MIN_N_FOR_PROJECTION = 5
 _ACCRUAL_WINDOW_DAYS = 30
 _SPARK_POINTS = 60
 
+# The card states, in PRECEDENCE order (module docstring: retired > futile > settled >
+# accruing). Exported so consumers stay in lockstep with the state machine instead of
+# re-typing string literals: the API's wall ordering unpacks this tuple, so a fifth
+# state fails THAT import loudly rather than 500ing at request time on an unknown key.
+STATES: tuple[str, ...] = (
+    "retired",
+    "futile-awaiting-decision",
+    "settled-awaiting-decision",
+    "accruing",
+)
+_RETIRED, _FUTILE, _SETTLED, _ACCRUING = STATES
+
 
 class BookLoader(Protocol):
     """The data seam: returns closed paper trades filtered by the given keys.
@@ -93,10 +105,11 @@ class SettlementCard:
     decision: str | None
 
 
-def _facet_filter(trades: list[PaperTrade], facet: str) -> list[PaperTrade]:
+def facet_filter(trades: list[PaperTrade], facet: str) -> list[PaperTrade]:
     """The gold facet is entries a human could actually have taken: ``would_surface``
     must be truthy. ``None`` (legacy/replay rows) and ``False`` are both excluded
-    BEFORE any math -- an unstampable row is never graded as gold."""
+    BEFORE any math -- an unstampable row is never graded as gold. Public: this is
+    the user-facing gold contract, shared by the API's cohort endpoint."""
     if facet == "gold":
         return [t for t in trades if t.would_surface]
     return trades
@@ -123,13 +136,13 @@ def _state(
     interval keep the card accruing -- a >= 20-close book vs an empty control must
     never read futile off an interval no bootstrap produced."""
     if exp.status == "retired":
-        return "retired"
+        return _RETIRED
     trusted = n_accrued >= MIN_LEADERBOARD_N and not thin and not collapsed
     if trusted and upper < exp.mde_r:
-        return "futile-awaiting-decision"
+        return _FUTILE
     if trusted and halfwidth <= exp.target_ci_halfwidth_r:
-        return "settled-awaiting-decision"
-    return "accruing"
+        return _SETTLED
+    return _ACCRUING
 
 
 def _n_needed(n_accrued: int, halfwidth: float, target: float) -> int | None:
@@ -212,10 +225,10 @@ def _card(
 ) -> SettlementCard:
     if exp.kind == "variant":
         scope = _scope(exp.play_type)
-        book = _facet_filter(
+        book = facet_filter(
             book_loader(play_type=scope, arm=BASELINE, variant=exp.name), facet
         )
-        control = _facet_filter(
+        control = facet_filter(
             book_loader(play_type=scope, arm=BASELINE, variant=exp.control), facet
         )
         book_s, ctrl_s = summarize(book), summarize(control)
@@ -227,7 +240,7 @@ def _card(
         # net@0.05 with a gross control side would be an overclaim.
         delta_cost_pool = [*book, *control]
     elif exp.kind == "arm":
-        trades = _facet_filter(
+        trades = facet_filter(
             book_loader(
                 play_type=_scope(exp.play_type), arm=None, variant=DEFAULT_VARIANT
             ),
