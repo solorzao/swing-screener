@@ -143,6 +143,21 @@ def test_missing_store_raises_keyerror(tmp_path: Path) -> None:
         )
 
 
+def test_unknown_decision_is_rejected_at_runtime(tmp_path: Path) -> None:
+    # Literal["approved", "withdrawn"] is STATIC-only: a runtime caller passing "rejected"
+    # would otherwise write a status the state machine doesn't know -- and the draft merge
+    # preserves every non-queued status forever. Guard it like to_config guards deltas.
+    row = _pv()
+    _seed(tmp_path, [row])
+    with pytest.raises(ValueError, match="rejected"):
+        decide_proposal(
+            tmp_path, "continuation", row.name,
+            decision="rejected",  # type: ignore[arg-type]
+            reason="r", today="2026-07-11",
+        )
+    assert load_proposed_for("continuation", tmp_path) == [row]
+
+
 @pytest.mark.parametrize("status", ["withdrawn", "approved", "draft"])
 def test_approve_requires_a_queued_row(tmp_path: Path, status: str) -> None:
     row = _pv(status=status)
@@ -166,6 +181,20 @@ def test_withdraw_requires_queued_or_approved(tmp_path: Path, status: str) -> No
             decision="withdrawn", reason="r", today="2026-07-11",
         )
     assert load_proposed_for("continuation", tmp_path) == [row]
+
+
+def test_decision_write_leaves_no_tmp_sibling(tmp_path: Path) -> None:
+    # The rewrite is atomic (serialize to a .tmp sibling, then os.replace): this file holds
+    # the only uncommitted copy of human decisions, and a torn write is the one corruption
+    # the draft merge's fail-safe read guard cannot undo. Observable: the .tmp sibling never
+    # outlives the call.
+    row = _pv()
+    _seed(tmp_path, [row])
+    decide_proposal(
+        tmp_path, "continuation", row.name,
+        decision="approved", reason="r", today="2026-07-11",
+    )
+    assert [p.name for p in tmp_path.iterdir()] == ["continuation.proposed.json"]
 
 
 # =====================================================================================

@@ -25,6 +25,7 @@ This module is the validated DATA layer (no LLM, no network):
 
 import dataclasses
 import json
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
@@ -120,6 +121,20 @@ def load_proposed_for(play_type: str, edge_dir: Path) -> list[ProposedVariant]:
     return load_proposed(path.read_text(encoding="utf-8"))
 
 
+def _write_proposed(path: Path, items: list[ProposedVariant]) -> None:
+    """Atomically rewrite one proposal store: serialize to a ``.tmp`` sibling, then
+    ``os.replace`` it over the real file.
+
+    This file holds the ONLY uncommitted copy of human decisions (until git captures them),
+    and a torn write is the one corruption the draft merge's fail-safe read guard cannot
+    undo -- so the store is never left half-written. Used by BOTH proposal-store writers
+    (``decide_proposal`` here, ``reflect.draft_variants``' merge).
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(proposed_to_json(items), encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def decide_proposal(
     edge_dir: Path,
     play_type: str,
@@ -139,18 +154,25 @@ def decide_proposal(
       * withdraw -- requires ``status`` in ``(QUEUED, APPROVED)`` (an approval can be walked
         back; a withdrawal is final until a human hand-edits it).
 
-    An unknown ``name`` raises ``KeyError``; a refused transition raises ``ValueError`` naming
-    the current status, and the store is left untouched. On success the ONE row is replaced
+    ``decision`` is also RUNTIME-checked (``Literal`` is static-only): anything but
+    ``APPROVED``/``WITHDRAWN`` raises ``ValueError`` rather than inventing a status the state
+    machine doesn't know -- the same gatekeeper stance as ``to_config``. An unknown ``name``
+    raises ``KeyError``; a refused transition raises ``ValueError`` naming the current status,
+    and the store is left untouched. On success the ONE row is replaced
     (``dataclasses.replace``: new ``status``, rationale + `` {DECISION} {today}: {reason}`` --
-    byte-compatible with the hand-edit convention) and the WHOLE file is rewritten with every
-    other row and the row order preserved. Returns the updated row. The decided row then stays
-    in the file as the audit record (``draft_variants``' merge preserves non-queued rows) until
-    git captures it.
+    byte-compatible with the hand-edit convention) and the WHOLE file is rewritten atomically
+    (``_write_proposed``) with every other row and the row order preserved. Returns the updated
+    row. The decided row then stays in the file as the audit record (``draft_variants``' merge
+    preserves non-queued rows) until git captures it.
     """
+    if decision not in (APPROVED, WITHDRAWN):
+        raise ValueError(
+            f"unknown decision {decision!r}: must be {APPROVED!r} or {WITHDRAWN!r}"
+        )
     items = load_proposed_for(play_type, edge_dir)
     index = next((i for i, pv in enumerate(items) if pv.name == name), None)
     if index is None:
-        raise KeyError(name)
+        raise KeyError(f"no proposal named {name!r} for {play_type}")
     current = items[index]
     allowed = (QUEUED,) if decision == APPROVED else (QUEUED, APPROVED)
     if current.status not in allowed:
@@ -164,7 +186,5 @@ def decide_proposal(
         rationale=current.rationale + f" {decision.upper()} {today}: {reason}",
     )
     items[index] = updated
-    (edge_dir / f"{play_type}.proposed.json").write_text(
-        proposed_to_json(items), encoding="utf-8"
-    )
+    _write_proposed(edge_dir / f"{play_type}.proposed.json", items)
     return updated

@@ -318,8 +318,8 @@ def test_structurally_malformed_draft_is_dropped(tmp_path, bad_draft):
 
 
 # =====================================================================================
-# MERGE (Phase 3): a redraft replaces only the QUEUED set -- decided rows survive it,
-# and a fresh draft colliding with a decided row's name is BLOCKED (decided rows win).
+# MERGE (Phase 3): a redraft replaces only the QUEUED set -- non-queued rows survive it,
+# and a fresh draft colliding with a preserved row's name is BLOCKED (preserved rows win).
 # =====================================================================================
 def _seeded_row(
     *,
@@ -368,6 +368,8 @@ def test_redraft_preserves_non_queued_rows_beside_the_fresh_queued_set(tmp_path:
     # Then the fresh queued set; the stale queued row is superseded (gone).
     assert stored[3:] == written
     assert all(pv.name != stale_queued.name for pv in stored)
+    # The merge write is atomic (tmp + os.replace): the .tmp sibling never outlives the call.
+    assert [p.name for p in tmp_path.iterdir()] == ["continuation.proposed.json"]
 
 
 def test_collision_with_a_decided_row_blocks_the_fresh_draft(
@@ -375,8 +377,8 @@ def test_collision_with_a_decided_row_blocks_the_fresh_draft(
 ) -> None:
     # A REAL collision via _draft_name determinism: a durable hunch re-drafts the same idea
     # at the same index -> the SAME deterministic name. Once that row is DECIDED (withdrawn
-    # here), the redraft must not resurrect it: decided rows win, the fresh draft is dropped
-    # with a log, and a withdrawn idea is not silently re-queued.
+    # here), the redraft must not resurrect it: preserved rows win, the fresh draft is
+    # dropped with a log, and a withdrawn idea is not silently re-queued.
     base = StrategyConfig()
     drafts = [{
         "delta": {"max_extension_atr": 1.5},
@@ -401,7 +403,7 @@ def test_collision_with_a_decided_row_blocks_the_fresh_draft(
     assert second == []
     # The decision survives; the idea is NOT re-queued.
     assert load_proposed_for("continuation", tmp_path) == [withdrawn]
-    assert any("decided rows win" in r.message for r in caplog.records)
+    assert any("preserved rows win" in r.message for r in caplog.records)
 
 
 def test_unreadable_prior_store_queues_nothing_and_is_left_untouched(
@@ -455,3 +457,44 @@ def test_collision_blocks_only_the_colliding_fresh_draft(tmp_path: Path) -> None
     # Decided row first, then the surviving fresh queued draft.
     assert stored == [withdrawn, *second]
     assert [pv.status for pv in stored] == ["withdrawn", QUEUED]
+
+
+def test_all_colliding_redraft_still_supersedes_stale_queued_rows(tmp_path: Path) -> None:
+    # The one edge where "every candidate dropped" does NOT mean "store untouched":
+    # collision drops happen AFTER a successful draft (they are not validation failures),
+    # so the merge write proceeds -- the stale queued set is superseded even though nothing
+    # new queues, and the decided row survives as the only content.
+    base = StrategyConfig()
+    durable = {
+        "delta": {"max_extension_atr": 1.5},
+        "rationale": "A tighter freshness gate.",
+        "hunch_ref": "continuation:market_trend=bull",
+    }
+    new_idea = {
+        "delta": {"min_pullback_bars": 3},
+        "rationale": "Deeper pullback.",
+        "hunch_ref": "continuation:volatility_tier=high",
+    }
+    first = draft_variants(
+        "continuation", [_hunch()], base, edge_dir=tmp_path, today="2026-07-05",
+        drafter=_fake_drafter([durable]),
+    )
+    withdrawn = decide_proposal(
+        tmp_path, "continuation", first[0].name,
+        decision="withdrawn", reason="overlaps the ext sweep", today="2026-07-08",
+    )
+    # A second run queues new_idea (index 1) beside the withdrawn row.
+    second = draft_variants(
+        "continuation", [_hunch()], base, edge_dir=tmp_path, today="2026-07-12",
+        drafter=_fake_drafter([durable, new_idea]),
+    )
+    assert len(second) == 1
+    # A third run drafts ONLY the durable idea -> its one candidate collides -> fresh == [].
+    third = draft_variants(
+        "continuation", [_hunch()], base, edge_dir=tmp_path, today="2026-07-19",
+        drafter=_fake_drafter([durable]),
+    )
+    assert third == []
+    # The write still happened: the stale queued row from the second run is gone; the
+    # withdrawn decision is preserved.
+    assert load_proposed_for("continuation", tmp_path) == [withdrawn]

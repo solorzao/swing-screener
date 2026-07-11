@@ -48,8 +48,8 @@ from swing_screener.pipeline.optimize import fetch_daily
 from swing_screener.pipeline.proposed import (
     QUEUED,
     ProposedVariant,
+    _write_proposed,
     load_proposed_for,
-    proposed_to_json,
     to_config,
 )
 from swing_screener.pipeline.replay import corpus_stamp, load_cached_daily, replay_book
@@ -926,13 +926,17 @@ def draft_variants(
     ahead of the fresh queued set: the decision is the audit record, and it lives in this file
     until git captures it, so a Sunday reflection redraft must not clobber it. And because
     ``_draft_name`` is deterministic (a durable hunch re-drafts at the same index -> the same
-    name), a fresh draft whose name matches a preserved row is DROPPED with a log: decided rows
-    win; a withdrawn idea is not silently re-queued.
+    name), a fresh draft whose name matches a preserved row is DROPPED with a log: preserved
+    rows win, and for the decided kind that is the point -- a withdrawn idea is not silently
+    re-queued.
 
     Fail-safe like ``author_edge_file``: with no hunches the drafter is not even asked; and on
-    ANY failure (drafter raises, returns empty, or every candidate is dropped) the store is left
-    UNTOUCHED -- a prior valid queued set survives. Returns the fresh queued variants written
-    ([] if nothing was queued).
+    ANY drafting failure (drafter raises, returns empty, or every candidate is dropped by
+    VALIDATION) the write is SKIPPED and the store is left UNTOUCHED -- a prior valid queued
+    set survives. COLLISION drops are different: they happen after a successful draft, so the
+    merge write still proceeds -- stale queued rows are superseded even when every fresh draft
+    collides and nothing new queues. Returns the fresh queued variants written ([] if nothing
+    was queued).
     """
     if not hunches:
         return []
@@ -964,20 +968,18 @@ def draft_variants(
         )
         return []
     preserved = [pv for pv in prior if pv.status != QUEUED]
-    decided_status = {pv.name: pv.status for pv in preserved}
+    preserved_status = {pv.name: pv.status for pv in preserved}
     fresh: list[ProposedVariant] = []
     for pv in valid:
-        if pv.name in decided_status:
+        if pv.name in preserved_status:
             log.info(
                 "dropping fresh draft %r for %s: its deterministic name matches a prior "
-                "%s row -- decided rows win; a withdrawn idea is not silently re-queued",
-                pv.name, play_type, decided_status[pv.name],
+                "%s row -- preserved rows win; a withdrawn idea is not silently re-queued",
+                pv.name, play_type, preserved_status[pv.name],
             )
             continue
         fresh.append(pv)
-    (edge_dir / f"{play_type}.proposed.json").write_text(
-        proposed_to_json(preserved + fresh), encoding="utf-8"
-    )
+    _write_proposed(edge_dir / f"{play_type}.proposed.json", preserved + fresh)
     log.info(
         "drafted %d queued variant(s) for %s (%d non-queued row(s) preserved)",
         len(fresh), play_type, len(preserved),
