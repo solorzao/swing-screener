@@ -72,11 +72,17 @@ export interface SettlementCard {
   play_type: string
   state: SettlementState
   n_accrued: number
+  /** Closes needed to settle, by CI-shrinkage projection. null means "cannot
+   * project yet" (n < 5 or a collapsed CI) and is deliberately never 0, which
+   * would read as "done" — the renderer must not conflate null (no read) with
+   * small (nearly done). */
   n_needed: number | null
-  /** Human ETA line, or null once the book stops accruing. */
+  /** Projected settlement date (ISO), from the trailing-30d close rate; null
+   * when unprojectable (n_needed null) or accrual stalled. */
   eta: string | null
   stopping_rule: string
   registered_sha: string
+  /** ISO-8601 date the experiment was registered. */
   registered_at: string
   mde_r: number
   book: Stat
@@ -106,6 +112,9 @@ export interface Funnel {
   pool_n: number
   confirmed_only: boolean
   premium_only: boolean
+  /** A live-quote fn was injected at digest time — NOT "the check ran":
+   * _drop_already_ran fails open on a quote outage, so true can coexist with
+   * actionable == fresh on an outage day. */
   already_ran_checked: boolean
 }
 
@@ -169,6 +178,7 @@ export interface Performance {
 /** The advisory autonomy gate + today's analyst spend, as one status object. */
 export interface Gate {
   ready: boolean
+  /** Multi-line preformatted text (format pinned by test_autonomy_countdown.py). */
   countdown: string
   execution_mode: string
   analyst_spend_today_usd: number
@@ -253,7 +263,14 @@ export interface Polled<T> {
  * `wake` (feed it `useEventWake()`) rides the same path: a changed value tears
  * down and re-creates the interval, which fires the immediate first tick — an
  * instant fetch plus a fresh `ms` cadence from the wake moment. `ms` stays the
- * floor, so a dead wake source degrades to plain polling. */
+ * floor, so a dead wake source degrades to plain polling.
+ *
+ * A changed FETCHER does NOT trigger a refetch: new params captured in an
+ * inline lambda update the ref, but no tick fires — a facet/window flip would
+ * show the old params' data under the new label for up to `ms`. The sanctioned
+ * idiom is to remount the consuming component via a React key (e.g.
+ * key={`${facet}-${win}`}), which both forces an immediate fetch and honestly
+ * drops the wrong-params data while it is in flight. */
 export function usePolling<T>(fetcher: () => Promise<T>, ms: number, wake = 0): Polled<T> {
   const [state, setState] = useState<Polled<T>>({
     data: null,
