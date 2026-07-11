@@ -26,7 +26,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -36,11 +36,23 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from swing_screener.analytics.performance import PerformanceSummary, breakdown
+from swing_screener.analytics.performance import (
+    PerformanceSummary,
+    breakdown,
+    cost_level_for,
+)
 from swing_screener.cockpit.heartbeats import Heartbeat, collect_heartbeats
+from swing_screener.cockpit.settlement import SettlementCard, _facet_filter, build_cards
 from swing_screener.cockpit.stats import stat_from_summary
-from swing_screener.db.repo import load_research_paper_trades
+from swing_screener.db.models import PaperTrade
+from swing_screener.db.repo import (
+    latest_reversal_funnel,
+    load_closed_paper_trades,
+    load_research_paper_trades,
+)
 from swing_screener.db.session import get_engine
+from swing_screener.pipeline.registry import load_experiments
+from swing_screener.settings import resolve_edge_dir
 
 
 def connection_label(db_url: str) -> str:
@@ -206,7 +218,10 @@ def create_app(
         return [_beat_dict(b) for b in beats]
 
     @app.get("/api/stats/cohorts")
-    def cohort_stats(session: Session = Depends(_session)) -> dict[str, object]:
+    def cohort_stats(
+        facet: Literal["research", "gold"] = "research",
+        session: Session = Depends(_session),
+    ) -> dict[str, object]:
         """Research-grid cohort expectancies; every number is a full Stat dict (rule 1).
 
         Shape (stable contract): ``{"cohorts": [{"key": <play_type>, "strength":
@@ -214,21 +229,79 @@ def create_app(
         play_type's aggregate row first (``strength: null``), then its per-strength
         split, both alphabetically. Strength-split keys come from ``breakdown``'s
         ``str()`` coercion, so a null-strength cohort appears as the string ``"None"``
-        -- distinct from the aggregate row's ``null``. ``cost_level``/``corpus_id``
-        are an explicit null (not persisted yet); facet is ``"research"``.
+        -- distinct from the aggregate row's ``null``. ``cost_level`` is derived per
+        cohort SUBSET by ``cost_level_for``'s cutoff rule: ``"0.05"`` iff every closed
+        trade provably exited on/after the cost epoch, else an honest null (one
+        pre-cutoff exit poisons its whole cohort). ``corpus_id`` stays an explicit
+        null (not persisted yet). ``facet`` selects the book -- ``gold`` keeps only
+        would_surface-truthy rows -- and is echoed on every Stat; anything else is
+        FastAPI's 422 via the ``Literal``.
         """
-        trades = load_research_paper_trades(session)
+        trades = _facet_filter(load_research_paper_trades(session), facet)
         by_play = breakdown(trades, "play_type")
         cohorts: list[dict[str, object]] = []
         for play_type in sorted(by_play):
-            cohorts.append(_cohort(play_type, None, by_play[play_type]))
             subset = [t for t in trades if str(t.play_type) == play_type]
+            cohorts.append(_cohort(play_type, None, by_play[play_type], subset, facet))
             by_strength = breakdown(subset, "strength")
             cohorts.extend(
-                _cohort(play_type, strength, by_strength[strength])
+                _cohort(play_type, strength, by_strength[strength],
+                        [t for t in subset if str(t.strength) == strength], facet)
                 for strength in sorted(by_strength)
             )
         return {"cohorts": cohorts}
+
+    @app.get("/api/forward-books")
+    def forward_books(
+        facet: Literal["research", "gold"] = "research",
+        session: Session = Depends(_session),
+    ) -> dict[str, object]:
+        """One settlement card per registered experiment (edge/experiments.json).
+
+        Cards order decision-forcing first: awaiting-decision (settled or futile),
+        then accruing, then retired -- stable by name within each group. The ordering
+        is a presentation concern, so it lives here, not in settlement's math. A
+        missing or empty registry is a normal setup state: ``{"cards": []}``, never
+        an error. ``facet`` threads through to ``build_cards`` (it filters each
+        loaded book internally, before any math).
+        """
+        experiments = load_experiments(resolve_edge_dir(edge_dir))
+
+        def _load(
+            *, play_type: str | None, arm: str | None, variant: str
+        ) -> list[PaperTrade]:
+            return load_closed_paper_trades(
+                session, play_type=play_type, arm=arm, variant=variant
+            )
+
+        cards = build_cards(
+            experiments, book_loader=_load, now=datetime.now(UTC), facet=facet
+        )
+        cards.sort(key=lambda c: (_STATE_RANK[c.state], c.name))
+        return {"cards": [_card_dict(c) for c in cards]}
+
+    @app.get("/api/funnel")
+    def funnel(session: Session = Depends(_session)) -> dict[str, object]:
+        """The latest daily digest's reversal funnel snapshot, newest ``run_date``
+        first; ``{"funnel": null}`` before the first digest records one. ``overflow``
+        is the comma-joined column split back into a ticker list, empties dropped
+        (the empty string means "no overflow", never ``[""]``)."""
+        row = latest_reversal_funnel(session)
+        if row is None:
+            return {"funnel": None}
+        return {"funnel": {
+            "run_date": row.run_date.isoformat(),
+            "detected": row.detected,
+            "confirmed": row.confirmed,
+            "fresh": row.fresh,
+            "actionable": row.actionable,
+            "surfaced": row.surfaced,
+            "overflow": [t for t in row.overflow_tickers.split(",") if t],
+            "pool_n": row.pool_n,
+            "confirmed_only": row.confirmed_only,
+            "premium_only": row.premium_only,
+            "already_ran_checked": row.already_ran_checked,
+        }}
 
     spawner = login_spawner if login_spawner is not None else _spawn_az_login
     login_lock = threading.Lock()
@@ -280,9 +353,57 @@ def _down_summary(exc: Exception) -> str:
     return f"database unreachable ({type(exc).__name__})"
 
 
-def _cohort(key: str, strength: str | None, summary: PerformanceSummary) -> dict[str, object]:
-    stat = stat_from_summary(summary, cost_level=None, corpus_id=None, facet="research")
+def _cohort(
+    key: str,
+    strength: str | None,
+    summary: PerformanceSummary,
+    trades: list[PaperTrade],
+    facet: str,
+) -> dict[str, object]:
+    """One cohort row: the Stat carries the SUBSET's provable cost level (the cutoff
+    rule in ``cost_level_for`` -- ``trades`` must be exactly the rows ``summary`` was
+    computed from) and the facet it was computed under. ``corpus_id`` stays an
+    explicit null (not persisted yet)."""
+    stat = stat_from_summary(
+        summary, cost_level=cost_level_for(trades), corpus_id=None, facet=facet
+    )
     return {"key": key, "strength": strength, "stat": stat.as_dict()}
+
+
+# Forward Books wall order: decision-forcing cards first (settled and futile both
+# await a human), then still-accruing books, then retired history. A closed set --
+# an unknown state from settlement should fail loudly, not sort somewhere quiet.
+_STATE_RANK = {
+    "settled-awaiting-decision": 0,
+    "futile-awaiting-decision": 0,
+    "accruing": 1,
+    "retired": 2,
+}
+
+
+def _card_dict(c: SettlementCard) -> dict[str, object]:
+    """Explicit wire form for a settlement card -- hand-rolled like ``_beat_dict``
+    (never ``dataclasses.asdict`` on the wire): Stats serialize via their own
+    ``as_dict`` and the spark's (date, value) tuples become JSON pairs here, visibly."""
+    return {
+        "name": c.name,
+        "kind": c.kind,
+        "play_type": c.play_type,
+        "state": c.state,
+        "n_accrued": c.n_accrued,
+        "n_needed": c.n_needed,
+        "eta": c.eta,
+        "stopping_rule": c.stopping_rule,
+        "registered_sha": c.registered_sha,
+        "registered_at": c.registered_at,
+        "mde_r": c.mde_r,
+        "book": c.book.as_dict(),
+        "control": c.control.as_dict(),
+        "delta": c.delta.as_dict(),
+        "upper_bound_type": c.upper_bound_type,
+        "spark": [[d, v] for d, v in c.spark],
+        "decision": c.decision,
+    }
 
 
 def _beat_dict(b: Heartbeat) -> dict[str, object]:
