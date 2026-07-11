@@ -70,6 +70,16 @@ export function SettlementCard({ card }: { card: SettlementCardData }) {
         <span className="scard-kind">
           {card.kind} · {card.play_type}
         </span>
+        {/* "Label, don't hide": the IID cue must survive every state — a futile
+            verdict rests on exactly this unhardened upper bound. */}
+        {card.upper_bound_type === 'iid' && (
+          <span
+            className="scard-kind"
+            title="upper bound: IID (unhardened) — only the lower bound is cluster-hardened"
+          >
+            iid upper
+          </span>
+        )}
         <span className={`scard-state ${STATE_CLS[card.state]}`}>
           {STATE_LABEL[card.state]}
         </span>

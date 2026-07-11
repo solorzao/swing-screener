@@ -24,7 +24,7 @@ function FlagBadge({ flag }: { flag: 'iid' | 'thin' | 'ok' }) {
       title={
         flag === 'iid'
           ? 'clusters too thin — IID-fallback bound (unhardened)'
-          : 'n < 12 — thin read'
+          : 'n < 20 — below the leaderboard trust bar (MIN_LEADERBOARD_N)'
       }
     >
       {flag.toUpperCase()}
