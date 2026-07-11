@@ -951,7 +951,19 @@ def draft_variants(
     ]
     if not valid:
         return []
-    preserved = [pv for pv in load_proposed_for(play_type, edge_dir) if pv.status != QUEUED]
+    try:
+        prior = load_proposed_for(play_type, edge_dir)
+    except Exception:
+        # The merge READS the prior store, so a corrupt/hand-mangled file is a failure mode
+        # the old wholesale rewrite never had. It may hold the only copy of a human decision:
+        # never clobber it, never crash the reflection -- queue nothing, leave the bytes.
+        log.warning(
+            "could not read the prior proposed store for %s; queueing nothing "
+            "(store untouched -- rewriting it could erase a human decision)",
+            play_type, exc_info=True,
+        )
+        return []
+    preserved = [pv for pv in prior if pv.status != QUEUED]
     decided_status = {pv.name: pv.status for pv in preserved}
     fresh: list[ProposedVariant] = []
     for pv in valid:

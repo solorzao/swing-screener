@@ -404,6 +404,26 @@ def test_collision_with_a_decided_row_blocks_the_fresh_draft(
     assert any("decided rows win" in r.message for r in caplog.records)
 
 
+def test_unreadable_prior_store_queues_nothing_and_is_left_untouched(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The merge READS the prior store, so a corrupt/hand-mangled file is a new failure mode.
+    # It may hold the only copy of a human decision: never clobber it, never crash the
+    # reflection -- warn, queue nothing, leave the bytes exactly as found (fail-safe).
+    base = StrategyConfig()
+    (tmp_path / "continuation.proposed.json").write_text("{not json", encoding="utf-8")
+    with caplog.at_level(logging.WARNING):
+        written = draft_variants(
+            "continuation", [_hunch()], base, edge_dir=tmp_path, today="2026-07-12",
+            drafter=_fake_drafter([
+                {"delta": {"max_extension_atr": 1.5}, "rationale": "r", "hunch_ref": "h"}
+            ]),
+        )
+    assert written == []
+    assert (tmp_path / "continuation.proposed.json").read_text(encoding="utf-8") == "{not json"
+    assert any("store untouched" in r.message for r in caplog.records)
+
+
 def test_collision_blocks_only_the_colliding_fresh_draft(tmp_path: Path) -> None:
     # Two fresh drafts: the durable hunch re-drafts at index 0 (same name as the withdrawn
     # row -> blocked); a genuinely new idea at index 1 gets a new name -> queued beside it.
