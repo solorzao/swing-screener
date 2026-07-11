@@ -607,6 +607,20 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
             # 9-12 -- present, invisible); one compact line keeps them visible.
             surfaced = {s.ticker for s in reversal_sigs}
             reversal_overflow = [s.ticker for s in pool if s.ticker not in surfaced]
+            # Persist the funnel snapshot: fresh/actionable/surfaced are digest-time
+            # state (cooldown, live quotes, sector cap) and are UNRECOVERABLE later --
+            # this row is the only record (the cockpit's funnel view reads it).
+            # Idempotent per run_date (delete-then-insert): a forced resend re-records
+            # this execution's counts instead of duplicating.
+            repo.save_reversal_funnel(
+                session, run_date=run_date, detected=detected, confirmed=confirmed_n,
+                fresh=n_fresh, actionable=n_actionable, surfaced=len(reversal_sigs),
+                overflow_tickers=",".join(reversal_overflow)[:512],
+                pool_n=sel.REVERSAL_POOL_N,
+                confirmed_only=scfg.reversal_surface_confirmed_only,
+                premium_only=scfg.reversal_surface_premium_only,
+                already_ran_checked=latest_closes_fn is not None,
+            )
             reversal_digest, reversal_pdf = _build_picks(
                 reversal_sigs, play_type="reversal", collect_intents=collected_intents)
 

@@ -1,7 +1,7 @@
 """Thin CRUD layer over the SQLAlchemy models for signals and trades."""
 
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import CursorResult, delete, func, select, update
@@ -15,6 +15,7 @@ from swing_screener.db.models import (
     ExecutionLog,
     ExitEvent,
     PaperTrade,
+    ReversalFunnel,
     Signal,
     Trade,
     Universe,
@@ -513,6 +514,40 @@ def apply_universe_metrics(
 
 def list_email_log(session: Session) -> list[EmailLog]:
     return list(session.scalars(select(EmailLog).order_by(EmailLog.sent_at.desc())))
+
+
+def save_reversal_funnel(
+    session: Session, *, run_date: date, detected: int, confirmed: int, fresh: int,
+    actionable: int, surfaced: int, overflow_tickers: str, pool_n: int,
+    confirmed_only: bool, premium_only: bool, already_ran_checked: bool,
+) -> ReversalFunnel:
+    """Persist the daily digest's reversal funnel snapshot, ONE row per ``run_date``.
+
+    Delete-then-insert (mirroring the EmailLog dedup posture): a forced digest resend
+    re-executes the funnel write for the same run_date, and the latest execution's
+    counts must win -- not raise on the unique index or pile up duplicates. The
+    fresh/actionable/surfaced stages are digest-time state (cooldown, live quotes,
+    sector cap) and are unrecoverable later, so this row is the only record.
+    ``created_at`` is stamped in UTC at save time (mirrors MarketReport)."""
+    session.execute(delete(ReversalFunnel).where(ReversalFunnel.run_date == run_date))
+    row = ReversalFunnel(
+        run_date=run_date, detected=detected, confirmed=confirmed, fresh=fresh,
+        actionable=actionable, surfaced=surfaced, overflow_tickers=overflow_tickers,
+        pool_n=pool_n, confirmed_only=confirmed_only, premium_only=premium_only,
+        already_ran_checked=already_ran_checked, created_at=datetime.now(UTC),
+    )
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def latest_reversal_funnel(session: Session) -> ReversalFunnel | None:
+    """The newest funnel snapshot by run_date, or None when nothing has been recorded.
+
+    The cockpit's funnel view reads this -- the latest daily digest's stage counts."""
+    stmt = select(ReversalFunnel).order_by(ReversalFunnel.run_date.desc()).limit(1)
+    return session.scalars(stmt).first()
 
 
 def create_analysis_request(session: Session, *, ticker: str, requested_at: datetime,

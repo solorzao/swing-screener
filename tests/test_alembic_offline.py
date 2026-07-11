@@ -25,7 +25,7 @@ from alembic.config import Config  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_TABLES = {"universe", "signals", "trades", "paper_trades", "exit_events",
-                   "email_log", "analyst_calls", "execution_logs"}
+                   "email_log", "analyst_calls", "execution_logs", "reversal_funnels"}
 TICKER_INDEXES = {"ix_signals_ticker", "ix_trades_ticker", "ix_paper_trades_ticker",
                   "ix_analyst_calls_ticker", "ix_execution_logs_ticker"}
 # slicing indexes the shadow book relies on (arm/variant/account A/B + isolation).
@@ -36,6 +36,9 @@ EXIT_EVENT_INDEXES = {"ix_exit_events_account"}
 # Phase 4 live-broker tracking: execution_logs is looked up by broker + broker order id.
 EXECUTION_LOG_BROKER_INDEXES = {"ix_execution_logs_broker",
                                 "ix_execution_logs_broker_order_id"}
+# one funnel snapshot per daily digest: the unique index is the idempotency backstop
+# behind the write site's delete-then-insert.
+REVERSAL_FUNNEL_INDEXES = {"uq_reversal_funnels_run_date"}
 
 
 def _config(db_url: str) -> Config:
@@ -64,6 +67,7 @@ def test_migration_creates_every_table_and_index(tmp_path, monkeypatch):
     assert PAPER_TRADE_INDEXES <= indexes
     assert EXIT_EVENT_INDEXES <= indexes
     assert EXECUTION_LOG_BROKER_INDEXES <= indexes
+    assert REVERSAL_FUNNEL_INDEXES <= indexes
 
 
 def test_migration_adds_analyst_call_token_spend_columns(tmp_path, monkeypatch):
@@ -81,6 +85,26 @@ def test_migration_adds_analyst_call_token_spend_columns(tmp_path, monkeypatch):
         con.close()
 
     assert {"input_tokens", "output_tokens", "web_searches", "est_cost_usd"} <= cols
+
+
+def test_migration_enforces_reversal_funnel_run_date_unique(tmp_path, monkeypatch):
+    # ONE funnel row per run_date: the unique index must reject a duplicate (the
+    # backstop behind the write site's delete-then-insert on a forced resend).
+    db = tmp_path / "rf.db"
+    url = f"sqlite:///{db}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    command.upgrade(_config(url), "head")
+
+    con = sqlite3.connect(db)
+    try:
+        # every count column carries a server_default, so run_date alone suffices
+        con.execute("INSERT INTO reversal_funnels (run_date) VALUES ('2026-07-09')")
+        con.commit()
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute("INSERT INTO reversal_funnels (run_date) VALUES ('2026-07-09')")
+            con.commit()
+    finally:
+        con.close()
 
 
 def test_migration_enforces_email_log_dedup(tmp_path, monkeypatch):

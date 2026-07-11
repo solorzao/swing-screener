@@ -3,7 +3,7 @@ from datetime import UTC, date, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from swing_screener.db.models import EmailLog, ExitEvent, Signal, Universe
+from swing_screener.db.models import EmailLog, ExitEvent, ReversalFunnel, Signal, Universe
 from swing_screener.db.session import get_engine
 from swing_screener.notify import run
 
@@ -198,6 +198,53 @@ def test_reversal_top5_sector_cap_backfills(tmp_path):
     assert "CRM" in body and "WDAY" in body
     # capped-out names stay visible on the compact overflow line, not as full picks
     assert "Also confirmed (lost the top-5/sector race): MS, BAC, C" in body
+
+
+def test_daily_digest_persists_reversal_funnel_row(tmp_path):
+    """The daily digest persists the funnel snapshot: fresh/actionable/surfaced are
+    digest-time state (cooldown, live quotes, sector cap) and are unrecoverable later --
+    the row is the only record. Sector-cap fixture: 5 financials + 2 software, all
+    confirmed, cap 2/sector + top-5 -> 4 surfaced, 3 on the overflow line."""
+    url = f"sqlite:///{tmp_path / 'funrow.sqlite'}"
+    _seed(url)
+    engine = get_engine(url)
+    with Session(engine) as s:
+        fins = ["JPM", "GS", "MS", "BAC", "C"]
+        s.add_all([_rev_sig(t, i + 1, "confirmed") for i, t in enumerate(fins)])
+        s.add_all([_rev_sig("CRM", 6, "confirmed"), _rev_sig("WDAY", 7, "confirmed")])
+        s.add_all([Universe(ticker=t, sector="Financials") for t in fins])
+        s.add_all([Universe(ticker=t, sector="Information Technology")
+                   for t in ("CRM", "WDAY")])
+        s.commit()
+    res = run.send_digest(kind="daily", db_url=url, run_date=RUN, to="me@example.com",
+                          pdf_dir=tmp_path / "digests", anthropic_client=_FakeClient(),
+                          smtp_send=lambda **k: None,
+                          latest_closes_fn=lambda tickers: {})  # fail-open: nothing dropped
+    assert res.sent is True and res.n_reversals == 4
+    with Session(get_engine(url)) as s:
+        rows = list(s.scalars(select(ReversalFunnel)))
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.run_date == RUN  # the screen run's date, not "today"
+    assert (row.detected, row.confirmed, row.fresh, row.actionable,
+            row.surfaced) == (7, 7, 7, 7, 4)
+    assert row.overflow_tickers == "MS,BAC,C"  # cleared every bar, lost the top-5/sector race
+    assert row.pool_n == 20
+    assert row.confirmed_only is True and row.premium_only is False
+    assert row.already_ran_checked is True  # latest_closes_fn was injected
+    assert row.created_at is not None
+
+
+def test_weekly_digest_persists_no_reversal_funnel(tmp_path):
+    """The funnel block is daily-only: a weekly digest must not write a funnel row."""
+    url = f"sqlite:///{tmp_path / 'funwk.sqlite'}"
+    _seed(url)
+    res = run.send_digest(kind="weekly", db_url=url, run_date=RUN, to="me@example.com",
+                          pdf_dir=tmp_path / "digests", anthropic_client=_FakeClient(),
+                          smtp_send=lambda **k: None)
+    assert res.sent is True
+    with Session(get_engine(url)) as s:
+        assert list(s.scalars(select(ReversalFunnel))) == []
 
 
 def test_send_digest_keeps_picks_when_quotes_unavailable(tmp_path):

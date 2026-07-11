@@ -20,6 +20,7 @@ from swing_screener.db.models import (
     ExecutionLog,
     ExitEvent,
     PaperTrade,
+    ReversalFunnel,
     Signal,
     Trade,
     Universe,
@@ -110,6 +111,8 @@ def test_representative_string_lengths() -> None:
     assert _len(EmailLog.__table__.c.kind) == 32
     # arm is indexed, so it must stay bounded (Azure SQL can't index NVARCHAR(max))
     assert _len(PaperTrade.__table__.c.arm) == 32
+    # the funnel overflow line is bounded too (the write site truncates to match)
+    assert _len(ReversalFunnel.__table__.c.overflow_tickers) == 512
 
 
 def test_email_log_has_alert_key_length_64() -> None:

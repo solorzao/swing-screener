@@ -1,9 +1,10 @@
 from datetime import date
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from swing_screener.db import repo
-from swing_screener.db.models import PaperTrade, Signal, Universe
+from swing_screener.db.models import PaperTrade, ReversalFunnel, Signal, Universe
 from swing_screener.db.session import get_engine
 
 
@@ -257,6 +258,50 @@ def test_requeue_stale_running():
         fresh_row = repo.get_analysis_request(s, fresh.id)
         assert fresh_row.status == "running"
         assert fresh_row.started_at == datetime(2026, 6, 16, 12, 30)
+
+
+def _save_funnel(s: Session, run_date: date, **overrides: object) -> None:
+    kwargs: dict[str, object] = dict(
+        detected=31, confirmed=12, fresh=9, actionable=7, surfaced=5,
+        overflow_tickers="CRM,WDAY", pool_n=20, confirmed_only=True,
+        premium_only=False, already_ran_checked=True)
+    kwargs.update(overrides)
+    repo.save_reversal_funnel(s, run_date=run_date, **kwargs)  # type: ignore[arg-type]
+
+
+def test_save_reversal_funnel_idempotent_per_run_date() -> None:
+    """A forced digest resend re-executes the funnel write for the same run_date: one
+    row must remain, carrying the SECOND write's values (delete-then-insert, mirroring
+    the EmailLog dedup posture)."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        _save_funnel(s, date(2026, 7, 9))
+        _save_funnel(s, date(2026, 7, 9), detected=30, confirmed=11, fresh=8,
+                     actionable=6, surfaced=4, overflow_tickers="",
+                     already_ran_checked=False)
+        rows = list(s.scalars(select(ReversalFunnel)))
+        assert len(rows) == 1
+        row = rows[0]
+        assert (row.detected, row.confirmed, row.fresh, row.actionable,
+                row.surfaced) == (30, 11, 8, 6, 4)
+        assert row.overflow_tickers == ""
+        assert row.pool_n == 20
+        assert row.confirmed_only is True
+        assert row.premium_only is False
+        assert row.already_ran_checked is False
+        assert row.created_at is not None  # stamped at save time
+
+
+def test_latest_reversal_funnel_returns_newest() -> None:
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        assert repo.latest_reversal_funnel(s) is None  # empty table
+        _save_funnel(s, date(2026, 7, 8), detected=5)
+        _save_funnel(s, date(2026, 7, 9), detected=9)
+        got = repo.latest_reversal_funnel(s)
+        assert got is not None
+        assert got.run_date == date(2026, 7, 9)  # newest run_date wins
+        assert got.detected == 9
 
 
 def test_complete_and_fail():
