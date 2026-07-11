@@ -1,6 +1,6 @@
 """Corpus pinning: replay evidence must name a reproducible corpus.
 
-``_load_cached_daily`` defaulted to "newest parquet per ticker", which silently mixes
+``load_cached_daily`` defaulted to "newest parquet per ticker", which silently mixes
 cache vintages as the cache refreshes -- the 2026-07-03 refresh moved prior results and
 no edge-file claim could name its corpus. ``as_of`` pins by fetch date; ``corpus_stamp``
 reports the vintage histogram and warns on a mixed corpus.
@@ -11,8 +11,8 @@ import logging
 import pandas as pd
 
 from swing_screener.pipeline.replay import (
-    _cached_daily_file,
-    _load_cached_daily,
+    cached_daily_file,
+    load_cached_daily,
     corpus_stamp,
 )
 
@@ -29,13 +29,13 @@ def test_as_of_pins_the_vintage(tmp_path):
     _write(tmp_path, "AMD_20260601", rows=3)
     _write(tmp_path, "AMD_20260703", rows=5)
 
-    assert _cached_daily_file("AMD", tmp_path).name == "AMD_20260703.parquet"  # newest
-    assert _cached_daily_file("AMD", tmp_path, as_of="20260615").name == "AMD_20260601.parquet"
-    assert _cached_daily_file("AMD", tmp_path, as_of="20260531") is None  # nothing that old
+    assert cached_daily_file("AMD", tmp_path).name == "AMD_20260703.parquet"  # newest
+    assert cached_daily_file("AMD", tmp_path, as_of="20260615").name == "AMD_20260601.parquet"
+    assert cached_daily_file("AMD", tmp_path, as_of="20260531") is None  # nothing that old
 
-    assert len(_load_cached_daily("AMD", tmp_path)) == 5
-    assert len(_load_cached_daily("AMD", tmp_path, as_of="20260615")) == 3
-    assert _load_cached_daily("AMD", tmp_path, as_of="20260531") is None
+    assert len(load_cached_daily("AMD", tmp_path)) == 5
+    assert len(load_cached_daily("AMD", tmp_path, as_of="20260615")) == 3
+    assert load_cached_daily("AMD", tmp_path, as_of="20260531") is None
 
 
 def test_corpus_stamp_reports_vintages_and_warns_on_a_mixed_corpus(tmp_path, caplog):

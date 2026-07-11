@@ -23,7 +23,7 @@ from swing_screener.analytics.performance import (
     summarize,
 )
 from swing_screener.config import StrategyConfig
-from swing_screener.pipeline.replay import _load_cached_daily
+from swing_screener.pipeline.replay import load_cached_daily
 from swing_screener.signals.frame import build_frame
 from swing_screener.signals.reversal import detect_reversal
 
@@ -49,7 +49,7 @@ def compute_features(signals: pd.DataFrame) -> pd.DataFrame:
     """One row per (ticker, opened_date): the detector context at the trigger bar."""
     rows = []
     for ticker, grp in signals.groupby("ticker"):
-        raw = _load_cached_daily(ticker, CACHE)
+        raw = load_cached_daily(ticker, CACHE)
         if raw is None:
             continue
         f = build_frame(raw, CFG)

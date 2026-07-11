@@ -232,7 +232,7 @@ def format_leaderboard(by_variant: Mapping[str, PerformanceSummary]) -> str:
     return "\n".join(lines)
 
 
-def _cached_daily_file(ticker: str, cache_dir: Path, as_of: str | None = None) -> Path | None:
+def cached_daily_file(ticker: str, cache_dir: Path, as_of: str | None = None) -> Path | None:
     """The cached daily parquet a replay should read for ``ticker``.
 
     Default: the most recent snapshot (``<cache>/1d/<T>_<date>.parquet``). With ``as_of``
@@ -246,11 +246,11 @@ def _cached_daily_file(ticker: str, cache_dir: Path, as_of: str | None = None) -
     return files[-1] if files else None
 
 
-def _load_cached_daily(
+def load_cached_daily(
     ticker: str, cache_dir: Path, as_of: str | None = None
 ) -> pd.DataFrame | None:
-    """Cached daily OHLCV for one ticker (see ``_cached_daily_file`` for vintage choice)."""
-    f = _cached_daily_file(ticker, cache_dir, as_of)
+    """Cached daily OHLCV for one ticker (see ``cached_daily_file`` for vintage choice)."""
+    f = cached_daily_file(ticker, cache_dir, as_of)
     return pd.read_parquet(f) if f is not None else None
 
 
@@ -264,7 +264,7 @@ def corpus_stamp(cache_dir: Path, tickers: list[str], as_of: str | None = None) 
     vintages: dict[str, int] = {}
     resolved = 0
     for t in tickers:
-        f = _cached_daily_file(t, cache_dir, as_of)
+        f = cached_daily_file(t, cache_dir, as_of)
         if f is None:
             continue
         resolved += 1
@@ -293,7 +293,7 @@ def main() -> None:
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
     frames: dict[str, pd.DataFrame] = {}
     for ticker in tickers:
-        df = _load_cached_daily(ticker, args.cache_dir, args.as_of)
+        df = load_cached_daily(ticker, args.cache_dir, args.as_of)
         if df is None:
             log.warning("no cached daily data for %s; skipping", ticker)
             continue

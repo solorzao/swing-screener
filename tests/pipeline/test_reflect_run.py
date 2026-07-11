@@ -376,6 +376,10 @@ def test_main_smoke(monkeypatch, tmp_path):
     # The glue wired the replay frames + edge_dir through to run_reflection.
     assert captured["edge_dir"] == edge_dir
     assert "S" in captured["replay_frames"]
+    # Unpinned runs STILL thread a corpus stamp -- it records the actual (possibly
+    # mixed) cache vintages, which is the honest provenance for an unpinned regen.
+    assert captured["corpus_id"].startswith("corpus:")
+    assert captured["verdicts_only"] is False
 
 
 def test_run_reflection_force_reflects_all_play_types_even_when_not_due(tmp_path):
@@ -392,6 +396,108 @@ def test_run_reflection_force_reflects_all_play_types_even_when_not_due(tmp_path
             edge_dir=edge_dir, client=client, today="2026-07-03", force=True,
         )
     assert set(reflected) == {"continuation", "reversal"}
+
+
+def test_run_reflection_verdicts_only_writes_sidecars_and_nothing_else(tmp_path: Path):
+    """--verdicts-only is the stamping-regen path: it grades + rewrites the SIDECARS for
+    EVERY play type (the due-gate would no-op a regen) and touches NOTHING else -- the
+    Opus-authored md stays byte-identical (a template rewrite would destroy the prose; a
+    re-author would burn Opus spend), the drafter is never consulted (a rewrite would
+    clobber queued proposals), and the frontmatter counter is untouched."""
+    import json
+
+    edge_dir = _seed_edge_dir(tmp_path)
+    proposed_before = '[{"hand": "written"}]'
+    (edge_dir / "continuation.proposed.json").write_text(proposed_before, encoding="utf-8")
+    md_before = {pt: (edge_dir / f"{pt}.md").read_text(encoding="utf-8")
+                 for pt in ("continuation", "reversal")}
+
+    def _drafter(play_type, hunches, base):  # would queue a variant if ever consulted
+        return [{"delta": {"max_extension_atr": 1.5}, "rationale": "x", "hunch_ref": "h"}]
+
+    with _mem_session() as session:
+        _seed(session, [_closed_trade("T0", 1.0, "continuation")])  # far below the trigger
+        assert due_play_types(session, edge_dir=edge_dir) == []
+        reflected = run_reflection(
+            session, replay_frames={"S": _synth()}, spy_daily=None, edge_dir=edge_dir,
+            client=_FakeClient("MUST NOT APPEAR"), today="2026-07-11", drafter=_drafter,
+            corpus_id="corpus: 1/1 tickers · vintage(s) 20260703:1 · pinned as-of 20260703",
+            verdicts_only=True,
+        )
+
+    # implies force-all-play-types: both reflected despite neither being due.
+    assert set(reflected) == {"continuation", "reversal"}
+    for pt in ("continuation", "reversal"):
+        # the sidecar is (re)written and carries the threaded corpus id on replay rows...
+        rows = json.loads((edge_dir / f"{pt}.verdicts.json").read_text(encoding="utf-8"))
+        assert rows
+        for r in rows:
+            if r["source"] == "replay":
+                assert r["cost_level"] == "0.05"
+                assert r["corpus_id"].endswith("pinned as-of 20260703")
+            elif r["source"] == "none":
+                assert r["cost_level"] is None and r["corpus_id"] is None
+        # ...while the md (prose + frontmatter counter) is byte-for-byte untouched.
+        assert (edge_dir / f"{pt}.md").read_text(encoding="utf-8") == md_before[pt]
+    # the queued-proposals store is untouched (drafting skipped entirely).
+    assert (edge_dir / "continuation.proposed.json").read_text(
+        encoding="utf-8") == proposed_before
+    assert not (edge_dir / "reversal.proposed.json").exists()
+
+
+def _write_vintage_parquet(cache_dir: Path, name: str, rows: int) -> None:
+    """A tiny ``<cache>/1d/<TICKER>_<YYYYMMDD>.parquet`` snapshot (the pinning layout)."""
+    idx = pd.date_range("2024-01-01", periods=rows, freq="1D")
+    df = pd.DataFrame({"open": [1.0] * rows, "high": [2.0] * rows, "low": [0.5] * rows,
+                       "close": [1.5] * rows, "volume": [100.0] * rows}, index=idx)
+    (cache_dir / "1d").mkdir(parents=True, exist_ok=True)
+    df.to_parquet(cache_dir / "1d" / f"{name}.parquet")
+
+
+def test_main_as_of_loads_pinned_cache_only_and_threads_corpus_id(monkeypatch, tmp_path: Path):
+    """--as-of is the pinned-loading path: frames come from the cached snapshot at/before
+    the pin (the OLDER vintage here), NEVER the network, and the corpus stamp naming the
+    pin is threaded through to run_reflection as corpus_id."""
+    import swing_screener.pipeline.reflect as reflect
+
+    cache = tmp_path / ".cache"
+    _write_vintage_parquet(cache, "AMD_20260601", rows=3)   # the pinned (older) vintage
+    _write_vintage_parquet(cache, "AMD_20260703", rows=5)   # newer -- must NOT be picked
+    edge_dir = _seed_edge_dir(tmp_path)
+
+    engine = get_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(reflect, "get_engine", lambda url: engine)
+
+    def _no_network(*a, **k):
+        raise AssertionError("a pinned regen must never fetch from the network")
+
+    monkeypatch.setattr(reflect, "fetch_daily", _no_network)
+    monkeypatch.setattr(reflect, "fetch_bars", _no_network)
+
+    captured: dict = {}
+
+    def _fake_run(session, **kw):
+        captured.update(kw)
+        return []
+
+    monkeypatch.setattr(reflect, "run_reflection", _fake_run)
+    monkeypatch.setattr("sys.argv", [
+        "reflect", "--tickers", "AMD,MISSING", "--edge-dir", str(edge_dir),
+        "--cache-dir", str(cache), "--as-of", "20260615", "--verdicts-only",
+    ])
+    reflect.main()
+
+    # AMD resolved to the pinned (older, 3-row) vintage; MISSING skipped with a warning.
+    assert set(captured["replay_frames"]) == {"AMD"}
+    assert len(captured["replay_frames"]["AMD"]) == 3
+    assert captured["spy_daily"] is None  # no cached SPY at the pin -> none, not a fetch
+    # the corpus stamp records the pin and is threaded as corpus_id.
+    assert "pinned as-of 20260615" in captured["corpus_id"]
+    assert "1/2 tickers" in captured["corpus_id"]
+    # --verdicts-only reaches run_reflection, and the drafter is withheld outright.
+    assert captured["verdicts_only"] is True
+    assert captured["drafter"] is None
 
 
 def test_reflection_grades_only_the_would_surface_facet(tmp_path):

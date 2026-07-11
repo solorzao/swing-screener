@@ -33,6 +33,7 @@ from swing_screener.analytics.performance import (
     _bucket_trades_by_score,
     _clustered_ci_low,
     _score_labels,
+    cost_level_for,
     score_stamped,
     summarize,
 )
@@ -50,7 +51,7 @@ from swing_screener.pipeline.proposed import (
     proposed_to_json,
     to_config,
 )
-from swing_screener.pipeline.replay import replay_book
+from swing_screener.pipeline.replay import corpus_stamp, load_cached_daily, replay_book
 from swing_screener.pipeline.variants import DEFAULT_VARIANT
 from swing_screener.settings import load_settings, resolve_edge_dir
 
@@ -94,7 +95,12 @@ class Verdict:
     """One graded (dimension, bucket) cell for a play type. ``ci_low`` is the
     multiple-comparisons-corrected effective lower bound on whichever ``source`` decided
     the tier; the verdict is emitted even for hunches so the edge file can show what's
-    being watched."""
+    being watched.
+
+    ``cost_level`` / ``corpus_id`` are PROVENANCE stamps applied post-``grade`` by
+    ``_stamp_provenance`` (``grade`` itself stays pure and emits the defaults). They
+    MUST default to ``None``: ``load_verdicts`` is a strict ``Verdict(**d)`` and the
+    committed pre-Phase-3 sidecars lack the keys."""
 
     play_type: str
     dimension: str  # "market_trend" | "volatility_tier" | "score"
@@ -105,6 +111,8 @@ class Verdict:
     ci_low: float  # MC-corrected effective lower bound on the deciding source
     n_clusters: int
     source: str  # "forward" | "replay" | "none"
+    cost_level: str | None = None  # slippage level the deciding book's R provably carries
+    corpus_id: str | None = None  # replay corpus stamp (replay-sourced verdicts only)
 
 
 class _BucketBound(NamedTuple):
@@ -231,9 +239,10 @@ def grade(
 # verdicts; it MUST read a code-owned artifact, never parse the LLM-authored ``edge/<pt>.md``
 # prose (which the model rewrites). ``run_reflection`` therefore also emits
 # ``edge/<pt>.verdicts.json`` -- a LOSSLESS round-trip of exactly the ``Verdict`` rows
-# ``grade`` produced, written deterministically regardless of whether the LLM authoring
-# succeeded. (``Verdict`` is a flat frozen dataclass of JSON-native scalars, so
-# ``asdict`` / ``Verdict(**d)`` round-trips every field.)
+# ``grade`` produced (provenance-stamped post-grade by ``_stamp_provenance``), written
+# deterministically regardless of whether the LLM authoring succeeded. (``Verdict`` is a
+# flat frozen dataclass of JSON-native scalars, so ``asdict`` / ``Verdict(**d)``
+# round-trips every field; the Phase-3 stamps default so pre-stamp sidecars still load.)
 # ===========================================================================
 
 
@@ -962,6 +971,41 @@ _REPLAY_HAIRCUT_ATR = 0.05
 _EDGE_DIR = Path("edge")
 
 
+def _stamp_provenance(
+    verdicts: list[Verdict],
+    forward_gold: list[PaperTrade],
+    corpus_id: str | None,
+) -> list[Verdict]:
+    """Stamp cost/corpus provenance onto graded ``verdicts`` (post-``grade``; the grader
+    itself stays pure). Per ``source``:
+
+      * ``"replay"``  -> ``cost_level`` is the fixed a-priori haircut every replay fill
+        carries (``str(_REPLAY_HAIRCUT_ATR)`` -- the same ``"0.05"`` glyph the cockpit
+        renders, never an ``atr_``-prefixed variant), ``corpus_id`` names the replay
+        corpus (``None`` when unknown -- the stamp records reality, it never invents it).
+      * ``"forward"`` -> ``cost_level`` is what the GOLD forward cohort provably realized
+        (``cost_level_for`` -- ``None`` on a mixed gross/net book), ``corpus_id`` is
+        ``None``: a forward book has no replay corpus, so stamping one is a category
+        error.
+      * ``"none"``    -> BOTH ``None``. A hunch cell may DISPLAY numbers from whichever
+        book had data, but nothing was confirmed -- it measured nothing, and stamping a
+        non-measurement would claim provenance it does not have. (This deliberately
+        refines "follow the displayed book" down to the honest floor.)
+    """
+    forward_level = cost_level_for(forward_gold)
+    stamped: list[Verdict] = []
+    for v in verdicts:
+        if v.source == "replay":
+            stamped.append(replace(
+                v, cost_level=str(_REPLAY_HAIRCUT_ATR), corpus_id=corpus_id,
+            ))
+        elif v.source == "forward":
+            stamped.append(replace(v, cost_level=forward_level, corpus_id=None))
+        else:
+            stamped.append(replace(v, cost_level=None, corpus_id=None))
+    return stamped
+
+
 def _edge_text(edge_dir: Path, play_type: str) -> str:
     """The current edge file's text, or "" if it does not exist."""
     path = edge_dir / f"{play_type}.md"
@@ -1004,6 +1048,8 @@ def run_reflection(
     today: str | None = None,
     drafter: DrafterFn | None = None,
     force: bool = False,
+    corpus_id: str | None = None,
+    verdicts_only: bool = False,
 ) -> list[str]:
     """Reflect every DUE play type and rewrite its ``edge/<pt>.md``; return the list reflected.
 
@@ -1011,6 +1057,19 @@ def run_reflection(
     the manual re-grade path for when the graded facets themselves change (a score
     definition change, a family edit) and waiting weeks for the counter would leave
     stale verdicts steering conviction.
+
+    ``corpus_id`` is the ``replay.corpus_stamp`` line for ``replay_frames``' cache
+    vintages; it is stamped (with each verdict's cost level) onto the graded verdicts
+    post-``grade`` via ``_stamp_provenance``, so the sidecar names its evidence.
+
+    ``verdicts_only=True`` is the SIDECAR-ONLY regen (e.g. re-stamping provenance onto
+    existing verdicts): it implies force-all-play-types (the due-gate would no-op a
+    regen) and, per play type, grades + rewrites ``edge/<pt>.verdicts.json`` and NOTHING
+    else -- no md authoring (a deterministic-template rewrite would destroy the Opus
+    prose; with an API key present a plain ``force`` would instead burn an unnecessary
+    Opus re-author -- either way wrong for a stamping regen), no drafting (a rewrite
+    would clobber queued proposals), and no frontmatter counter reset (the md is left
+    byte-untouched).
 
     For each due play type: load the live forward book (arm=BASELINE, variant=DEFAULT_VARIANT);
     build the screened tier by replaying ``replay_frames`` on the 1d timeframe with the fixed
@@ -1030,7 +1089,10 @@ def run_reflection(
     """
     cfg = replace(StrategyConfig(), fill_slippage_atr=_REPLAY_HAIRCUT_ATR)
     base = StrategyConfig()
-    due = list(_PLAY_TYPES) if force else due_play_types(session, edge_dir=edge_dir)
+    # verdicts_only implies force-all: a sidecar regen re-grades what already exists, so
+    # the "enough NEW closes" due-gate would simply no-op it.
+    all_types = force or verdicts_only
+    due = list(_PLAY_TYPES) if all_types else due_play_types(session, edge_dir=edge_dir)
     if not due:
         return []
 
@@ -1057,13 +1119,25 @@ def run_reflection(
         # filter to restore the old behavior).
         forward_gold = [t for t in forward if t.would_surface]
         replay_pt = [t for t in replay_all if t.play_type == pt]
-        verdicts = grade(pt, forward_gold, replay_pt)
+        # grade() stays pure; the provenance stamps (cost level + replay corpus id) are
+        # applied post-grade so the sidecar names the evidence behind every tier.
+        verdicts = _stamp_provenance(
+            grade(pt, forward_gold, replay_pt), forward_gold, corpus_id,
+        )
 
         # Emit the machine-readable sidecar FIRST -- it is deterministic + code-owned, so it
         # is written whether or not the (optional, fallible) LLM authoring below succeeds.
         (edge_dir / f"{pt}.verdicts.json").write_text(
             verdicts_to_json(verdicts), encoding="utf-8"
         )
+
+        if verdicts_only:
+            # The sidecar-only carve: everything below this line is the md/drafting write
+            # path (authoring, frontmatter counter, proposals) -- a stamping regen must
+            # leave all of it byte-untouched.
+            log.info("reflected %s (verdicts-only): sidecar rewritten, md/proposals "
+                     "untouched", pt)
+            continue
 
         # Code-owned analyst-calibration note: summarize this play type's SCORED calls
         # so the playbook records whether the analyst's judgment is proving out. Like the
@@ -1113,21 +1187,49 @@ def main() -> None:
                         help="reflect every play type now, ignoring the re-arm counter "
                              "(the manual re-grade path after a graded facet changes, "
                              "e.g. a score-definition change)")
+    parser.add_argument("--as-of", default=None, metavar="YYYYMMDD",
+                        help="pin the replay corpus to cache snapshots at/before this "
+                             "fetch date (reproducible evidence; cache-only -- never "
+                             "fetches); default = the live fetch seam (newest, possibly "
+                             "mixed vintages -- the corpus stamp records whichever)")
+    parser.add_argument("--verdicts-only", action="store_true",
+                        help="grade + rewrite the verdicts.json sidecars ONLY (implies "
+                             "force-all): no md authoring, no drafting, no frontmatter "
+                             "reset -- the stamping-regen path")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
 
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
-    replay_frames = fetch_daily(tickers, args.cache_dir)
+    if args.as_of is not None:
+        # Pinned loading: cache-only (a network fetch would write a NEW vintage and
+        # defeat the pin). A ticker with no snapshot at/before the pin is skipped.
+        replay_frames: dict[str, pd.DataFrame] = {}
+        for ticker in tickers:
+            df = load_cached_daily(ticker, args.cache_dir, args.as_of)
+            if df is None:
+                log.warning("no cached daily data for %s at/before %s; skipping",
+                            ticker, args.as_of)
+                continue
+            replay_frames[ticker] = df
+        spy_daily = load_cached_daily("SPY", args.cache_dir, args.as_of)
+    else:
+        replay_frames = fetch_daily(tickers, args.cache_dir)
+        spy_daily = fetch_bars("SPY", "1d", cache_dir=args.cache_dir)
     if not replay_frames:
         log.warning("no replay data fetched for %s; screened tier will be empty", tickers)
-    spy_daily = fetch_bars("SPY", "1d", cache_dir=args.cache_dir)
+    # The stamp is computed in BOTH modes, AFTER loading: --as-of changes what is LOADED;
+    # the stamp always records the corpus reality (a pinned single vintage, or the actual
+    # -- possibly mixed -- vintages an unpinned run graded against).
+    corpus_id = corpus_stamp(args.cache_dir, tickers, args.as_of)
+    log.info("%s", corpus_id)
 
     engine = get_engine(settings.db_url)
     with Session(engine) as session:
         reflected = run_reflection(
             session, replay_frames=replay_frames, spy_daily=spy_daily,
             edge_dir=resolve_edge_dir(args.edge_dir), today=date.today().isoformat(),
-            drafter=_opus_drafter(), force=args.force,
+            drafter=None if args.verdicts_only else _opus_drafter(), force=args.force,
+            corpus_id=corpus_id, verdicts_only=args.verdicts_only,
         )
     if reflected:
         log.info("reflected play types: %s", ", ".join(reflected))
