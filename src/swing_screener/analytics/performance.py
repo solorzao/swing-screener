@@ -455,15 +455,14 @@ def _rank_labels(edges: Sequence[int]) -> list[str]:
     return labels
 
 
-def rank_bucket(
+def _bucket_trades_by_rank(
     trades: Iterable[PaperTrade], edges: Sequence[int]
-) -> dict[str, PerformanceSummary]:
-    """Bucket trades by ``rank`` into ranges defined by ``edges`` and summarize each.
-
-    Buckets are inclusive ranges ``1..edges[0]``, ``edges[0]+1..edges[1]``, ...,
-    with a final open-ended ``edges[-1]+1 +`` bucket. Every bucket label appears
-    in the result even when it has no trades.
-    """
+) -> dict[str, list[PaperTrade]]:
+    """Group trades into rank buckets (inclusive ranges -- see ``rank_bucket``). The
+    single source of the rank-bucket MEMBERSHIP rule, shared by ``rank_bucket`` (which
+    summarizes each group) and the cockpit API (which needs the raw trade lists to
+    stamp each bucket's cost level), mirroring ``_bucket_trades_by_score``. Every
+    label appears even when its group is empty."""
     labels = _rank_labels(edges)
     groups: dict[str, list[PaperTrade]] = {label: [] for label in labels}
     for t in trades:
@@ -473,7 +472,22 @@ def rank_bucket(
                 idx = i
                 break
         groups[labels[idx]].append(t)
-    return {label: summarize(groups[label]) for label in labels}
+    return groups
+
+
+def rank_bucket(
+    trades: Iterable[PaperTrade], edges: Sequence[int]
+) -> dict[str, PerformanceSummary]:
+    """Bucket trades by ``rank`` into ranges defined by ``edges`` and summarize each.
+
+    Buckets are inclusive ranges ``1..edges[0]``, ``edges[0]+1..edges[1]``, ...,
+    with a final open-ended ``edges[-1]+1 +`` bucket. Every bucket label appears
+    in the result even when it has no trades.
+    """
+    return {
+        label: summarize(group)
+        for label, group in _bucket_trades_by_rank(trades, edges).items()
+    }
 
 
 def _score_labels(edges: Sequence[float]) -> list[str]:
