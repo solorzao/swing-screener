@@ -602,6 +602,9 @@ thin; an infinite stream is miserable to assert against):
 
 `_change_token(engine_factory) -> dict[str, str]`: short-lived Session per call; cheap
 max-watermarks only — `max(Signal.run_date)`, `max(PaperTrade.id)`,
+`max(ExitEvent.id)` (a trade CLOSE is an UPDATE on paper_trades, so the trade-id
+watermark alone misses it — every close path inserts an ExitEvent, which is the
+watermark that catches the Forward Books zone's most important change class),
 `max(EmailLog.sent_at)`, `max(MarketReport.run_date)`, `latest_reversal_funnel`
 run_date, newest `*.verdicts.json` mtime via the existing heartbeat helper. Async
 endpoint:
