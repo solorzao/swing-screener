@@ -647,8 +647,11 @@ def _default_quote_fetch() -> Callable[[list[str]], dict[str, float]]:
 def _default_broker_factory() -> BrokerClient | None:
     """The real broker resolution -- the same ``build_broker(load_settings())``
     one-liner every pipeline entrypoint uses. Settings are read at CALL time (each
-    snapshot refresh; they are cheap env reads). No broker configured -> None,
-    which ``BrokerSnapshot`` caches as a None snapshot for its TTL."""
+    snapshot refresh; they are cheap env reads) BY CHOICE, not accident: broker /
+    credential state follows the entrypoints' resolve-at-use pattern, unlike
+    ``_default_quote_fetch``'s cache_dir, which is process-stable and bound once.
+    No broker configured -> None, which ``BrokerSnapshot`` caches as a None
+    snapshot for its TTL."""
     return build_broker(load_settings())
 
 

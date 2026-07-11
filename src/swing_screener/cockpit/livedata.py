@@ -6,9 +6,12 @@ Two facts shape everything here:
   requests concurrently (the exact race ``api.py``'s engine cache documents), so
   the invariant is: the 60s poll must never pay a cold yfinance fetch twice.
   Both caches are single-flight -- ONE ``threading.Lock`` held ACROSS the
-  upstream call. Blocking concurrent requests is the deliberate choice: a few
-  hundred ms of serialization beats a duplicate yfinance fetch or a second
-  round-trip to the venue.
+  upstream call. Blocking concurrent requests is the deliberate choice, and the
+  worst case is honest: ``latest_closes`` walks its tickers SERIALLY with
+  per-ticker retry sleeps, so a cold window over a dozen tickers with two dead
+  ones holds the lock for SECONDS -- once per window, bounded by one serial
+  ``latest_closes`` pass over the unknown subset -- and every quote-consuming
+  endpoint queues behind it. That still beats paying the same fetch twice.
 * ``data.fetch`` does NOT negative-cache upstream failures: a dead/delisted
   ticker costs ~1.5-2.5s of retry sleeps on EVERY ``latest_closes`` call. So the
   quote cache records upstream misses in a known-missing set and refuses to
@@ -21,7 +24,8 @@ cache; anything else triggers one upstream call for exactly the unknown subset,
 merged in. On expiry the WHOLE cache resets, wholesale -- the window is anchored
 at its first contributing fetch, so no price is ever served staler than one TTL.
 ``as_of`` is the wall-clock instant of the last upstream call that contributed
-to the window.
+to the window; individual prices may predate ``as_of`` by up to one TTL -- it
+timestamps the window's latest contribution, not each price.
 
 :class:`BrokerSnapshot` is the same posture around the broker: the factory
 answering None (no broker configured) and ANY broker exception both degrade to a
@@ -49,14 +53,23 @@ from swing_screener.pipeline.broker import BrokerClient, BrokerOrder, BrokerPosi
 class QuoteResult:
     """One answered quote request: the requested tickers' latest closes (misses
     ABSENT from the dict, never None -- mirroring ``data.quotes.latest_closes``)
-    plus the UTC instant of the last upstream call that contributed."""
+    plus the UTC instant of the last upstream call that contributed. Individual
+    prices may predate ``as_of`` by up to one TTL: it timestamps the window's
+    latest contribution, not each price -- render it as such."""
 
     prices: dict[str, float]
     as_of: datetime
 
 
 class QuoteCache:
-    """A single-flight TTL cache over a ``latest_closes``-shaped fetch fn (module doc)."""
+    """A single-flight TTL cache over a ``latest_closes``-shaped fetch fn (module doc).
+
+    ``latest_closes``-shaped includes the failure posture: the fetch NEVER raises
+    -- failures are simply absent from its dict (``fetch_bars`` swallows per-ticker
+    errors). Nothing here catches, and that is correct ONLY under that contract: a
+    seam-provided fetch that raises propagates to the caller (an endpoint 500),
+    with cache state unchanged -- the merge happens after the fetch returns, and
+    the ``with`` block releases the lock on the way out."""
 
     def __init__(
         self,

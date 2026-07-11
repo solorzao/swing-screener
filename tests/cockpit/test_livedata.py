@@ -10,6 +10,7 @@ database: ``fetch_fn`` / ``broker_factory`` are the seams, and the injectable
 
 import threading
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from swing_screener.cockpit.api import create_app
@@ -122,6 +123,17 @@ def test_as_of_is_the_last_contributing_fetch() -> None:
     assert merged.as_of >= first.as_of  # a contributing fetch re-stamps
 
 
+def test_empty_request_on_a_cold_cache_stamps_now_and_never_fetches() -> None:
+    """The documented degenerate case: an all-cached-nothing get on a cold cache
+    stamps ``as_of = now`` (nothing cached means nothing stale) and calls nothing."""
+    fetch = _FetchRecorder({})
+    cache = QuoteCache(fetch, ttl_s=_TTL, clock=_Clock())
+    before = datetime.now(UTC)
+    got = cache.get([])
+    assert before <= got.as_of <= datetime.now(UTC)
+    assert got.prices == {} and fetch.calls == []
+
+
 def test_two_threads_racing_an_expired_ttl_fetch_once() -> None:
     """The api.py engine-cache race, replayed: uvicorn runs sync endpoints on a
     threadpool and the frontend fires its first requests concurrently. The lock is
@@ -230,6 +242,36 @@ def test_snapshot_cached_within_ttl_and_invalidate_busts_it() -> None:
     fresh = snap.get()
     assert fresh is not None
     assert fresh.positions == (BrokerPosition(symbol="AAPL", qty=10, avg_entry_price=150.0),)
+
+
+def test_two_threads_racing_an_expired_broker_ttl_read_once() -> None:
+    """The quote-side barrier race, broker flavor: the lock held across the venue
+    read means two racing gets after expiry cost exactly one factory resolution."""
+    clock = _Clock()
+
+    class _SlowFactory(_CountingFactory):
+        def __call__(self) -> BrokerClient | None:
+            time.sleep(0.05)  # widen the race window: the loser must block, not re-read
+            return super().__call__()
+
+    factory = _SlowFactory(FakeBroker())
+    snap = BrokerSnapshot(factory, ttl_s=60.0, clock=clock)
+    snap.get()  # seed the window
+    clock.now += 60.0  # expire it: both threads see a stale cache
+    barrier = threading.Barrier(2)
+    results: list[Snapshot | None] = []
+
+    def hit() -> None:
+        barrier.wait()
+        results.append(snap.get())
+
+    threads = [threading.Thread(target=hit) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert factory.calls == 2  # the seed + exactly ONE refresh for the race
+    assert all(isinstance(r, Snapshot) for r in results)
 
 
 # -- create_app seams -------------------------------------------------------------
