@@ -163,14 +163,22 @@ def _gh_beat(
 ) -> Heartbeat:
     """One GH-workflow beat. No poller, or a poller answering None (unreachable
     API, no completed run): the explicit UNKNOWN placeholder -- 0/0, 'no contract
-    stated'. CI is the one conclusion-driven beat: a failed latest run reads DOWN
-    however fresh it is -- a red CI lamp signals the conclusion, not staleness --
-    with the conclusion in ``detail``; optimizer/reflection stay purely time-based
-    (their failure mode is 'stopped running', which 7d/3h already catches)."""
-    run = gh_latest(workflow) if gh_latest is not None else None
-    if run is None:
+    stated' -- but ``detail`` says WHICH kind of nothing, so an operator with an
+    expired token is never sent chasing a config problem that doesn't exist. CI
+    is the one conclusion-driven beat: ``conclusion != "success"`` reads DOWN
+    however fresh the run is -- a red CI lamp signals the conclusion, not
+    staleness -- and the inequality deliberately catches timed_out /
+    action_required / cancelled too, so e.g. a manually cancelled run stays red
+    (with the actual conclusion in ``detail``) until the next success;
+    optimizer/reflection stay purely time-based (their failure mode is 'stopped
+    running', which 7d/3h already catches)."""
+    if gh_latest is None:
         return Heartbeat(name=name, state="unknown", last=None, period_s=0, grace_s=0,
                          detail="poller not configured")
+    run = gh_latest(workflow)
+    if run is None:
+        return Heartbeat(name=name, state="unknown", last=None, period_s=0, grace_s=0,
+                         detail="no completed run observed or GitHub unreachable")
     completed_at, conclusion = run
     if name == "GH · CI" and conclusion != "success":
         return Heartbeat(
@@ -187,7 +195,10 @@ def _next_expected(last: datetime) -> datetime:
     ``_MARKET_HOLIDAYS`` -- at the same time-of-day. Holidays are looked up on the
     UTC calendar date: the 23:59 UTC anchor is 18:59/19:59 ET of the SAME calendar
     date, so the UTC date already equals the ET trading date and a tz conversion
-    would buy nothing."""
+    would buy nothing; the same holds for the daily digest's ~16:30 ET sent_at
+    anchor, which lands well before UTC midnight -- a send rescheduled past
+    ~19:00 ET would cross into the next UTC date and shift weekend/holiday skips
+    by a day."""
     last = _as_utc(last)
     d = last.date() + timedelta(days=1)
     while d.weekday() >= 5 or d in _MARKET_HOLIDAYS:
@@ -200,7 +211,10 @@ def _business_period(last: datetime | None) -> timedelta:
     expected one -- 1 day midweek, 3 over a weekend, 4 over a holiday weekend.
     With no run ever there is no anchor to compute from, so fall back to the flat
     72h outer bound (the beat reads UNKNOWN then anyway; the period only states
-    the contract)."""
+    the contract). Known DST wrinkle: the daily digest's ET-scheduled sent_at
+    shifts ~60min in UTC across a transition while grace is 45min, so the Monday
+    after fall-back can read a self-healing false LATE for ~15 minutes once a
+    year (the evening screen is immune -- its anchor is a fixed 23:59 UTC)."""
     if last is None:
         return timedelta(hours=72)
     return _next_expected(last) - _as_utc(last)

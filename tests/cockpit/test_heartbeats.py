@@ -7,7 +7,12 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from swing_screener.cockpit.heartbeats import Heartbeat, beat_state, collect_heartbeats
+from swing_screener.cockpit.heartbeats import (
+    _MARKET_HOLIDAYS,
+    Heartbeat,
+    beat_state,
+    collect_heartbeats,
+)
 from swing_screener.db.models import EmailLog, MarketReport, Signal
 from swing_screener.db.session import get_engine
 
@@ -200,8 +205,11 @@ def test_gh_poller_maps_runs_to_beats(tmp_path: Path) -> None:
 
 
 def test_gh_poller_none_answer_reads_unknown(tmp_path: Path) -> None:
-    """A poller that answers None (API unreachable, no completed run) degrades to
-    the SAME unknown placeholder as no poller at all -- never a stale green."""
+    """A CONFIGURED poller that answers None (API unreachable, expired token, no
+    completed run) degrades to the same unknown STATE and 0/0 shape as no poller
+    at all -- never a stale green -- but ``detail`` must name the right kind of
+    nothing: an operator with an expired token must not be sent chasing a config
+    problem that doesn't exist."""
     engine = get_engine("sqlite:///:memory:")
     with Session(engine) as s:
         beats = {b.name: b for b in collect_heartbeats(
@@ -209,4 +217,13 @@ def test_gh_poller_none_answer_reads_unknown(tmp_path: Path) -> None:
     for name in ("GH · optimizer", "GH · reflection", "GH · CI"):
         assert beats[name].state == "unknown"
         assert beats[name].period_s == 0 and beats[name].grace_s == 0
-        assert beats[name].detail == "poller not configured"
+        assert beats[name].detail == "no completed run observed or GitHub unreachable"
+
+
+def test_holiday_list_covers_the_current_year() -> None:
+    """DELIBERATELY clock-dependent dead-man switch: _MARKET_HOLIDAYS is static by
+    design (2026-2027 seeded), so this test goes red in January 2028 exactly when
+    the list needs its annual refresh -- and the GH · CI beat surfaces that red in
+    the cockpit itself. False lights erode trust in silence; this converts ~10
+    false LATE lamps a year into one failing test."""
+    assert max(d.year for d in _MARKET_HOLIDAYS) >= date.today().year
