@@ -27,7 +27,8 @@ The GEX module lives in this repo as a sibling vertical — **not** a third play
 | Live role | Phase 1 prep/journal/grader; evolve to live engine later |
 | GEX source | Compute in-house (chain snapshot × Black-Scholes gamma × OI), cross-validated against a free public GEX dashboard |
 | P&L model | R-multiples on the underlying (stop/target geometry). Premium tracking deferred; schema carries the columns from day 1 |
-| Universe | SPY + QQQ (index products with liquid chains via free data; SPX needs CBOE — deferred) |
+| Universe | SPY + QQQ default watchlist for the morning plan; **ad-hoc GEX analysis accepts any optionable ticker**, guarded by a chain-liquidity check (SPX needs CBOE — deferred) |
+| Broker import | Robinhood activity-CSV importer → immutable fills → paired round-trips in a separate `robinhood` book, human-confirmed linking to journaled setups |
 
 ## Package layout
 
@@ -45,7 +46,10 @@ src/swing_screener/options/
   journal.py     # OptionSetup lifecycle: create → grade → take/skip → close
   settle.py      # nightly settlement: replay session's completed 5m bars,
                  #   resolve stop/target/EOD-flat, write realized_r
-  run.py         # CLI: `plan` (pre-market), `settle` (post-close), `validate` (GEX cross-check)
+  broker_import.py  # Robinhood activity-CSV parser → BrokerFill rows → FIFO pairing
+                    #   into round-trip trades; setup-link suggestions
+  run.py         # CLI: `plan` (pre-market), `settle` (post-close), `validate` (GEX
+                 #   cross-check), `analyze <ticker>` (ad-hoc map), `import-robinhood <csv>`
 ```
 
 Pure modules (`gex.py`, `bias.py`, `checklist.py`) take dataframes/values in, return dataclasses out — no I/O, matching the repo's pure-engine test convention.
@@ -63,7 +67,8 @@ All lifecycle columns are **DateTime** (equity tables are Date-typed — the map
 
 - **GexSnapshot** — `underlying`, `ts`, `spot`, `call_wall`, `put_wall`, `gamma_flip`, `net_gex`, `regime`, per-strike profile (JSON), `source`. One per underlying per morning (refreshable on demand).
 - **OptionSetup** (the journal row) — `ts`, `underlying`, `direction`, FK→GexSnapshot, `regime`, pivot level + pattern notes, **12 checklist item booleans** + composite grade, entry/stop/target on the underlying, `status` (idea / taken / skipped), free-text notes.
-- **OptionPaperTrade** — FK→OptionSetup, `opened_at`/`closed_at` (DateTime), entry/stop/target, `exit_reason` (stop / target / eod_flat / manual), `realized_r`, `hold_minutes`. **Live-ready nullable columns from day 1:** `occ_symbol` (String(24) — OCC symbols are 21 chars), `strike`, `expiry`, `right`, `contracts`, `entry_premium`, `exit_premium`.
+- **OptionPaperTrade** — FK→OptionSetup, `opened_at`/`closed_at` (DateTime), entry/stop/target, `exit_reason` (stop / target / eod_flat / manual / expired), `realized_r`, `hold_minutes`. **Live-ready nullable columns from day 1:** `occ_symbol` (String(24) — OCC symbols are 21 chars), `strike`, `expiry`, `right`, `contracts`, `entry_premium`, `exit_premium`. Also serves imported broker trades (see Robinhood import): `account` distinguishes the books (`options-lab` paper vs `robinhood`), and imported rows carry a nullable FK→OptionSetup that is only set when Oliver confirms a link.
+- **BrokerFill** — one immutable row per imported CSV transaction: `import_hash` (unique — dedup key over date/instrument/code/qty/price), `activity_ts`, `underlying`, `occ_symbol`, `trans_code` (BTO/STC/STO/BTC/expiration/assignment), `quantity`, `price`, `amount`, `raw` (JSON of the source line), `source='robinhood'`. Round-trip pairing writes `OptionPaperTrade(account='robinhood')` rows referencing their fills; fills stay untouched so pairing is re-runnable.
 
 Notes: the shared Alembic head means these revisions will also apply to Azure at the next equity job startup — harmless (empty tables), but sequence revisions carefully. The cockpit change-token gets watermarks for the new tables (the ExitEvent.id lesson); Phase-1 write frequency (morning plan + a handful of journal rows + nightly settle) is low enough for the shared wake channel. Phase 2's live engine gets its **own** SSE channel — the shared wake counter fans out to every panel and must not churn intraday.
 
@@ -75,18 +80,32 @@ Notes: the shared Alembic head means these revisions will also apply to Azure at
 - `run.py validate` prints our levels alongside instructions to eyeball a free public dashboard; a weekly manual cross-check is the calibration ritual (scraping third-party dashboards is brittle — keep validation semi-manual).
 - OI updates once daily pre-market, so a morning-static map is honest; intraday GEX drift is a Phase-2 (paid-data) concern.
 
+### Any-ticker analysis + liquidity guard
+
+The GEX pipeline is ticker-agnostic — `run.py analyze NVDA` (or the cockpit's "Analyze ticker" input) snapshots any optionable chain and produces the same map. But dealer-gamma levels are only *meaningful* on dense chains where hedging flow actually operates. `GexConfig` carries liquidity thresholds (minimum total OI near spot, minimum populated strike density, maximum spread width); a chain that fails them still renders, wearing a prominent **"thin chain — levels unreliable"** warning rather than being blocked. The automatic morning plan runs only the configured watchlist (`GexConfig.watchlist`, default `("SPY", "QQQ")` — editable); ad-hoc analyses store `GexSnapshot` rows like any other so a journaled setup on TSLA links to the map that motivated it.
+
 ## Cockpit: the GEX Lab tab
 
 First view-switcher in `App.tsx` ("Swing" | "GEX Lab" — no router library needed, a top-level state toggle keyed the sanctioned remount way). New `APIRouter` (first router composition in `api.py` — routes stay thin, same 503-friendly DB posture).
 
 Panels:
 
-1. **Day Plan** — bias per underlying (EMA stack state), regime, the three levels vs current spot, breakout/range/stand-down call, "Build today's plan" button (POST → runs plan.py).
+1. **Day Plan** — bias per watchlist underlying (EMA stack state), regime, the three levels vs current spot, breakout/range/stand-down call, "Build today's plan" button (POST → runs plan.py), plus an **"Analyze ticker"** input for ad-hoc maps on any symbol (thin-chain warning surfaced inline).
 2. **Checklist Grader** — the 12-point form; submitting creates an `OptionSetup` with per-item results and computed grade. This is the cockpit's first real user-write surface (precedent: POST /api/azure-login).
-3. **Journal** — today's setups + recent history with settled outcomes; mark taken/skipped; manual close with notes.
-4. **Lab Stats** — expectancy by grade bucket, by regime, per-checklist-item breakdown — all wearing the `Stat` provenance contract. GEX *levels* are not stats and get a sanctioned plain-value renderer (no fake CIs).
+3. **Journal** — today's setups + recent history with settled outcomes; mark taken/skipped; manual close with notes; confirm/reject suggested Robinhood-trade links; `needs review` queue for unpaired imports.
+4. **Lab Stats** — expectancy by grade bucket, by regime, per-checklist-item breakdown, and a separate Robinhood-book section (premium P&L, planned-vs-realized on linked trades) — all wearing the `Stat` provenance contract. GEX *levels* are not stats and get a sanctioned plain-value renderer (no fake CIs).
+5. **Import** — CSV file-picker (POST multipart → broker_import), showing per-import results: fills added, duplicates skipped, trades paired, links suggested.
 
 Levels/plan display is text + simple hand-rolled SVG in the existing Sparkline idiom; no charting library in Phase 1.
+
+## Robinhood import
+
+Closes the loop between what was journaled and what was actually traded — the discipline half of the strategy ("did I sit on my hands?").
+
+- **Ingest:** `run.py import-robinhood <csv>` or a file-picker upload in the Lab tab. The parser targets Robinhood's account-activity export, filters option transactions, and writes one immutable `BrokerFill` per line. `import_hash` uniqueness makes re-importing an overlapping export a no-op. **Format is pinned against a real sample export from Oliver at implementation time** (Robinhood's CSV layout drifts; the parser fails loudly on unrecognized columns rather than guessing).
+- **Pairing:** FIFO per OCC symbol pairs opening fills (BTO) with closing fills (STC / expiration / assignment) into round-trip `OptionPaperTrade(account='robinhood')` rows with real premium P&L. Multi-leg/spread structures and unmatched fills are flagged `needs review` in the journal, not silently mangled — Phase 1 pairing handles the strategy's actual instrument (single-leg long calls/puts).
+- **Setup linking:** the importer suggests journal links by underlying + open-time proximity to `OptionSetup.ts`; Oliver confirms or rejects each in the cockpit. A linked pair lets the stats compare *planned* R (underlying geometry) against *realized* premium P&L — slippage, early exits, and theta made visible per trade.
+- **Book separation:** the `robinhood` book is premium-denominated and never pools with the paper lab's underlying-R stats; each book gets its own facets and its own Lab Stats panel section. Equity (share) rows in the CSV are ignored in Phase 1 — importing swing trades is a possible later extension, out of scope here.
 
 ## Learning loop (lab side)
 
@@ -103,7 +122,7 @@ Levels/plan display is text + simple hand-rolled SVG in the existing Sparkline i
 
 ## Testing
 
-`tests/options/` mirroring the package: golden-value GEX math on synthetic chains (known walls/flip), EMA-stack state classification, checklist grading, settlement replay against fixture 5m parquet, no-network seams throughout. TDD per repo convention.
+`tests/options/` mirroring the package: golden-value GEX math on synthetic chains (known walls/flip), EMA-stack state classification, checklist grading, settlement replay against fixture 5m parquet, importer round-trips against an anonymized sample Robinhood CSV (dedup on re-import, FIFO pairing, spread-flagging), no-network seams throughout. TDD per repo convention.
 
 ## Phase 2 sketch (for the record, not for building now)
 
