@@ -47,7 +47,7 @@ from swing_screener.analytics.performance import (
     summarize,
     trailing_expectancy,
 )
-from swing_screener.cockpit.stats import Stat, stat_from_summary
+from swing_screener.cockpit.stats import Stat, stat_from_paired_delta, stat_from_summary
 from swing_screener.db.models import PaperTrade
 from swing_screener.pipeline.arms import BASELINE
 from swing_screener.pipeline.registry import Experiment
@@ -235,10 +235,14 @@ def _card(
         value, low, high, n_accrued, n_clusters, thin, collapsed = _variant_numbers(
             book, control, book_s, ctrl_s
         )
+        delta = Stat(
+            value=value, n=n_accrued, n_clusters=n_clusters, ci_low=low, ci_high=high,
+            # The delta compares both sides, so its cost stamp must cover both:
+            # claiming net@0.05 with a gross control side would be an overclaim.
+            cost_level=cost_level_for([*book, *control]), corpus_id=None, facet=facet,
+            unit="R", thin_clusters=thin,
+        )
         upper_bound_type = "clustered"
-        # The delta compares both sides, so its cost stamp must cover both: claiming
-        # net@0.05 with a gross control side would be an overclaim.
-        delta_cost_pool = [*book, *control]
     elif exp.kind == "arm":
         trades = facet_filter(
             book_loader(
@@ -249,36 +253,32 @@ def _card(
         book = [t for t in trades if t.arm == exp.name]
         control = [t for t in trades if t.arm == exp.control]
         book_s, ctrl_s = summarize(book), summarize(control)
-        pad = paired_arm_delta(trades, arm=exp.name, baseline=exp.control)
-        value, low, high = pad.mean_delta, pad.delta_ci_low, pad.delta_ci_high
-        # n_accrued counts pairs where BOTH legs closed -- smaller than either arm's
-        # own closed count (the card's sub-line explains why).
-        n_accrued, n_clusters, thin = pad.n_pairs, pad.n_clusters, pad.thin_clusters
+        # The shared mapping (delta.n counts pairs where BOTH legs closed -- smaller
+        # than either arm's own closed count; the card's sub-line explains why). Both
+        # delta sides come from the one pooled load (arms share fills), so the pooled
+        # book carries the cost stamp.
+        delta = stat_from_paired_delta(
+            paired_arm_delta(trades, arm=exp.name, baseline=exp.control),
+            cost_level=cost_level_for(trades), facet=facet,
+        )
         upper_bound_type = "iid"
         # The paired interval is always computed from real pairs (0 pairs reads
         # thin_clusters=True, which the trust bar already blocks) -- never collapsed.
         collapsed = False
-        # Both delta sides come from this one pooled load (arms share fills).
-        delta_cost_pool = trades
     else:  # pragma: no cover -- the registry lockstep test keeps kinds well-formed
         raise ValueError(f"unknown experiment kind {exp.kind!r} for {exp.name!r}")
 
-    halfwidth = (high - low) / 2
-    n_needed = _n_needed(n_accrued, halfwidth, exp.target_ci_halfwidth_r)
-    delta = Stat(
-        value=value, n=n_accrued, n_clusters=n_clusters, ci_low=low, ci_high=high,
-        cost_level=cost_level_for(delta_cost_pool), corpus_id=None, facet=facet,
-        unit="R", thin_clusters=thin,
-    )
+    halfwidth = (delta.ci_high - delta.ci_low) / 2
+    n_needed = _n_needed(delta.n, halfwidth, exp.target_ci_halfwidth_r)
     return SettlementCard(
         name=exp.name,
         kind=exp.kind,
         play_type=exp.play_type,
-        state=_state(exp, n_accrued=n_accrued, halfwidth=halfwidth, upper=high,
-                     thin=thin, collapsed=collapsed),
-        n_accrued=n_accrued,
+        state=_state(exp, n_accrued=delta.n, halfwidth=halfwidth, upper=delta.ci_high,
+                     thin=delta.thin_clusters, collapsed=collapsed),
+        n_accrued=delta.n,
         n_needed=n_needed,
-        eta=_eta(book, n_accrued=n_accrued, n_needed=n_needed, now=now),
+        eta=_eta(book, n_accrued=delta.n, n_needed=n_needed, now=now),
         stopping_rule=exp.stopping_rule,
         registered_sha=exp.registered_sha,
         registered_at=exp.registered_at,

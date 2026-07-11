@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 from swing_screener.analytics.performance import (
     _CLUSTER_FLOOR,
     MIN_LEADERBOARD_N,
+    SCORE_EDGES,
     _bucket_trades_by_score,
     _clustered_ci_low,
     _score_labels,
@@ -71,12 +72,13 @@ _DEFAULT_THESIS = {
 }
 
 # PRE-REGISTERED univariate family (frozen; adding a dimension is a deliberate git-visible
-# change that resets K). Categorical dims enumerate buckets; "score" lists its band labels.
-_SCORE_EDGES = (0.5, 0.6, 0.7, 0.8)
+# change that resets K). Categorical dims enumerate buckets; "score" lists its band labels
+# from the shared SCORE_EDGES constant (analytics.performance) -- changing THOSE edges is
+# likewise a git-visible family change that resets K.
 _FAMILY: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("market_trend", ("bull", "bear")),
     ("volatility_tier", ("low", "med", "high")),
-    ("score", tuple(_score_labels(_SCORE_EDGES))),  # the score_bucket band labels
+    ("score", tuple(_score_labels(SCORE_EDGES))),  # the score_bucket band labels
 )
 _ALPHA = 0.05  # family-wise; one-sided Bonferroni per bucket
 _MARGIN_R = 0.0  # net-of-cost edge must clear this (replay is haircut upstream)
@@ -154,7 +156,7 @@ def _bucketed(trades: list[PaperTrade], dimension: str) -> dict[str, list[PaperT
     via ``_bucket_trades_by_score`` (lower-inclusive / upper-exclusive bands) so the verdict
     bucket names match the calibration table exactly."""
     if dimension == "score":
-        return _bucket_trades_by_score(trades, _SCORE_EDGES)
+        return _bucket_trades_by_score(trades, SCORE_EDGES)
     buckets = next(b for d, b in _FAMILY if d == dimension)
     return {b: [t for t in trades if getattr(t, dimension) == b] for b in buckets}
 

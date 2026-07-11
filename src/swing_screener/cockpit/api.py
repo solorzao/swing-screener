@@ -37,6 +37,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from swing_screener.analytics.performance import (
+    SCORE_EDGES,
     PerformanceSummary,
     _bucket_trades_by_rank,
     _bucket_trades_by_score,
@@ -56,7 +57,7 @@ from swing_screener.cockpit.settlement import (
     build_cards,
     facet_filter,
 )
-from swing_screener.cockpit.stats import Stat, stat_from_summary
+from swing_screener.cockpit.stats import stat_from_paired_delta, stat_from_summary
 from swing_screener.db.models import AnalystCall, PaperTrade
 from swing_screener.db.repo import (
     latest_reversal_funnel,
@@ -359,6 +360,13 @@ def create_app(
         page parity). The score cut goes through ``score_stamped`` (forward book
         only); regime cuts skip unknown-regime rows. ``profit_factor`` serializes an
         all-winner book as null -- JSON has no Infinity (the page's ∞ glyph).
+
+        Budget: ~1.25s per request at a realistic 6k-row book (~25 clustered
+        bootstraps across the five breakdown families plus the per-arm paired
+        deltas; measured 0.6s median on the dev box -- the budget leaves headroom
+        for slower boxes and Azure round-trips). Combined with /api/forward-books
+        the 60s poll cycle carries ~2.4s (~4% duty); revisit (cache across requests)
+        if wall time approaches the poll interval or a second polling client appears.
         """
         trades = facet_filter(load_research_paper_trades(session), facet)
         if play_type != "all":
@@ -408,7 +416,7 @@ def create_app(
         by_tf = breakdown(detail_trades, "timeframe")
         score_rows: list[dict[str, object]] = []
         for label, group in _bucket_trades_by_score(
-            score_stamped(detail_trades), _SCORE_EDGES
+            score_stamped(detail_trades), SCORE_EDGES
         ).items():
             band = summarize(group)
             if band.n_closed > 0:  # an empty band would read as a spurious zero
@@ -553,11 +561,11 @@ def _cohort(
     return {"key": key, "strength": strength, "stat": _stat_dict(summary, trades, facet)}
 
 
-# The Streamlit performance page's fixed bucket edges, ported as-is (they are the
-# parity contract): leaderboard-adjacent rank buckets 1-5 / 6-10 / 11+, and the
-# score-calibration bands below/around the surfacing thresholds.
+# The Streamlit performance page's fixed rank-bucket edges (1-5 / 6-10 / 11+),
+# ported as-is -- they are the parity contract. The score-band edges are the shared
+# SCORE_EDGES constant (analytics.performance): the reflection's verdict buckets and
+# this breakdown must band identically.
 _RANK_EDGES: tuple[int, ...] = (5, 10)
-_SCORE_EDGES: tuple[float, ...] = (0.5, 0.6, 0.7, 0.8)
 
 
 def _leaderboard_row(
@@ -583,11 +591,11 @@ def _arm_row(
     arm: str, summary: PerformanceSummary, pooled: list[PaperTrade], facet: str
 ) -> dict[str, object]:
     """One experiment-arm row. ``pooled`` is the whole DEFAULT_VARIANT book (every
-    arm): the paired delta needs both legs of each fill. The delta Stat mirrors
-    settlement.py's arm branch 1:1 -- value = mean per-pair delta, n = pairs where
-    both legs closed, hardened lower / IID upper bounds, cost level stamped over the
-    POOLED book (both delta sides). The baseline row carries ``delta: null`` (there
-    is no self-delta) with ``n_pairs: 0`` -- no pairs back a delta claim there."""
+    arm): the paired delta needs both legs of each fill. The delta Stat is built by
+    ``stat_from_paired_delta`` -- the one home for the mapping, shared with
+    settlement.py's arm branch -- with the cost level stamped over the POOLED book
+    (both delta sides). The baseline row carries ``delta: null`` (there is no
+    self-delta) with ``n_pairs: 0`` -- no pairs back a delta claim there."""
     subset = [t for t in pooled if str(t.arm) == arm]
     row: dict[str, object] = {"arm": arm, "stat": _stat_dict(summary, subset, facet)}
     if arm == BASELINE:
@@ -596,11 +604,8 @@ def _arm_row(
         return row
     pad = paired_arm_delta(pooled, arm=arm)
     row["n_pairs"] = pad.n_pairs
-    row["delta"] = Stat(
-        value=pad.mean_delta, n=pad.n_pairs, n_clusters=pad.n_clusters,
-        ci_low=pad.delta_ci_low, ci_high=pad.delta_ci_high,
-        cost_level=cost_level_for(pooled), corpus_id=None, facet=facet,
-        unit="R", thin_clusters=pad.thin_clusters,
+    row["delta"] = stat_from_paired_delta(
+        pad, cost_level=cost_level_for(pooled), facet=facet
     ).as_dict()
     return row
 

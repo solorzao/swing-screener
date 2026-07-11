@@ -653,10 +653,10 @@ def test_performance_arms_ab_with_paired_delta(tmp_path: Path) -> None:
     arm branch. The baseline row's delta is null (no self-delta), n_pairs 0."""
     url = _db_url(tmp_path)
     t0 = datetime(2026, 1, 2, 15, 0, tzinfo=UTC)
+    exit_d = COST_STAMPED_FROM + timedelta(days=1)  # post-cutoff: both sides net @0.05
     _seed(url, [
-        _perf_trade("AMD", 1.0, trigger_ts=t0, exit_date=date(2026, 1, 5)),
-        _perf_trade("AMD", 1.6, arm="partial33_cond", trigger_ts=t0,
-                    exit_date=date(2026, 1, 5)),
+        _perf_trade("AMD", 1.0, trigger_ts=t0, exit_date=exit_d),
+        _perf_trade("AMD", 1.6, arm="partial33_cond", trigger_ts=t0, exit_date=exit_d),
     ])
     body = TestClient(create_app(url, edge_dir=tmp_path)).get(
         "/api/stats/performance").json()
@@ -677,9 +677,29 @@ def test_performance_arms_ab_with_paired_delta(tmp_path: Path) -> None:
     assert delta["ci_low"] == pytest.approx(0.6)  # 1 pair: interval collapses to point
     assert delta["ci_high"] == pytest.approx(0.6)
     assert delta["thin_clusters"] is True and delta["unit"] == "R"
+    assert delta["cost_level"] == "0.05"  # cost_level_for over the POOLED book (both sides)
     # KPIs read the page's default arm-detail selection: the BASELINE arm.
     assert body["kpis"]["expectancy"]["value"] == pytest.approx(1.0)
     assert body["kpis"]["n_closed"] == 1
+
+
+def test_performance_arm_pin_falls_back_alphabetically_without_baseline(
+    tmp_path: Path,
+) -> None:
+    """A multi-arm book WITHOUT a baseline arm pins the KPI/breakdown subset to the
+    first arm alphabetically -- the page's radio default (index 0 when BASELINE is
+    absent). Deltas vs the missing baseline honestly carry zero pairs."""
+    url = _db_url(tmp_path)
+    _seed(url, [
+        _perf_trade("AMD", 1.6, arm="partial33_cond", exit_date=date(2026, 1, 5)),
+        _perf_trade("AMD", 0.9, arm="flip_only", exit_date=date(2026, 1, 5)),
+    ])
+    body = TestClient(create_app(url, edge_dir=tmp_path)).get(
+        "/api/stats/performance").json()
+    assert [row["arm"] for row in body["arms"]] == ["flip_only", "partial33_cond"]
+    assert body["kpis"]["expectancy"]["value"] == pytest.approx(0.9)  # flip_only pins
+    assert body["kpis"]["n_closed"] == 1
+    assert all(row["n_pairs"] == 0 for row in body["arms"])  # no baseline: no pairs
 
 
 def test_performance_play_type_filter_scopes_the_arm_ab(tmp_path: Path) -> None:

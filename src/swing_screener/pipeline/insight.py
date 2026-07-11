@@ -9,7 +9,7 @@ so the model can never invent conviction the evidence doesn't support.
 This module also owns the R-based sizing (1R scaled by conviction) and the flat
 ``OrderIntent`` type the renderer consumes. Everything here is a pure function:
 deterministic, no network, no DB, safe to unit-test in isolation. The score banding is
-keyed off the SAME published labels the grader uses (``_score_labels(_SCORE_EDGES)``) --
+keyed off the SAME published labels the grader uses (``_score_labels(SCORE_EDGES)``) --
 never re-derived here -- so a calibration-table change can't silently desync the two.
 """
 
@@ -17,9 +17,9 @@ from dataclasses import dataclass
 from datetime import date
 from typing import TYPE_CHECKING
 
-from swing_screener.analytics.performance import _score_labels
+from swing_screener.analytics.performance import SCORE_EDGES, _score_labels
 from swing_screener.db.models import AnalystCall
-from swing_screener.pipeline.reflect import Verdict, _SCORE_EDGES
+from swing_screener.pipeline.reflect import Verdict
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -69,11 +69,11 @@ class OrderIntent:
 
 def _score_band(score: float) -> str:
     """The published score-band label a raw ``score`` falls in (lower-inclusive: a score
-    exactly on an edge falls into the HIGHER band). Keyed off ``_score_labels(_SCORE_EDGES)``
+    exactly on an edge falls into the HIGHER band). Keyed off ``_score_labels(SCORE_EDGES)``
     -- the SAME bands the grader buckets by -- so the pick's band names a real verdict bucket."""
-    labels = _score_labels(_SCORE_EDGES)
-    idx = len(_SCORE_EDGES)
-    for i, edge in enumerate(_SCORE_EDGES):
+    labels = _score_labels(SCORE_EDGES)
+    idx = len(SCORE_EDGES)
+    for i, edge in enumerate(SCORE_EDGES):
         if score < edge:
             idx = i
             break

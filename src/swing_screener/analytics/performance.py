@@ -490,6 +490,16 @@ def rank_bucket(
     }
 
 
+# The repo's ONE set of score-calibration band edges, shared by the reflection's
+# pre-registered "score" dimension (pipeline/reflect.py -- its verdict buckets are
+# tuple(_score_labels(SCORE_EDGES)), so changing these edges is a deliberate,
+# git-visible family change that resets its Bonferroni K), the insight engine's
+# score-band lookup, and the cockpit API's score breakdown. All consumers must
+# bucket identically or a verdict's band label stops naming the band the user
+# reads it against.
+SCORE_EDGES: tuple[float, ...] = (0.5, 0.6, 0.7, 0.8)
+
+
 def _score_labels(edges: Sequence[float]) -> list[str]:
     """Band labels from ascending score ``edges`` in (0, 1).
 
