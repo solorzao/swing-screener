@@ -242,6 +242,7 @@ def test_resolve_chart_bytes_blob_disabled_reads_local_file(
     assert blob.resolve_chart_bytes(str(chart)) == _PNG
     assert blob.resolve_chart_bytes(str(tmp_path / "missing.png")) is None
     assert blob.resolve_chart_bytes(None) is None
+    assert blob.resolve_chart_bytes("") is None
 
 
 def test_resolve_chart_bytes_blob_enabled_degrades_on_error(
@@ -251,6 +252,7 @@ def test_resolve_chart_bytes_blob_enabled_degrades_on_error(
 
     def boom(key: str) -> bytes:
         raise RuntimeError("blob 404")
+
     monkeypatch.setattr(blob, "download_bytes", boom)
     assert blob.resolve_chart_bytes("20240401/AMD_1d_20240401.png") is None
 
@@ -283,5 +285,6 @@ def test_resolve_pdf_bytes_blob_enabled_degrades_on_error(
 
     def boom(key: str) -> bytes:
         raise RuntimeError("blob 404")
+
     monkeypatch.setattr(blob, "download_bytes", boom)
     assert blob.resolve_pdf_bytes("reports/AMD_20240401.pdf") is None

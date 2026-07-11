@@ -1,9 +1,11 @@
-"""Private Azure Blob chart store (optional, graceful, lazy).
+"""Private Azure Blob store for chart PNGs and report PDFs (optional, graceful, lazy).
 
 The store is enabled iff ``load_settings().blob_account_url`` is set. When it is,
 the pipeline uploads each rendered chart PNG to a PRIVATE container under a key,
 and the pdf/dashboard consumers download it back by that same key. When it is
-not set, callers keep their existing local-filesystem behavior.
+not set, the local filesystem is the store. The :func:`resolve_chart_bytes` /
+:func:`resolve_pdf_bytes` pair owns that branching for consumers: blob key or
+local path in, raw bytes out, ``None`` on any miss.
 
 The ``azure-storage-blob`` / ``azure-identity`` packages are an optional extra
 that is NOT installed in CI, so they are imported LAZILY inside the functions
@@ -91,7 +93,8 @@ def _resolve_bytes(key: str | None) -> bytes | None:
     When the store is enabled, ``key`` is a blob KEY (the filesystem is not
     shared across Azure executions): download it, returning ``None`` on any
     failure so a missing/aged-out blob just skips the artifact. When disabled,
-    ``key`` is a local path: read its bytes iff it exists, else ``None``.
+    ``key`` is a local path: read its bytes, with any failure (missing,
+    unreadable, a directory) likewise resolving to ``None``.
     """
     if not key:
         return None
@@ -100,10 +103,10 @@ def _resolve_bytes(key: str | None) -> bytes | None:
             return download_bytes(key)
         except Exception:
             return None
-    path = Path(key)
-    if path.exists():
-        return path.read_bytes()
-    return None
+    try:
+        return Path(key).read_bytes()
+    except Exception:
+        return None
 
 
 def resolve_chart_bytes(chart_path: str | None) -> bytes | None:

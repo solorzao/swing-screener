@@ -29,6 +29,7 @@ from swing_screener.analytics.calibration import max_conviction_step
 from swing_screener.config import StrategyConfig
 from swing_screener.config_secrets import get_secret
 from swing_screener.data.fetch import fetch_bars
+from swing_screener.data.quotes import latest_closes
 from swing_screener.data.universe import names_by_ticker
 from swing_screener.db import repo
 from swing_screener.db.models import EmailLog, ExitEvent, Signal
@@ -813,8 +814,6 @@ def main() -> None:
     # Config-gated + fail-open; off -> None, so the digest is byte-for-byte today's behavior.
     latest_closes_fn: Callable[[list[str]], dict[str, float]] | None = None
     if StrategyConfig().digest_drop_already_ran:
-        from swing_screener.data.quotes import latest_closes
-
         def latest_closes_fn(tickers: list[str]) -> dict[str, float]:  # noqa: E731
             return latest_closes(tickers, cache_dir=settings.cache_dir)
     result = send_digest(kind=args.kind, db_url=args.db, pdf_dir=args.pdf_dir, force=force,

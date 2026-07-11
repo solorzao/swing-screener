@@ -1,9 +1,10 @@
 """Latest-close quotes over the bar cache.
 
-A thin pure wrapper around :func:`swing_screener.data.fetch.fetch_bars`.
-Consumed by the digest's already-ran filter (``notify/run.py``) and the
-cockpit's live prices. ``latest_closes`` is called as a module attribute so
-tests can monkeypatch that seam and avoid the network.
+A thin wrapper around :func:`swing_screener.data.fetch.fetch_bars` (all I/O
+lives in ``fetch_bars``). Consumed by the digest's already-ran filter
+(``notify/run.py``), the cockpit's live prices, and the dashboard's candidate
+and trade views until it retires. ``latest_closes`` is called as a module
+attribute so tests can monkeypatch that seam and avoid the network.
 """
 
 from pathlib import Path
