@@ -40,7 +40,7 @@
 
 **Step 1:** Write `docs/OPTIONS_LAB.md` — the lab's own charter, ~60 lines, mirroring NORTH_STAR.md's tone. Required content: Purpose (learn and validate the GEX day-trading method with paper trades and imported real trades; produce evidence, not adrenaline); Scope (SPY/QQQ watchlist + any-ticker ad-hoc analysis; single-leg long calls/puts; day-trade horizon); Principles inherited verbatim from the North Star (evidence gates promotion; honest uncertainty — session-clustered CIs; deterministic levels are ground truth; human gate — no automation of order flow; small, interpretable, reversible); Lab-specific rules (primary metric = R-multiples on the underlying; the `robinhood` book is premium-denominated and never pools with paper stats; checklist grade is recorded before outcome is known); Non-goals (real-money execution, multi-leg strategies, intraday GEX drift, non-index prediction claims). Reference the strategy source guide and the design doc.
 
-**Step 2:** In `docs/NORTH_STAR.md`, find the non-goals section (contains "Not day-trading — swing horizons only") and append one line immediately after that bullet: `  - (The GEX options lab is governed by its own charter, [OPTIONS_LAB.md](OPTIONS_LAB.md) — this document does not apply to it, nor it to this document.)` Do not change anything else.
+**Step 2:** In `docs/NORTH_STAR.md`, find the non-goals section (contains "Not day-trading — swing horizons only") and append one line immediately after that bullet: `  - (The GEX options lab is governed by its own charter, [OPTIONS_LAB.md](OPTIONS_LAB.md) — this document does not apply to it, nor it to this document. Suite-level structure: [ARCHITECTURE.md](ARCHITECTURE.md).)` Do not change anything else. `docs/OPTIONS_LAB.md` should likewise link to `docs/ARCHITECTURE.md` (the module contract it satisfies).
 
 **Step 3:** Commit: `git add docs/OPTIONS_LAB.md docs/NORTH_STAR.md && git commit -m "docs: OPTIONS_LAB charter; cross-reference from North Star"`
 
@@ -1298,7 +1298,17 @@ No UI test framework exists — the gates are `npm run lint`, `npm run build`, a
 
 Local component state only (form fields, parse results); no new libraries; hand-rolled table markup in the existing panel CSS vocabulary.
 
-**Step 4:** `App.tsx` minimal edit: `const [view, setView] = useState<'swing' | 'gex'>('swing')`; a two-button segmented control in/next to the Masthead using the existing `.mh-seg`/`.seg-on` classes; when `view === 'gex'` render `<GexLab wake={wake} />` INSTEAD of the swing grid (masthead stays). Keep the diff small — the unexecuted Phase-3 plan will restructure this file.
+**Step 4:** `App.tsx` minimal edit, but **module-shaped** (suite direction, docs/ARCHITECTURE.md): a small registry, not a hardcoded toggle —
+
+```tsx
+const MODULES = [
+  { key: 'swing', label: 'SWING' },
+  { key: 'gex', label: 'GEX LAB' },
+] as const
+type ModuleKey = (typeof MODULES)[number]['key']
+```
+
+`const [view, setView] = useState<ModuleKey>('swing')`; the nav renders `MODULES.map(...)` as segmented buttons (existing `.mh-seg`/`.seg-on` classes) so module #3 is a one-entry addition; when `view === 'gex'` render `<GexLab wake={wake} />` INSTEAD of the swing grid (masthead stays). Keep the diff otherwise small — the unexecuted Phase-3 plan will restructure this file.
 
 **Step 5:** `npm run lint && npm run build`; verify `git status` shows only expected static changes; **manual verify** — from the worktree: `$PY -m swing_screener.cockpit --browser --port 8901` against a scratch DB seeded by the Task-17 test helpers (or point `SWING_DB_URL` at a tmp sqlite), click through: view toggle, build plan (will fail politely without network — the PanelBody error line is the acceptance), grade + submit a setup, import the FIXTURE csv, tag, commit. Screenshot for the PR.
 
