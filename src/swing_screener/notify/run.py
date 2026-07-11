@@ -813,7 +813,7 @@ def main() -> None:
     # Config-gated + fail-open; off -> None, so the digest is byte-for-byte today's behavior.
     latest_closes_fn: Callable[[list[str]], dict[str, float]] | None = None
     if StrategyConfig().digest_drop_already_ran:
-        from swing_screener.dashboard.quotes import latest_closes
+        from swing_screener.data.quotes import latest_closes
 
         def latest_closes_fn(tickers: list[str]) -> dict[str, float]:  # noqa: E731
             return latest_closes(tickers, cache_dir=settings.cache_dir)

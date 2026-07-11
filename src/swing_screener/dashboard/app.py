@@ -24,8 +24,9 @@ from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from swing_screener.analytics import performance
-from swing_screener.dashboard import quotes, ui
-from swing_screener.dashboard.pl import position_pl, total_unrealized_pl
+from swing_screener.analytics.pl import position_pl, total_unrealized_pl
+from swing_screener.dashboard import ui
+from swing_screener.data import quotes
 from swing_screener.db import repo
 from swing_screener.db.models import AnalystCall, ExitEvent, PaperTrade, Signal, Trade
 from swing_screener.db.session import get_engine
@@ -34,7 +35,7 @@ from swing_screener.pipeline.reflect import analyst_calibration
 from swing_screener.pipeline.variants import DEFAULT_VARIANT
 from swing_screener.settings import load_settings
 from swing_screener.signals.actionability import classify as classify_actionability
-from swing_screener.storage.blob import blob_enabled, download_bytes
+from swing_screener.storage.blob import resolve_chart_bytes, resolve_pdf_bytes
 
 
 @st.cache_resource
@@ -64,44 +65,23 @@ def _cache_dir() -> Path:
     return load_settings().cache_dir
 
 
-def _resolve_chart_image(chart_path: str | None) -> bytes | str | None:
-    """Resolve a signal's ``chart_path`` to something ``st.image`` can render.
+def _resolve_chart_image(chart_path: str | None) -> bytes | None:
+    """Resolve a signal's ``chart_path`` to bytes for ``st.image`` (None skips it).
 
-    When blob storage is enabled, ``chart_path`` is a blob KEY (the filesystem is
-    not shared across Azure executions): download the bytes, returning ``None`` on
-    any failure so a missing/aged-out blob just skips the image. When disabled,
-    keep the existing local behavior: return the path iff it exists, else ``None``.
+    Delegates to :func:`swing_screener.storage.blob.resolve_chart_bytes`, which
+    owns the blob-key-vs-local-path branching. Bytes now even for local files
+    (``st.image`` accepts both; the cockpit API needs bytes).
     """
-    if not chart_path:
-        return None
-    if blob_enabled():
-        try:
-            return download_bytes(chart_path)
-        except Exception:
-            return None
-    if Path(chart_path).exists():
-        return chart_path
-    return None
+    return resolve_chart_bytes(chart_path)
 
 
 def _resolve_pdf_bytes(key: str | None) -> bytes | None:
     """Resolve a report's ``pdf_blob_key`` to raw bytes for ``st.download_button``.
 
-    Mirrors :func:`_resolve_chart_image`'s blob-vs-local logic but always returns
-    bytes (the download button needs bytes, not a path). Returns ``None`` on any
-    failure so a missing/aged-out PDF just hides the button.
+    Delegates to :func:`swing_screener.storage.blob.resolve_pdf_bytes`; ``None``
+    on any miss just hides the button.
     """
-    if not key:
-        return None
-    if blob_enabled():
-        try:
-            return download_bytes(key)
-        except Exception:
-            return None
-    path = Path(key)
-    if path.exists():
-        return path.read_bytes()
-    return None
+    return resolve_pdf_bytes(key)
 
 
 def _render_candidates(session: Session) -> None:

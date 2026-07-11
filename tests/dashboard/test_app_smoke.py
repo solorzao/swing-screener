@@ -4,7 +4,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 from streamlit.testing.v1 import AppTest
 
-from swing_screener.dashboard import quotes
+from swing_screener.data import quotes
 from swing_screener.db.models import AnalystCall, PaperTrade, Signal, Trade
 from swing_screener.db.session import get_engine
 

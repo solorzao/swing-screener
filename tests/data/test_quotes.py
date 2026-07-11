@@ -1,7 +1,6 @@
 import pandas as pd
 
-from swing_screener.data import fetch
-from swing_screener.dashboard import quotes
+from swing_screener.data import fetch, quotes
 
 
 def _df(last_close: float) -> pd.DataFrame:

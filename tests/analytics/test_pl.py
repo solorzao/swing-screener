@@ -2,7 +2,7 @@ from datetime import date
 
 import pytest
 
-from swing_screener.dashboard.pl import position_pl, total_unrealized_pl
+from swing_screener.analytics.pl import position_pl, total_unrealized_pl
 from swing_screener.db.models import Trade
 
 

@@ -1,21 +1,5 @@
-from pathlib import Path
+"""Re-export shim -- moved to :mod:`swing_screener.data.quotes`; dashboard/ dies in Phase 3."""
 
-from swing_screener.data import fetch
+from swing_screener.data.quotes import latest_close, latest_closes
 
-
-def latest_close(ticker: str, *, cache_dir: Path) -> float | None:
-    """Most recent daily close for a ticker, or None if unavailable."""
-    df = fetch.fetch_bars(ticker, "1d", cache_dir=cache_dir)
-    if df is None or df.empty:
-        return None
-    return float(df["close"].iloc[-1])
-
-
-def latest_closes(tickers: list[str], *, cache_dir: Path) -> dict[str, float]:
-    """Latest close per ticker, skipping any that fail to fetch."""
-    out: dict[str, float] = {}
-    for ticker in tickers:
-        price = latest_close(ticker, cache_dir=cache_dir)
-        if price is not None:
-            out[ticker] = price
-    return out
+__all__ = ["latest_close", "latest_closes"]
