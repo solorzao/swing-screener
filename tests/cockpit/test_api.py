@@ -27,7 +27,7 @@ from swing_screener.cockpit.api import (
     create_app,
 )
 from swing_screener.cockpit.settlement import STATES
-from swing_screener.db.models import AnalystCall, EmailLog, PaperTrade
+from swing_screener.db.models import AnalystCall, EmailLog, ExitEvent, PaperTrade
 from swing_screener.db.repo import save_reversal_funnel
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.registry import Experiment
@@ -942,8 +942,8 @@ def test_gate_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_change_token_moves_on_new_trade(tmp_path: Path) -> None:
     """The wake channel's whole contract lives in the token: stable while nothing
-    changes, different after a write. The SSE loop itself stays a thin
-    compare-and-emit, so THIS is where the behavior is pinned."""
+    changes, different after a write -- AND after a close. The SSE loop itself
+    stays a thin compare-and-emit, so THIS is where the behavior is pinned."""
     url = _db_url(tmp_path)
     engine = get_engine(url)
     before = _change_token(engine, tmp_path)
@@ -952,7 +952,16 @@ def test_change_token_moves_on_new_trade(tmp_path: Path) -> None:
     with Session(engine) as s:
         s.add(_trade("AAA", 1.0))
         s.commit()
-    assert _change_token(engine, tmp_path) != before
+    after_insert = _change_token(engine, tmp_path)
+    assert after_insert != before
+    # A CLOSE is an UPDATE on paper_trades (status/exit_* set on the existing row;
+    # no new id, no updated_at column), so max(PaperTrade.id) never moves -- the
+    # ExitEvent that EVERY close path inserts (shadow.py / reconcile.py /
+    # exitcheck.py) is the observable the token must watch.
+    with Session(engine) as s:
+        s.add(ExitEvent(created_date=date.today(), tier="base", reason="stop_hit"))
+        s.commit()
+    assert _change_token(engine, tmp_path) != after_insert
 
 
 def test_change_token_survives_db_down(tmp_path: Path) -> None:
@@ -970,32 +979,38 @@ def test_change_token_survives_db_down(tmp_path: Path) -> None:
 
 
 def test_events_route_exists(tmp_path: Path) -> None:
-    """GET /api/events answers 200 text/event-stream.
+    """GET /api/events answers 200 text/event-stream, and the FIRST event arrives on
+    connect (``last`` starts None) -- the endpoint contract useEventWake builds on:
+    an event means "refetch now", never evidence something changed.
 
     Deliberately NOT via TestClient: its transport runs the ASGI app to completion
     and buffers the whole body (testclient.py handle_request ->
     ``portal.call(self.app, ...)``), so an infinite SSE stream never yields headers
     -- ``client.stream()`` would hang, not stream. Instead this drives the raw ASGI
-    app: capture ``http.response.start``, then answer the next ``receive()`` with
-    ``http.disconnect``, which sse-starlette's disconnect listener turns into a
-    task-group cancel -- the app call returns cleanly, first event unconsumed.
+    app: capture ``http.response.start`` plus ONE body chunk (the always-on-connect
+    event), then answer the next ``receive()`` with ``http.disconnect``, which
+    sse-starlette's disconnect listener turns into a task-group cancel -- the app
+    call returns cleanly with the rest of the infinite stream unconsumed.
     """
     url = _db_url(tmp_path)
     get_engine(url)  # seed the file + schema; the app builds its OWN engine
     app = create_app(url, edge_dir=tmp_path)
 
-    async def _head() -> tuple[int, dict[str, str]]:
+    async def _head() -> tuple[int, dict[str, str], bytes]:
         start: dict[str, Any] = {}
-        got_start = anyio.Event()
+        chunks: list[bytes] = []
+        got_body = anyio.Event()
 
         async def receive() -> dict[str, Any]:
-            await got_start.wait()
+            await got_body.wait()
             return {"type": "http.disconnect"}
 
         async def send(message: MutableMapping[str, Any]) -> None:
             if message["type"] == "http.response.start":
                 start.update(message)
-                got_start.set()
+            elif message["type"] == "http.response.body" and message.get("body"):
+                chunks.append(bytes(message["body"]))
+                got_body.set()
 
         scope: dict[str, Any] = {
             "type": "http", "http_version": "1.1", "method": "GET",
@@ -1006,8 +1021,9 @@ def test_events_route_exists(tmp_path: Path) -> None:
         with anyio.fail_after(10):  # a wedged stream FAILS the test, never hangs it
             await app(scope, receive, send)
         headers = {k.decode(): v.decode() for k, v in start["headers"]}
-        return start["status"], headers
+        return start["status"], headers, chunks[0]
 
-    status, headers = anyio.run(_head)
+    status, headers, first = anyio.run(_head)
     assert status == 200
     assert headers["content-type"].startswith("text/event-stream")
+    assert b"event: change" in first  # one event per (re)connect, always

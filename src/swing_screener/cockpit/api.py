@@ -55,8 +55,8 @@ from swing_screener.analytics.performance import (
 )
 from swing_screener.cockpit.heartbeats import (
     Heartbeat,
-    _newest_verdicts_mtime,
     collect_heartbeats,
+    newest_verdicts_mtime,
 )
 from swing_screener.cockpit.settlement import (
     STATES,
@@ -68,6 +68,7 @@ from swing_screener.cockpit.stats import stat_from_paired_delta, stat_from_summa
 from swing_screener.db.models import (
     AnalystCall,
     EmailLog,
+    ExitEvent,
     MarketReport,
     PaperTrade,
     Signal,
@@ -529,15 +530,20 @@ def create_app(
 
     @app.get("/api/events")
     async def events() -> EventSourceResponse:
-        """The SSE wake channel: one ``change`` event whenever the change token moves.
+        """The SSE wake channel: a ``change`` event whenever the change token moves
+        -- plus ALWAYS one on (re)connect, since ``last`` starts None. Consumers
+        (Task 9's useEventWake) must treat an event as a refetch trigger, never as
+        evidence something changed.
 
         Data changes come from EXTERNAL processes (scheduled jobs, git pulls), so
         server-side polling is the only correct driver -- there is no in-process
         write to hook. The endpoint is async so the infinite generator never pins a
         threadpool worker; each token read hops through ``anyio.to_thread`` (the DB
         probe is sync) and no Session survives across the sleeps. The frontend's 60s
-        poll stays the floor -- this channel only wakes it early. GET under /api
-        (covered by the dev vite proxy); no X-Cockpit header: it mutates nothing.
+        poll stays the floor -- this channel only wakes it early: the poll is the
+        defense against dropped SSE connections and change classes the token doesn't
+        watch. GET under /api (covered by the dev vite proxy); no X-Cockpit header:
+        it mutates nothing.
         """
 
         async def stream() -> AsyncIterator[dict[str, str]]:
@@ -549,9 +555,9 @@ def create_app(
                 if token != last:
                     last = token
                     yield {"event": "change", "data": json.dumps(token)}
-                await anyio.sleep(15)
+                await anyio.sleep(_WAKE_POLL_S)
 
-        return EventSourceResponse(stream(), ping=15)
+        return EventSourceResponse(stream(), ping=_WAKE_POLL_S)
 
     resolved_static = static_dir if static_dir is not None else Path(__file__).parent / "static"
     if (resolved_static / "index.html").is_file():
@@ -576,6 +582,12 @@ def _down_summary(exc: Exception) -> str:
     return f"database unreachable ({type(exc).__name__})"
 
 
+# One cadence for the wake channel: the token poll AND sse-starlette's keepalive
+# ping tick together, deliberately -- a ping without a fresh token read (or vice
+# versa) buys nothing, so the two must not drift apart.
+_WAKE_POLL_S = 15
+
+
 def _watermark(value: object | None) -> str:
     """One watermark's wire form: ISO for dates/datetimes, ``str()`` for ids, the
     literal ``"none"`` for an empty table -- strings only, so token equality is a
@@ -589,24 +601,28 @@ def _watermark(value: object | None) -> str:
 
 def _change_token(engine: Engine, edge_dir: Path) -> dict[str, str]:
     """The wake channel's change token: cheap max-watermarks over every store the
-    cockpit renders -- screen run, paper-trade write, sent email, market report,
-    funnel snapshot, newest reflection verdicts file. Equality means "nothing worth
-    refetching"; the values are opaque to the frontend. One short-lived Session per
-    call, never held across the stream loop's sleeps. ``edge_dir`` is the RESOLVED
-    edge directory (the caller threads ``resolve_edge_dir`` -- same seam as the
-    heartbeats)."""
+    cockpit renders -- screen run, paper-trade write, trade close, sent email,
+    market report, funnel snapshot, newest reflection verdicts file. Equality means
+    "nothing worth refetching"; the values are opaque to the frontend. The ``exit``
+    watermark exists because a close is an UPDATE on paper_trades (no new id, no
+    updated_at column) -- invisible to ``max(PaperTrade.id)`` -- but every close
+    path (shadow.py, reconcile.py, exitcheck.py) INSERTS an ExitEvent. One
+    short-lived Session per call, never held across the stream loop's sleeps.
+    ``edge_dir`` is the RESOLVED edge directory (the caller threads
+    ``resolve_edge_dir`` -- same seam as the heartbeats)."""
     with Session(engine) as session:
         funnel = latest_reversal_funnel(session)
         token = {
             "signal": _watermark(session.scalar(select(func.max(Signal.run_date)))),
             "trade": _watermark(session.scalar(select(func.max(PaperTrade.id)))),
+            "exit": _watermark(session.scalar(select(func.max(ExitEvent.id)))),
             "email": _watermark(session.scalar(select(func.max(EmailLog.sent_at)))),
             "weather": _watermark(
                 session.scalar(select(func.max(MarketReport.run_date)))
             ),
             "funnel": _watermark(funnel.run_date if funnel is not None else None),
         }
-    token["verdicts"] = _watermark(_newest_verdicts_mtime(edge_dir))
+    token["verdicts"] = _watermark(newest_verdicts_mtime(edge_dir))
     return token
 
 

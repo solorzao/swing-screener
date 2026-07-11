@@ -91,7 +91,7 @@ def collect_heartbeats(
               timedelta(days=31), timedelta(days=2)),
         _beat("market weather", _eod_utc(weather_last), now,
               timedelta(days=7), timedelta(hours=3)),
-        _beat("reflection verdicts", _newest_verdicts_mtime(resolved_edge), now,
+        _beat("reflection verdicts", newest_verdicts_mtime(resolved_edge), now,
               timedelta(days=7), timedelta(hours=3)),
     ]
     beats += [
@@ -131,7 +131,11 @@ def _latest_email(session: Session, kind: str) -> datetime | None:
     )
 
 
-def _newest_verdicts_mtime(edge_dir: Path) -> datetime | None:
+def newest_verdicts_mtime(edge_dir: Path) -> datetime | None:
+    """Newest ``*.verdicts.json`` mtime under ``edge_dir`` as a UTC datetime, or None
+    when no verdicts file exists (a missing/empty dir is a normal setup state).
+    Public: the reflection-verdicts heartbeat AND the wake channel's change token
+    (cockpit/api.py) both read this -- the one shared "did reflection run?" clock."""
     mtimes = [p.stat().st_mtime for p in edge_dir.glob("*.verdicts.json")]
     return None if not mtimes else datetime.fromtimestamp(max(mtimes), tz=UTC)
 
