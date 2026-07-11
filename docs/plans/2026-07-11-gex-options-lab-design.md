@@ -28,7 +28,7 @@ The GEX module lives in this repo as a sibling vertical — **not** a third play
 | GEX source | Compute in-house (chain snapshot × Black-Scholes gamma × OI), cross-validated against a free public GEX dashboard |
 | P&L model | R-multiples on the underlying (stop/target geometry). Premium tracking deferred; schema carries the columns from day 1 |
 | Universe | SPY + QQQ default watchlist for the morning plan; **ad-hoc GEX analysis accepts any optionable ticker**, guarded by a chain-liquidity check (SPX needs CBOE — deferred) |
-| Broker import | Robinhood activity-CSV importer → immutable fills → paired round-trips in a separate `robinhood` book, human-confirmed linking to journaled setups |
+| Broker import | Robinhood activity-CSV importer: parse → **review grid with per-episode GEX/other/skip tagging** → commit to a separate `robinhood` book; human-confirmed linking to journaled setups. Format pinned against Oliver's real 2026-07-11 export |
 
 ## Package layout
 
@@ -67,8 +67,8 @@ All lifecycle columns are **DateTime** (equity tables are Date-typed — the map
 
 - **GexSnapshot** — `underlying`, `ts`, `spot`, `call_wall`, `put_wall`, `gamma_flip`, `net_gex`, `regime`, per-strike profile (JSON), `source`. One per underlying per morning (refreshable on demand).
 - **OptionSetup** (the journal row) — `ts`, `underlying`, `direction`, FK→GexSnapshot, `regime`, pivot level + pattern notes, **12 checklist item booleans** + composite grade, entry/stop/target on the underlying, `status` (idea / taken / skipped), free-text notes.
-- **OptionPaperTrade** — FK→OptionSetup, `opened_at`/`closed_at` (DateTime), entry/stop/target, `exit_reason` (stop / target / eod_flat / manual / expired), `realized_r`, `hold_minutes`. **Live-ready nullable columns from day 1:** `occ_symbol` (String(24) — OCC symbols are 21 chars), `strike`, `expiry`, `right`, `contracts`, `entry_premium`, `exit_premium`. Also serves imported broker trades (see Robinhood import): `account` distinguishes the books (`options-lab` paper vs `robinhood`), and imported rows carry a nullable FK→OptionSetup that is only set when Oliver confirms a link.
-- **BrokerFill** — one immutable row per imported CSV transaction: `import_hash` (unique — dedup key over date/instrument/code/qty/price), `activity_ts`, `underlying`, `occ_symbol`, `trans_code` (BTO/STC/STO/BTC/expiration/assignment), `quantity`, `price`, `amount`, `raw` (JSON of the source line), `source='robinhood'`. Round-trip pairing writes `OptionPaperTrade(account='robinhood')` rows referencing their fills; fills stay untouched so pairing is re-runnable.
+- **OptionPaperTrade** — FK→OptionSetup, `opened_at`/`closed_at` (DateTime), entry/stop/target, `exit_reason` (stop / target / eod_flat / manual / expired), `realized_r`, `hold_minutes`. **Live-ready nullable columns from day 1:** `occ_symbol` (String(24) — OCC symbols are 21 chars), `strike`, `expiry`, `right`, `contracts`, `entry_premium`, `exit_premium`. Also serves imported broker trades (see Robinhood import): `account` distinguishes the books (`options-lab` paper vs `robinhood`), a `strategy` tag (`gex` / `other` — set at review time, editable later) scopes which imported episodes the GEX stats see, and imported rows carry a nullable FK→OptionSetup that is only set when Oliver confirms a link. One row per flat-to-flat **episode** (all fills in a contract from first open to net-zero), not per fill.
+- **BrokerFill** — one immutable row per imported CSV transaction: `import_hash` (unique — dedup key over date/instrument/code/qty/price/amount), `activity_date` (date — the export has no time component), `underlying`, `occ_symbol`, `trans_code` (BTO/STC/STO/BTC/OEXP), `quantity`, `price`, `amount` (fee-inclusive), `raw` (JSON of the source line), `source='robinhood'`. Fills persist even when their episode is skipped at review — dedup and later re-review both need them; episode pairing is re-runnable from fills.
 
 Notes: the shared Alembic head means these revisions will also apply to Azure at the next equity job startup — harmless (empty tables), but sequence revisions carefully. The cockpit change-token gets watermarks for the new tables (the ExitEvent.id lesson); Phase-1 write frequency (morning plan + a handful of journal rows + nightly settle) is low enough for the shared wake channel. Phase 2's live engine gets its **own** SSE channel — the shared wake counter fans out to every panel and must not churn intraday.
 
@@ -94,18 +94,31 @@ Panels:
 2. **Checklist Grader** — the 12-point form; submitting creates an `OptionSetup` with per-item results and computed grade. This is the cockpit's first real user-write surface (precedent: POST /api/azure-login).
 3. **Journal** — today's setups + recent history with settled outcomes; mark taken/skipped; manual close with notes; confirm/reject suggested Robinhood-trade links; `needs review` queue for unpaired imports.
 4. **Lab Stats** — expectancy by grade bucket, by regime, per-checklist-item breakdown, and a separate Robinhood-book section (premium P&L, planned-vs-realized on linked trades) — all wearing the `Stat` provenance contract. GEX *levels* are not stats and get a sanctioned plain-value renderer (no fake CIs).
-5. **Import** — CSV file-picker (POST multipart → broker_import), showing per-import results: fills added, duplicates skipped, trades paired, links suggested.
+5. **Import** — CSV file-picker (POST multipart → broker_import) opening the **review grid**: parsed episodes with contract, date span, contracts, fee-inclusive P&L, and day-trade/multi-day badges; per-episode GEX / other / skip tagging plus setup-link confirmation; commit summary (episodes committed by tag, fills deduped, still-open episodes carried).
 
 Levels/plan display is text + simple hand-rolled SVG in the existing Sparkline idiom; no charting library in Phase 1.
 
 ## Robinhood import
 
-Closes the loop between what was journaled and what was actually traded — the discipline half of the strategy ("did I sit on my hands?").
+Closes the loop between what was journaled and what was actually traded — the discipline half of the strategy ("did I sit on my hands?"). Import is a **two-stage flow: parse → human review/tag → commit.** Nothing reaches the book without Oliver's review, because not every Robinhood trade is a GEX trade.
 
-- **Ingest:** `run.py import-robinhood <csv>` or a file-picker upload in the Lab tab. The parser targets Robinhood's account-activity export, filters option transactions, and writes one immutable `BrokerFill` per line. `import_hash` uniqueness makes re-importing an overlapping export a no-op. **Format is pinned against a real sample export from Oliver at implementation time** (Robinhood's CSV layout drifts; the parser fails loudly on unrecognized columns rather than guessing).
-- **Pairing:** FIFO per OCC symbol pairs opening fills (BTO) with closing fills (STC / expiration / assignment) into round-trip `OptionPaperTrade(account='robinhood')` rows with real premium P&L. Multi-leg/spread structures and unmatched fills are flagged `needs review` in the journal, not silently mangled — Phase 1 pairing handles the strategy's actual instrument (single-leg long calls/puts).
-- **Setup linking:** the importer suggests journal links by underlying + open-time proximity to `OptionSetup.ts`; Oliver confirms or rejects each in the cockpit. A linked pair lets the stats compare *planned* R (underlying geometry) against *realized* premium P&L — slippage, early exits, and theta made visible per trade.
-- **Book separation:** the `robinhood` book is premium-denominated and never pools with the paper lab's underlying-R stats; each book gets its own facets and its own Lab Stats panel section. Equity (share) rows in the CSV are ignored in Phase 1 — importing swing trades is a possible later extension, out of scope here.
+**Format (pinned against Oliver's real export, 2026-07-11).** Columns: `Activity Date, Process Date, Settle Date, Instrument, Description, Trans Code, Quantity, Price, Amount`, all quoted. Facts the parser must honor:
+
+- Dates are M/D/YYYY with **no time component** — everything downstream works at day granularity.
+- Option descriptions parse as `TICKER M/D/YYYY Call|Put $STRIKE`; expiration rows are `Trans Code=OEXP` with description `Option Expiration for …`, a quantity that may carry a suffix (`30S`), and empty price/amount.
+- Money fields: `$`-prefixed prices; amounts with thousands commas and parentheses for debits (`($1,320.04)`). **Amounts include fees** (e.g. 5 × $0.05 × 100 → `($25.20)`), so summed amounts give true P&L net of fees — use amounts for P&L, `Price` for per-contract premium.
+- Non-trade rows to skip: `ACH` (deposits/cancels), `RTP` (instant transfers + withdrawal fees) — rows with empty `Instrument`.
+- Trailer garbage to tolerate: a bare `""` line and a disclaimer row with a *mismatched column count*.
+- Trade codes present: `BTO`, `STC`, `OEXP`; parser also accepts `STO`/`BTC` (short/close) and flags them `needs review` rather than pairing naively.
+- One order fragments into many partial-fill lines (same date/contract/price) — the parser stores each as its own `BrokerFill` but presents them aggregated.
+
+**Pairing → episodes.** Fills group per contract into **flat-to-flat episodes**: from first opening fill until net position returns to zero (FIFO internally for lot accounting). The episode is the reviewable, taggable, stat-bearing unit — one `OptionPaperTrade(account='robinhood')` row per episode with VWAP entry/exit premium, total contracts, fee-inclusive P&L, and first-open/last-close dates. Fragmented fills, scale-ins, and scale-outs collapse into one honest trade; a multi-week accumulation reads as one episode, a same-day scalp as another. Episodes still open at import time (net position ≠ 0) commit as `open` and settle on a later import.
+
+**Review & GEX tagging (Oliver's requirement).** The Lab tab's Import panel shows parsed episodes — contract, date span, contracts, real P&L, day-trade vs multi-day badge — each with a three-way decision: **GEX / other / skip**. Skipped episodes are not committed (their fills still land in `BrokerFill` for dedup and re-review). Committed episodes carry `strategy='gex'|'other'`; Lab Stats default to `strategy='gex'`, and a comparison stat (GEX trades vs the rest of the book) shows whether the system is actually improving results. Tags remain editable in the Journal — a review-time decision is never final. CLI equivalent: `run.py import-robinhood <csv>` parses and prints the episode table with prompt-based tagging (`--tag-all=other` for non-interactive).
+
+**Setup linking.** With date-only precision, link suggestions match underlying + same session date against `OptionSetup` rows; ambiguities (two setups that day) are resolved by hand in the review grid. A linked pair lets stats compare *planned* R (underlying geometry) against *realized* premium P&L — slippage, early exits, and theta made visible per trade.
+
+**Book separation.** The `robinhood` book is premium-denominated and never pools with the paper lab's underlying-R stats; each book gets its own facets and Lab Stats section. Equity (share) rows are ignored in Phase 1. **The raw export is never committed to the repo** (it contains bank-transfer lines); the test fixture is an anonymized reconstruction preserving every format quirk above.
 
 ## Learning loop (lab side)
 
@@ -122,7 +135,7 @@ Closes the loop between what was journaled and what was actually traded — the 
 
 ## Testing
 
-`tests/options/` mirroring the package: golden-value GEX math on synthetic chains (known walls/flip), EMA-stack state classification, checklist grading, settlement replay against fixture 5m parquet, importer round-trips against an anonymized sample Robinhood CSV (dedup on re-import, FIFO pairing, spread-flagging), no-network seams throughout. TDD per repo convention.
+`tests/options/` mirroring the package: golden-value GEX math on synthetic chains (known walls/flip), EMA-stack state classification, checklist grading, settlement replay against fixture 5m parquet, importer round-trips against an anonymized fixture reconstructing every quirk of the real export (fragmented fills, OEXP `30S` quantities, parenthesized comma amounts, ACH/RTP noise rows, mismatched-column trailer; dedup on re-import, episode pairing, STO/BTC flagging), no-network seams throughout. TDD per repo convention.
 
 ## Phase 2 sketch (for the record, not for building now)
 
