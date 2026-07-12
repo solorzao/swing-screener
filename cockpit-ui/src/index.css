@@ -147,8 +147,8 @@ body {
   border: 1.5px dashed var(--dim);
 }
 
-/* Amber = attention-you-can-act-on; an ENABLED masthead button is new (disarm is
-   dead until Phase 3) so it must read as live, unlike the dashed Phase-2 stubs. */
+/* Amber = attention-you-can-act-on; an ENABLED masthead button must read as
+   live, unlike the dashed Phase-2 stubs. */
 button.db-login {
   font-size: 10.5px;
   padding: 3px 9px;
@@ -242,14 +242,24 @@ button.db-login:disabled {
   border-radius: 0 3px 3px 0;
 }
 
+/* DISARM (live since Task 15): red-outlined and quiet at rest — red here is
+   the DESTRUCTIVE-ACTION color, paired with the hold gesture, never a breach
+   claim. Disabled keeps the dimmer Phase-2 look (no broker configured). The
+   armed/held states build on this anchor via the .htc classes below. */
 button.disarm {
   font-size: 10.5px;
   letter-spacing: 0.12em;
-  padding: 4px 12px;
+  padding: 3px 12px;
   border-radius: 3px;
   background: transparent;
   border: 1px solid color-mix(in srgb, var(--red) 45%, var(--line2));
-  color: color-mix(in srgb, var(--red) 55%, var(--dim));
+  color: color-mix(in srgb, var(--red) 75%, var(--txt));
+  cursor: pointer;
+}
+
+button.disarm:disabled {
+  color: color-mix(in srgb, var(--red) 35%, var(--dim));
+  border-color: color-mix(in srgb, var(--red) 25%, var(--line2));
   cursor: not-allowed;
 }
 
@@ -1170,4 +1180,506 @@ button.mh-screen:hover {
   min-width: 0;
   width: 100%;
   height: auto;
+}
+
+/* ---------- HoldToConfirm (components/HoldToConfirm.tsx) ---------- */
+
+/* The hold gesture's chrome: a fill sweeping left-to-right for exactly the
+   hold duration (the transition-duration is set inline from holdMs), snapping
+   back fast on abort. `htc-waiting` is the completed-hold-awaiting-its-gate
+   state (DISARM's preview): full fill, pulsing — keep holding. Flat htc-
+   namespace (the sanctioned no-collision pattern). */
+.htc {
+  position: relative;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+}
+
+.htc .htc-fill {
+  position: absolute;
+  inset: 0;
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 120ms linear;
+  background: color-mix(in srgb, var(--red) 30%, transparent);
+  pointer-events: none;
+}
+
+.htc.htc-holding .htc-fill {
+  transform: scaleX(1);
+}
+
+.htc.htc-waiting .htc-fill {
+  transform: scaleX(1);
+  animation: htc-pulse 900ms ease-in-out infinite;
+}
+
+@keyframes htc-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.htc .htc-body {
+  position: relative;
+}
+
+/* ---------- DISARM control + popover (Masthead.tsx DisarmControl) ---------- */
+
+.dz-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+/* The two-line button face: DISARM + its exact-effect caption (design rule 3:
+   destructive actions are captioned with what they actually do). */
+.dz-btn-label {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.25;
+}
+
+.dz-btn-label b {
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+
+.dz-btn-label small {
+  font-size: 8px;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: color-mix(in srgb, var(--red) 40%, var(--dim));
+  white-space: nowrap;
+}
+
+/* The anchored panel under the masthead button: preview while holding, result
+   after a real fire (persistent until dismissed), the 409/failure states. */
+.dz-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 380px;
+  z-index: 30;
+  background: var(--panel);
+  border: 1px solid var(--line2);
+  border-radius: 6px;
+  padding: 10px 12px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.dz-head {
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  color: var(--txt);
+}
+
+.dz-head-alarm {
+  color: var(--red);
+}
+
+.dz-row {
+  font-size: 11.5px;
+  color: var(--txt);
+  line-height: 1.45;
+}
+
+.dz-row.dz-dim {
+  color: var(--dim);
+}
+
+.dz-verb {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* The unprotected alarm: red + border + role=alert — LOUD, and the panel that
+   carries it stays up until explicitly dismissed. */
+.dz-alarm {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--red);
+  border: 1px solid color-mix(in srgb, var(--red) 55%, var(--line2));
+  background: color-mix(in srgb, var(--red) 12%, var(--panel2));
+  box-shadow: 0 0 10px 1px color-mix(in srgb, var(--red) 30%, transparent);
+  border-radius: 3px;
+  padding: 7px 9px;
+}
+
+.dz-foot {
+  font-size: 10px;
+  color: var(--faint);
+  line-height: 1.4;
+}
+
+button.dz-dismiss {
+  align-self: flex-end;
+  font-size: 10.5px;
+  padding: 3px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+  color: var(--dim);
+  cursor: pointer;
+}
+
+button.dz-dismiss:hover {
+  color: var(--txt);
+  border-color: var(--line);
+}
+
+/* ---------- BracketLamp (components/BracketLamp.tsx) ---------- */
+
+/* Shape redundancy mirrors the heartbeat lamps: armed filled circle, db-only
+   amber triangle, unprotected red square, unknown dashed hollow circle.
+   UNKNOWN is never green — and never calm either: dashes mean "no claim". */
+.bl {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.bl .bl-lamp {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.bl-armed {
+  color: var(--dim);
+}
+
+.bl-armed .bl-lamp {
+  background: color-mix(in srgb, var(--green) 55%, var(--panel));
+}
+
+.bl-db-only {
+  color: var(--amber);
+}
+
+.bl-db-only .bl-lamp {
+  background: var(--amber);
+  border-radius: 0;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+  filter: var(--lamp-amber-drop);
+}
+
+.bl-unprotected {
+  color: var(--red);
+}
+
+.bl-unprotected .bl-lamp {
+  background: var(--red);
+  border-radius: 0;
+}
+
+.bl-unknown {
+  color: var(--dim);
+}
+
+.bl-unknown .bl-lamp {
+  background: transparent;
+  border: 1.5px dashed var(--dim);
+}
+
+/* ---------- CapGauge (components/CapGauge.tsx) ---------- */
+
+.cg {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cg-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.cg-label {
+  font-size: 11px;
+  color: var(--txt);
+  white-space: nowrap;
+}
+
+.cg-nums {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.cg-breach-tag {
+  color: var(--red);
+  letter-spacing: 0.08em;
+}
+
+/* "no cap set" is a posture problem, not zero room — dashed-amber, never 0/0. */
+.cg-nocap {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--amber);
+  border: 1px dashed color-mix(in srgb, var(--amber) 55%, var(--line2));
+  border-radius: 3px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
+.cg-track {
+  position: relative;
+  height: 8px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.cg-track.cg-indet {
+  border-style: dashed;
+  border-color: var(--faint);
+  background: transparent;
+}
+
+.cg-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: color-mix(in srgb, var(--blue) 35%, var(--panel2));
+}
+
+.cg-fill.cg-warn {
+  background: color-mix(in srgb, var(--amber) 45%, var(--panel2));
+}
+
+.cg-fill.cg-breach {
+  background: color-mix(in srgb, var(--red) 55%, var(--panel2));
+}
+
+/* ---------- Execution Safety screen (screens/SafetyScreen.tsx) ---------- */
+
+/* Inverted color doctrine (this screen fronts real money): locks OFF = the
+   calm SAFE state, locks ON = lit amber attention; GO is loud, NO-GO quiet;
+   UNKNOWN always dashed, never green, never calm-safe. */
+
+.sfy-banner {
+  margin: 14px 14px 0;
+  padding: 9px 12px;
+  font-size: 11.5px;
+  color: var(--amber);
+  border: 1px dashed color-mix(in srgb, var(--amber) 55%, var(--line2));
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--amber) 8%, var(--panel));
+}
+
+.sfy-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--panel2);
+}
+
+.sfy-row:last-child {
+  border-bottom: none;
+}
+
+.sfy-name {
+  width: 170px;
+  flex: none;
+  font-size: 11.5px;
+  color: var(--txt);
+}
+
+.sfy-val {
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.sfy-note {
+  font-size: 10px;
+  color: var(--faint);
+}
+
+.sfy-note.pad {
+  padding: 6px 12px;
+}
+
+/* A lock that is ON = the system is armed(able): the shared lit-amber lamp. */
+.sfy-armed {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--amber);
+  border: 1px solid var(--lamp-amber-border);
+  background: var(--lamp-amber-bg);
+  box-shadow: var(--lamp-amber-glow);
+  border-radius: 3px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+
+/* A lock that is OFF = safe: calm, dim, nothing glows. */
+.sfy-safe {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.sfy-warn {
+  font-size: 11px;
+  color: var(--amber);
+}
+
+.sfy-unknown {
+  font-size: 10.5px;
+  color: var(--dim);
+  border: 1px dashed var(--dim);
+  border-radius: 3px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
+.sfy-unknown-block {
+  padding: 10px 12px;
+  font-size: 11.5px;
+  color: var(--dim);
+  border: 1px dashed var(--dim);
+  border-radius: 3px;
+  margin: 10px 12px;
+}
+
+/* GO is the DANGEROUS verdict (real money may be armed) — it glows; NO-GO is
+   the quiet everyday state. */
+.sfy-go {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--amber);
+  border: 1px solid var(--lamp-amber-border);
+  background: var(--lamp-amber-bg);
+  box-shadow: var(--lamp-amber-glow);
+  border-radius: 3px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+
+.sfy-nogo {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+
+.sfy-check {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--panel2);
+  font-size: 11.5px;
+}
+
+.sfy-check:last-child {
+  border-bottom: none;
+}
+
+.sfy-mark {
+  font-family: var(--mono);
+  color: var(--dim);
+  flex: none;
+  width: 12px;
+}
+
+.sfy-mark.ok {
+  color: var(--txt);
+}
+
+.sfy-cname {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--txt);
+  flex: none;
+  width: 130px;
+}
+
+.sfy-advisory {
+  font-style: normal;
+  font-size: 9px;
+  color: var(--faint);
+  letter-spacing: 0.06em;
+}
+
+.sfy-detail {
+  color: var(--dim);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sfy-caps {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+.sfy-shield {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.sfy-shield th {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+  text-align: left;
+  font-weight: 400;
+  padding: 6px 12px 2px;
+}
+
+.sfy-shield td {
+  padding: 5px 12px;
+  border-top: 1px solid var(--panel2);
+  font-size: 11.5px;
+  color: var(--txt);
+}
+
+/* No snapshot = no claim: the dashed UNKNOWN treatment, writ large. */
+.sfy-shield-unknown {
+  margin: 10px 12px;
+  padding: 12px;
+  border: 1.5px dashed var(--dim);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--dim);
+  line-height: 1.5;
+}
+
+.sfy-shield-unknown-head {
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  color: var(--txt);
+  margin-bottom: 4px;
 }

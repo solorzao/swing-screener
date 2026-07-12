@@ -19,6 +19,7 @@ import type { BreakdownTab } from './components/PerformancePanel'
 import { ForwardScreen } from './screens/ForwardScreen'
 import { MissionControlScreen } from './screens/MissionControlScreen'
 import { PlaceholderScreen } from './screens/PlaceholderScreen'
+import { SafetyScreen } from './screens/SafetyScreen'
 import { SystemsScreen } from './screens/SystemsScreen'
 
 /** True when a keydown happened while typing — digit keys must never steal a
@@ -149,6 +150,8 @@ export default function App() {
             />
           ) : screen === 'forward' ? (
             <ForwardScreen fb={fb} facet={facet} />
+          ) : screen === 'safety' ? (
+            <SafetyScreen wake={wake} />
           ) : screen === 'systems' ? (
             <SystemsScreen beats={beats} wake={wake} />
           ) : (

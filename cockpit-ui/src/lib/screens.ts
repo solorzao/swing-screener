@@ -38,7 +38,7 @@ export const SCREENS: ScreenDef[] = [
   { id: 'forward', digit: '4', title: 'FORWARD BOOKS' },
   { id: 'playbooks', digit: '5', title: 'PLAYBOOKS', task: 18 },
   { id: 'analyst', digit: '6', title: 'ANALYST', task: 19 },
-  { id: 'safety', digit: '7', title: 'EXECUTION SAFETY', task: 15 },
+  { id: 'safety', digit: '7', title: 'EXECUTION SAFETY' },
   { id: 'weather', digit: '8', title: 'MARKET WEATHER', task: 20 },
   { id: 'systems', digit: '9', title: 'SYSTEMS' },
   { id: 'reference', digit: null, title: 'REFERENCE', task: 20 },
