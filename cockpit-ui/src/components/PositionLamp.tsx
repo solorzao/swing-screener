@@ -1,13 +1,11 @@
 import type { PositionBadge } from '../lib/api'
+import { Lamp } from './Lamp'
 
-/* The get-out lamp shared by the RiskStrip (Zone B), the positions table, and
-   Task 17's PickCard actionability cell. ONE definition of the swatch + its
-   screen-reader label so the two Task-16 surfaces never drift apart: the
-   colored swatch is aria-hidden (shape redundancy lives in .plamp-* CSS —
-   green circle / amber triangle / red square / dashed hollow), and a .vh span
-   carries the same text to a screen reader, so the state is never title-only
-   silence. `red` price ≤ stop, `yellow` ≥ target, `green` between, `unknown`
-   no quote. UNKNOWN is never green. */
+/* The get-out lamp for the RiskStrip (Zone B) and the positions table: it binds
+   the position-badge vocabulary to the shared Lamp primitive (the swatch + .vh
+   dual-render — see Lamp.tsx; PickCard's ActionabilityLamp binds its own). `red`
+   price ≤ stop, `yellow` ≥ target, `green` between, `unknown` no quote.
+   PositionBadge is exactly Lamp's color set, so the badge is the color. */
 
 const BADGE_TITLE: Record<PositionBadge, string> = {
   red: 'price at/under the stop',
@@ -17,14 +15,5 @@ const BADGE_TITLE: Record<PositionBadge, string> = {
 }
 
 export function PositionLamp({ badge }: { badge: PositionBadge }) {
-  return (
-    <>
-      <span
-        className={`plamp plamp-${badge}`}
-        title={BADGE_TITLE[badge]}
-        aria-hidden="true"
-      />
-      <span className="vh">{BADGE_TITLE[badge]}</span>
-    </>
-  )
+  return <Lamp color={badge} title={BADGE_TITLE[badge]} />
 }

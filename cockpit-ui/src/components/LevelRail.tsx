@@ -33,10 +33,15 @@ export function LevelRail({
   const lo = Math.min(stop, floor, lastClose ?? Infinity)
   const hi = Math.max(target, ceiling, lastClose ?? -Infinity)
   const span = hi - lo
-  const pos = (p: number): number => (span > 0 ? ((p - lo) / span) * 100 : 50)
+  // Clamp to the rail: an inverted level (a bad row) pins at an end rather than
+  // vanishing off-track.
+  const pos = (p: number): number =>
+    span > 0 ? Math.max(0, Math.min(100, ((p - lo) / span) * 100)) : 50
 
   let track: ReactNode
-  if (span <= 0) {
+  // `!(span > 0)` (not `span <= 0`) so a NaN span routes to the dashed
+  // degenerate strip instead of plotting `$NaN`-positioned ticks.
+  if (!(span > 0)) {
     track = (
       <div className="lr-track lr-degenerate" title="levels collapsed — nothing to plot" />
     )

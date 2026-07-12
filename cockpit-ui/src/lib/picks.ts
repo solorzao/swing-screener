@@ -10,10 +10,14 @@ import type { CohortRow, Stat } from './api'
  * play-type aggregate row; null when neither exists (no closed trades on this
  * facet yet — the caller simply omits the chip).
  *
- * The backend str-coerces a null-strength split key to the string "None"
- * (distinct from the aggregate row's real `null`), so a pick whose own strength
- * is null matches the "None" split first, then the aggregate — never the other
- * play type's rows. */
+ * This mirrors the aggregation in
+ * src/swing_screener/cockpit/routers/books.py::cohort_stats — play_type-major,
+ * an aggregate row with `strength: null`, and per-strength splits whose key is
+ * `str()`-coerced (a null strength becomes the sentinel string "None", distinct
+ * from the aggregate's real `null`). So a pick whose own strength is null
+ * matches the "None" split first, then the aggregate — never another play
+ * type's rows. (Follow-up: this join would be more robust as a server-resolved
+ * `cohort_stat: Stat | null` field on the pick row — see the commit body.) */
 export function resolveCohortStat(
   cohorts: CohortRow[],
   ref: { play_type: string; strength: string | null },

@@ -41,7 +41,7 @@ export function CapGauge({
     kind === 'usd'
       ? `${fmtUsd(cap.used, 0)} / ${fmtUsd(cap.limit, 0)}`
       : kind === 'r'
-        ? `today ${fmtR(cap.used)} · breaker at −${cap.limit.toFixed(2)}R`
+        ? `today ${fmtR(cap.used)} · breaker at ${fmtR(-cap.limit)}`
         : `${cap.used} / ${cap.limit} open`
 
   return (

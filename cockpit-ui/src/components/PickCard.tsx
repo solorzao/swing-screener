@@ -2,6 +2,8 @@ import { signalChartUrl } from '../lib/api'
 import type { Actionability, PickRow, Stat } from '../lib/api'
 import { fmtR } from '../lib/fmt'
 import { ConvictionChip } from './ConvictionChip'
+import { Lamp } from './Lamp'
+import type { LampColor } from './Lamp'
 import { LevelRail } from './LevelRail'
 import { StatChip } from './StatChip'
 
@@ -22,10 +24,10 @@ import { StatChip } from './StatChip'
    - `is_extra` marks a liveness-dropped pick — visually distinct, and it never
      consumed one of the surfaced five (the caller keeps it out of that count). */
 
-/** Actionability status → the shared position-lamp swatch color. The `.plamp-*`
- * vocabulary (green circle / amber triangle / red square / dashed hollow) is
- * reused verbatim so the pick lamp and the positions lamp never drift. */
-const ACT_COLOR: Record<Actionability['status'], string> = {
+/** Actionability status → the shared Lamp color. The `.plamp-*` vocabulary
+ * (green circle / amber triangle / red square / dashed hollow) is reused via
+ * the Lamp primitive so the pick lamp and the positions lamp never drift. */
+const ACT_COLOR: Record<Actionability['status'], LampColor> = {
   actionable: 'green',
   extended: 'yellow',
   broken: 'red',
@@ -47,9 +49,9 @@ function actTitle(status: Actionability['status'], isReversal: boolean): string 
   }
 }
 
-/** The actionability lamp: the shared swatch (aria-hidden) + a `.vh` label for a
- * screen reader (never title-only silence — the PositionLamp pattern) + the
- * visible status word with its dist_r. */
+/** The actionability lamp: the shared Lamp (swatch + `.vh` SR label, never
+ * title-only silence) bound to the actionability vocabulary, plus the visible
+ * status word with its dist_r. */
 function ActionabilityLamp({
   act,
   isReversal,
@@ -60,8 +62,7 @@ function ActionabilityLamp({
   const title = actTitle(act.status, isReversal)
   return (
     <span className="pk-act">
-      <span className={`plamp plamp-${ACT_COLOR[act.status]}`} title={title} aria-hidden="true" />
-      <span className="vh">{title}</span>
+      <Lamp color={ACT_COLOR[act.status]} title={title} />
       <span className={`pk-act-txt ltf-act-${act.status}`}>
         {act.status}
         {act.dist_r !== null && (

@@ -8,6 +8,8 @@ import {
   usePolling,
 } from '../lib/api'
 import type {
+  CohortRow,
+  Cohorts,
   Facet,
   ForwardBooks,
   Heartbeat,
@@ -32,8 +34,7 @@ import { StatChip } from '../components/StatChip'
 const WINDOWS: Window[] = ['all', '90', '180', '365']
 const PLAY_TYPES: PlayType[] = ['all', 'continuation', 'reversal']
 
-function CohortsSection({ facet, wake }: { facet: Facet; wake: number }) {
-  const cohorts = usePolling(() => getCohorts(facet), POLL_MS, wake, facet)
+function CohortsSection({ facet, cohorts }: { facet: Facet; cohorts: Polled<Cohorts> }) {
   return (
     <section className="panel">
       <div className="panel-head">
@@ -64,22 +65,21 @@ function CohortsSection({ facet, wake }: { facet: Facet; wake: number }) {
 /* Zone D — TODAY (the design's right-column pick surface, plan Task 17). The
    digest's surfaced picks in digest order as compact PickCards, then the
    liveness-dropped extras flagged beneath — never counted in the surfaced five.
-   Its own picks + cohorts polls (per-screen; die with Mission Control); the
-   cohort join is facet-scoped. The LOG action hands the pick's signal id up to
-   App, which navigates to the Candidates screen and prefills the form there
-   (Mission Control has no room to host it). */
+   Its own picks poll (per-screen; dies with Mission Control); the facet-scoped
+   cohorts poll is HOISTED to the screen and shared with CohortsSection (one
+   /api/cohorts per interval, two consumers). The LOG action hands the pick's
+   signal id up to App, which navigates to the Candidates screen and prefills
+   the form there (Mission Control has no room to host it). */
 function TodayZone({
-  facet,
   wake,
+  cohortRows,
   onLogPick,
 }: {
-  facet: Facet
   wake: number
+  cohortRows: CohortRow[]
   onLogPick: (signalId: number) => void
 }) {
   const picks = usePolling(getPicks, POLL_MS, wake)
-  const cohorts = usePolling(() => getCohorts(facet), POLL_MS, wake, facet)
-  const cohortRows = cohorts.data?.cohorts ?? []
   return (
     <section className="panel">
       <div className="panel-head">
@@ -225,6 +225,9 @@ export function MissionControlScreen({
 }) {
   const funnel = usePolling(getFunnel, POLL_MS, wake)
   const positions = usePolling(getPositions, POLL_MS, wake)
+  // One facet-scoped cohorts poll for the whole screen — Zone D's per-card
+  // StatChip join and the COHORTS panel both read it (no double /api/cohorts).
+  const cohorts = usePolling(() => getCohorts(facet), POLL_MS, wake, facet)
   return (
     <>
       <div className="zone-b">
@@ -261,8 +264,12 @@ export function MissionControlScreen({
         </div>
 
         <div className="col-stack">
-          <TodayZone facet={facet} wake={wake} onLogPick={onLogPick} />
-          <CohortsSection facet={facet} wake={wake} />
+          <TodayZone
+            wake={wake}
+            cohortRows={cohorts.data?.cohorts ?? []}
+            onLogPick={onLogPick}
+          />
+          <CohortsSection facet={facet} cohorts={cohorts} />
           <PerformanceSection
             facet={facet}
             win={win}
