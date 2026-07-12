@@ -6,12 +6,14 @@ import {
   getGate,
   getHealth,
   getHeartbeats,
+  getTicker,
   useEventWake,
   usePolling,
 } from './lib/api'
 import type { Facet, PlayType, Window } from './lib/api'
 import { SCREENS } from './lib/screens'
 import type { ScreenId } from './lib/screens'
+import { EventTicker } from './components/EventTicker'
 import { Masthead } from './components/Masthead'
 import type { CostLevel } from './components/Masthead'
 import { NeedsHandStrip } from './components/NeedsHandStrip'
@@ -23,8 +25,10 @@ import { MissionControlScreen } from './screens/MissionControlScreen'
 import { PlaceholderScreen } from './screens/PlaceholderScreen'
 import { PlaybooksScreen } from './screens/PlaybooksScreen'
 import { PositionsScreen } from './screens/PositionsScreen'
+import { ReferenceScreen } from './screens/ReferenceScreen'
 import { SafetyScreen } from './screens/SafetyScreen'
 import { SystemsScreen } from './screens/SystemsScreen'
+import { WeatherScreen } from './screens/WeatherScreen'
 
 /** The last analysis id the user has SEEN (localStorage; scope decision 14 —
  * "unread" is client-side, no migration). Missing / unparseable reads 0, so a
@@ -102,23 +106,27 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  /* The PERMANENT poll roster (plan scope decision 15) — exactly these five
-     outlive a screen switch: health (masthead + db-down card), heartbeats
-     (masthead caution lamp + both SYSTEMS panels), gate (masthead chips +
-     DISARM enablement via broker_configured), forward-books (the
-     Needs-Your-Hand strip's source, shared with the Mission Control panel and
-     the forward screen — one ~1s fetch, three consumers), attention (the
-     strip's proposal/reflection/analysis items, consumed by Tasks 19-20).
+  /* The PERMANENT poll roster (plan scope decision 15) — exactly these SIX
+     outlive a screen switch, feeding the three persistent chrome elements
+     (masthead · Needs-Your-Hand strip · Zone E ticker): health (masthead +
+     db-down card), heartbeats (masthead caution lamp + both SYSTEMS panels),
+     gate (masthead chips + DISARM enablement via broker_configured),
+     forward-books (the Needs-Your-Hand strip's source, shared with the Mission
+     Control panel and the forward screen — one ~1s fetch, three consumers),
+     attention (the strip's proposal/reflection/analysis items — Tasks 19-20),
+     and ticker (Zone E's merged event feed — the always-visible bottom strip;
+     its poll joins the permanent roster because the strip is on every screen).
      Everything else mounts with its screen and dies with it. A facet flip
      re-params ONLY the fb poll (usePolling's paramsKey — no remount, so
      screens that ignore facet keep their form/scroll state). Roster math:
-     forward-books + gate + attention is ~1.3s per 60s server-side; the heavy
-     per-screen endpoints only poll while visible. */
+     forward-books + gate + attention + ticker is a few light reads per 60s
+     server-side; the heavy per-screen endpoints only poll while visible. */
   const health = usePolling(getHealth, POLL_MS, wake)
   const beats = usePolling(getHeartbeats, POLL_MS, wake)
   const gate = usePolling(getGate, POLL_MS, wake)
   const attention = usePolling(getAttention, POLL_MS, wake)
   const fb = usePolling(() => getForwardBooks(facet), POLL_MS, wake, facet)
+  const ticker = usePolling(getTicker, POLL_MS, wake)
 
   const asOf = latest(
     health.lastFetched,
@@ -126,6 +134,7 @@ export default function App() {
     gate.lastFetched,
     attention.lastFetched,
     fb.lastFetched,
+    ticker.lastFetched,
   )
   // Stale heartbeats must not feed the caution lamp: on any fetch error the
   // masthead sees null and shows UNKNOWN instead of yesterday's green. The gate
@@ -187,6 +196,7 @@ export default function App() {
               The strip persists across EVERY screen, above the switch. */}
           <NeedsHandStrip
             cards={fb.error === null ? (fb.data?.cards ?? null) : null}
+            attention={attention.data}
             analysisUnread={analysisUnread}
             onNavigate={setScreen}
           />
@@ -224,13 +234,25 @@ export default function App() {
             <SafetyScreen wake={wake} />
           ) : screen === 'systems' ? (
             <SystemsScreen beats={beats} wake={wake} />
+          ) : screen === 'weather' ? (
+            <WeatherScreen wake={wake} />
+          ) : screen === 'reference' ? (
+            <ReferenceScreen wake={wake} />
           ) : (
-            // Everything else is a Task 15-20 placeholder; each future task
-            // replaces its branch with an import + one switch line here.
+            // Unreachable: every ScreenId has an explicit branch above (Task 20
+            // built the last two). The placeholder survives as the defensive
+            // default so a future ScreenId can never render blank.
             <PlaceholderScreen id={screen} />
           )}
         </>
       )}
+
+      {/* Zone E — the merged event ticker: the third persistent chrome element,
+          rendered OUTSIDE the db-down branch so it (like the masthead) is on
+          every screen and every state. Its poll rides the permanent roster
+          above; a db outage / fetch error keeps the last-good feed, or "…" when
+          nothing has been fetched yet. */}
+      <EventTicker feed={ticker} />
     </div>
   )
 }

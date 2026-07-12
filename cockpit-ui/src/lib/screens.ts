@@ -39,9 +39,9 @@ export const SCREENS: ScreenDef[] = [
   { id: 'playbooks', digit: '5', title: 'PLAYBOOKS' },
   { id: 'analyst', digit: '6', title: 'ANALYST' },
   { id: 'safety', digit: '7', title: 'EXECUTION SAFETY' },
-  { id: 'weather', digit: '8', title: 'MARKET WEATHER', task: 20 },
+  { id: 'weather', digit: '8', title: 'MARKET WEATHER' },
   { id: 'systems', digit: '9', title: 'SYSTEMS' },
-  { id: 'reference', digit: null, title: 'REFERENCE', task: 20 },
+  { id: 'reference', digit: null, title: 'REFERENCE' },
 ]
 
 const BY_ID = new Map(SCREENS.map((s) => [s.id, s]))

@@ -3896,3 +3896,407 @@ button.needs-hand-analysis:hover {
   font-size: 10px;
   color: var(--faint);
 }
+
+/* ---------- Needs-hand attention buttons (NeedsHandStrip.tsx) ----------
+   The Task-20 attention items (queued proposals · approved-pending · reflection
+   due) are the amber lamp treatment, but clickable — a button that navigates to
+   Playbooks. Same lit-amber face as .needs-hand-item; adds cursor + inherited
+   font so it reads as an actionable lamp, not a static one. */
+button.needs-hand-btn {
+  font: inherit;
+  cursor: pointer;
+}
+
+button.needs-hand-btn:hover {
+  border-color: var(--amber);
+}
+
+/* ---------- Zone E — event ticker (components/EventTicker.tsx) ----------
+   The always-visible bottom strip: a left label + a single horizontally-
+   scrollable row of source-tagged pills, sticky to the viewport bottom (the
+   masthead's counterpart at top). No animation — the row scrolls by hand/wheel. */
+.et {
+  position: sticky;
+  bottom: 0;
+  z-index: 9;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 34px;
+  padding: 0 14px;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+}
+
+.et-label {
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: var(--faint);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.et-scroll {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+  /* a thin, quiet scrollbar — the strip is dense, the track shouldn't shout */
+  scrollbar-width: thin;
+}
+
+.et-empty {
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.et-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  max-width: 320px;
+  padding: 2px 8px;
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  background: var(--panel2);
+  font-size: 11px;
+}
+
+.et-tag {
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  border: 1px solid var(--line2);
+  border-radius: 2px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+/* Per-source hue on the tag only — quiet, one accent each. */
+.et-src-exit .et-tag {
+  color: var(--amber);
+  border-color: color-mix(in srgb, var(--amber) 45%, var(--line2));
+}
+.et-src-execution .et-tag {
+  color: var(--blue);
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+.et-src-analyst .et-tag {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 45%, var(--line2));
+}
+.et-src-analysis .et-tag {
+  color: var(--blue);
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+
+.et-ticker {
+  color: var(--txt);
+  font-size: 11px;
+}
+
+.et-headline {
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- Market Weather screen (screens/WeatherScreen.tsx) ---------- */
+.wx {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+.wx-meta {
+  font-size: 10.5px;
+  color: var(--faint);
+}
+
+.wx-core {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wx-core-chips {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.wx-align {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  color: var(--dim);
+  white-space: nowrap;
+}
+.wx-align-aligned_bull {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 45%, var(--line2));
+  background: color-mix(in srgb, var(--green) 8%, var(--panel2));
+}
+.wx-align-aligned_bear {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 45%, var(--line2));
+  background: color-mix(in srgb, var(--red) 8%, var(--panel2));
+}
+.wx-align-mixed {
+  color: var(--amber);
+  border-color: color-mix(in srgb, var(--amber) 45%, var(--line2));
+}
+
+.wx-flip {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--line2));
+  color: var(--amber);
+  white-space: nowrap;
+}
+
+.wx-deep {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  white-space: nowrap;
+}
+/* is_deep=true: the analyst read, calm-neutral (never green — green is the tier
+   edge claim). is_deep=false: the deterministic fallback, hatched + dim so a
+   canned read is visibly not the analyst's. */
+.wx-deep-yes {
+  color: var(--txt);
+}
+.wx-deep-no {
+  color: var(--faint);
+  border-style: dashed;
+  background: var(--hatch);
+}
+
+.wx-core-text {
+  font-size: 13px;
+  color: var(--txt);
+  line-height: 1.45;
+}
+
+.wx-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px 14px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: 10px 0;
+}
+
+.wx-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.wx-cell-lab {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.wx-cell-val {
+  font-size: 12.5px;
+  color: var(--txt);
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.wx-flag {
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: var(--amber);
+  border: 1px solid color-mix(in srgb, var(--amber) 40%, var(--line2));
+  border-radius: 2px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+.wx-report {
+  font-size: 12px;
+}
+
+.wx-hist-wrap {
+  overflow-x: auto;
+  padding: 4px 12px 12px;
+}
+
+.wx-hist {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 11.5px;
+}
+.wx-hist th {
+  text-align: left;
+  font-weight: 400;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+  padding: 4px 12px 4px 0;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.wx-hist td {
+  padding: 5px 12px 5px 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: baseline;
+}
+.wx-hist-core {
+  color: var(--dim);
+}
+
+/* ---------- Reference screen (screens/ReferenceScreen.tsx) ---------- */
+.ref-search {
+  background: var(--bg);
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  color: var(--txt);
+  font-size: 12px;
+  padding: 3px 8px;
+  width: 130px;
+}
+
+.ref-count {
+  font-size: 10px;
+  color: var(--faint);
+  padding: 6px 12px 0;
+}
+
+.ref-filters {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.ref-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ref-filter-lab {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.ref-filter-in {
+  background: var(--bg);
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  color: var(--txt);
+  font-size: 12px;
+  padding: 3px 8px;
+  width: 160px;
+}
+
+.ref-table-wrap {
+  overflow-x: auto;
+  padding: 4px 12px 12px;
+}
+
+.ref-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 11.5px;
+}
+.ref-table th {
+  text-align: left;
+  font-weight: 400;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+  padding: 4px 12px 4px 0;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.ref-table td {
+  padding: 5px 12px 5px 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: baseline;
+}
+.ref-table th.ref-num,
+.ref-table td.ref-num {
+  text-align: right;
+}
+
+.ref-tkr {
+  color: var(--txt);
+}
+.ref-name {
+  color: var(--dim);
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ref-exch {
+  color: var(--faint);
+  font-size: 10.5px;
+}
+
+/* Manual closes are SHOWN but flagged: a subtle left rule + the "no alert" tag
+   makes the "why no email" legible without hiding the row. */
+.ref-exit-manual td {
+  background: color-mix(in srgb, var(--blue) 5%, transparent);
+}
+.ref-reason {
+  color: var(--txt);
+}
+.ref-manual-tag {
+  margin-left: 6px;
+  font-size: 8.5px;
+  letter-spacing: 0.04em;
+  color: var(--dim);
+  border: 1px dashed var(--line2);
+  border-radius: 2px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+.ref-book {
+  color: var(--dim);
+}
+.ref-exit-msg {
+  color: var(--dim);
+  max-width: 380px;
+}
+.ref-sent {
+  color: var(--dim);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+.ref-kind {
+  color: var(--dim);
+}
+.ref-subject {
+  color: var(--txt);
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
