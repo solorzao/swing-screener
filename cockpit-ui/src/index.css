@@ -200,7 +200,10 @@ button.db-login:disabled {
 
 /* Segmented controls (components/Segmented.tsx — masthead + panel heads):
    buttons in a bordered span. Enabled segments are live; disabled ones stay the
-   Phase-2 "visible commitments, dead controls beat absent ones" treatment. */
+   Phase-2 "visible commitments, dead controls beat absent ones" treatment.
+   Theme via ancestor compounds (.perf-head .seg button), not bare className
+   selectors — a bare .x-tabs button ties .seg button at (0,1,1) and wins only
+   by source order. */
 .seg {
   display: flex;
 }

@@ -32,7 +32,15 @@ export function Segmented<T extends string>({
   className?: string
 }) {
   return (
-    <span className={className === undefined ? 'seg' : `seg ${className}`} title={title}>
+    // role="group" + aria-label: without them a screen reader hears a run of
+    // unrelated toggle buttons with no announced grouping. The group title IS
+    // the accessible name when one exists; no title, no invented text.
+    <span
+      className={className === undefined ? 'seg' : `seg ${className}`}
+      role="group"
+      title={title}
+      aria-label={title}
+    >
       {options.map((o) => (
         <button
           key={o.value}
