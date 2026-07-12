@@ -20,6 +20,7 @@ export type ScreenId =
   | 'weather'
   | 'systems'
   | 'reference'
+  | 'gexlab'
 
 export interface ScreenDef {
   id: ScreenId
@@ -42,6 +43,7 @@ export const SCREENS: ScreenDef[] = [
   { id: 'weather', digit: '8', title: 'MARKET WEATHER' },
   { id: 'systems', digit: '9', title: 'SYSTEMS' },
   { id: 'reference', digit: null, title: 'REFERENCE' },
+  { id: 'gexlab', digit: null, title: 'GEX LAB' },
 ]
 
 const BY_ID = new Map(SCREENS.map((s) => [s.id, s]))
@@ -54,6 +56,10 @@ export function screenDef(id: ScreenId): ScreenDef {
   return def
 }
 
-/** The display NUMBER (design numbering): the digit key, or '10' for the
- * digitless Reference screen. */
-export const screenNumber = (def: ScreenDef): string => def.digit ?? '10'
+/** The display NUMBER (design numbering): the digit key for the 1-9 screens, or
+ * a sequential 10, 11, … for the digitless masthead-link screens (Reference is
+ * 10, GEX LAB 11) — derived from registry order, so a new digitless screen never
+ * collides on a hard-coded number. */
+const DIGITLESS = SCREENS.filter((s) => s.digit === null)
+export const screenNumber = (def: ScreenDef): string =>
+  def.digit ?? String(10 + DIGITLESS.indexOf(def))

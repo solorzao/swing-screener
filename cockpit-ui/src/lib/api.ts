@@ -1034,6 +1034,215 @@ export const getAnalyst = (): Promise<AnalystReport> =>
 export const getAttention = (): Promise<Attention> =>
   fetchJson<Attention>('/api/attention')
 
+/* ---------- GEX lab wire shapes (routers/gex.py) ---------- */
+
+/** One GEX snapshot — deterministic level facts, so plain nullable numbers, NOT
+ * Stats (a level has no n / CI / provenance). A null level renders an em dash. */
+export interface GexSnapshot {
+  underlying: string
+  ts: string
+  spot: number | null
+  call_wall: number | null
+  put_wall: number | null
+  gamma_flip: number | null
+  regime: string
+  thin_chain: boolean
+}
+
+export interface GexPlanResponse {
+  snapshots: GexSnapshot[]
+  watchlist: string[]
+}
+
+/** One built DayPlan row (POST plan/build with no ticker). bias is
+ * bullish|bearish|tangled, call is breakout|range|stand_down; spacing_pct is
+ * already a percent number (not a fraction). */
+export interface GexDayPlan {
+  underlying: string
+  bias: string
+  regime: string
+  call: string
+  spacing_pct: number | null
+  call_wall: number | null
+  put_wall: number | null
+  gamma_flip: number | null
+  spot: number | null
+}
+
+/** Single-ticker analyze result (POST plan/build with a ticker). thin_reasons
+ * are the loud per-reason strings when thin_chain — levels are unreliable. */
+export interface GexAnalyzed {
+  underlying: string
+  regime: string
+  call_wall: number | null
+  put_wall: number | null
+  gamma_flip: number | null
+  spot: number | null
+  thin_chain: boolean
+  thin_reasons: string[]
+}
+
+/** plan/build returns EITHER {plans} (no ticker) OR {analyzed} (a ticker) —
+ * exactly one branch is present; the caller narrows on which. */
+export interface GexBuildResult {
+  plans?: GexDayPlan[]
+  analyzed?: GexAnalyzed
+}
+
+export type GexGrade = 'A+' | 'B' | 'no_trade'
+export type GexStatus = 'idea' | 'taken' | 'skipped'
+
+/** The 12 checklist keys — the exact OptionSetup.chk_* columns (checklist.py). */
+export interface GexChecklist {
+  chk_daily_bias_clear: boolean
+  chk_daily_stack_ordered: boolean
+  chk_m5_agrees: boolean
+  chk_gex_levels_marked: boolean
+  chk_price_at_pivot: boolean
+  chk_regime_match: boolean
+  chk_pattern_clean: boolean
+  chk_volume_confirming: boolean
+  chk_risk_sized: boolean
+  chk_stop_structural: boolean
+  chk_rr_at_least_2: boolean
+  chk_confirmation_candle: boolean
+}
+
+/** One journaled setup — the checklist booleans ride inline (spread into the
+ * row server-side). grade is the graded verdict ("A+"|"B"|"no_trade"). */
+export interface GexSetup extends GexChecklist {
+  id: number
+  ts: string
+  underlying: string
+  direction: string
+  regime: string
+  grade: string
+  status: string
+  pattern: string
+  notes: string
+  pivot_level: number | null
+  entry: number | null
+  stop: number | null
+  target: number | null
+}
+
+export interface GexSetupsResponse {
+  setups: GexSetup[]
+}
+
+/** POST /api/gex/setups body — the checklist carries all 12 keys; the server
+ * grades it (422 on an unknown/missing key). */
+export interface GexSetupCreate {
+  underlying: string
+  direction: string
+  checklist: GexChecklist
+  entry?: number | null
+  stop?: number | null
+  target?: number | null
+  regime?: string
+  pivot_level?: number | null
+  pattern?: string
+  notes?: string
+}
+
+/** A lab Stat with its checklist grade label (GET /api/gex/stats by_grade). */
+export interface GexGradeStat extends Stat {
+  grade: string
+}
+
+/** One Robinhood strategy tag's premium book — PLAIN labeled values, NOT a Stat
+ * (premium dollars, no CI, no R). total_pnl sums premium P&L; open counts open
+ * rows. */
+export interface RobinhoodBook {
+  n: number
+  total_pnl: number
+  wins: number
+  losses: number
+  open: number
+}
+
+/** GET /api/gex/stats. `robinhood` is keyed by strategy tag ("gex"/"other") —
+ * a tag with no imported rows is simply ABSENT, never a zeroed book. */
+export interface GexStats {
+  overall: Stat
+  by_grade: GexGradeStat[]
+  robinhood: Record<string, RobinhoodBook>
+}
+
+/** One paired import episode (open→close of an occ contract). needs_review
+ * flags an episode the pairer could not fully reconcile. import_key is the
+ * commit-tag join key. */
+export interface GexEpisode {
+  occ_symbol: string
+  underlying: string
+  opened_on: string
+  closed_on: string | null
+  status: string
+  contracts: number
+  entry_premium: number | null
+  exit_premium: number | null
+  pnl: number | null
+  exit_reason: string | null
+  needs_review: boolean
+  import_key: string
+}
+
+export interface GexParseResult {
+  episodes: GexEpisode[]
+  fills_added: number
+  fills_skipped: number
+}
+
+export interface GexCommitResult {
+  committed: number
+}
+
+export const getGexPlan = (): Promise<GexPlanResponse> =>
+  fetchJson<GexPlanResponse>('/api/gex/plan')
+
+/** Build the day's plans (no ticker) OR analyze one ticker — the response
+ * branch (plans vs analyzed) follows the argument. Both touch the network
+ * server-side (a yfinance chain fetch), so this can be slow. */
+export const postGexBuild = (ticker?: string): Promise<GexBuildResult> =>
+  postAction<GexBuildResult>(
+    '/api/gex/plan/build',
+    ticker !== undefined && ticker.trim() !== '' ? { ticker: ticker.trim() } : {},
+  )
+
+export const getGexSetups = (day?: string): Promise<GexSetupsResponse> =>
+  fetchJson<GexSetupsResponse>(
+    day === undefined || day === ''
+      ? '/api/gex/setups'
+      : `/api/gex/setups?day=${encodeURIComponent(day)}`,
+  )
+
+/** Journal a graded setup — the server grades the checklist and returns the row. */
+export const postGexSetup = (body: GexSetupCreate): Promise<GexSetup> =>
+  postAction<GexSetup>('/api/gex/setups', body)
+
+/** Take (opens a paper trade) or skip an `idea` setup. */
+export const postGexSetupStatus = (
+  setupId: number,
+  status: 'taken' | 'skipped',
+): Promise<GexSetup> =>
+  postAction<GexSetup>(`/api/gex/setups/${setupId}/status`, { status })
+
+/** Parse a broker activity CSV into paired episodes (idempotently stores the
+ * fills); the commit is a separate step over the same CSV. */
+export const postGexImportParse = (csvText: string): Promise<GexParseResult> =>
+  postAction<GexParseResult>('/api/gex/import/parse', { csv_text: csvText })
+
+/** Commit the tagged episodes — `tags` maps each episode's import_key to
+ * "gex" | "other" | "skip". Re-parses the same CSV server-side. */
+export const postGexImportCommit = (
+  csvText: string,
+  tags: Record<string, string>,
+): Promise<GexCommitResult> =>
+  postAction<GexCommitResult>('/api/gex/import/commit', { csv_text: csvText, tags })
+
+export const getGexStats = (): Promise<GexStats> =>
+  fetchJson<GexStats>('/api/gex/stats')
+
 export interface Polled<T> {
   data: T | null
   error: string | null
