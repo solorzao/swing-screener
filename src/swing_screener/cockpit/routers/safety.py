@@ -11,7 +11,6 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -22,7 +21,8 @@ from swing_screener.cockpit.common import (
     _require_cockpit,
 )
 from swing_screener.cockpit.livedata import BrokerSnapshot, Snapshot
-from swing_screener.db.models import AnalystCall, DisarmEvent
+from swing_screener.cockpit.spend import spend_rows_since
+from swing_screener.db.models import DisarmEvent
 from swing_screener.db.repo import latest_recorded_stop
 from swing_screener.pipeline.autonomy import autonomy_gate, gate_countdown
 from swing_screener.pipeline.broker import BrokerClient
@@ -81,15 +81,18 @@ def build_safety_router(
         so the arithmetic is never reimplemented here. A missing verdicts sidecar
         reads as not-ready (the gate's own missing-file posture), never an error.
         ``execution_mode`` reads the env-backed settings at request time;
-        ``analyst_spend_today_usd`` sums ``est_cost_usd`` over TODAY's AnalystCall
-        rows (NULL costs -- the deterministic/fallback path -- count 0.0).
+        ``analyst_spend_today_usd`` sums ``est_cost_usd`` over TODAY's LLM spend
+        UNIONED across analyst calls + Journal v2 coach/audit rows (NULL costs --
+        the deterministic/fallback path -- count 0.0).
         ``broker_configured`` is settings TRUTHINESS (is ``SWING_BROKER`` set),
         NEVER connectivity: DISARM's enablement keys on it, and it rides this
         already-polled endpoint so the always-visible masthead needs no extra poll.
         """
         report = autonomy_gate(session, edge_dir=resolve_edge_dir(edge_dir))
-        calls = session.scalars(
-            select(AnalystCall).where(AnalystCall.created_date == date.today())
+        today = date.today()
+        # union across analyst calls + Journal v2 coach/audit spend (NULL costs -> 0.0)
+        spend_today = sum(
+            (c or 0.0) for d, c in spend_rows_since(session, today) if d == today
         )
         settings = load_settings()
         return {
@@ -97,7 +100,7 @@ def build_safety_router(
             "countdown": gate_countdown(report),
             "execution_mode": settings.execution_mode,
             "broker_configured": bool(settings.broker),
-            "analyst_spend_today_usd": sum((c.est_cost_usd or 0.0 for c in calls), 0.0),
+            "analyst_spend_today_usd": spend_today,
         }
 
     @router.post("/api/disarm", dependencies=[Depends(_require_cockpit)])
