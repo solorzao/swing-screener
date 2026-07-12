@@ -21,6 +21,22 @@ what every module must bring.
 ARCHITECTURE's naming policy. The rest of this README documents module 1 and the shared
 platform it runs on.)*
 
+### Module 2: the GEX options lab (Phase 1)
+
+A local, **paper-only** lab for learning the GEX day-trading method (9/21/50 EMA stacks +
+dealer-gamma levels + a 12-point A+ checklist). Phase 1 is a prep/journal/grader — no live
+feed, no Azure job, no execution path exists. CLI (`python -m swing_screener.options.run`):
+
+| Command | What it does |
+|---|---|
+| `plan` | pre-market: compute the SPY/QQQ GEX map (in-house, chain OI × Black-Scholes gamma) + daily EMA bias → a breakout / range / stand-down day plan |
+| `analyze <ticker> [--save]` | ad-hoc GEX map for any optionable ticker, with a thin-chain warning |
+| `settle` | post-close: replay the session's completed 5-minute bars to resolve open lab trades to R-multiples |
+| `import-robinhood <csv> [--tag-all=gex\|other]` | import a Robinhood activity export into a separate premium book, review-and-tag which trades were GEX |
+
+Charter: [docs/modules/gex-lab.md](docs/modules/gex-lab.md) · playbook: [edge/gex.md](edge/gex.md).
+The cockpit GEX Lab tab lands after the cockpit Phase-3 restructure.
+
 ## Module 1: the swing screener
 
 A self-improving **swing-trading system**. It screens a universe of stocks for **Heiken Ashi**
