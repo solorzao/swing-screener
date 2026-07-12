@@ -315,7 +315,8 @@ def _record_dict(rec: TradeRecord) -> dict[str, object]:
         "opened": rec.opened.isoformat() if rec.opened is not None else None,
         "closed": rec.closed.isoformat() if rec.closed is not None else None,
         "unit": rec.unit,
-        "r": _finite_or_none(rec.r) if rec.r is not None else None,
+        # wire key stays "r" for FE compat; value is the unit-tagged result
+        "r": _finite_or_none(rec.result) if rec.result is not None else None,
         "tags": [{"name": t.name, "kind": t.kind, "source": t.source}
                  for t in rec.tags],
         "theses": [{"event_kind": h.event_kind, "source": h.source, "body": h.body}

@@ -58,7 +58,7 @@ class TradeRecord:
     opened: date | None
     closed: date | None
     unit: str
-    r: float | None
+    result: float | None  # interpreted by ``unit`` ("R" for swing/manual, "$" for robinhood)
     tags: list[TagView] = field(default_factory=list)
     theses: list[ThesisView] = field(default_factory=list)
 
@@ -68,8 +68,8 @@ def trade_records(session: Session, *, book: str) -> list[TradeRecord]:
     stable id order, each carrying its book-scoped tags and theses.
 
     ``opened`` prefers ``opened_date`` and falls back to ``entry_date`` (a legacy row
-    may carry only the fill date); ``closed`` is ``exit_date`` (None while open); ``r``
-    is ``realized_r`` (None until closed). Tags/theses are resolved to display views in
+    may carry only the fill date); ``closed`` is ``exit_date`` (None while open);
+    ``result`` is ``realized_r`` (None until closed). Tags/theses are display views in
     application order. Pure read; no aggregation. Empty book -> ``[]``.
     """
     trades = list(session.scalars(
@@ -92,7 +92,7 @@ def trade_records(session: Session, *, book: str) -> list[TradeRecord]:
             opened=t.opened_date if t.opened_date is not None else t.entry_date,
             closed=t.exit_date,
             unit="R",
-            r=t.realized_r,
+            result=t.realized_r,
             tags=tags_by_trade.get(t.id, []),
             theses=theses_by_trade.get(t.id, []),
         )
