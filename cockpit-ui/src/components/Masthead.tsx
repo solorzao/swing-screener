@@ -226,6 +226,17 @@ export function Masthead({
         GEX LAB
       </button>
 
+      {/* SYSTEM AUDIT — the third-party machine-conduct auditor (compliance,
+          anomalies, breaches). Its own door: distinct from the personal Journal. */}
+      <button
+        type="button"
+        className="mh-ref"
+        title="System Audit — machine-conduct oversight (caps, reject rate, disarms, drought, calibration drift)"
+        onClick={() => onNavigate('systemaudit')}
+      >
+        SYSTEM AUDIT
+      </button>
+
       {/* DISARM enablement keys on the PERMANENT gate poll's broker_configured
           (settings truthiness, never connectivity); App force-nulls the gate on
           a fetch error, so a stale broker_configured can never arm the button. */}

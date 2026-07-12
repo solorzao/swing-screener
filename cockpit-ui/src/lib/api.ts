@@ -212,6 +212,8 @@ export interface TradeCreate {
   stop: number
   target: number
   notes?: string
+  /** Journal v2: the discretionary entry emotion (FOMO, calm…) — manual only. */
+  emotional_state?: string | null
   /** Set when the form was prefilled from a pick — the server verifies the row
    * exists (422 otherwise) and stamps `override` from the plan deviation. */
   signal_id?: number | null
@@ -1037,8 +1039,18 @@ export const getAttention = (): Promise<Attention> =>
 /* ---------- Phase 3 wire shapes (routers/journal.py) ---------- */
 
 /** The journal's per-account firewall: one book selects one account. Distinct
- * from the masthead `Facet` (research/gold) — these are the trade accounts. */
-export type JournalBook = 'research' | 'paper' | 'live'
+ * from the masthead `Facet` (research/gold) — these are the trade accounts.
+ * research/paper/live are the MACHINE shadow-grid books; manual_equity/robinhood
+ * are Oliver's real PERSONAL books (the Coach's scope, never the machine's). */
+export type JournalBook =
+  | 'research'
+  | 'paper'
+  | 'live'
+  | 'manual_equity'
+  | 'robinhood'
+
+/** A personal book — the only books the Coach voice is applied to. */
+export type CoachBook = 'manual_equity' | 'robinhood'
 
 /** One P&L calendar cell: summed R (null under the non-finite→null rule) + count.
  * Shared by the day grid and the month roll-up. */
@@ -1204,6 +1216,96 @@ export const getJournalNotes = (day: string): Promise<JournalNote[]> =>
 /** Write a human notebook entry (X-Cockpit guarded; `source` stamped server-side). */
 export const postJournalNote = (body: NoteCreate): Promise<JournalNote> =>
   postAction<JournalNote>('/api/journal/notes', body)
+
+/* ---------- Journal v2 Coach wire shapes (routers/coach.py) ---------- */
+
+/** One parked auto-tag proposal (lives in a review's facts until confirmed). */
+export interface TagProposal {
+  name: string
+  kind: string
+  reason: string
+}
+
+/** One Coach review of a real personal trade. `facts` is the code-owned scorecard
+ * (authoritative); `narrative` is advisory LLM prose (null until the async draft
+ * lands); `human_edit` is Oliver's own edit. Displayed figures come from `facts`. */
+export interface CoachReview {
+  id: number
+  kind: string
+  book: CoachBook
+  trade_id: number | null
+  generated_at: string | null
+  model: string | null
+  est_cost_usd: number | null
+  narrative: string | null
+  human_edit: string | null
+  facts: {
+    result?: number | null
+    unit?: string
+    outcome?: string
+    hold_days?: number | null
+    moved_stop?: boolean
+    override?: string | null
+    emotional_state?: string | null
+    tag_proposals?: TagProposal[]
+    [k: string]: unknown
+  }
+}
+
+/** The current Weaknesses Profile (a distillation, staleness-stamped). */
+export interface WeaknessesProfile {
+  items: { weakness: string; count?: number; evidence?: { book: string; trade_id: number }[] }[]
+  thin_data: boolean
+  n_reviews: number
+  generated_at: string | null
+}
+
+export const getCoachReviews = (book: CoachBook): Promise<CoachReview[]> =>
+  fetchJson<CoachReview[]>(`/api/coach/reviews?book=${book}`)
+
+export const getWeaknesses = (): Promise<WeaknessesProfile> =>
+  fetchJson<WeaknessesProfile>('/api/coach/weaknesses')
+
+/** Save Oliver's edited prose onto a review (X-Cockpit guarded). */
+export const postCoachEdit = (id: number, humanEdit: string): Promise<CoachReview> =>
+  postAction<CoachReview>(`/api/coach/reviews/${id}/edit`, { human_edit: humanEdit })
+
+/** Confirm a parked proposal -> the overlay tag (source=analyst) is written. */
+export const postConfirmTag = (
+  id: number,
+  tag: { name: string; kind: string },
+): Promise<{ applied: { name: string; kind: string }; trade_id: number }> =>
+  postAction(`/api/coach/reviews/${id}/confirm-tag`, tag)
+
+/* ---------- Journal v2 Auditor wire shapes (routers/audit.py) ---------- */
+
+/** One System Behavior Audit — a weekly conduct report or an immediate breach.
+ * `findings` is the code-owned conduct scorecard; `narrative` advisory prose. */
+export interface AuditReport {
+  id: number
+  kind: string
+  period_from: string
+  period_to: string
+  breach_key: string
+  severity: string
+  acknowledged: boolean
+  generated_at: string | null
+  model: string | null
+  est_cost_usd: number | null
+  narrative: string | null
+  findings: Record<string, unknown>
+}
+
+export const getAuditReports = (): Promise<AuditReport[]> =>
+  fetchJson<AuditReport[]>('/api/audit/reports')
+
+export const getAuditBreaches = (): Promise<AuditReport[]> =>
+  fetchJson<AuditReport[]>('/api/audit/breaches')
+
+/** Acknowledge a report/breach (X-Cockpit guarded, no body). */
+export const postAuditAck = (id: number): Promise<AuditReport> =>
+  postAction<AuditReport>(`/api/audit/${id}/ack`)
+
 /* ---------- GEX lab wire shapes (routers/gex.py) ---------- */
 
 /** One GEX snapshot — deterministic level facts, so plain nullable numbers, NOT

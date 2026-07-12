@@ -22,6 +22,7 @@ export type ScreenId =
   | 'reference'
   | 'journal'
   | 'gexlab'
+  | 'systemaudit'
 
 export interface ScreenDef {
   id: ScreenId
@@ -46,6 +47,7 @@ export const SCREENS: ScreenDef[] = [
   { id: 'reference', digit: null, title: 'REFERENCE' },
   { id: 'journal', digit: null, title: 'JOURNAL' },
   { id: 'gexlab', digit: null, title: 'GEX LAB' },
+  { id: 'systemaudit', digit: null, title: 'SYSTEM AUDIT' },
 ]
 
 const BY_ID = new Map(SCREENS.map((s) => [s.id, s]))

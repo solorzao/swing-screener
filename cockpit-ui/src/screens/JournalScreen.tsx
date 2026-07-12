@@ -10,12 +10,17 @@ import {
   getJournalMistakes,
   getJournalNotes,
   getJournalRecords,
+  getCoachReviews,
+  getWeaknesses,
+  postConfirmTag,
   postJournalNote,
   usePolling,
 } from '../lib/api'
 import type {
   BreakdownBy,
   CalendarCell,
+  CoachBook,
+  CoachReview,
   JournalBook,
   JournalCalendar,
   JournalCurve,
@@ -24,6 +29,7 @@ import type {
   MistakeRow,
   NoteKind,
   TradeRecordRow,
+  WeaknessesProfile,
 } from '../lib/api'
 import { dashOr, fmtR } from '../lib/fmt'
 import { PanelBody } from '../components/PanelBody'
@@ -49,10 +55,25 @@ import { StatChip } from '../components/StatChip'
 const MINUS = '−'
 
 const BOOK_OPTIONS: { value: JournalBook; label: string; title: string }[] = [
-  { value: 'research', label: 'research', title: 'the wide would-surface grid' },
-  { value: 'paper', label: 'paper', title: 'the curated intent (paper) book' },
-  { value: 'live', label: 'live', title: 'the live-money account' },
+  { value: 'manual_equity', label: 'manual equity', title: 'your real equity trades (the Coach view)' },
+  { value: 'robinhood', label: 'robinhood', title: 'your real options book ($ premium, never R)' },
+  { value: 'research', label: 'research', title: 'the wide would-surface grid (machine)' },
+  { value: 'paper', label: 'paper', title: 'the curated intent (paper) book (machine)' },
+  { value: 'live', label: 'live', title: 'the live-money account (machine)' },
 ]
+
+/** The two PERSONAL books get the Coach view; the three machine books get the v1
+ * stat panels (which are R-native over the shadow book and don't apply here). */
+const PERSONAL_BOOKS: ReadonlySet<string> = new Set(['manual_equity', 'robinhood'])
+function isPersonalBook(book: JournalBook): book is CoachBook {
+  return PERSONAL_BOOKS.has(book)
+}
+
+/** Format a review's result with its unit ("2R" / "$42"), em dash when null. */
+function fmtResult(result: number | null | undefined, unit: string | undefined): string {
+  if (result === null || result === undefined) return '—'
+  return unit === '$' ? `$${result}` : `${result}R`
+}
 
 /** The book's slippage vintage as a caption stamp — null = mixed / unstamped. */
 function costCaption(costLevel: string | null): string {
@@ -649,8 +670,118 @@ function RecordsPanel({ book, wake }: { book: JournalBook; wake: number }) {
 
 /* ================= screen ================= */
 
+/* ================= COACH REVIEWS (Journal v2) ================= */
+
+/** Per-trade coaching over a personal book. Facts are code-owned (rendered here);
+ * `narrative`/`human_edit` are advisory prose. Parked tag proposals confirm into the
+ * overlay (source=analyst) on click — the confirm gate. */
+function CoachReviewsPanel({ book, wake }: { book: CoachBook; wake: number }) {
+  const [bump, setBump] = useState(0)
+  const reviews = usePolling(() => getCoachReviews(book), POLL_MS, wake + bump, book)
+  const confirm = (id: number, name: string, kind: string) => {
+    postConfirmTag(id, { name, kind }).then(
+      () => setBump((b) => b + 1),
+      () => {},
+    )
+  }
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        COACH REVIEWS
+        <span className="panel-caption">
+          per-trade coaching · {book} — numbers owned by code, prose advisory
+        </span>
+      </div>
+      <PanelBody polled={reviews} noun="reviews">
+        {(rows: CoachReview[]) =>
+          rows.length === 0 ? (
+            <div className="panel-wait">no reviews yet — they appear as you close manual trades</div>
+          ) : (
+            <div className="jr-notes">
+              {rows.map((r) => (
+                <div key={r.id} className="jr-note">
+                  <div className="jr-note-meta">
+                    <span className="jr-note-kind">{String(r.facts.outcome ?? '—')}</span>
+                    <span className="mono">{fmtResult(r.facts.result, r.facts.unit)}</span>
+                    {r.facts.moved_stop === true && (
+                      <span className="jr-note-tag">moved stop</span>
+                    )}
+                    {r.facts.emotional_state != null && (
+                      <span className="jr-note-tag">{r.facts.emotional_state}</span>
+                    )}
+                    <span className="jr-note-when mono">{r.generated_at ?? '—'}</span>
+                  </div>
+                  <div className="jr-note-text">
+                    {r.human_edit ?? r.narrative ?? '(draft pending…)'}
+                  </div>
+                  {(r.facts.tag_proposals ?? []).length > 0 && (
+                    <div className="jr-note-actions">
+                      <span className="jr-note-hint">confirm a tag:</span>
+                      {(r.facts.tag_proposals ?? []).map((p) => (
+                        <button
+                          key={p.name}
+                          type="button"
+                          className="ltf-btn"
+                          title={p.reason}
+                          onClick={() => confirm(r.id, p.name, p.kind)}
+                        >
+                          {p.name} ({p.kind})
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )
+        }
+      </PanelBody>
+    </section>
+  )
+}
+
+/** The current Weaknesses Profile — a staleness-stamped distillation, thin-data honest. */
+function WeaknessesPanel({ wake }: { wake: number }) {
+  const prof = usePolling(() => getWeaknesses(), POLL_MS, wake)
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        WEAKNESSES
+        <span className="panel-caption">standing patterns across your reviews — a living distillation</span>
+      </div>
+      <PanelBody polled={prof} noun="profile">
+        {(p: WeaknessesProfile) => (
+          <div className="jr-weak">
+            {p.thin_data && (
+              <div className="panel-wait">
+                thin data ({p.n_reviews} reviews) — read as a hint, not a verdict
+              </div>
+            )}
+            {p.items.length === 0 ? (
+              <div className="panel-wait">no recurring weakness yet</div>
+            ) : (
+              <ul className="jr-weak-list">
+                {p.items.map((it) => (
+                  <li key={it.weakness}>
+                    {it.weakness}
+                    {it.count != null && it.count > 0 ? ` ×${it.count}` : ''}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {p.generated_at != null && (
+              <span className="jr-note-hint">as of {p.generated_at}</span>
+            )}
+          </div>
+        )}
+      </PanelBody>
+    </section>
+  )
+}
+
 export function JournalScreen({ wake }: { wake: number }) {
-  const [book, setBook] = useState<JournalBook>('research')
+  const [book, setBook] = useState<JournalBook>('manual_equity')
+  const personal = isPersonalBook(book)
 
   return (
     <main className="grid-single">
@@ -663,20 +794,32 @@ export function JournalScreen({ wake }: { wake: number }) {
           onChange={setBook}
         />
         <span className="jr-toolbar-note">
-          R-native · per-book firewall — one account, never pooled
+          {personal
+            ? 'your real trades — the Coach view (never pooled with the machine books)'
+            : 'R-native · per-book firewall — one account, never pooled'}
         </span>
       </div>
 
-      <CalendarPanel book={book} wake={wake} />
-      <CurvePanel book={book} wake={wake} />
-      <BreakdownsPanel book={book} wake={wake} />
-      <div className="jr-two">
-        <ExcursionsPanel book={book} wake={wake} />
-        <DisciplinePanel book={book} wake={wake} />
-      </div>
-      <MistakesPanel book={book} wake={wake} />
-      <NotebookPanel wake={wake} />
-      <RecordsPanel book={book} wake={wake} />
+      {personal ? (
+        <>
+          <CoachReviewsPanel book={book} wake={wake} />
+          <WeaknessesPanel wake={wake} />
+          <RecordsPanel book={book} wake={wake} />
+        </>
+      ) : (
+        <>
+          <CalendarPanel book={book} wake={wake} />
+          <CurvePanel book={book} wake={wake} />
+          <BreakdownsPanel book={book} wake={wake} />
+          <div className="jr-two">
+            <ExcursionsPanel book={book} wake={wake} />
+            <DisciplinePanel book={book} wake={wake} />
+          </div>
+          <MistakesPanel book={book} wake={wake} />
+          <NotebookPanel wake={wake} />
+          <RecordsPanel book={book} wake={wake} />
+        </>
+      )}
     </main>
   )
 }

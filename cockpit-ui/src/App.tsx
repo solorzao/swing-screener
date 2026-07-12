@@ -29,6 +29,7 @@ import { PlaybooksScreen } from './screens/PlaybooksScreen'
 import { PositionsScreen } from './screens/PositionsScreen'
 import { ReferenceScreen } from './screens/ReferenceScreen'
 import { SafetyScreen } from './screens/SafetyScreen'
+import { SystemAuditScreen } from './screens/SystemAuditScreen'
 import { SystemsScreen } from './screens/SystemsScreen'
 import { WeatherScreen } from './screens/WeatherScreen'
 
@@ -244,6 +245,8 @@ export default function App() {
             <ReferenceScreen wake={wake} />
           ) : screen === 'journal' ? (
             <JournalScreen wake={wake} />
+          ) : screen === 'systemaudit' ? (
+            <SystemAuditScreen wake={wake} />
           ) : (
             // Unreachable: every ScreenId has an explicit branch above (Task 20
             // built the last two). The placeholder survives as the defensive
