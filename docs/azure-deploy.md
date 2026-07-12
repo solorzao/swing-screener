@@ -35,7 +35,7 @@ repoints the jobs on merge to `main` via GitHub→Azure **OIDC**.
 
 The IaC is under [`infra/`](../infra/): `main.bicep` (subscription-scoped, creates the
 resource group) wires modules for the registry, the UAMI, the Container Apps environment
-(+ a cost-capped Log Analytics workspace), storage, Key Vault, Azure SQL, and the five
+(+ a cost-capped Log Analytics workspace), storage, Key Vault, Azure SQL, and the ten
 jobs. Validate then deploy:
 
 ```bash
