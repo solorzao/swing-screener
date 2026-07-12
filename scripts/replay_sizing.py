@@ -15,7 +15,7 @@ import pandas as pd
 
 from swing_screener.analytics.performance import breakdown, size_weighted_expectancy, summarize
 from swing_screener.config import StrategyConfig
-from swing_screener.pipeline.replay import _load_cached_daily, replay_book
+from swing_screener.pipeline.replay import load_cached_daily, replay_book
 
 log = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ def main() -> None:
         tickers = tickers[: args.limit]
     frames: dict[str, pd.DataFrame] = {}
     for t in tickers:
-        df = _load_cached_daily(t, args.cache_dir)
+        df = load_cached_daily(t, args.cache_dir)
         if df is not None and len(df) > 60:
             frames[t] = df
     base = StrategyConfig(fill_slippage_atr=args.slippage)

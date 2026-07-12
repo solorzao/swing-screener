@@ -12,6 +12,8 @@ the replay corpus via ``pipeline.replay``) and returns ``Verdict`` rows. Falsifi
 prior claims against the previous edge file lives in a later task, not here.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import logging
@@ -20,11 +22,13 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from datetime import date
 from pathlib import Path
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
-import anthropic
 import pandas as pd
 from sqlalchemy.orm import Session
+
+if TYPE_CHECKING:  # the SDK is only needed to CONSTRUCT clients -- see author_edge_file
+    import anthropic
 
 from swing_screener.analytics.performance import (
     _CLUSTER_FLOOR,
@@ -33,6 +37,7 @@ from swing_screener.analytics.performance import (
     _bucket_trades_by_score,
     _clustered_ci_low,
     _score_labels,
+    cost_level_for,
     score_stamped,
     summarize,
 )
@@ -45,12 +50,15 @@ from swing_screener.db.session import get_engine
 from swing_screener.pipeline.arms import BASELINE
 from swing_screener.pipeline.optimize import fetch_daily
 from swing_screener.pipeline.proposed import (
+    PLAY_TYPES,
     QUEUED,
     ProposedVariant,
-    proposed_to_json,
+    _write_proposed,
+    load_proposed_for,
+    store_filename,
     to_config,
 )
-from swing_screener.pipeline.replay import replay_book
+from swing_screener.pipeline.replay import corpus_stamp, load_cached_daily, replay_book
 from swing_screener.pipeline.variants import DEFAULT_VARIANT
 from swing_screener.settings import load_settings, resolve_edge_dir
 
@@ -94,7 +102,12 @@ class Verdict:
     """One graded (dimension, bucket) cell for a play type. ``ci_low`` is the
     multiple-comparisons-corrected effective lower bound on whichever ``source`` decided
     the tier; the verdict is emitted even for hunches so the edge file can show what's
-    being watched."""
+    being watched.
+
+    ``cost_level`` / ``corpus_id`` are PROVENANCE stamps applied post-``grade`` by
+    ``_stamp_provenance`` (``grade`` itself stays pure and emits the defaults). They
+    MUST default to ``None``: ``load_verdicts`` is a strict ``Verdict(**d)`` and the
+    committed pre-Phase-3 sidecars lack the keys."""
 
     play_type: str
     dimension: str  # "market_trend" | "volatility_tier" | "score"
@@ -105,6 +118,8 @@ class Verdict:
     ci_low: float  # MC-corrected effective lower bound on the deciding source
     n_clusters: int
     source: str  # "forward" | "replay" | "none"
+    cost_level: str | None = None  # slippage level the deciding book's R provably carries
+    corpus_id: str | None = None  # replay corpus stamp (replay-sourced verdicts only)
 
 
 class _BucketBound(NamedTuple):
@@ -231,9 +246,10 @@ def grade(
 # verdicts; it MUST read a code-owned artifact, never parse the LLM-authored ``edge/<pt>.md``
 # prose (which the model rewrites). ``run_reflection`` therefore also emits
 # ``edge/<pt>.verdicts.json`` -- a LOSSLESS round-trip of exactly the ``Verdict`` rows
-# ``grade`` produced, written deterministically regardless of whether the LLM authoring
-# succeeded. (``Verdict`` is a flat frozen dataclass of JSON-native scalars, so
-# ``asdict`` / ``Verdict(**d)`` round-trips every field.)
+# ``grade`` produced (provenance-stamped post-grade by ``_stamp_provenance``), written
+# deterministically regardless of whether the LLM authoring succeeded. (``Verdict`` is a
+# flat frozen dataclass of JSON-native scalars, so ``asdict`` / ``Verdict(**d)``
+# round-trips every field; the Phase-3 stamps default so pre-stamp sidecars still load.)
 # ===========================================================================
 
 
@@ -245,6 +261,14 @@ def verdicts_to_json(verdicts: list[Verdict]) -> str:
 def load_verdicts(text: str) -> list[Verdict]:
     """Inverse of ``verdicts_to_json``: parse the sidecar JSON back into ``Verdict`` rows."""
     return [Verdict(**d) for d in json.loads(text)]
+
+
+def verdicts_filename(play_type: str) -> str:
+    """The ONE owner of the verdicts sidecar's filename shape (the
+    ``proposed.store_filename`` convention): one play type's code-owned sidecar
+    lives at ``<edge_dir>/<this>``. The writer (``run_reflection``) and the
+    cockpit's change token both derive from it, so the shape cannot drift."""
+    return f"{play_type}.verdicts.json"
 
 
 # ===========================================================================
@@ -654,7 +678,11 @@ def author_edge_file(
     number; the deterministic scaffold it is handed is the immutable ground truth.
 
     ``client`` is an injectable seam: tests pass a fake so no network call is made; prod
-    constructs ``anthropic.Anthropic`` via ``get_secret``. CODE -- not the model -- owns the
+    constructs ``anthropic.Anthropic`` via ``get_secret``. The SDK import is LAZY (function
+    scope, only on the construct-a-real-client path): the cockpit imports this module for its
+    pure helpers (``load_verdicts``, ``analyst_calibration``, ``due_play_types``), and pulling
+    the SDK at module scope would tax every such import for a dependency only the authoring
+    paths use. CODE -- not the model -- owns the
     event-trigger frontmatter: whatever body the model returns, ``_with_frontmatter`` strips
     any header it emitted and stamps the authoritative ``forward_closed_at_last_reflection``
     / ``last_reflected``. On ANY failure (missing key, API error, empty/blank reply) we fall
@@ -665,7 +693,10 @@ def author_edge_file(
         forward_closed_at_last_reflection=n_closed_now, last_reflected=last_reflected,
     )
     try:
-        client = client or anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
+        if client is None:
+            import anthropic
+
+            client = anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
         resp = client.messages.create(
             model=model,
             max_tokens=8000,
@@ -800,12 +831,17 @@ def _opus_drafter(
     ``propose_screen_variants`` tool. Returns a ``DrafterFn`` closing over the client/model.
 
     ``client`` is an injectable seam (prod constructs ``anthropic.Anthropic`` via ``get_secret``,
-    like ``author_edge_file``). The returned function extracts the ``variants`` array from the
-    model's ``tool_use`` block; it may RAISE on any failure (missing key, API error, no tool
-    block) -- ``draft_variants`` catches that and drafts nothing.
+    like ``author_edge_file`` -- and the SDK import is lazy for the same reason: pure-helper
+    importers must not pay for it). The returned function extracts the ``variants`` array from
+    the model's ``tool_use`` block; it may RAISE on any failure (missing key, API error, no
+    tool block) -- ``draft_variants`` catches that and drafts nothing.
     """
     def _fn(play_type: str, hunches: list[Verdict], base: StrategyConfig) -> list[dict]:
-        c = client or anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
+        c = client
+        if c is None:
+            import anthropic
+
+            c = anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
         # Build kwargs as a plain dict (like notify/analysis.py): the SDK's create() overloads
         # don't reconcile with the heterogeneous tool/tool_choice literals, and this is the
         # untrusted-output seam to_config re-validates anyway.
@@ -907,13 +943,26 @@ def draft_variants(
 
     The flow: ask the (injectable, fallible) ``drafter`` for raw candidate dicts; validate each
     via ``_candidate`` (``to_config`` is the hard gate -- illegal/malformed drafts are DROPPED +
-    warned); and, IF any survive, REWRITE ``edge/<pt>.proposed.json`` with the new queued set
-    (queued drafts are machine-owned, so a fresh successful run replaces the prior set).
+    warned); and, IF any survive, MERGE them into ``edge/<pt>.proposed.json``.
+
+    The merge (Phase 3): ONLY the ``QUEUED`` rows are machine-owned, so only THEY are replaced
+    by the fresh set (a redraft supersedes stale queued ideas). Every non-queued row -- an
+    ``approved``/``withdrawn`` decision the cockpit's ``decide_proposal`` wrote (or the older
+    hand-edited kind), a ``draft``, anything -- is PRESERVED verbatim, in its original order,
+    ahead of the fresh queued set: the decision is the audit record, and it lives in this file
+    until git captures it, so a Sunday reflection redraft must not clobber it. And because
+    ``_draft_name`` is deterministic (a durable hunch re-drafts at the same index -> the same
+    name), a fresh draft whose name matches a preserved row is DROPPED with a log: preserved
+    rows win, and for the decided kind that is the point -- a withdrawn idea is not silently
+    re-queued.
 
     Fail-safe like ``author_edge_file``: with no hunches the drafter is not even asked; and on
-    ANY failure (drafter raises, returns empty, or every candidate is dropped) the store is left
-    UNTOUCHED -- a prior valid queued set survives. Returns the list of variants written ([] if
-    nothing was queued).
+    ANY drafting failure (drafter raises, returns empty, or every candidate is dropped by
+    VALIDATION) the write is SKIPPED and the store is left UNTOUCHED -- a prior valid queued
+    set survives. COLLISION drops are different: they happen after a successful draft, so the
+    merge write still proceeds -- stale queued rows are superseded even when every fresh draft
+    collides and nothing new queues. Returns the fresh queued variants written ([] if nothing
+    was queued).
     """
     if not hunches:
         return []
@@ -932,11 +981,36 @@ def draft_variants(
     ]
     if not valid:
         return []
-    (edge_dir / f"{play_type}.proposed.json").write_text(
-        proposed_to_json(valid), encoding="utf-8"
+    try:
+        prior = load_proposed_for(play_type, edge_dir)
+    except Exception:
+        # The merge READS the prior store, so a corrupt/hand-mangled file is a failure mode
+        # the old wholesale rewrite never had. It may hold the only copy of a human decision:
+        # never clobber it, never crash the reflection -- queue nothing, leave the bytes.
+        log.warning(
+            "could not read the prior proposed store for %s; queueing nothing "
+            "(store untouched -- rewriting it could erase a human decision)",
+            play_type, exc_info=True,
+        )
+        return []
+    preserved = [pv for pv in prior if pv.status != QUEUED]
+    preserved_status = {pv.name: pv.status for pv in preserved}
+    fresh: list[ProposedVariant] = []
+    for pv in valid:
+        if pv.name in preserved_status:
+            log.info(
+                "dropping fresh draft %r for %s: its deterministic name matches a prior "
+                "%s row -- preserved rows win; a withdrawn idea is not silently re-queued",
+                pv.name, play_type, preserved_status[pv.name],
+            )
+            continue
+        fresh.append(pv)
+    _write_proposed(edge_dir / store_filename(play_type), preserved + fresh)
+    log.info(
+        "drafted %d queued variant(s) for %s (%d non-queued row(s) preserved)",
+        len(fresh), play_type, len(preserved),
     )
-    log.info("drafted %d queued variant(s) for %s", len(valid), play_type)
-    return valid
+    return fresh
 
 
 # ===========================================================================
@@ -951,7 +1025,6 @@ def draft_variants(
 # workflow PRs the edge/*.md diff for a human to merge.
 # ===========================================================================
 
-_PLAY_TYPES = ("continuation", "reversal")
 # New closed FORWARD trades (per play type) required to re-arm a reflection. Tied to the
 # leaderboard's trust floor so a reflection never fires on a sample too thin to grade.
 _REFLECT_TRIGGER_N = MIN_LEADERBOARD_N
@@ -960,6 +1033,41 @@ _REFLECT_TRIGGER_N = MIN_LEADERBOARD_N
 # honesty haircut into a tunable knob and reopen the overfit door.
 _REPLAY_HAIRCUT_ATR = 0.05
 _EDGE_DIR = Path("edge")
+
+
+def _stamp_provenance(
+    verdicts: list[Verdict],
+    forward_gold: list[PaperTrade],
+    corpus_id: str | None,
+) -> list[Verdict]:
+    """Stamp cost/corpus provenance onto graded ``verdicts`` (post-``grade``; the grader
+    itself stays pure). Per ``source``:
+
+      * ``"replay"``  -> ``cost_level`` is the fixed a-priori haircut every replay fill
+        carries (``str(_REPLAY_HAIRCUT_ATR)`` -- the same ``"0.05"`` glyph the cockpit
+        renders, never an ``atr_``-prefixed variant), ``corpus_id`` names the replay
+        corpus (``None`` when unknown -- the stamp records reality, it never invents it).
+      * ``"forward"`` -> ``cost_level`` is what the GOLD forward cohort provably realized
+        (``cost_level_for`` -- ``None`` on a mixed gross/net book), ``corpus_id`` is
+        ``None``: a forward book has no replay corpus, so stamping one is a category
+        error.
+      * ``"none"``    -> BOTH ``None``. A hunch cell may DISPLAY numbers from whichever
+        book had data, but nothing was confirmed -- it measured nothing, and stamping a
+        non-measurement would claim provenance it does not have. (This deliberately
+        refines "follow the displayed book" down to the honest floor.)
+    """
+    forward_level = cost_level_for(forward_gold)
+    stamped: list[Verdict] = []
+    for v in verdicts:
+        if v.source == "replay":
+            stamped.append(replace(
+                v, cost_level=str(_REPLAY_HAIRCUT_ATR), corpus_id=corpus_id,
+            ))
+        elif v.source == "forward":
+            stamped.append(replace(v, cost_level=forward_level, corpus_id=None))
+        else:
+            stamped.append(replace(v, cost_level=None, corpus_id=None))
+    return stamped
 
 
 def _edge_text(edge_dir: Path, play_type: str) -> str:
@@ -984,7 +1092,7 @@ def due_play_types(session: Session, edge_dir: Path = _EDGE_DIR) -> list[str]:
     grades. A play type is due iff ``current - last >= _REFLECT_TRIGGER_N``.
     """
     due: list[str] = []
-    for pt in _PLAY_TYPES:
+    for pt in PLAY_TYPES:
         last = parse_state(_edge_text(edge_dir, pt)).forward_closed_at_last_reflection
         current = len(repo.load_closed_paper_trades(
             session, play_type=pt, arm=BASELINE, variant=DEFAULT_VARIANT,
@@ -1004,6 +1112,8 @@ def run_reflection(
     today: str | None = None,
     drafter: DrafterFn | None = None,
     force: bool = False,
+    corpus_id: str | None = None,
+    verdicts_only: bool = False,
 ) -> list[str]:
     """Reflect every DUE play type and rewrite its ``edge/<pt>.md``; return the list reflected.
 
@@ -1011,6 +1121,22 @@ def run_reflection(
     the manual re-grade path for when the graded facets themselves change (a score
     definition change, a family edit) and waiting weeks for the counter would leave
     stale verdicts steering conviction.
+
+    ``corpus_id`` is the ``replay.corpus_stamp`` line for ``replay_frames``' cache
+    vintages; it is stamped (with each verdict's cost level) onto the graded verdicts
+    post-``grade`` via ``_stamp_provenance``, so the sidecar names its evidence. The
+    stamp resolves from the CACHE: unpinned, a fetch-failed ticker with a stale leftover
+    snapshot is counted resolved though it was not graded -- pinned mode has no such
+    divergence (loading and stamping both read ``cached_daily_file(as_of)``).
+
+    ``verdicts_only=True`` is the SIDECAR-ONLY regen (e.g. re-stamping provenance onto
+    existing verdicts): it implies force-all-play-types (the due-gate would no-op a
+    regen) and, per play type, grades + rewrites ``edge/<pt>.verdicts.json`` and NOTHING
+    else -- no md authoring (a deterministic-template rewrite would destroy the Opus
+    prose; with an API key present a plain ``force`` would instead burn an unnecessary
+    Opus re-author -- either way wrong for a stamping regen), no drafting (a rewrite
+    would clobber queued proposals), and no frontmatter counter reset (the md is left
+    byte-untouched).
 
     For each due play type: load the live forward book (arm=BASELINE, variant=DEFAULT_VARIANT);
     build the screened tier by replaying ``replay_frames`` on the 1d timeframe with the fixed
@@ -1030,7 +1156,10 @@ def run_reflection(
     """
     cfg = replace(StrategyConfig(), fill_slippage_atr=_REPLAY_HAIRCUT_ATR)
     base = StrategyConfig()
-    due = list(_PLAY_TYPES) if force else due_play_types(session, edge_dir=edge_dir)
+    # verdicts_only implies force-all: a sidecar regen re-grades what already exists, so
+    # the "enough NEW closes" due-gate would simply no-op it.
+    all_types = force or verdicts_only
+    due = list(PLAY_TYPES) if all_types else due_play_types(session, edge_dir=edge_dir)
     if not due:
         return []
 
@@ -1057,13 +1186,25 @@ def run_reflection(
         # filter to restore the old behavior).
         forward_gold = [t for t in forward if t.would_surface]
         replay_pt = [t for t in replay_all if t.play_type == pt]
-        verdicts = grade(pt, forward_gold, replay_pt)
+        # grade() stays pure; the provenance stamps (cost level + replay corpus id) are
+        # applied post-grade so the sidecar names the evidence behind every tier.
+        verdicts = _stamp_provenance(
+            grade(pt, forward_gold, replay_pt), forward_gold, corpus_id,
+        )
 
         # Emit the machine-readable sidecar FIRST -- it is deterministic + code-owned, so it
         # is written whether or not the (optional, fallible) LLM authoring below succeeds.
-        (edge_dir / f"{pt}.verdicts.json").write_text(
+        (edge_dir / verdicts_filename(pt)).write_text(
             verdicts_to_json(verdicts), encoding="utf-8"
         )
+
+        if verdicts_only:
+            # The sidecar-only carve: everything below this line is the md/drafting write
+            # path (authoring, frontmatter counter, proposals) -- a stamping regen must
+            # leave all of it byte-untouched.
+            log.info("reflected %s (verdicts-only): sidecar rewritten, md/proposals "
+                     "untouched", pt)
+            continue
 
         # Code-owned analyst-calibration note: summarize this play type's SCORED calls
         # so the playbook records whether the analyst's judgment is proving out. Like the
@@ -1113,21 +1254,58 @@ def main() -> None:
                         help="reflect every play type now, ignoring the re-arm counter "
                              "(the manual re-grade path after a graded facet changes, "
                              "e.g. a score-definition change)")
+    parser.add_argument("--as-of", default=None, metavar="YYYYMMDD",
+                        help="pin the replay corpus to cache snapshots at/before this "
+                             "fetch date (reproducible evidence; cache-only -- never "
+                             "fetches); default = the live fetch seam (newest, possibly "
+                             "mixed vintages -- the corpus stamp records whichever)")
+    parser.add_argument("--verdicts-only", action="store_true",
+                        help="grade + rewrite the verdicts.json sidecars ONLY (implies "
+                             "force-all): no md authoring, no drafting, no frontmatter "
+                             "reset -- the stamping-regen path")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
 
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
-    replay_frames = fetch_daily(tickers, args.cache_dir)
+    if args.as_of is not None:
+        # Pinned loading: cache-only (a network fetch would write a NEW vintage and
+        # defeat the pin). A ticker with no snapshot at/before the pin is skipped.
+        replay_frames: dict[str, pd.DataFrame] = {}
+        for ticker in tickers:
+            df = load_cached_daily(ticker, args.cache_dir, args.as_of)
+            if df is None:
+                log.warning("no cached daily data for %s at/before %s; skipping",
+                            ticker, args.as_of)
+                continue
+            replay_frames[ticker] = df
+        spy_daily = load_cached_daily("SPY", args.cache_dir, args.as_of)
+        if spy_daily is None:
+            # Louder than a skipped ticker: no SPY degrades the WHOLE regen (regime
+            # unstamped -> the market_trend replay dimension grades empty).
+            log.warning("no cached SPY at/before %s; regime unstamped for this regen",
+                        args.as_of)
+    else:
+        replay_frames = fetch_daily(tickers, args.cache_dir)
+        spy_daily = fetch_bars("SPY", "1d", cache_dir=args.cache_dir)
     if not replay_frames:
         log.warning("no replay data fetched for %s; screened tier will be empty", tickers)
-    spy_daily = fetch_bars("SPY", "1d", cache_dir=args.cache_dir)
+    # The stamp is computed in BOTH modes, AFTER loading: --as-of changes what is LOADED;
+    # the stamp resolves from the CACHE. Pinned, that is exactly what was graded (loading
+    # and stamping both read cached_daily_file(as_of)). Unpinned it can overclaim:
+    # fetch_daily skips a ticker on persistent fetch failure, but the stamp re-resolves
+    # from the cache and counts a stale leftover snapshot as resolved though it was not
+    # graded -- pinned mode has no such divergence.
+    corpus_id = corpus_stamp(args.cache_dir, tickers, args.as_of)
+    log.info("%s", corpus_id)
 
     engine = get_engine(settings.db_url)
     with Session(engine) as session:
         reflected = run_reflection(
             session, replay_frames=replay_frames, spy_daily=spy_daily,
             edge_dir=resolve_edge_dir(args.edge_dir), today=date.today().isoformat(),
-            drafter=_opus_drafter(), force=args.force,
+            # belt-and-braces; the carve already skips drafting
+            drafter=None if args.verdicts_only else _opus_drafter(), force=args.force,
+            corpus_id=corpus_id, verdicts_only=args.verdicts_only,
         )
     if reflected:
         log.info("reflected play types: %s", ", ".join(reflected))

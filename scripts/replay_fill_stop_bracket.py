@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, cast
 import pandas as pd
 
 from swing_screener.analytics.performance import breakdown
-from swing_screener.pipeline.replay import _cached_daily_file
+from swing_screener.pipeline.replay import cached_daily_file
 
 if TYPE_CHECKING:
     from swing_screener.db.models import PaperTrade
@@ -50,7 +50,7 @@ def fill_bar_lows(df: pd.DataFrame, cache_dir: Path, as_of: str) -> pd.Series:
     """Low of each trade's fill bar from the pinned per-ticker parquet."""
     lows = pd.Series(index=df.index, dtype=float)
     for ticker, sub in df.groupby("ticker"):
-        f = _cached_daily_file(str(ticker), cache_dir, as_of)
+        f = cached_daily_file(str(ticker), cache_dir, as_of)
         if f is None:
             continue
         bars = pd.read_parquet(f)

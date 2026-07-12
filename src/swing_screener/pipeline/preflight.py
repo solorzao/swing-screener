@@ -16,7 +16,9 @@ The checks split into SAFETY-CRITICAL and ADVISORY:
   whether the edge is proven enough; preflight just surfaces its verdict.)
 
 A BROKER error is NEVER allowed to propagate: the reachability check wraps ``get_account`` in
-try/except and records a NO-GO line, so a down broker reads as NO-GO rather than a crash.
+try/except and records a NO-GO line, so a down broker reads as NO-GO rather than a crash. A
+MISSING broker (``broker=None`` -- the cockpit's default local setup) is likewise a report,
+not a crash: explicit not-applicable broker lines plus a REAL config check (see ``preflight``).
 """
 
 import argparse
@@ -64,6 +66,15 @@ class PreflightReport:
     checks: list[PreflightCheck]
 
 
+def broker_error_detail(exc: BaseException) -> str:
+    """The ONLY wording a broker failure may wear on a checklist line or an HTTP detail:
+    the exception CLASS name, never the message -- broker/httpx messages embed venue
+    hosts, URLs, and credentials, and these details reach the cockpit wire verbatim.
+    Operator debuggability belongs in the LOG (callers log with ``exc_info``), never in
+    the detail. Shared with ``cockpit.api`` so the leak posture has exactly one home."""
+    return f"broker error ({type(exc).__name__})"
+
+
 def _check_config(settings: Settings) -> PreflightCheck:
     """CRITICAL: ``execution_mode`` + ``broker`` are coherent -- a broker must be selected, and
     the mode must be one that actually trades (``paper`` / ``live``)."""
@@ -88,7 +99,10 @@ def _check_reachable(
     try:
         account = broker.get_account()
     except Exception as exc:  # noqa: BLE001 -- a down broker is a NO-GO, never a crash
-        return PreflightCheck("reachable", False, str(exc), True), None
+        # Class name ONLY on the checklist (broker_error_detail); the full traceback --
+        # what the operator actually debugs with -- goes to the log instead.
+        log.error("preflight: broker.get_account() failed", exc_info=True)
+        return PreflightCheck("reachable", False, broker_error_detail(exc), True), None
     return PreflightCheck("reachable", True, f"account status {account.status}", True), account
 
 
@@ -136,11 +150,16 @@ def _check_gate(session: Session, *, edge_dir: Path) -> PreflightCheck:
     return PreflightCheck("autonomy_gate", report.ready, detail, False)
 
 
+#: The explicit not-applicable detail every broker-shaped check wears when there is
+#: no broker to ask (``preflight(broker=None)``) -- mirrors ``main()``'s early exit.
+_NO_BROKER_DETAIL = "not applicable -- no broker"
+
+
 def preflight(
     session: Session,
     settings: Settings,
     *,
-    broker: BrokerClient,
+    broker: BrokerClient | None,
     edge_dir: Path = _EDGE_DIR,
 ) -> PreflightReport:
     """Run the read-only GO/NO-GO preflight check. NO writes, NO arming.
@@ -148,18 +167,37 @@ def preflight(
     Evaluates six checks in order -- config / reachable / funded / caps (CRITICAL) +
     is_real_money / autonomy_gate (ADVISORY) -- and returns a ``PreflightReport`` whose ``go``
     is True iff every CRITICAL check passed. A broker error never propagates (the reachability
-    check catches it). This function performs NO writes: it only reads the broker, the settings
+    check catches it). ``broker=None`` (the cockpit's default local setup, or a client
+    factory that raised) is a report, never a crash: config still evaluates the SETTINGS
+    for real -- the NO-GO 'no broker configured' line when SWING_BROKER is unset, an honest
+    broker=... line when it IS set but no client could be built; reachable / funded /
+    is_real_money read as explicit not-applicable
+    lines; caps and the autonomy gate stay REAL (neither needs the broker); ``go`` is False.
+    This function performs NO writes: it only reads the broker, the settings
     snapshot, and the advisory gate (a SELECT over the scored-call book + the verdicts sidecars).
     It NEVER mutates ``execution_mode``, settings, env, or any edge file -- arming stays a human
     act, performed elsewhere."""
-    config = _check_config(settings)
-    reachable, account = _check_reachable(broker)
-    funded = _check_funded(account)
-    caps = _check_caps(settings)
-    is_real = _check_is_real_money(broker)
-    gate = _check_gate(session, edge_dir=edge_dir)
+    if broker is None:
+        checks = [
+            # The REAL config check, not a hardcoded line: with SWING_BROKER unset the
+            # output is byte-identical to the old wording, but a configured-yet-raising
+            # factory (the cockpit's degrade path) must not read 'SWING_BROKER is unset'.
+            _check_config(settings),
+            PreflightCheck("reachable", False, _NO_BROKER_DETAIL, True),
+            PreflightCheck("funded", False, _NO_BROKER_DETAIL, True),
+            _check_caps(settings),
+            PreflightCheck("is_real_money", False, _NO_BROKER_DETAIL, False),
+            _check_gate(session, edge_dir=edge_dir),
+        ]
+    else:
+        config = _check_config(settings)
+        reachable, account = _check_reachable(broker)
+        funded = _check_funded(account)
+        caps = _check_caps(settings)
+        is_real = _check_is_real_money(broker)
+        gate = _check_gate(session, edge_dir=edge_dir)
+        checks = [config, reachable, funded, caps, is_real, gate]
 
-    checks = [config, reachable, funded, caps, is_real, gate]
     go = all(c.ok for c in checks if c.critical)
     return PreflightReport(go=go, checks=checks)
 

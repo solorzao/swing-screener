@@ -3,7 +3,12 @@
    The y-domain always includes 0 so the zero-line is a real reference, not a
    floating decoration: for a trailing-expectancy drift the whole read is which
    side of zero the line lives on. Renders nothing for an empty series — the
-   caller owns empty-state copy. */
+   caller owns empty-state copy.
+
+   Sizing: `width`/`height` define the viewBox COORDINATE SPACE (and thus the
+   aspect ratio), not rendered pixels — the SVG carries no width/height
+   attributes, and .sparkline's CSS stretches it to its container (Phase 3:
+   the fixed-pixel debt paid; a card at 285px and one at 500px both fill). */
 
 export function Sparkline({
   points,
@@ -36,8 +41,6 @@ export function Sparkline({
   return (
     <svg
       className="sparkline"
-      width={width}
-      height={height}
       viewBox={`0 0 ${width} ${height}`}
       aria-hidden="true"
     >

@@ -153,6 +153,45 @@ def test_disarm_reports_unprotected_when_no_recorded_stop(tmp_path, monkeypatch,
     assert any("UNPROTECTED" in r.message for r in caplog.records)
 
 
+def test_ensure_stop_protection_returns_restored_and_unprotected() -> None:
+    """The (restored, unprotected) contract: ``restored`` names every symbol a
+    protective stop was re-submitted for, ``unprotected`` every position with no
+    recorded level (left alone, loudly) -- the cockpit's DISARM response is built
+    from exactly this pair."""
+    broker = FakeBroker(real_money=False)
+    for symbol in ("NVDA", "XYZY"):
+        entry = broker.submit_order(_spec(f"k-{symbol}", symbol, qty=8,
+                                          stop_loss=95.0, take_profit=110.0))
+        broker.fill(entry.broker_order_id, 100.0)
+    _kill_legs(broker)
+    stops = {"NVDA": 95.0}  # XYZY has no recorded level
+
+    restored, unprotected = disarm.ensure_stop_protection(
+        broker, stops.get, key_suffix="test")
+
+    assert restored == ["NVDA"]
+    assert unprotected == ["XYZY"]
+    live_stops = [o for o in broker.list_open_orders()
+                  if o.side == "sell" and o.order_type == "stop"]
+    assert [o.symbol for o in live_stops] == ["NVDA"]  # restored means SUBMITTED
+
+
+def test_ensure_stop_protection_dry_run_reports_restored_without_submitting() -> None:
+    """Dry-run still POPULATES ``restored`` (the hold preview must show what a real
+    run would protect) while the venue stays untouched."""
+    broker = _armed_bracket_broker()
+    _kill_legs(broker)
+    n_specs = len(broker.submitted_specs)
+    stops = {"NVDA": 95.0}
+
+    restored, unprotected = disarm.ensure_stop_protection(
+        broker, stops.get, key_suffix="test", dry_run=True)
+
+    assert restored == ["NVDA"]                    # the preview names the symbol...
+    assert unprotected == []
+    assert len(broker.submitted_specs) == n_specs  # ...but nothing was submitted
+
+
 def test_disarm_dry_run_touches_nothing(tmp_path, monkeypatch):
     broker = _armed_bracket_broker()
     _kill_legs(broker)

@@ -70,16 +70,19 @@ def ensure_stop_protection(
     *,
     key_suffix: str,
     dry_run: bool = False,
-) -> list[str]:
+) -> tuple[list[str], list[str]]:
     """Every open position must retain a live protective sell STOP.
 
     A position whose stop leg died (e.g. a pre-fix blanket disarm) gets a plain GTC
     stop re-submitted at ``stop_for(symbol)`` -- the ticket's recorded level, COPIED,
     never computed. When no level exists the position is reported UNPROTECTED and left
-    to the human (guessing a level would violate North Star #4). Returns the symbols
-    left unprotected."""
+    to the human (guessing a level would violate North Star #4). Returns
+    ``(restored, unprotected)``: ``restored`` names every symbol a stop was
+    re-submitted for -- dry-run INCLUDED (the symbols a real run WOULD protect, so a
+    hold preview can show them); ``unprotected`` the positions left to the human."""
     protected = {o.symbol for o in broker.list_open_orders()
                  if o.side == "sell" and o.order_type in _STOP_TYPES}
+    restored: list[str] = []
     unprotected: list[str] = []
     for pos in broker.get_positions():
         if pos.symbol in protected:
@@ -91,6 +94,7 @@ def ensure_stop_protection(
                       "recorded ticket level to restore -- protect it manually NOW",
                       pos.symbol, pos.qty)
             continue
+        restored.append(pos.symbol)
         if dry_run:
             log.info("[dry-run] would re-submit protective stop: %s x%d @ %.2f",
                      pos.symbol, pos.qty, stop)
@@ -101,7 +105,7 @@ def ensure_stop_protection(
             limit_price=None, time_in_force="gtc", stop_price=stop))
         log.info("re-submitted protective stop: %s x%d @ %.2f (level copied from the "
                  "ExecutionLog ticket)", pos.symbol, pos.qty, stop)
-    return unprotected
+    return restored, unprotected
 
 
 def _recorded_stop_lookup(settings: Settings) -> Callable[[str], float | None]:
@@ -145,9 +149,10 @@ def main() -> None:
         log.info("no resting entry orders to cancel")
 
     positions = broker.get_positions()
+    restored: list[str] = []
     unprotected: list[str] = []
     if positions:
-        unprotected = ensure_stop_protection(
+        restored, unprotected = ensure_stop_protection(
             broker, _recorded_stop_lookup(settings),
             key_suffix=datetime.now().strftime("%Y%m%d%H%M%S"), dry_run=args.dry_run)
     for pos in positions:
@@ -157,6 +162,10 @@ def main() -> None:
         log.info("%d open position(s) remain at the venue -- closing them is a human "
                  "decision; the screen run keeps reconciling them while disarmed",
                  len(positions))
+    if restored:
+        log.info("%d protective stop(s) %s: %s", len(restored),
+                 "would be re-submitted" if args.dry_run else "re-submitted",
+                 ", ".join(restored))
     if unprotected:
         log.error("%d position(s) left UNPROTECTED: %s",
                   len(unprotected), ", ".join(unprotected))

@@ -1,4 +1,5 @@
 import type { BreakdownRow, Performance } from '../lib/api'
+import { Segmented } from './Segmented'
 import { Sparkline } from './Sparkline'
 import { StatChip } from './StatChip'
 
@@ -147,19 +148,12 @@ export function PerformancePanel({
       <div className="perf-section">
         <div className="perf-section-head">
           BREAKDOWNS
-          <span className="mh-seg perf-tabs">
-            {tabs.map((t) => (
-              <button
-                key={t}
-                type="button"
-                className={t === activeTab ? 'seg-on' : undefined}
-                aria-pressed={t === activeTab}
-                onClick={() => onTab(t)}
-              >
-                {t}
-              </button>
-            ))}
-          </span>
+          <Segmented
+            className="perf-tabs"
+            options={tabs.map((t) => ({ value: t }))}
+            value={activeTab}
+            onChange={onTab}
+          />
         </div>
         {activeTab === 'timeframe' && (
           <BreakdownTable rows={data.breakdowns.timeframe} />

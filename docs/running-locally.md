@@ -3,7 +3,7 @@
 The Phase 2 pipeline runs the engine over the universe on your machine against a
 local SQLite database — no Azure yet. This is the **dry-run** setup: run it after
 the close for a couple of weeks so the shadow book accumulates real forward-test
-results before building the dashboard (Phase 3).
+results before reviewing them in the desktop cockpit.
 
 ## Prerequisites
 
@@ -37,7 +37,7 @@ Sanity-check on a small slice first:
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--db` | `sqlite:///local.db` | SQLAlchemy DB URL — matches the dashboard's default so both agree (same code targets Azure SQL later) |
+| `--db` | `sqlite:///local.db` | SQLAlchemy DB URL — matches the cockpit's default so both agree (same code targets Azure SQL later) |
 | `--universe` | `src/swing_screener/data/universe_seed.csv` | ticker list to scan |
 | `--cache-dir` | `.cache` | parquet bar cache (keyed per ticker/interval/day) |
 | `--chart-dir` | `.charts` | annotated HA chart PNGs for the top picks |
@@ -51,7 +51,7 @@ Sanity-check on a small slice first:
 2. Per ticker (isolated — one bad ticker never aborts the run): fetches 1h→4h, 1d,
    1wk, 1mo bars (cached as parquet) and builds the enriched frames. Also records
    that ticker's average dollar volume and a best-effort market cap (cached per day)
-   onto its `universe` row — so the dashboard's Universe view is populated.
+   onto its `universe` row — so the cockpit's Universe (Reference) view is populated.
 3. Detects the pullback-continuation signal on each timeframe, scores + ranks them,
    and writes `signals` rows (rank 1 = highest score) for the run date.
 4. Renders annotated Heiken Ashi charts for the top N into `--chart-dir`.
@@ -73,5 +73,5 @@ are gitignored.
 
 ## Next
 
-After a 1–2 week dry-run validates signal quality, proceed to Phase 3 (local
-Streamlit dashboard) and Phase 4 (email + LLM analysis).
+After a 1–2 week dry-run validates signal quality, review the results in the desktop
+cockpit ([cockpit.md](cockpit.md)) and enable the email + LLM analysis digests.

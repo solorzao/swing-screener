@@ -1,7 +1,7 @@
 """create the four GEX options-lab tables
 
 Revision ID: f2a9c4e7b1d8
-Revises: d7e4b2f9a1c6
+Revises: e4b8a2d6f1c9
 Create Date: 2026-07-12
 
 The options lab (docs/modules/gex-lab.md) is a firewalled sibling module: it never
@@ -20,7 +20,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "f2a9c4e7b1d8"
-down_revision: Union[str, Sequence[str], None] = "d7e4b2f9a1c6"
+down_revision: Union[str, Sequence[str], None] = "e4b8a2d6f1c9"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
