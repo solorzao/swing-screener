@@ -75,8 +75,8 @@ def compute_gex(chain: pd.DataFrame, spot: float, asof: date, cfg: GexConfig) ->
         return days / 365.0
 
     df["gamma"] = [
-        bs_gamma(spot, row.strike, row.iv, _t(row.expiry), cfg.risk_free_rate)
-        for row in df.itertuples()
+        bs_gamma(spot, float(strike), float(iv), _t(expiry), cfg.risk_free_rate)
+        for strike, iv, expiry in zip(df["strike"], df["iv"], df["expiry"], strict=True)
     ]
     # Unsigned dollar gamma per 1% move; the call/put sign is applied per side below.
     df["gex"] = df["gamma"] * df["open_interest"] * 100.0 * spot * spot * 0.01

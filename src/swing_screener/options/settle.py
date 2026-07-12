@@ -58,7 +58,7 @@ def settle_open_trades(
         # test fixtures are naive. Copy only when a conversion is needed so the
         # caller's frame is never mutated.
         idx = frame.index
-        if getattr(idx, "tz", None) is not None:
+        if isinstance(idx, pd.DatetimeIndex) and idx.tz is not None:
             frame = frame.copy()
             frame.index = idx.tz_convert("America/New_York").tz_localize(None)
 
@@ -84,30 +84,33 @@ def _close_trade(trade: OptionPaperTrade, bars: pd.DataFrame) -> None:
     target = float(trade.target)  # type: ignore[arg-type]
     is_long = trade.direction == "long"
 
+    # Typed column arrays + a plain timestamp list keep the bar-walk clear of
+    # pandas' loosely-typed itertuples rows (mypy can't prove those are floats).
+    lows = bars["low"].to_numpy(dtype=float)
+    highs = bars["high"].to_numpy(dtype=float)
+    closes = bars["close"].to_numpy(dtype=float)
+    timestamps = list(bars.index)
+
     exit_reason: str | None = None
     exit_price = 0.0
-    closed_ts: pd.Timestamp | None = None
-    last_ts: pd.Timestamp | None = None
-    last_close = 0.0
-    for row in bars.itertuples():
-        last_ts = row.Index
-        last_close = float(row.close)
+    closed_ts = timestamps[-1]          # bars is non-empty; eod_flat closes here
+    last_close = float(closes[-1])
+    for i in range(len(timestamps)):
+        low, high = float(lows[i]), float(highs[i])
         if is_long:
-            stop_hit = row.low <= stop
-            target_hit = row.high >= target
+            stop_hit, target_hit = low <= stop, high >= target
         else:
-            stop_hit = row.high >= stop
-            target_hit = row.low <= target
+            stop_hit, target_hit = high >= stop, low <= target
         # Both in one bar -> stop (worst-case): check the stop first.
         if stop_hit:
-            exit_reason, exit_price, closed_ts = "stop", stop, row.Index
+            exit_reason, exit_price, closed_ts = "stop", stop, timestamps[i]
             break
         if target_hit:
-            exit_reason, exit_price, closed_ts = "target", target, row.Index
+            exit_reason, exit_price, closed_ts = "target", target, timestamps[i]
             break
 
     if exit_reason is None:
-        exit_reason, exit_price, closed_ts = "eod_flat", last_close, last_ts
+        exit_reason, exit_price = "eod_flat", last_close  # closed_ts is the last bar
 
     risk = abs(entry - stop)
     realized_r = (exit_price - entry) / risk if is_long else (entry - exit_price) / risk
