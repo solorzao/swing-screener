@@ -55,11 +55,11 @@ def discipline_report(trades: Iterable[PaperTrade]) -> dict:
     win_maes: list[float] = []
     for t in closed:
         exc = excursion_r(t)
-        if exc is None:
+        r = t.realized_r
+        if exc is None or r is None:
             continue
-        # realized_r is non-None on every closed-filled trade (see _is_closed_filled).
-        givebacks.append(exc.mfe_r - t.realized_r)
-        if t.realized_r > 0:
+        givebacks.append(exc.mfe_r - r)
+        if r > 0:
             win_maes.append(exc.mae_r)
 
     with_reason = [t for t in closed if t.exit_reason is not None]

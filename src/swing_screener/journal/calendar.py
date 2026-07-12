@@ -45,13 +45,14 @@ def pnl_calendar(
         if not _is_closed_filled(t):
             continue
         d = t.exit_date
-        if d is None:
+        r = t.realized_r
+        if d is None or r is None:
             continue
         month_key = f"{d.year:04d}-{d.month:02d}"
-        _accumulate(months, month_key, t.realized_r)
+        _accumulate(months, month_key, r)
         if month is not None and (d.year, d.month) != (month.year, month.month):
             continue
-        _accumulate(days, d.isoformat(), t.realized_r)
+        _accumulate(days, d.isoformat(), r)
     return {"days": days, "months": months, "cost_level": cost_level_for(trades)}
 
 
