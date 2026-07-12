@@ -30,6 +30,7 @@ from swing_screener.config import StrategyConfig
 from swing_screener.db.models import AnalystCall, Signal
 from swing_screener.db.repo import latest_run_date, load_scored_analyst_calls
 from swing_screener.notify import select as sel
+from swing_screener.pipeline.reflect import analyst_calibration
 from swing_screener.signals.actionability import classify, surface_keep
 
 
@@ -177,9 +178,6 @@ def _analyst_block(
     if call is None:
         return None
     if s.play_type not in calib_cache:
-        # Lazy: pipeline.reflect drags anthropic (+ the replay stack) at module
-        # scope -- the cockpit must not pay that import on startup.
-        from swing_screener.pipeline.reflect import analyst_calibration
         calib_cache[s.play_type] = analyst_calibration(
             load_scored_analyst_calls(session, play_type=s.play_type))
     scored = calib_cache[s.play_type]["by_conviction"].get(call.final_conviction)

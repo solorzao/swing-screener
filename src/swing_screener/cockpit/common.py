@@ -157,8 +157,11 @@ def _down_summary(exc: Exception) -> str:
 # The two error shapes the on-demand worker writes TODAY (notify/ondemand.py): the
 # curated no-data line and the class-name-only form. Anything else in the column is
 # a legacy row persisted before the leak fix -- raw ``str(exc)`` that can embed
-# hosts, URLs, or keys.
-_SAFE_STORED_ERROR = re.compile(r"no data for \S+|error \([A-Za-z_][\w.]*\)")
+# hosts, URLs, or keys. The no-data token is bounded at 16 chars, mirroring the
+# writer's own bound (``AnalysisRequest.ticker`` is String(16), model-validated on
+# the way in) -- a longer "ticker" is not something the worker ever wrote, so it
+# redacts like any other unrecognized shape.
+_SAFE_STORED_ERROR = re.compile(r"no data for \S{1,16}|error \([A-Za-z_][\w.]*\)")
 
 
 def _stored_error_detail(error: str | None) -> str | None:

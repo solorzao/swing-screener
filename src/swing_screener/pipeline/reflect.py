@@ -12,6 +12,8 @@ the replay corpus via ``pipeline.replay``) and returns ``Verdict`` rows. Falsifi
 prior claims against the previous edge file lives in a later task, not here.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import logging
@@ -20,11 +22,13 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from datetime import date
 from pathlib import Path
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
-import anthropic
 import pandas as pd
 from sqlalchemy.orm import Session
+
+if TYPE_CHECKING:  # the SDK is only needed to CONSTRUCT clients -- see author_edge_file
+    import anthropic
 
 from swing_screener.analytics.performance import (
     _CLUSTER_FLOOR,
@@ -665,7 +669,11 @@ def author_edge_file(
     number; the deterministic scaffold it is handed is the immutable ground truth.
 
     ``client`` is an injectable seam: tests pass a fake so no network call is made; prod
-    constructs ``anthropic.Anthropic`` via ``get_secret``. CODE -- not the model -- owns the
+    constructs ``anthropic.Anthropic`` via ``get_secret``. The SDK import is LAZY (function
+    scope, only on the construct-a-real-client path): the cockpit imports this module for its
+    pure helpers (``load_verdicts``, ``analyst_calibration``, ``due_play_types``), and pulling
+    the SDK at module scope would tax every such import for a dependency only the authoring
+    paths use. CODE -- not the model -- owns the
     event-trigger frontmatter: whatever body the model returns, ``_with_frontmatter`` strips
     any header it emitted and stamps the authoritative ``forward_closed_at_last_reflection``
     / ``last_reflected``. On ANY failure (missing key, API error, empty/blank reply) we fall
@@ -676,7 +684,10 @@ def author_edge_file(
         forward_closed_at_last_reflection=n_closed_now, last_reflected=last_reflected,
     )
     try:
-        client = client or anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
+        if client is None:
+            import anthropic
+
+            client = anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
         resp = client.messages.create(
             model=model,
             max_tokens=8000,
@@ -811,12 +822,17 @@ def _opus_drafter(
     ``propose_screen_variants`` tool. Returns a ``DrafterFn`` closing over the client/model.
 
     ``client`` is an injectable seam (prod constructs ``anthropic.Anthropic`` via ``get_secret``,
-    like ``author_edge_file``). The returned function extracts the ``variants`` array from the
-    model's ``tool_use`` block; it may RAISE on any failure (missing key, API error, no tool
-    block) -- ``draft_variants`` catches that and drafts nothing.
+    like ``author_edge_file`` -- and the SDK import is lazy for the same reason: pure-helper
+    importers must not pay for it). The returned function extracts the ``variants`` array from
+    the model's ``tool_use`` block; it may RAISE on any failure (missing key, API error, no
+    tool block) -- ``draft_variants`` catches that and drafts nothing.
     """
     def _fn(play_type: str, hunches: list[Verdict], base: StrategyConfig) -> list[dict]:
-        c = client or anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
+        c = client
+        if c is None:
+            import anthropic
+
+            c = anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
         # Build kwargs as a plain dict (like notify/analysis.py): the SDK's create() overloads
         # don't reconcile with the heterogeneous tool/tool_choice literals, and this is the
         # untrusted-output seam to_config re-validates anyway.
