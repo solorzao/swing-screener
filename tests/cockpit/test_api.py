@@ -2775,7 +2775,9 @@ def test_disarm_broker_failure_is_503_class_only_and_busts_the_snapshot(
     (the message can embed the venue host), AND the snapshot is still invalidated
     -- the ``finally`` -- because a PARTIAL disarm may already have moved venue
     state; the factory-call counter is the observable (as in the invalidation
-    test above)."""
+    test above). A SECOND disarm answers 503 again, never 409: the single-flight
+    lock is released on the EXCEPTION path too (the outer ``finally``), so a
+    failed run never wedges the endpoint shut."""
 
     class _CancelRefusedBroker(FakeBroker):
         def cancel_order(self, broker_order_id: str) -> None:
@@ -2791,6 +2793,9 @@ def test_disarm_broker_failure_is_503_class_only_and_busts_the_snapshot(
     assert "secret-venue-host" not in r.text          # leak posture: class only
     client.get("/api/positions")
     assert calls["n"] == 3                            # partial run STILL busted it
+    # 503, NOT 409: the failed run released the lock (a success-only release
+    # would leave it held and this request would read 'already in flight').
+    assert client.post("/api/disarm", headers=_HDR).status_code == 503
 
 
 def test_execution_safety_none_factory_is_200_never_a_500(
