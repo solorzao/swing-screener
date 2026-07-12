@@ -27,6 +27,7 @@ from swing_screener.cockpit.api import (
     _down_summary,
     _LoginFlight,
     _override_note,
+    _pdf_filename,
     _safe_change_token,
     _worker_label,
     TradeCreate,
@@ -1911,6 +1912,7 @@ def test_request_analysis_uppercases_the_ticker(tmp_path: Path) -> None:
     {"ticker": ""},         # ticker required
     {"ticker": "   "},      # whitespace-only is still missing
     {"ticker": "A" * 40},   # over String(16)
+    {"ticker": "ＡＭＤ"},    # fullwidth look-alike: tickers are ASCII by construction
     {},                     # missing entirely
 ])
 def test_request_analysis_validation(tmp_path: Path, bad: dict[str, object]) -> None:
@@ -1963,7 +1965,11 @@ def test_analysis_list_shape_order_and_manual_worker(tmp_path: Path) -> None:
     assert new["summary"] == "" and new["error"] is None
     assert old["has_pdf"] is True and old["chart_count"] == 2
     assert old["summary"] == "looks fine"
-    assert old["requested_at"] == "2026-07-09T12:00:00"  # stored value, verbatim
+    # Naive DB values are stamped UTC on the wire ('+00:00'-suffixed): JS's
+    # Date() parses naive ISO as LOCAL and would skew relative-time renders.
+    assert old["requested_at"] == "2026-07-09T12:00:00+00:00"
+    assert old["started_at"] == "2026-07-09T12:05:00+00:00"
+    assert old["finished_at"] == "2026-07-09T12:09:00+00:00"
 
 
 def test_worker_label_derives_cloud_vs_manual() -> None:
@@ -2081,6 +2087,33 @@ def test_analysis_chart_and_pdf_local_branch(
     assert p.headers["content-type"] == "application/pdf"
     assert p.headers["content-disposition"] == 'attachment; filename="AMD_report.pdf"'
     assert p.content == _PDF
+
+
+def test_pdf_filename_survives_a_fullwidth_ticker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A legacy row whose ticker rode in before the model's ASCII pin (fullwidth
+    ＡＭＤ passes str.isalnum -- it is Unicode-aware) must still DOWNLOAD: a
+    non-ASCII char reaching starlette's latin-1 header encoding is an unhandled
+    500 inside the sanitizer's own threat model. The allowlist is ASCII-pinned,
+    so the emptied name falls back to 'analysis'."""
+    monkeypatch.delenv("SWING_BLOB_ACCOUNT_URL", raising=False)
+    pdf = tmp_path / "report.pdf"
+    pdf.write_bytes(_PDF)
+    client, engine = _client_and_engine(tmp_path)
+    with Session(engine) as s:
+        row = _analysis_row(ticker="ＡＭＤ", status="done", pdf_blob_key=str(pdf))
+        s.add(row)
+        s.commit()
+        rid = row.id
+    p = client.get(f"/api/analysis/{rid}/pdf")
+    assert p.status_code == 200  # never a 500
+    assert (p.headers["content-disposition"]
+            == 'attachment; filename="analysis_report.pdf"')
+    assert p.content == _PDF
+    # Unit pins: per-char the filter is ascii AND (alnum or ._-), not either.
+    assert _pdf_filename("ＡＭＤ2") == "2_report.pdf"
+    assert _pdf_filename('A"MD\r\n') == "AMD_report.pdf"
 
 
 def test_analysis_asset_404_paths(

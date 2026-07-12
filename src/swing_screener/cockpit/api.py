@@ -274,11 +274,12 @@ class TradeClose(BaseModel):
 
 
 class AnalysisCreate(BaseModel):
-    """POST /api/analysis body: one ticker, required, stripped + uppercased --
-    the worker fetches by ticker and the queue list renders it verbatim, so a
-    lowercase dupe must collapse into the same spelling. ``max_length`` mirrors
-    ``AnalysisRequest.ticker``'s String(16) (the template rule); no float fields,
-    so there is no ``allow_inf_nan`` to pin here."""
+    """POST /api/analysis body: one ticker, required, stripped + uppercased, and
+    ASCII-only -- tickers are ASCII by construction, and a fullwidth look-alike
+    (ＡＭＤ) would both miss the real symbol at fetch time and be stripped from the
+    PDF filename downstream (see ``_pdf_filename``), so it is rejected at the front
+    door. ``max_length`` mirrors ``AnalysisRequest.ticker``'s String(16) (the
+    template rule); no float fields, so there is no ``allow_inf_nan`` to pin."""
 
     ticker: str = Field(max_length=16)
 
@@ -288,6 +289,8 @@ class AnalysisCreate(BaseModel):
         v = v.strip().upper()
         if not v:
             raise ValueError("ticker is required")
+        if not v.isascii():
+            raise ValueError("ticker must be ASCII")
         return v
 
 
@@ -1050,10 +1053,15 @@ def create_app(
         ``worker`` derives from the DB URL (``_worker_label``): 'cloud (*/15min)'
         for Azure, else 'manual' -- the UI copy for manual says requests wait for
         ``python -m swing_screener.notify.ondemand``. Timestamps are served as
-        stored (tz-naive; UTC from the worker/cockpit, naive-local on legacy
-        Streamlit rows -- see the POST docstring). ``has_pdf``/``chart_count``
-        let the UI draw asset affordances without touching a resolver. Budget:
-        one LIMITed SELECT, no resolver or network calls."""
+        unambiguous UTC ('+00:00'-suffixed, ``_utc_iso``): naive DB values are
+        stamped UTC, because JS's ``Date()`` parses naive ISO as LOCAL and would
+        skew every relative-time render by the zone offset. started_at and
+        finished_at are worker-stamped UTC, so the stamp is unconditionally
+        correct; legacy Streamlit ``requested_at`` rows were naive LOCAL and
+        wear a bounded display offset until they age out (see the POST
+        docstring). ``has_pdf``/``chart_count`` let the UI draw asset
+        affordances without touching a resolver. Budget: one LIMITed SELECT,
+        no resolver or network calls."""
         now = datetime.now(UTC)
         rows = list_analysis_requests(session, limit=limit)
         return {
@@ -1062,11 +1070,9 @@ def create_app(
                 "ticker": r.ticker,
                 "status": r.status,
                 "stalled": _stalled(r.status, r.started_at, now=now),
-                "requested_at": r.requested_at.isoformat(),
-                "started_at": (r.started_at.isoformat()
-                               if r.started_at is not None else None),
-                "finished_at": (r.finished_at.isoformat()
-                                if r.finished_at is not None else None),
+                "requested_at": _utc_iso(r.requested_at),
+                "started_at": _utc_iso(r.started_at),
+                "finished_at": _utc_iso(r.finished_at),
                 "summary": r.summary,
                 "error": r.error,
                 "has_pdf": bool(r.pdf_blob_key),
@@ -1631,6 +1637,17 @@ def _stalled(status: str, started_at: datetime | None, *, now: datetime) -> bool
     return (now - started_at) > _STALE_AFTER
 
 
+def _utc_iso(value: datetime | None) -> str | None:
+    """A stored datetime as an unambiguous UTC wire string ('+00:00'-suffixed).
+
+    DB datetimes come back tz-naive (see ``_stalled``); served naive, JS's
+    ``Date()`` would parse them as LOCAL time and skew every relative-time render
+    by the zone offset. The worker/cockpit stamp UTC, so stamping UTC here is
+    correct; legacy Streamlit ``requested_at`` rows were naive LOCAL and wear a
+    bounded display offset until they age out (disclosed at the endpoints)."""
+    return value.replace(tzinfo=UTC).isoformat() if value is not None else None
+
+
 def _worker_label(db_url: str) -> str:
     """Who drains the queue, derived from the DB URL (the ``_is_azure`` predicate --
     URL-shaped, never connectivity-shaped): the Azure DB is drained by the cloud
@@ -1649,6 +1666,9 @@ def _pdf_filename(ticker: str) -> str:
     """``{ticker}_report.pdf`` with the ticker reduced to header-safe characters:
     the value is DB-sourced (model-validated on the way in today, but legacy rows
     predate the model) and a quote or CR/LF inside Content-Disposition corrupts the
-    header. Alphanumerics plus ``._-`` survive; an emptied ticker reads 'analysis'."""
-    safe = "".join(c for c in ticker if c.isalnum() or c in "._-")
+    header. ASCII alphanumerics plus ``._-`` survive -- ``isalnum`` alone is
+    Unicode-aware, so a fullwidth ticker (ＡＭＤ) would sail through the allowlist
+    and then blow up starlette's latin-1 header encoding as an unhandled 500,
+    inside this sanitizer's own threat model. An emptied ticker reads 'analysis'."""
+    safe = "".join(c for c in ticker if c.isascii() and (c.isalnum() or c in "._-"))
     return f"{safe or 'analysis'}_report.pdf"
