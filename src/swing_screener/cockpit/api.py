@@ -6,9 +6,9 @@ Three constraints, stated as contract:
   both CI bounds, cost level, corpus id, facet (docs/plans/2026-07-05-desktop-ui-design.md,
   "The three mechanical rules", rule 1: the frontend has NO renderer for a bare float,
   so a number without provenance is unrepresentable).
-* The connection label NEVER contains the URL, host, or credentials -- the Streamlit
-  sidebar chip's guarantee (``dashboard/ui.py connection_label``), reimplemented here
-  rather than imported because that module is slated for deletion with the dashboard.
+* The connection label NEVER contains the URL, host, or credentials -- the guarantee the
+  retired Streamlit sidebar chip carried (its ``connection_label``), reimplemented here
+  rather than carried over from the now-deleted dashboard module.
 * A dead database is a friendly answer, never a traceback: ``/api/health`` always
   answers 200 with ``connected: false`` plus a one-line summary; data endpoints answer
   503 with a JSON ``detail``. That covers MID-REQUEST failures too: a stale-schema

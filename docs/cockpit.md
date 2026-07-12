@@ -1,8 +1,8 @@
 # Desktop cockpit
 
 The native desktop app over the screener database: a pywebview window (or browser
-tab) served by a local FastAPI backend, replacing the Streamlit dashboard screen by
-screen. Design + phased plans: `docs/plans/2026-07-05-desktop-ui-design.md`,
+tab) served by a local FastAPI backend. It replaces the retired Streamlit dashboard.
+Design + phased plans: `docs/plans/2026-07-05-desktop-ui-design.md`,
 `docs/plans/2026-07-05-desktop-ui-phase1.md` (shell, heartbeats, COHORTS) and
 `docs/plans/2026-07-10-desktop-ui-phase2.md` (forward books, funnel, performance
 parity, SSE).
@@ -36,7 +36,7 @@ tab:
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `SWING_DB_URL` (env) | `sqlite:///local.db` | database to point at — same variable the pipeline and dashboard read, so a configured box lands on its real data |
+| `SWING_DB_URL` (env) | `sqlite:///local.db` | database to point at — the same variable the pipeline reads, so a configured box lands on its real data |
 | `--db <url>` | `$SWING_DB_URL` | explicit override; wins over the env var |
 | `--port <n>` | a free port | fixed port (useful for the dev proxy, below) |
 | `--browser` | off | open the default browser instead of a pywebview window |
@@ -52,7 +52,7 @@ The Start-menu icon is the committed `src/swing_screener/cockpit/assets/cockpit.
 ## Pointing at Azure (your real data)
 
 The cockpit reads whatever database `SWING_DB_URL` names — the same variable the
-dashboard and pipeline use. To run it over production Azure SQL:
+pipeline uses. To run it over production Azure SQL:
 
 ```powershell
 az login                       # DefaultAzureCredential picks this up
@@ -60,8 +60,8 @@ $env:SWING_DB_URL = "mssql+pyodbc://@<server>.database.windows.net/swing?driver=
 .\.venv\Scripts\python -m swing_screener.cockpit --browser
 ```
 
-(Same URL form as the dashboard's Azure mode — see `docs/dashboard.md`; your client
-IP must be allowed on the SQL server firewall, and the ODBC driver is auto-detected.)
+(See the [Azure deploy runbook](azure-deploy.md) for the connection-string forms; your
+client IP must be allowed on the SQL server firewall, and the ODBC driver is auto-detected.)
 Against prod, the heartbeat rail reads the REAL cadence (digest sends, market
 weather, screen runs) and COHORTS grades the real forward book. Everything is
 read-only. The in-app Local ⇄ Azure switcher chip has not shipped yet (Phase 3);

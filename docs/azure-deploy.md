@@ -18,14 +18,14 @@ real CLI. Signals/trades live in **Azure SQL** (Alembic owns the schema); chart 
 live in a **private Blob container**; secrets live in **Key Vault**. Everything authes
 with **one user-assigned managed identity (UAMI)** — there are **no stored credentials
 anywhere** (no SQL logins, no storage keys, no service-principal secrets). The
-**dashboard stays local**, pointed at Azure SQL via `az login`. CD auto-builds and
+**cockpit stays local**, pointed at Azure SQL via `az login`. CD auto-builds and
 repoints the jobs on merge to `main` via GitHub→Azure **OIDC**.
 
 ## Prerequisites
 
 - An Azure subscription and `az` CLI (`az login`).
 - Your own Entra (Azure AD) **user object id** (`az ad signed-in-user show --query id -o tsv`)
-  — you become the SQL AAD admin and a Blob reader for the local dashboard.
+  — you become the SQL AAD admin and a Blob reader for the local cockpit.
 - The real secret value: `ANTHROPIC_API_KEY` (and the digest recipient). Passed to the deploy
   as `@secure()` params and stored only in Key Vault — **never commit them**. **Email needs no
   secret**: it sends via Azure Communication Services authenticated by the managed identity.
@@ -57,7 +57,7 @@ az deployment sub create \
   the DB genuinely idles >16h/day; the hourly intraday job keeps it warm, so Basic is
   usually cheaper.
 - **SQL firewall** is restricted to the IPs you pass in `sqlAllowedIps` — start with your
-  home IP (for the dashboard). A Consumption Container Apps environment doesn't expose a
+  home IP (for the local cockpit). A Consumption Container Apps environment doesn't expose a
   stable egress IP as a deploy output, so add the env's outbound IP(s) in a follow-up once
   known: `az sql server firewall-rule create -g <rg> -s <server> -n ca-egress --start-ip-address <ip> --end-ip-address <ip>`. The broad "allow all Azure IPs" rule is deliberately
   **not** used. (Entra-only auth still gates access; this just minimizes the network
@@ -96,12 +96,12 @@ CREATE USER [<uami-name>] FROM EXTERNAL PROVIDER;
 ALTER ROLE db_datareader ADD MEMBER [<uami-name>];
 ALTER ROLE db_datawriter ADD MEMBER [<uami-name>];
 ALTER ROLE db_ddladmin  ADD MEMBER [<uami-name>];   -- Alembic issues CREATE/ALTER TABLE
--- your own Entra user, so the LOCAL dashboard can read:
+-- your own Entra user, so the LOCAL cockpit can read:
 CREATE USER [<your-entra-upn>] FROM EXTERNAL PROVIDER;
 ALTER ROLE db_datareader ADD MEMBER [<your-entra-upn>];
 ```
 
-Then grant your human identity **Storage Blob Data Reader** so the local dashboard can
+Then grant your human identity **Storage Blob Data Reader** so the local cockpit can
 download charts:
 
 ```bash
@@ -154,25 +154,25 @@ az containerapp job start  --name intraday-exit -g <rg>   # against a seeded ope
 az containerapp job update --name intraday-exit -g <rg> --remove-env-vars RUN_GATE_FORCE
 ```
 
-## Step 5 — Point the local dashboard at Azure SQL
+## Step 5 — Point the local cockpit at Azure SQL
 
-The dashboard **stays local**. Connection strings come in two forms — note the
+The cockpit **stays local**. Connection strings come in two forms — note the
 **clientId, not objectId** gotcha for the job:
 
 | Context | `SWING_DB_URL` auth |
 |---|---|
 | Jobs (in Azure) | `...;Authentication=ActiveDirectoryMSI;User Id=<UAMI clientId>` (Bicep sets this) |
-| Local dashboard | `...;Authentication=ActiveDirectoryDefault` (uses your `az login`) |
+| Local cockpit | `...;Authentication=ActiveDirectoryDefault` (uses your `az login`) |
 
 ```bash
 az login
 $env:SWING_DB_URL = "mssql+pyodbc://<server>.database.windows.net/swing?driver=ODBC+Driver+18+for+SQL+Server&Authentication=ActiveDirectoryDefault"
 $env:SWING_BLOB_ACCOUNT_URL = "https://<storage>.blob.core.windows.net"
 $env:SWING_BLOB_CONTAINER = "charts"
-streamlit run src/swing_screener/dashboard/app.py
+python -m swing_screener.cockpit --browser
 ```
 
-The dashboard reads candidates from Azure SQL and downloads charts from Blob (as Storage
+The cockpit reads candidates from Azure SQL and downloads charts from Blob (as Storage
 Blob Data Reader). It needs **ODBC Driver 18** locally (`msodbcsql18`).
 
 ## Step 6 — Wire CD (GitHub → Azure via OIDC)
@@ -239,7 +239,7 @@ the `analysis_requests` table is created by `alembic upgrade head` on the job's 
   fails with error **40613** while it wakes (~1 min). `run_screen` retries the startup
   `alembic upgrade head` with backoff, so the evening screen survives it.
 - **Chart TTL:** a lifecycle rule deletes chart blobs after ~90 days, but `Signal.chart_path`
-  rows persist longer — old charts 404 and the PDF/dashboard degrade to a chartless section
+  rows persist longer — old charts 404 and the PDF/cockpit degrade to a chartless section
   (handled in code; not an error).
 - **Secrets** are injected into the jobs as env vars from Key Vault by the UAMI; the code
   logs secret **names only, never values**.
