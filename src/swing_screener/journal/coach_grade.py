@@ -55,7 +55,7 @@ def equity_review_facts(t: Trade) -> TradeReviewFacts:
     exit_price = t.exit_price
     closed = exit_price is not None
     risk = entry - stop
-    result = (exit_price - entry) / risk if (closed and risk > 0) else None
+    result = (exit_price - entry) / risk if (exit_price is not None and risk > 0) else None
 
     hold_days = (t.exit_date - t.entry_date).days if t.exit_date is not None else None
     override = t.override
