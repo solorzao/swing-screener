@@ -1,5 +1,10 @@
 # Desktop Cockpit Phase 3 Implementation Plan
 
+> **Status (2026-07-12): SHIPPED.** All 22 tasks are implemented on
+> `feat/cockpit-phase3` — the ten screens, the six actions, and the Streamlit
+> deletion. The operator docs are `docs/cockpit.md`; the local-migration recovery is in
+> its troubleshooting section (and cross-referenced from `docs/azure-deploy.md`).
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this
 > plan task-by-task. (Revision 2 — 37 findings from a four-lens adversarial verification
 > pass folded in; the notable ones are marked ★ inline.)

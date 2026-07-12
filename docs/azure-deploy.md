@@ -243,6 +243,15 @@ the `analysis_requests` table is created by `alembic upgrade head` on the job's 
   (handled in code; not an error).
 - **Secrets** are injected into the jobs as env vars from Key Vault by the UAMI; the code
   logs secret **names only, never values**.
+- **Local `local.db` migration trap (cockpit operators):** a fresh Azure SQL database is
+  built by Alembic from empty and `alembic upgrade head` is correct there (the pipeline
+  runs it on startup). A **local** `local.db` born from `create_all`, however, has no
+  `alembic_version` stamp, so a bare `alembic upgrade head` replays the initial migration
+  and dies with `table email_log already exists`. If you run the local cockpit over an old
+  `local.db` and a panel shows `OperationalError`, stamp the pre-Phase-3 head first:
+  `alembic stamp d7e4b2f9a1c6` then `alembic upgrade head` (or the one-liner
+  `ALTER TABLE trades ADD COLUMN override VARCHAR(256)`). Full recovery in
+  [the cockpit runbook](cockpit.md#troubleshooting-stale-localdb-and-the-phase-3-migration-trap).
 
 ## Cost
 
