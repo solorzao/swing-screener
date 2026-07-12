@@ -121,7 +121,11 @@ from swing_screener.pipeline.execution import (
     PAPER_ACCOUNT,
 )
 from swing_screener.pipeline.insight import size_order
-from swing_screener.pipeline.preflight import PreflightReport, preflight
+from swing_screener.pipeline.preflight import (
+    PreflightReport,
+    broker_error_detail,
+    preflight,
+)
 from swing_screener.pipeline.proposed import (
     ProposedVariant,
     decide_proposal,
@@ -761,6 +765,11 @@ def create_app(
             "analyst_spend_today_usd": sum((c.est_cost_usd or 0.0 for c in calls), 0.0),
         }
 
+    # The DISARM single-flight lock (mirrors login_lock below). Parked on app.state
+    # so a test can hold it deterministically instead of racing two threads.
+    disarm_lock = threading.Lock()
+    app.state.disarm_lock = disarm_lock
+
     @app.post("/api/disarm", dependencies=[Depends(_require_cockpit)])
     def disarm_book(
         dry_run: bool = Query(default=False),
@@ -775,7 +784,13 @@ def create_app(
         re-submitted as a plain GTC stop at the ExecutionLog ticket's RECORDED
         level (COPIED, never computed -- North Star #4); no recorded level -> the
         position is named in ``unprotected`` and LEFT ALONE (never auto-closed --
-        North Star #3). Header-guarded (``_require_cockpit``). The broker comes
+        North Star #3). Header-guarded (``_require_cockpit``). SINGLE-FLIGHT:
+        two concurrent real runs could both read the open-order list before
+        either cancels, and the per-second ``key_suffix`` only collapses stop
+        re-submits landing within the same second -- overlapping runs risk
+        DUPLICATE live GTC sell stops (2x the position: triggered, the second
+        sells short). The lock is acquired NON-blocking; the loser answers 409
+        'disarm already in flight' without touching the venue. The broker comes
         from the FACTORY seam, live per request -- the cached snapshot is a READ
         and nothing to cancel through. A None factory answer (no broker
         configured) is a 409 STATE, not a crash; a broker/factory error is a 503
@@ -785,38 +800,44 @@ def create_app(
         invalidated (in ``finally`` -- a partial disarm has still moved venue
         state), so the UI never renders pre-disarm orders for up to a TTL.
         """
+        if not disarm_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="disarm already in flight")
         try:
-            broker = resolved_broker_factory()
-        except Exception as exc:
-            raise HTTPException(
-                status_code=503, detail=f"broker error ({type(exc).__name__})"
-            ) from exc
-        if broker is None:
-            raise HTTPException(status_code=409, detail="no broker configured")
-        broker_snapshot: BrokerSnapshot = app.state.broker_snapshot
-        try:
-            entries, sells = pull_entry_orders(broker, dry_run=dry_run)
-            restored, unprotected = ensure_stop_protection(
-                broker, lambda sym: latest_recorded_stop(session, sym),
-                key_suffix=f"cockpit-{datetime.now(UTC):%Y%m%d%H%M%S}",
-                dry_run=dry_run)
-        except SQLAlchemyError:
-            raise  # the app-level handler's 503: a DB failure is not a broker error
-        except Exception as exc:
-            raise HTTPException(
-                status_code=503, detail=f"broker error ({type(exc).__name__})"
-            ) from exc
+            try:
+                broker = resolved_broker_factory()
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=503, detail=broker_error_detail(exc)
+                ) from exc
+            if broker is None:
+                raise HTTPException(status_code=409, detail="no broker configured")
+            broker_snapshot: BrokerSnapshot = app.state.broker_snapshot
+            try:
+                entries, sells = pull_entry_orders(broker, dry_run=dry_run)
+                restored, unprotected = ensure_stop_protection(
+                    broker, lambda sym: latest_recorded_stop(session, sym),
+                    key_suffix=f"cockpit-{datetime.now(UTC):%Y%m%d%H%M%S}",
+                    dry_run=dry_run)
+            except SQLAlchemyError:
+                raise  # the app-level handler's 503: a DB failure is not a broker error
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=503, detail=broker_error_detail(exc)
+                ) from exc
+            finally:
+                if not dry_run:
+                    broker_snapshot.invalidate()
+            return {
+                "dry_run": dry_run,
+                "cancelled": [{"symbol": o.symbol,
+                               "broker_order_id": o.broker_order_id}
+                              for o in entries],
+                "sells_kept": len(sells),
+                "stops_restored": restored,
+                "unprotected": unprotected,
+            }
         finally:
-            if not dry_run:
-                broker_snapshot.invalidate()
-        return {
-            "dry_run": dry_run,
-            "cancelled": [{"symbol": o.symbol, "broker_order_id": o.broker_order_id}
-                          for o in entries],
-            "sells_kept": len(sells),
-            "stops_restored": restored,
-            "unprotected": unprotected,
-        }
+            disarm_lock.release()
 
     @app.get("/api/execution/safety")
     def execution_safety(session: Session = Depends(_session)) -> dict[str, object]:
@@ -825,10 +846,12 @@ def create_app(
         ``broker_configured`` is settings TRUTHINESS, never connectivity (same rule
         as ``/api/gate``). ``preflight`` is ``pipeline.preflight``'s report over a
         FRESH client from the factory seam; a None factory answer takes the report's
-        None-broker shape (config NO-GO, explicit not-applicable lines -- the
-        default local setup is never a 500), and a RAISING factory degrades to that
-        same shape with the reachable line carrying the exception CLASS only (leak
-        posture). ``locks`` renders ``can_arm_real_money``'s three components
+        None-broker shape (the config line evaluated from settings for REAL, explicit
+        not-applicable broker lines -- the default local setup is never a 500), and a
+        RAISING factory degrades to that same shape -- the config line stays honest
+        (the settings ARE configured; the factory failed) and the reachable line
+        carries the exception CLASS only (leak posture).
+        ``locks`` renders ``can_arm_real_money``'s three components
         individually (``gate_ready`` reuses the report's advisory gate line -- one
         evaluation per request); ``caps_mandate`` is ``real_money_limits_ok`` over
         the resolved limits. ``env_scope`` is the honesty label: everything here
@@ -843,14 +866,17 @@ def create_app(
             broker = resolved_broker_factory()
         except Exception as exc:
             broker = None
-            broker_error = f"broker error ({type(exc).__name__})"
+            broker_error = broker_error_detail(exc)
         report = preflight(session, settings, broker=broker,
                            edge_dir=resolve_edge_dir(edge_dir))
         if broker_error is not None:
             report = PreflightReport(go=report.go, checks=[
                 replace(c, detail=broker_error) if c.name == "reachable" else c
                 for c in report.checks])
-        gate_ready = next(c.ok for c in report.checks if c.name == "autonomy_gate")
+        # Default False: a renamed/absent gate check degrades to not-green
+        # (UNKNOWN is never green), instead of a StopIteration 500.
+        gate_ready = next(
+            (c.ok for c in report.checks if c.name == "autonomy_gate"), False)
         mode, limits = resolve_execution(settings)
         caps_ok, caps_reason = real_money_limits_ok(limits)
         broker_snapshot: BrokerSnapshot = app.state.broker_snapshot

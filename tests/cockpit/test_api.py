@@ -51,7 +51,7 @@ from swing_screener.settings import _EXECUTION_MODES
 from swing_screener.storage import blob
 from swing_screener.db.repo import save_reversal_funnel
 from swing_screener.db.session import get_engine
-from swing_screener.pipeline.broker import BrokerOrderSpec, FakeBroker
+from swing_screener.pipeline.broker import BrokerAccount, BrokerOrderSpec, FakeBroker
 from swing_screener.pipeline.proposed import (
     ProposedVariant,
     load_proposed_for,
@@ -2578,11 +2578,12 @@ LOCK_KEYS = {"mode_is_live", "allow_real_money", "gate_ready"}
 CHECK_KEYS = {"name", "ok", "detail", "critical"}
 
 
-def _disarm_broker() -> FakeBroker:
+def _disarm_broker(broker: FakeBroker | None = None) -> FakeBroker:
     """The disarm scenario at the venue: a resting AMD entry limit (fake-0) plus a
     bracket-filled NVDA position whose protective sell legs (stop + target) are
-    LIVE open orders."""
-    broker = FakeBroker()
+    LIVE open orders. Pass a FakeBroker SUBCLASS to script a mid-disarm venue
+    failure over the same scenario."""
+    broker = broker if broker is not None else FakeBroker()
     broker.submit_order(BrokerOrderSpec(
         client_order_id="resting-entry", symbol="AMD", side="buy", qty=3,
         order_type="limit", limit_price=90.0, time_in_force="day"))
@@ -2745,6 +2746,53 @@ def test_disarm_real_run_invalidates_the_broker_snapshot(tmp_path: Path) -> None
     assert calls["n"] == 4                            # real run: snapshot re-read
 
 
+def test_disarm_is_single_flight(tmp_path: Path) -> None:
+    """Two overlapping real runs can both read the open-order list before either
+    cancels, and differing per-second key_suffixes defeat the client_order_id
+    dedup -- duplicate live GTC sell stops (2x the position). The lock is held
+    deterministically here (it lives on app.state for exactly this): the second
+    request 409s BEFORE resolving a live client, and the lock is released
+    per-request so a later disarm proceeds."""
+    broker = _disarm_broker()
+    client, _engine, calls = _broker_app(tmp_path, broker)
+    lock = client.app.state.disarm_lock  # type: ignore[attr-defined]
+    assert lock.acquire(blocking=False)  # an in-flight disarm holds the lock
+    try:
+        r = client.post("/api/disarm", headers=_HDR)
+        assert r.status_code == 409
+        assert r.json()["detail"] == "disarm already in flight"
+        assert calls["n"] == 0                       # rejected before the factory
+        assert len(broker.list_open_orders()) == 3   # venue untouched
+    finally:
+        lock.release()
+    assert client.post("/api/disarm", headers=_HDR).status_code == 200
+
+
+def test_disarm_broker_failure_is_503_class_only_and_busts_the_snapshot(
+    tmp_path: Path,
+) -> None:
+    """A mid-disarm venue failure: 503 whose detail is the exception CLASS only
+    (the message can embed the venue host), AND the snapshot is still invalidated
+    -- the ``finally`` -- because a PARTIAL disarm may already have moved venue
+    state; the factory-call counter is the observable (as in the invalidation
+    test above)."""
+
+    class _CancelRefusedBroker(FakeBroker):
+        def cancel_order(self, broker_order_id: str) -> None:
+            raise RuntimeError("secret-venue-host.alpaca.markets refused the cancel")
+
+    broker = _disarm_broker(_CancelRefusedBroker())
+    client, _engine, calls = _broker_app(tmp_path, broker)
+    client.get("/api/positions")                      # primes the snapshot
+    assert calls["n"] == 1
+    r = client.post("/api/disarm", headers=_HDR)      # live client: n -> 2
+    assert r.status_code == 503
+    assert r.json()["detail"] == "broker error (RuntimeError)"
+    assert "secret-venue-host" not in r.text          # leak posture: class only
+    client.get("/api/positions")
+    assert calls["n"] == 3                            # partial run STILL busted it
+
+
 def test_execution_safety_none_factory_is_200_never_a_500(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2855,6 +2903,31 @@ def test_execution_safety_broker_error_degrades_by_class_name(
     checks = {c["name"]: c for c in body["preflight"]["checks"]}
     assert checks["reachable"]["ok"] is False
     assert checks["reachable"]["detail"] == "broker error (RuntimeError)"
+    # The config line stays HONEST: SWING_BROKER IS set, the FACTORY failed --
+    # it must not claim the variable is unset.
+    assert "SWING_BROKER is unset" not in checks["config"]["detail"]
     assert body["preflight"]["go"] is False
     assert body["bracket_shield"]["known"] is False  # UNKNOWN, never green
     assert "secret-host" not in r.text  # leak posture: class name only
+
+
+def test_execution_safety_unreachable_venue_leaks_class_name_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The safety screen's PRIMARY degraded scenario: the factory succeeds (a
+    broker is configured) but ``get_account`` fails at the venue -- down, 401 --
+    with a message embedding the venue host. The reachable line must carry the
+    exception CLASS only; the message never reaches the wire."""
+    monkeypatch.setenv("SWING_BROKER", "alpaca")
+
+    class _DownVenueBroker(FakeBroker):
+        def get_account(self) -> BrokerAccount:
+            raise RuntimeError("secret-venue-host.alpaca.markets 401 unauthorized")
+
+    client, _engine, _calls = _broker_app(tmp_path, _DownVenueBroker())
+    r = client.get("/api/execution/safety")
+    assert r.status_code == 200
+    checks = {c["name"]: c for c in r.json()["preflight"]["checks"]}
+    assert checks["reachable"]["ok"] is False
+    assert "RuntimeError" in checks["reachable"]["detail"]  # class name on the line
+    assert "secret-venue-host" not in r.text                # message never on the wire
