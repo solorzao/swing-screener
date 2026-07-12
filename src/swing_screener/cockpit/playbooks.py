@@ -22,7 +22,7 @@ the writer and this checker.
 
 from dataclasses import dataclass
 
-from swing_screener.pipeline.reflect import Verdict, _section_body
+from swing_screener.pipeline.reflect import Verdict, _condition, _section_body
 
 # Tier -> the md section header that should carry the verdict's condition token.
 # Mirrors ``reflect.render_edge_file``'s tier routing exactly (the writer this
@@ -70,7 +70,9 @@ def playbook_drift(md_text: str, verdicts: list[Verdict]) -> DriftReport:
     for v in verdicts:
         header = _TIER_SECTIONS.get(v.tier)
         section = _section_body(md_text, header) if header is not None else ""
-        token = f"{v.dimension}={v.bucket}"
+        # reflect._condition is the WRITER's own token renderer -- sharing it
+        # means the checker can never spell the glyph differently than the md.
+        token = _condition(v)
         if token not in section:
             missing.append(MissingToken(token=token, tier=v.tier))
     return DriftReport(ok=not missing, missing=tuple(missing))

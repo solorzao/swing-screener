@@ -33,17 +33,24 @@ def build_weather_router(
         a setup state, not an error (the job is weekly; a fresh DB has none).
 
         ``history`` is the flip log: every run's ``{run_date, ha_alignment,
-        flipped, core}`` newest-first (weekly cadence -- the whole table is a few
-        rows per month, so no pagination). ``run_date`` doubles as the as-of for
-        this weekly-stale data; ``created_at`` rides as unambiguous UTC
-        (``_utc_iso``) for the "generated at" caption.
+        flipped, core}`` newest-first (weekly cadence -- the whole table is a
+        few rows per month, so no pagination; the history SELECT is
+        column-limited so the full ``report`` Text never loads once per row).
+        ``run_date`` doubles as the as-of for this weekly-stale data;
+        ``created_at`` rides as unambiguous UTC (``_utc_iso``) for the
+        "generated at" caption.
         """
-        rows = list(session.scalars(
-            select(MarketReport).order_by(MarketReport.run_date.desc(),
-                                          MarketReport.id.desc())))
-        if not rows:
+        latest = session.scalars(
+            select(MarketReport)
+            .order_by(MarketReport.run_date.desc(), MarketReport.id.desc())
+            .limit(1)).first()
+        if latest is None:
             return {"weather": None, "history": []}
-        latest = rows[0]
+        history = session.execute(
+            select(MarketReport.run_date, MarketReport.ha_alignment,
+                   MarketReport.flipped, MarketReport.core)
+            .order_by(MarketReport.run_date.desc(), MarketReport.id.desc())
+        ).all()
         return {
             "weather": {
                 "run_date": latest.run_date.isoformat(),
@@ -73,11 +80,11 @@ def build_weather_router(
                 "created_at": _utc_iso(latest.created_at),
             },
             "history": [{
-                "run_date": r.run_date.isoformat(),
-                "ha_alignment": r.ha_alignment,
-                "flipped": r.flipped,
-                "core": r.core,
-            } for r in rows],
+                "run_date": run_date.isoformat(),
+                "ha_alignment": ha_alignment,
+                "flipped": flipped,
+                "core": core,
+            } for run_date, ha_alignment, flipped, core in history],
         }
 
     return router

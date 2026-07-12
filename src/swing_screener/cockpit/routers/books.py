@@ -31,6 +31,7 @@ from swing_screener.analytics.performance import (
 )
 from swing_screener.cockpit.common import (
     _down_summary,
+    _finite_or_none,
     _is_azure,
     _LoginFlight,
     _LoginProc,
@@ -261,12 +262,12 @@ def build_books_router(
             detail_trades = scoped
 
         summary = summarize(detail_trades)
-        pf = summary.profit_factor
         kpis: dict[str, object] = {
             "expectancy": _stat_dict(summary, detail_trades, facet),
             "win_rate": summary.win_rate,
             "fill_rate": summary.fill_rate,
-            "profit_factor": None if pf == float("inf") else pf,
+            # a loss-free book's pf is +inf; the shared non-finite->null rule
+            "profit_factor": _finite_or_none(summary.profit_factor),
             "n_closed": summary.n_closed,
         }
 

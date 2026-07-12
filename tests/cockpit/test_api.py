@@ -3463,8 +3463,8 @@ def test_ticker_analysis_window_orders_by_lifecycle_not_id(tmp_path: Path) -> No
 
 
 PLAYBOOKS_KEYS = {"books", "due_play_types", "store_errors", "ci_note"}
-BOOK_KEYS = {"play_type", "md", "frontmatter", "verdicts", "verdicts_error",
-             "drift", "falsified", "reflection_due"}
+BOOK_KEYS = {"play_type", "md", "md_error", "frontmatter", "verdicts",
+             "verdicts_error", "drift", "falsified", "reflection_due"}
 # The verdict wire row: EVERY Verdict field by name, a closed set like STAT_KEYS
 # -- deliberately NOT a Stat dict (tier rides verdict rows; scope decision 11),
 # and deliberately NO ci_high (the wire's ci_note says why).
@@ -3593,6 +3593,68 @@ def test_playbooks_degrades_per_book_and_drift_never_fabricates_ok(
     assert rev["drift"] is None  # unknown -- a drift lamp must not read ok here
 
 
+def test_playbooks_unreadable_md_degrades_that_book_only(tmp_path: Path) -> None:
+    """A non-UTF-8 md (a cp1252 smart-quote from a Windows hand-edit -- the
+    drift lamp's OWN stated threat model) must not 500 either surface.
+    ``reflect._edge_text`` stays strict by decision (the nightly reflection
+    fails loudly on corruption); the ENDPOINT degrades: that book serves md ""
+    + ``md_error`` naming the class only, drift null (faithfulness against
+    nothing is unknowable), while its SIDECAR still renders -- the numbers
+    never depended on the prose. The other book is untouched. /api/attention
+    -- whose due gate reads both mds -- stays 200 with reflection_due degraded
+    quietly to [] (md_error here is the loud marker)."""
+    cont = _sidecar_verdict(play_type="continuation")
+    cont_md = render_edge_file("continuation", "thesis", [cont], n_closed_now=7)
+    (tmp_path / "continuation.md").write_text(cont_md, encoding="utf-8")
+    (tmp_path / "continuation.verdicts.json").write_text(
+        verdicts_to_json([cont]), encoding="utf-8")
+    (tmp_path / "reversal.verdicts.json").write_text(
+        verdicts_to_json([_sidecar_verdict()]), encoding="utf-8")
+    (tmp_path / "reversal.md").write_bytes(  # \x93/\x94 = cp1252 smart quotes
+        b"## Thesis\n\x93hand-edited on Windows\x94\n")
+
+    client = _client(tmp_path)
+    r = client.get("/api/playbooks")
+    assert r.status_code == 200
+    body = r.json()
+    books = {b["play_type"]: b for b in body["books"]}
+    bad = books["reversal"]
+    assert bad["md"] == ""
+    assert bad["md_error"] == "unreadable (UnicodeDecodeError)"  # class only
+    assert bad["drift"] is None  # unknown, never a fabricated ok
+    assert len(bad["verdicts"]) == 1  # the sidecar still renders
+    assert bad["verdicts_error"] is None
+    good = books["continuation"]
+    assert good["md_error"] is None
+    assert good["md"] == cont_md
+    assert good["drift"] == {"ok": True, "missing": []}
+    assert body["due_play_types"] == []  # the due gate read the bad md: quiet
+
+    a = client.get("/api/attention")
+    assert a.status_code == 200
+    assert a.json()["reflection_due"] == []
+
+
+def test_playbooks_mangled_tier_row_degrades_not_500(tmp_path: Path) -> None:
+    """A hand-mangled sidecar row whose values PASS ``Verdict(**d)`` but break
+    the drift check (an unhashable list tier) is the same corrupt-store state:
+    the drift call lives INSIDE the row-build umbrella, so the book reads
+    'unreadable (TypeError)' + drift null -- never a 500."""
+    row = {"play_type": "reversal", "dimension": "market_trend",
+           "bucket": "bear", "tier": ["hunch"], "n": 1, "expectancy_r": 0.1,
+           "ci_low": -0.1, "n_clusters": 1, "source": "none"}
+    (tmp_path / "reversal.verdicts.json").write_text(
+        json.dumps([row]), encoding="utf-8")
+    r = _client(tmp_path).get("/api/playbooks")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["store_errors"] == ["reversal"]
+    rev = {b["play_type"]: b for b in body["books"]}["reversal"]
+    assert rev["verdicts"] == []  # never a half-built row list on the wire
+    assert rev["verdicts_error"] == "unreadable (TypeError)"
+    assert rev["drift"] is None
+
+
 def test_playbooks_empty_edge_dir_is_a_setup_state(tmp_path: Path) -> None:
     """A fresh clone (no md, no sidecars, empty DB) is a SETUP state, not an
     error: md "", verdicts_error 'missing' (distinct from corrupt -- it never
@@ -3602,6 +3664,7 @@ def test_playbooks_empty_edge_dir_is_a_setup_state(tmp_path: Path) -> None:
     assert body["due_play_types"] == []
     for b in body["books"]:
         assert b["md"] == ""
+        assert b["md_error"] is None  # missing is a setup state, not a failure
         assert b["verdicts"] == []
         assert b["verdicts_error"] == "missing"
         assert b["drift"] is None
@@ -3761,7 +3824,11 @@ def test_analyst_spend_windows_and_undercount(tmp_path: Path) -> None:
     """Spend sums ``est_cost_usd`` over calendar windows INCLUDING today (today /
     7d / 30d); a NULL-cost row (deterministic path, legacy) is COUNTED and
     disclosed, never silently summed as zero -- the note says the totals
-    undercount. A 40-day-old row is outside every window."""
+    undercount. BOTH window edges are pinned with straddling rows (day 6 in /
+    day 7 out of the 7d window; day 29 in / day 30 out of the 30d window --
+    power-of-two costs so any misassignment changes a sum uniquely), the same
+    treatment the freshness split's boundary got. A 40-day-old row is outside
+    every window."""
     today = date.today()
     client, engine = _client_and_engine(tmp_path)
 
@@ -3773,15 +3840,19 @@ def test_analyst_spend_windows_and_undercount(tmp_path: Path) -> None:
     with Session(engine) as s:
         s.add(_costed("T0", 0, 1.0))
         s.add(_costed("T3", 3, 2.0))
+        s.add(_costed("T6", 6, 16.0))     # last day INSIDE the 7d window
+        s.add(_costed("T7", 7, 32.0))     # first day OUTSIDE it (30d only)
         s.add(_costed("T10", 10, 4.0))
-        s.add(_costed("T40", 40, 8.0))    # outside the 30d window entirely
+        s.add(_costed("T29", 29, 64.0))   # last day INSIDE the 30d window
+        s.add(_costed("T30", 30, 128.0))  # first day OUTSIDE it
+        s.add(_costed("T40", 40, 8.0))    # outside every window
         s.add(_costed("NUL", 0, None))    # no estimate recorded
         s.commit()
     spend = client.get("/api/analyst").json()["spend"]
     assert set(spend) == SPEND_KEYS
     assert spend["today_usd"] == pytest.approx(1.0)
-    assert spend["last_7d_usd"] == pytest.approx(3.0)
-    assert spend["last_30d_usd"] == pytest.approx(7.0)
+    assert spend["last_7d_usd"] == pytest.approx(19.0)    # 1 + 2 + 16
+    assert spend["last_30d_usd"] == pytest.approx(119.0)  # + 32 + 4 + 64
     assert spend["uncosted_calls_30d"] == 1
     assert "undercount" in spend["note"]
 

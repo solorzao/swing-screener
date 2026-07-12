@@ -135,6 +135,20 @@ def _json_safe_floats(obj: object) -> object:
     return obj
 
 
+def _finite_or_none(value: float) -> float | None:
+    """JSON has no inf/nan: a non-finite SERVED statistic is an explicit null.
+
+    The one spelling of the rule (playbook verdict floats, the analyst's
+    calibration bound, the performance profit factor all route here) -- stated
+    in code rather than left to the serializer's inf-handling default, so the
+    wire contract survives a framework change. Distinct from
+    ``_json_safe_floats`` on purpose: that helper STRINGIFIES non-finite floats
+    in the 422 error payload (an echo must show what the client sent); a served
+    statistic nulls instead, because a rendered 'inf' would read as a number we
+    measured."""
+    return value if math.isfinite(value) else None
+
+
 def _utc_iso(value: datetime | None) -> str | None:
     """A stored datetime as an unambiguous UTC wire string ('+00:00'-suffixed).
 

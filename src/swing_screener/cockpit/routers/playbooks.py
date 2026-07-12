@@ -12,7 +12,6 @@ second parser. Promotion is a HUMAN act -- nothing here mutates anything; both
 endpoints are plain GETs.
 """
 
-import math
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -20,7 +19,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from swing_screener.cockpit.playbooks import playbook_drift
+from swing_screener.cockpit.common import _finite_or_none
+from swing_screener.cockpit.playbooks import DriftReport, playbook_drift
 from swing_screener.db.models import AnalysisRequest
 from swing_screener.pipeline.proposed import APPROVED, QUEUED, load_proposed_for
 from swing_screener.pipeline.reflect import (
@@ -64,6 +64,13 @@ def build_playbooks_router(
 
         * ``md``: the edge file VERBATIM ("" when missing -- ``_edge_text``'s
           posture); prose only, numbers on screen come from ``verdicts``.
+        * ``md_error``: None when the md was read (missing included -- that is a
+          setup state); ``"unreadable (ClassName)"`` when the read RAISED -- a
+          cp1252 smart-quote from a Windows hand-edit is this surface's own
+          threat model. ``reflect._edge_text`` stays STRICT by decision (the
+          nightly reflection must fail loudly on a corrupt file); the ENDPOINT
+          degrades instead: md serves "", drift is unknown, and the sidecar --
+          whose numbers never depended on the prose -- still renders.
         * ``frontmatter``: the reflection state ``parse_state`` reads (counter +
           ``last_reflected``, tolerant of hand-edits).
         * ``verdicts``: the sidecar rows, EVERY field including the provenance
@@ -79,21 +86,29 @@ def build_playbooks_router(
           broken sidecar never blanks the other book.
         * ``drift``: the structural md-vs-sidecar check (``cockpit.playbooks``),
           an ADVISORY amber. ``None`` -- explicitly unknown, never a fabricated
-          ok -- whenever the sidecar could not be read (missing or corrupt):
+          ok -- whenever EITHER input could not be read (md unreadable, sidecar
+          missing or corrupt): faithfulness against nothing is unknowable, and
           UNKNOWN never renders green.
         * ``falsified``: the "Falsified / retired" section body via the
           reflection's own parser, so the UI can strike it through without
           re-parsing markdown.
         * ``reflection_due``: whether this play type's forward book has re-armed
           a reflection (``due_play_types`` -- the reflection's OWN gate, so the
-          lamp and the nightly job agree by construction).
+          lamp and the nightly job agree by construction). The gate itself reads
+          every md, so an unreadable one degrades it to nothing-due for BOTH
+          books -- quiet by design; ``md_error`` is the loud marker here.
         """
         edir = resolve_edge_dir(edge_dir)
-        due = due_play_types(session, edge_dir=edir)
+        due = _due_or_empty(session, edir)
         books: list[dict[str, object]] = []
         store_errors: list[str] = []
         for pt in _PLAY_TYPES:
-            md = _edge_text(edir, pt)
+            md_error: str | None = None
+            try:
+                md = _edge_text(edir, pt)
+            except (OSError, ValueError) as exc:  # UnicodeDecodeError IS a ValueError
+                md = ""
+                md_error = f"unreadable ({type(exc).__name__})"
             state = parse_state(md)
             rows: list[dict[str, object]] = []
             drift: dict[str, object] | None = None
@@ -104,23 +119,25 @@ def build_playbooks_router(
             else:
                 try:
                     verdicts = load_verdicts(sidecar.read_text(encoding="utf-8"))
-                    # Built inside the try, list-then-assign (the proposals-GET
-                    # rule): a wrong-typed row must degrade the book, not leak a
-                    # partially-built row list onto the wire.
-                    rows = [_verdict_row(v) for v in verdicts]
+                    # Built inside ONE umbrella, list-then-assign (the
+                    # proposals-GET rule) -- and the drift check lives inside it
+                    # too: a row that PASSES ``Verdict(**d)`` with a mangled
+                    # value (an unhashable list tier, say) first raises in
+                    # ``playbook_drift``, and that is the same corrupt-store
+                    # state, not a 500.
+                    built = [_verdict_row(v) for v in verdicts]
+                    checked = (None if md_error is not None
+                               else _drift_dict(playbook_drift(md, verdicts)))
                 except (ValueError, TypeError) as exc:  # JSONDecodeError IS a ValueError
                     error = f"unreadable ({type(exc).__name__})"
                     store_errors.append(pt)
                 else:
-                    d = playbook_drift(md, verdicts)
-                    drift = {
-                        "ok": d.ok,
-                        "missing": [{"token": m.token, "tier": m.tier}
-                                    for m in d.missing],
-                    }
+                    rows = built
+                    drift = checked
             books.append({
                 "play_type": pt,
                 "md": md,
+                "md_error": md_error,
                 "frontmatter": {
                     "forward_closed_at_last_reflection":
                         state.forward_closed_at_last_reflection,
@@ -151,6 +168,10 @@ def build_playbooks_router(
           60s helps nobody.
         * ``reflection_due``: the play types whose forward book re-armed a
           reflection (``due_play_types`` -- the same gate the nightly job runs).
+          The gate reads every edge md; an unreadable one (the cp1252 hand-edit
+          case) degrades this to ``[]`` quietly -- same posture as the corrupt
+          proposal store -- with the loud ``md_error`` marker on
+          ``/api/playbooks`` where a human is looking.
         * ``latest_analysis_id``: ``max(AnalysisRequest.id)`` or null -- the
           client compares it to its localStorage last-seen id for the unread
           badge (Phase 3 plan, scope decision 14: unread is client-side).
@@ -168,12 +189,33 @@ def build_playbooks_router(
         return {
             "proposals_queued": queued,
             "proposals_approved_pending": approved,
-            "reflection_due": due_play_types(session, edge_dir=edir),
+            "reflection_due": _due_or_empty(session, edir),
             "latest_analysis_id": session.scalar(
                 select(func.max(AnalysisRequest.id))),
         }
 
     return router
+
+
+def _due_or_empty(session: Session, edir: Path) -> list[str]:
+    """``due_play_types`` with the endpoints' degrade posture: the gate reads
+    every edge md through the STRICT ``reflect._edge_text`` (strict by decision
+    -- the nightly reflection must fail loudly on a corrupt file), so an
+    unreadable md here answers nothing-due instead of a 500. Quiet on purpose:
+    the loud marker is the per-book ``md_error`` on ``/api/playbooks``. DB
+    errors are NOT swallowed -- they propagate to the app's 503 posture."""
+    try:
+        return due_play_types(session, edge_dir=edir)
+    except (OSError, ValueError):  # UnicodeDecodeError IS a ValueError
+        return []
+
+
+def _drift_dict(d: DriftReport) -> dict[str, object]:
+    """The drift report's wire form (hand-rolled, like every cockpit serializer)."""
+    return {
+        "ok": d.ok,
+        "missing": [{"token": m.token, "tier": m.tier} for m in d.missing],
+    }
 
 
 def _verdict_row(v: Verdict) -> dict[str, object]:
@@ -182,12 +224,11 @@ def _verdict_row(v: Verdict) -> dict[str, object]:
     wire decision, not an accidental ``asdict`` leak. ``cost_level`` /
     ``corpus_id`` pass through as-is: None means the row predates provenance
     stamping and the UI renders "not measured" -- fabricating a default here is
-    exactly the lie the North Star forbids. The two floats ride through
-    ``_finite_or_none``: the grader never writes a non-finite value (an empty
-    cell records the 0.0 placeholder), but ``json.loads`` ACCEPTS ``-Infinity``
-    from a mangled sidecar and JSON cannot carry it back out -- the wire
-    contract is null there (the profit-factor-inf precedent), stated HERE
-    rather than left to the serializer's inf-handling default."""
+    exactly the lie the North Star forbids. The two floats ride through the
+    shared ``common._finite_or_none``: the grader never writes a non-finite
+    value (an empty cell records the 0.0 placeholder), but ``json.loads``
+    ACCEPTS ``-Infinity`` from a mangled sidecar and JSON cannot carry it back
+    out -- the wire contract is null there."""
     return {
         "play_type": v.play_type,
         "dimension": v.dimension,
@@ -201,9 +242,3 @@ def _verdict_row(v: Verdict) -> dict[str, object]:
         "cost_level": v.cost_level,
         "corpus_id": v.corpus_id,
     }
-
-
-def _finite_or_none(value: float) -> float | None:
-    """JSON has no inf/nan: a non-finite float from a hand-mangled sidecar
-    serves as an explicit null (see ``_verdict_row``)."""
-    return value if math.isfinite(value) else None

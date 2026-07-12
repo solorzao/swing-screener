@@ -12,7 +12,6 @@ as explicit ``n=0`` rows, never dropped; an insufficient-data calibration bound 
 UNKNOWN, never green); spend totals name their own undercount.
 """
 
-import math
 from collections.abc import Callable, Iterator
 from datetime import date, timedelta
 
@@ -22,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from swing_screener.analytics.calibration import conviction_calibrated
 from swing_screener.analytics.performance import _CLUSTER_FLOOR, MIN_LEADERBOARD_N
+from swing_screener.cockpit.common import _finite_or_none
 from swing_screener.db.models import AnalystCall
 from swing_screener.db.repo import analyst_call_freshness
 from swing_screener.pipeline.reflect import (
@@ -104,8 +104,7 @@ def build_analyst_router(
                 "progress": {
                     "calibrated": verdict.calibrated,
                     "high_minus_low": verdict.high_minus_low,
-                    "ci_low": (None if math.isinf(verdict.ci_low)
-                               else verdict.ci_low),
+                    "ci_low": _finite_or_none(verdict.ci_low),
                     "n_high": verdict.n_high,
                     "n_low": verdict.n_low,
                     "n_clusters_high": verdict.n_clusters_high,
