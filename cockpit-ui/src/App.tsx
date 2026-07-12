@@ -1,35 +1,60 @@
-import { useState } from 'react'
-import type { ReactNode } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
-  getCohorts,
+  POLL_MS,
+  getAttention,
   getForwardBooks,
-  getFunnel,
   getGate,
   getHealth,
   getHeartbeats,
-  getPerformance,
+  getTicker,
   useEventWake,
   usePolling,
 } from './lib/api'
-import type { Facet, ForwardBooks, PlayType, Polled, Window } from './lib/api'
-import { FacetCaption } from './components/FacetToggle'
-import { FunnelBar } from './components/FunnelBar'
-import { HeartbeatRail } from './components/HeartbeatRail'
+import type { Facet, PlayType, Window } from './lib/api'
+import { SCREENS } from './lib/screens'
+import type { ScreenId } from './lib/screens'
+import { EventTicker } from './components/EventTicker'
 import { Masthead } from './components/Masthead'
 import type { CostLevel } from './components/Masthead'
 import { NeedsHandStrip } from './components/NeedsHandStrip'
-import { PerformancePanel } from './components/PerformancePanel'
 import type { BreakdownTab } from './components/PerformancePanel'
-import { SettlementCard } from './components/SettlementCard'
-import { StatChip } from './components/StatChip'
+import { AnalystScreen } from './screens/AnalystScreen'
+import { CandidatesScreen } from './screens/CandidatesScreen'
+import { ForwardScreen } from './screens/ForwardScreen'
+import { MissionControlScreen } from './screens/MissionControlScreen'
+import { PlaceholderScreen } from './screens/PlaceholderScreen'
+import { PlaybooksScreen } from './screens/PlaybooksScreen'
+import { PositionsScreen } from './screens/PositionsScreen'
+import { ReferenceScreen } from './screens/ReferenceScreen'
+import { SafetyScreen } from './screens/SafetyScreen'
+import { SystemsScreen } from './screens/SystemsScreen'
+import { WeatherScreen } from './screens/WeatherScreen'
 
-/* Poll budget: forward-books + performance each cost ~1s server-side, so 60s is
-   the floor for EVERY poll; the SSE wake (useEventWake) makes changes feel
-   instant without touching that budget. */
-const POLL_MS = 60_000
+/** The last analysis id the user has SEEN (localStorage; scope decision 14 —
+ * "unread" is client-side, no migration). Missing / unparseable reads 0, so a
+ * fresh install treats every existing analysis as already-seen only once it
+ * views the screen; a NEW id past this is the unread nudge. */
+const SEEN_ANALYSIS_KEY = 'cockpit.analysis.lastSeenId'
 
-const WINDOWS: Window[] = ['all', '90', '180', '365']
-const PLAY_TYPES: PlayType[] = ['all', 'continuation', 'reversal']
+function readSeenAnalysis(): number {
+  try {
+    const raw = window.localStorage.getItem(SEEN_ANALYSIS_KEY)
+    const n = raw === null ? 0 : Number.parseInt(raw, 10)
+    return Number.isFinite(n) ? n : 0
+  } catch {
+    return 0 // storage disabled — the nudge just never fires, never crashes
+  }
+}
+
+/** True when a keydown happened while typing — digit keys must never steal a
+ * value being entered into a form (INPUT/TEXTAREA/SELECT/contentEditable). */
+function isTypingContext(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  const tag = target.tagName
+  return (
+    tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable
+  )
+}
 
 function latest(...dates: (Date | null)[]): Date | null {
   let best: Date | null = null
@@ -39,178 +64,100 @@ function latest(...dates: (Date | null)[]): Date | null {
   return best
 }
 
-/* Shared body treatment — the template every future panel copies. While a fetch
-   error is present but the last good data is still on screen, the body dims
-   (.stale) under a "showing last good data" line: stale must LOOK different from
-   fresh, not just carry a footnote. With no data at all, the plain
-   unavailable/waiting lines stand alone. (The masthead takes the harder line and
-   force-nulls stale heartbeats instead — see below.) */
-function PanelBody<T>({
-  polled,
-  noun,
-  children,
-}: {
-  polled: Polled<T>
-  noun: string
-  children: (data: T) => ReactNode
-}) {
-  const { data, error } = polled
-  return (
-    <>
-      {error !== null && (
-        <div className="panel-error">
-          {data !== null
-            ? `showing last good data · ${error}`
-            : `${noun} unavailable — ${error}`}
-        </div>
-      )}
-      {data !== null ? (
-        <div className={error !== null ? 'stale' : undefined}>{children(data)}</div>
-      ) : (
-        error === null && <div className="panel-wait">waiting for first fetch…</div>
-      )}
-    </>
-  )
-}
-
-/* usePolling's contract: a changed fetcher does NOT refetch — new params would
-   show the old params' data under the new label for up to POLL_MS. The sanctioned
-   idiom is key-remounting the polled subtree (App keys these sections by their
-   params), which forces an immediate fetch and honestly drops the wrong-params
-   data while it is in flight. */
-
-/** Owns the forward-books poll; render-prop so the payload feeds BOTH the
- * Needs-Your-Hand strip (above the grid) and the Forward Books panel (inside it)
- * from one fetch — the endpoint costs ~1s server-side, polling it twice would
- * double that. */
-function WithForwardBooks({
-  facet,
-  wake,
-  children,
-}: {
-  facet: Facet
-  wake: number
-  children: (fb: Polled<ForwardBooks>) => ReactNode
-}) {
-  const fb = usePolling(() => getForwardBooks(facet), POLL_MS, wake)
-  return <>{children(fb)}</>
-}
-
-function CohortsSection({ facet, wake }: { facet: Facet; wake: number }) {
-  const cohorts = usePolling(() => getCohorts(facet), POLL_MS, wake)
-  return (
-    <section className="panel">
-      <div className="panel-head">
-        COHORTS <FacetCaption facet={facet} />
-      </div>
-      <PanelBody polled={cohorts} noun="cohorts">
-        {(data) =>
-          data.cohorts.length === 0 ? (
-            <div className="panel-wait">no closed trades on this facet yet</div>
-          ) : (
-            data.cohorts.map((row) => (
-              <div key={`${row.key}|${row.strength ?? ''}`} className="cohort-row">
-                <StatChip
-                  stat={row.stat}
-                  label={
-                    row.strength === null ? row.key : `${row.key} · ${row.strength}`
-                  }
-                />
-              </div>
-            ))
-          )
-        }
-      </PanelBody>
-    </section>
-  )
-}
-
-function PerformanceSection({
-  facet,
-  win,
-  playType,
-  tab,
-  wake,
-  onWin,
-  onPlayType,
-  onTab,
-}: {
-  facet: Facet
-  win: Window
-  playType: PlayType
-  tab: BreakdownTab
-  wake: number
-  onWin: (win: Window) => void
-  onPlayType: (playType: PlayType) => void
-  onTab: (tab: BreakdownTab) => void
-}) {
-  const perf = usePolling(() => getPerformance(playType, win, facet), POLL_MS, wake)
-  return (
-    <section className="panel">
-      <div className="panel-head perf-head">
-        PERFORMANCE <FacetCaption facet={facet} />
-        <span className="mh-spacer" />
-        <span className="mh-seg" title="play type">
-          {PLAY_TYPES.map((p) => (
-            <button
-              key={p}
-              type="button"
-              className={p === playType ? 'seg-on' : undefined}
-              aria-pressed={p === playType}
-              onClick={() => onPlayType(p)}
-            >
-              {p === 'continuation' ? 'cont' : p === 'reversal' ? 'rev' : 'all'}
-            </button>
-          ))}
-        </span>
-        <span className="mh-seg" title="leaderboard window (days)">
-          {WINDOWS.map((w) => (
-            <button
-              key={w}
-              type="button"
-              className={w === win ? 'seg-on' : undefined}
-              aria-pressed={w === win}
-              onClick={() => onWin(w)}
-            >
-              {w === 'all' ? 'all' : `${w}d`}
-            </button>
-          ))}
-        </span>
-      </div>
-      <PanelBody polled={perf} noun="performance">
-        {(data) => <PerformancePanel data={data} tab={tab} onTab={onTab} />}
-      </PanelBody>
-    </section>
-  )
-}
-
 export default function App() {
   const wake = useEventWake() // called ONCE; every poll rides the same counter
 
+  const [screen, setScreen] = useState<ScreenId>('mission')
   const [facet, setFacet] = useState<Facet>('research')
   const [cost, setCost] = useState<CostLevel>('0.05')
   const [win, setWin] = useState<Window>('all')
   const [playType, setPlayType] = useState<PlayType>('all')
-  // Lives here, not in PerformancePanel: local state would be reset by the
-  // key-remount blast every time facet/window/play-type flips.
+  // Lives here, not in PerformancePanel: a screen switch unmounts Mission
+  // Control entirely, and the breakdown-tab choice must survive the round trip.
   const [tab, setTab] = useState<BreakdownTab>('timeframe')
+  // Zone D → Candidates prefill hand-off: a LOG click on a Mission Control pick
+  // card sets the signal id here and navigates to Candidates, which consumes it
+  // once into its local logging state. `clearPrefill` is stable so the consuming
+  // effect settles in one pass.
+  const [prefillSignalId, setPrefillSignalId] = useState<number | null>(null)
+  const clearPrefill = useCallback(() => setPrefillSignalId(null), [])
+  const onLogPick = useCallback((signalId: number) => {
+    setPrefillSignalId(signalId)
+    setScreen('candidates')
+  }, [])
+  // The unread-analysis nudge (scope decision 14): last-seen id in localStorage,
+  // mirrored to state so the strip re-renders when it changes. Viewing the
+  // Analyst screen marks the latest id seen (below) — reached by digit 6, the
+  // strip item, or the masthead spend chip, all through `screen === 'analyst'`.
+  const [seenAnalysisId, setSeenAnalysisId] = useState<number>(readSeenAnalysis)
 
+  // The 1-9 keys, one App-level listener (plan scope decision 9): digits follow
+  // the design's fixed numbering (the SCREENS registry); typing contexts and
+  // modifier chords bail so a digit in a form field (or Ctrl+1 in the browser)
+  // never switches screens. `/` palette, j/k rows, Enter drill-in: deferred.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
+      if (isTypingContext(e.target)) return
+      const hit = SCREENS.find((s) => s.digit === e.key)
+      if (hit !== undefined) setScreen(hit.id)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  /* The PERMANENT poll roster (plan scope decision 15) — exactly these SIX
+     outlive a screen switch, feeding the three persistent chrome elements
+     (masthead · Needs-Your-Hand strip · Zone E ticker): health (masthead +
+     db-down card), heartbeats (masthead caution lamp + both SYSTEMS panels),
+     gate (masthead chips + DISARM enablement via broker_configured),
+     forward-books (the Needs-Your-Hand strip's source, shared with the Mission
+     Control panel and the forward screen — one ~1s fetch, three consumers),
+     attention (the strip's proposal/reflection/analysis items — Tasks 19-20),
+     and ticker (Zone E's merged event feed — the always-visible bottom strip;
+     its poll joins the permanent roster because the strip is on every screen).
+     Everything else mounts with its screen and dies with it. A facet flip
+     re-params ONLY the fb poll (usePolling's paramsKey — no remount, so
+     screens that ignore facet keep their form/scroll state). Roster math:
+     forward-books + gate + attention + ticker is a few light reads per 60s
+     server-side; the heavy per-screen endpoints only poll while visible. */
   const health = usePolling(getHealth, POLL_MS, wake)
   const beats = usePolling(getHeartbeats, POLL_MS, wake)
-  const funnel = usePolling(getFunnel, POLL_MS, wake)
   const gate = usePolling(getGate, POLL_MS, wake)
+  const attention = usePolling(getAttention, POLL_MS, wake)
+  const fb = usePolling(() => getForwardBooks(facet), POLL_MS, wake, facet)
+  const ticker = usePolling(getTicker, POLL_MS, wake)
 
   const asOf = latest(
     health.lastFetched,
     beats.lastFetched,
-    funnel.lastFetched,
     gate.lastFetched,
+    attention.lastFetched,
+    fb.lastFetched,
+    ticker.lastFetched,
   )
   // Stale heartbeats must not feed the caution lamp: on any fetch error the
   // masthead sees null and shows UNKNOWN instead of yesterday's green. The gate
   // chip takes the same hard line — stale READY is worse than "…".
   const mastheadBeats = beats.error === null ? beats.data : null
   const mastheadGate = gate.error === null ? gate.data : null
+
+  // Unread analysis (scope decision 14): the freshest attention id vs the seen
+  // id. Last-good attention is fine for a low-stakes nudge — worse case it lags
+  // a minute. Viewing the Analyst screen marks the latest seen (any entry
+  // route funnels through `screen === 'analyst'`), which clears the nudge.
+  const latestAnalysisId = attention.data?.latest_analysis_id ?? null
+  const analysisUnread = latestAnalysisId !== null && latestAnalysisId > seenAnalysisId
+  useEffect(() => {
+    if (screen !== 'analyst' || latestAnalysisId === null) return
+    if (latestAnalysisId <= seenAnalysisId) return
+    setSeenAnalysisId(latestAnalysisId)
+    try {
+      window.localStorage.setItem(SEEN_ANALYSIS_KEY, String(latestAnalysisId))
+    } catch {
+      /* storage disabled — state still clears the nudge for this session */
+    }
+  }, [screen, latestAnalysisId, seenAnalysisId])
 
   const dbDown = health.data !== null && !health.data.connected
 
@@ -225,6 +172,8 @@ export default function App() {
         onFacet={setFacet}
         cost={cost}
         onCost={setCost}
+        screen={screen}
+        onNavigate={setScreen}
       />
 
       {dbDown && health.data !== null ? (
@@ -239,83 +188,71 @@ export default function App() {
           </div>
         </div>
       ) : (
-        <WithForwardBooks key={`fb|${facet}`} facet={facet} wake={wake}>
-          {(fb) => (
-            <>
-              {/* The masthead's hard line, not PanelBody's stale-dim: on a fetch
-                  error the strip sees null and shows "…" — last-good content at
-                  full brightness could be a stale EMPTY state reading as a fresh
-                  "nothing needs your hand" while a book settled during the outage. */}
-              <NeedsHandStrip
-                cards={fb.error === null ? (fb.data?.cards ?? null) : null}
-              />
+        <>
+          {/* The masthead's hard line, not PanelBody's stale-dim: on a fetch
+              error the strip sees null and shows "…" — last-good content at
+              full brightness could be a stale EMPTY state reading as a fresh
+              "nothing needs your hand" while a book settled during the outage.
+              The strip persists across EVERY screen, above the switch. */}
+          <NeedsHandStrip
+            cards={fb.error === null ? (fb.data?.cards ?? null) : null}
+            attention={attention.data}
+            analysisUnread={analysisUnread}
+            onNavigate={setScreen}
+          />
 
-              <main className="grid">
-                <section className="panel">
-                  <div className="panel-head">SYSTEMS</div>
-                  <PanelBody polled={beats} noun="heartbeats">
-                    {(data) => <HeartbeatRail beats={data} />}
-                  </PanelBody>
-                </section>
-
-                <div className="col-stack">
-                  <section className="panel">
-                    <div className="panel-head">
-                      FORWARD BOOKS <FacetCaption facet={facet} />
-                    </div>
-                    <PanelBody polled={fb} noun="forward books">
-                      {(data) =>
-                        data.cards.length === 0 ? (
-                          <div className="panel-wait">no experiments registered</div>
-                        ) : (
-                          <div className="scard-wall">
-                            {data.cards.map((c) => (
-                              <SettlementCard key={c.name} card={c} />
-                            ))}
-                          </div>
-                        )
-                      }
-                    </PanelBody>
-                  </section>
-
-                  <section className="panel">
-                    <div className="panel-head">
-                      REVERSAL FUNNEL
-                      <span className="panel-caption">latest daily digest</span>
-                    </div>
-                    <PanelBody polled={funnel} noun="funnel">
-                      {(data) =>
-                        data.funnel === null ? (
-                          <div className="panel-wait">
-                            no funnel recorded yet — accrues from the next daily digest
-                          </div>
-                        ) : (
-                          <FunnelBar funnel={data.funnel} />
-                        )
-                      }
-                    </PanelBody>
-                  </section>
-                </div>
-
-                <div className="col-stack">
-                  <CohortsSection key={`cohorts|${facet}`} facet={facet} wake={wake} />
-                  <PerformanceSection
-                    key={`perf|${facet}|${win}|${playType}`}
-                    facet={facet}
-                    win={win}
-                    playType={playType}
-                    tab={tab}
-                    wake={wake}
-                    onWin={setWin}
-                    onPlayType={setPlayType}
-                    onTab={setTab}
-                  />
-                </div>
-              </main>
-            </>
+          {screen === 'mission' ? (
+            <MissionControlScreen
+              beats={beats}
+              fb={fb}
+              facet={facet}
+              wake={wake}
+              win={win}
+              playType={playType}
+              tab={tab}
+              onWin={setWin}
+              onPlayType={setPlayType}
+              onTab={setTab}
+              onLogPick={onLogPick}
+            />
+          ) : screen === 'candidates' ? (
+            <CandidatesScreen
+              facet={facet}
+              wake={wake}
+              prefillSignalId={prefillSignalId}
+              onPrefillConsumed={clearPrefill}
+            />
+          ) : screen === 'positions' ? (
+            <PositionsScreen wake={wake} />
+          ) : screen === 'playbooks' ? (
+            <PlaybooksScreen wake={wake} />
+          ) : screen === 'analyst' ? (
+            <AnalystScreen wake={wake} />
+          ) : screen === 'forward' ? (
+            <ForwardScreen fb={fb} facet={facet} />
+          ) : screen === 'safety' ? (
+            <SafetyScreen wake={wake} />
+          ) : screen === 'systems' ? (
+            <SystemsScreen beats={beats} wake={wake} />
+          ) : screen === 'weather' ? (
+            <WeatherScreen wake={wake} />
+          ) : screen === 'reference' ? (
+            <ReferenceScreen wake={wake} />
+          ) : (
+            // Unreachable: every ScreenId has an explicit branch above (Task 20
+            // built the last two). The placeholder survives as the defensive
+            // default so a future ScreenId can never render blank.
+            <PlaceholderScreen id={screen} />
           )}
-        </WithForwardBooks>
+        </>
       )}
+
+      {/* Zone E — the merged event ticker: the third persistent chrome element,
+          rendered OUTSIDE the db-down branch so it (like the masthead) is on
+          every screen and every state. Its poll rides the permanent roster
+          above; a db outage / fetch error keeps the last-good feed, or "…" when
+          nothing has been fetched yet. */}
+      <EventTicker feed={ticker} />
     </div>
   )
 }

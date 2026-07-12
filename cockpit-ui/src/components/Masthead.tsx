@@ -1,7 +1,12 @@
 import { useEffect, useState } from 'react'
 import { postAzureLogin } from '../lib/api'
 import type { Facet, Gate, Health, Heartbeat } from '../lib/api'
+import { fmtUsd } from '../lib/fmt'
+import { screenDef, screenNumber } from '../lib/screens'
+import type { ScreenId } from '../lib/screens'
+import { DisarmControl } from './DisarmControl'
 import { FacetToggle } from './FacetToggle'
+import { Segmented } from './Segmented'
 
 /** The one selectable cost level. `@0.10` is disabled-honest: replay-only, no
  * re-priced book exists (plan scope decision 4). */
@@ -32,6 +37,8 @@ export function Masthead({
   onFacet,
   cost,
   onCost,
+  screen,
+  onNavigate,
 }: {
   health: Health | null
   beats: Heartbeat[] | null
@@ -42,7 +49,13 @@ export function Masthead({
   onFacet: (facet: Facet) => void
   cost: CostLevel
   onCost: (cost: CostLevel) => void
+  /** The active screen — the indicator renders it from the registry. */
+  screen: ScreenId
+  /** Screen navigation: the REFERENCE link (screen 10 has no digit key — this
+   * is its one door) and the indicator's click-home both route here. */
+  onNavigate: (id: ScreenId) => void
 }) {
+  const def = screenDef(screen)
   const anyLit =
     beats !== null && beats.some((b) => b.state === 'late' || b.state === 'down')
   // No data at all counts as unknown — a dead poller is never allowed to look green.
@@ -84,6 +97,18 @@ export function Masthead({
         <b>SWING SCREENER</b> · COCKPIT
       </span>
 
+      {/* Where you are, registry-rendered ("3 · POSITIONS & LEDGER") — and the
+          mouse road home from digitless screens: clicking returns to Mission
+          Control, same as pressing 1. */}
+      <button
+        type="button"
+        className="mh-screen"
+        title={`current screen ${screenNumber(def)} · ${def.title} — click (or press 1) for Mission Control`}
+        onClick={() => onNavigate('mission')}
+      >
+        {screenNumber(def)} · {def.title}
+      </button>
+
       <span className={anyLit ? 'caution lit' : 'caution'}>MASTER CAUTION</span>
       {!anyLit && anyUnknown && <span className="unknown-tag">UNKNOWN</span>}
 
@@ -113,7 +138,7 @@ export function Masthead({
           ))}
       </span>
 
-      <span className="mh-spacer" />
+      <span className="spacer" />
 
       <span className="mh-clock">data as of {fmtClock(asOf)}</span>
 
@@ -135,31 +160,56 @@ export function Masthead({
         </span>
       )}
 
-      <span className="mh-seg">
+      {/* Today's analyst SPEND — real $ off the gate poll (no extra fetch; the
+          field was already on the wire, unrendered). Clicking opens the Analyst
+          screen where the spend windows + calibration live. */}
+      {gate !== null && (
         <button
           type="button"
-          className={cost === '0.05' ? 'seg-on' : undefined}
-          aria-pressed={cost === '0.05'}
-          title="every level exit haircut 0.05 ATR at exit; flip/time-stop exits are never haircut"
-          onClick={() => onCost('0.05')}
+          className="mh-spend"
+          title="today’s analyst token spend (real $) — click for the 7d/30d windows and calibration"
+          onClick={() => onNavigate('analyst')}
         >
-          net @0.05
+          analyst {fmtUsd(gate.analyst_spend_today_usd)}
         </button>
-        <button
-          type="button"
-          disabled
-          aria-pressed={cost === '0.10'}
-          title="not measured — replay-only level, no re-priced book exists"
-        >
-          @0.10
-        </button>
-      </span>
+      )}
+
+      <Segmented
+        options={[
+          {
+            value: '0.05',
+            label: 'net @0.05',
+            title:
+              'every level exit haircut 0.05 ATR at exit; flip/time-stop exits are never haircut',
+          },
+          {
+            value: '0.10',
+            label: '@0.10',
+            disabled: true,
+            title: 'not measured — replay-only level, no re-priced book exists',
+          },
+        ]}
+        value={cost}
+        onChange={onCost}
+      />
 
       <FacetToggle facet={facet} onFacet={onFacet} />
 
-      <button type="button" className="disarm" disabled title="Phase 3">
-        DISARM
+      {/* Screen 10 — the one screen without a digit key (design numbering
+          stops at 9); this link is its only entrance. */}
+      <button
+        type="button"
+        className="mh-ref"
+        title="Reference — screen 10 (universe, digest log, exit log)"
+        onClick={() => onNavigate('reference')}
+      >
+        REFERENCE
       </button>
+
+      {/* DISARM enablement keys on the PERMANENT gate poll's broker_configured
+          (settings truthiness, never connectivity); App force-nulls the gate on
+          a fetch error, so a stale broker_configured can never arm the button. */}
+      <DisarmControl gate={gate} />
     </header>
   )
 }

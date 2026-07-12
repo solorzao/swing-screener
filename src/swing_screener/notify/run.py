@@ -29,6 +29,7 @@ from swing_screener.analytics.calibration import max_conviction_step
 from swing_screener.config import StrategyConfig
 from swing_screener.config_secrets import get_secret
 from swing_screener.data.fetch import fetch_bars
+from swing_screener.data.quotes import latest_closes
 from swing_screener.data.universe import names_by_ticker
 from swing_screener.db import repo
 from swing_screener.db.models import EmailLog, ExitEvent, Signal
@@ -81,14 +82,14 @@ from swing_screener.pipeline.insight import (
     record_analyst_call,
 )
 from swing_screener.pipeline.regime import MARKET_PROXY, classify_regime
-from swing_screener.pipeline.reflect import load_verdicts
+from swing_screener.pipeline.reflect import load_verdicts, verdicts_filename
 from swing_screener.settings import (
     load_settings,
     resolve_edge_dir,
     resolve_execution,
     resolve_risk_unit,
 )
-from swing_screener.signals.actionability import classify
+from swing_screener.signals.actionability import classify, surface_keep
 from swing_screener.storage.blob import blob_enabled, download_bytes
 
 log = logging.getLogger(__name__)
@@ -195,7 +196,7 @@ def _load_playbook(edge_dir: Path, play_type: str) -> tuple[str, list] | None:
     read/parse error degrades to None rather than blocking the digest.
     """
     md = edge_dir / f"{play_type}.md"
-    sidecar = edge_dir / f"{play_type}.verdicts.json"
+    sidecar = edge_dir / verdicts_filename(play_type)
     if not (md.exists() and sidecar.exists()):
         return None
     try:
@@ -236,16 +237,12 @@ def _drop_already_ran(
     latest_closes_fn: Callable[[list[str]], dict[str, float]],
 ) -> list[Signal]:
     """Drop picks whose entry is no longer live at digest time -- with PLAY-TYPE-AWARE
-    semantics.
+    semantics (``actionability.surface_keep``, the shared rule the cockpit's
+    ``/api/picks`` also applies, so the email and the screen cannot drift).
 
-    CONTINUATION picks drop on ``extended`` (ran past the ceiling: the chase the freshness
-    gate exists to prevent) and on ``broken`` (stop violated). A REVERSAL pick is a RESTING
-    LIMIT with a multi-bar fill window: sitting above its ceiling at digest time is its
-    NORMAL state (a confirmed reversal closes above the flip high by definition), so
-    ``extended`` is kept and only ``broken`` drops it -- the old drop-on-extended rule
-    silently deleted every confirmed reversal during the 2026-07 rotation. Fail-open: a
-    pick with no live quote -- or ANY fetch error -- is KEPT, so a quote outage never
-    silences the digest. Caller passes ``latest_closes_fn=None`` to skip entirely."""
+    Fail-open: a pick with no live quote -- or ANY fetch error -- is KEPT, so a quote
+    outage never silences the digest. Caller passes ``latest_closes_fn=None`` to skip
+    entirely."""
     if not signals:
         return signals
     try:
@@ -257,9 +254,7 @@ def _drop_already_ran(
     for s in signals:
         status = classify(entry_floor=s.entry_floor, entry_ceiling=s.entry_ceiling,
                           stop=s.stop, price=prices.get(s.ticker)).status
-        keep = ("actionable", "unknown", "extended") if s.play_type == "reversal" else (
-            "actionable", "unknown")
-        if status in keep:
+        if status in surface_keep(s.play_type):
             out.append(s)
     return out
 
@@ -416,6 +411,9 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # (tests / backfill) overrides.
         if run_date is None:
             run_date = repo.latest_run_date(session) or date.today()
+        # manual_close events are excluded by pending_exit_alerts BY DESIGN: this is
+        # the ALERTS feed (urgent, actionable), not a daily closes ledger -- a future
+        # "today's closes" section must add its own query, never widen this one.
         alerts = sel.pending_exit_alerts(session, run_date)
         _emit_pending_exit_alert(session, run_date, recipient, send)
 
@@ -668,10 +666,19 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                                     "and pulling entry-side resting orders", kind, run_date)
                         if live_broker is not None:
                             pull_entry_orders(live_broker)
-                            ensure_stop_protection(
+                            restored, unprotected = ensure_stop_protection(
                                 live_broker,
                                 lambda sym: repo.latest_recorded_stop(session, sym),
                                 key_suffix=f"kill-{run_date:%Y%m%d}")
+                            if restored:
+                                log.warning(
+                                    "kill switch: re-submitted %d protective "
+                                    "stop(s): %s",
+                                    len(restored), ", ".join(restored))
+                            if unprotected:
+                                log.error(
+                                    "kill switch: %d position(s) left UNPROTECTED: "
+                                    "%s", len(unprotected), ", ".join(unprotected))
                         break
                     result = adapter.submit(
                         intent, session=session, run_date=run_date, limits=limits)
@@ -813,8 +820,6 @@ def main() -> None:
     # Config-gated + fail-open; off -> None, so the digest is byte-for-byte today's behavior.
     latest_closes_fn: Callable[[list[str]], dict[str, float]] | None = None
     if StrategyConfig().digest_drop_already_ran:
-        from swing_screener.dashboard.quotes import latest_closes
-
         def latest_closes_fn(tickers: list[str]) -> dict[str, float]:  # noqa: E731
             return latest_closes(tickers, cache_dir=settings.cache_dir)
     result = send_digest(kind=args.kind, db_url=args.db, pdf_dir=args.pdf_dir, force=force,

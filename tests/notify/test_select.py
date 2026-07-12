@@ -97,6 +97,27 @@ def test_exit_alerts_only_real_trades():
     assert len(alerts) == 1 and alerts[0].reason == "stop" and alerts[0].is_paper is False
 
 
+def test_manual_close_never_emails():
+    """A cockpit manual close writes a real (is_paper=False) ExitEvent so the change
+    token moves, but the hourly exit job must NEVER email an urgent alert about a
+    close Oliver just performed himself -- reason='manual_close' is excluded."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add_all([
+            ExitEvent(created_date=RUN, is_paper=False, trade_id=1, tier="hard",
+                      reason="stop", message="AMD stopped @ 95"),
+            ExitEvent(created_date=RUN, is_paper=False, trade_id=2, tier="",
+                      reason="manual_close", message="AEP closed manually @ 110"),
+        ])
+        s.commit()
+        alerts = sel.pending_exit_alerts(s, RUN)
+        assert [a.reason for a in alerts] == ["stop"]  # the stop still alerts
+        # a day with ONLY a manual close is a no-alert day, not an empty-alert email
+        s.query(ExitEvent).filter(ExitEvent.reason == "stop").delete()
+        s.commit()
+        assert sel.pending_exit_alerts(s, RUN) == []
+
+
 def _rev(ticker, rank, strength="early", first_seen=None, conviction_tier="base"):
     return Signal(run_date=RUN, ticker=ticker, timeframe="1d", horizon="medium",
                   play_type="reversal", strength=strength, conviction_tier=conviction_tier,

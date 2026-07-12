@@ -13,7 +13,6 @@ env/
 .env
 *.env
 secrets.toml
-.streamlit/secrets.toml
 
 # Local data / caches
 *.sqlite

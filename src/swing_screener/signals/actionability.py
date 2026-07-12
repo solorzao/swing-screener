@@ -53,3 +53,22 @@ def classify(
     if dist_r > buffer_r:
         return Actionability("extended", dist_r)
     return Actionability("actionable", dist_r)
+
+
+def surface_keep(play_type: str) -> tuple[Status, ...]:
+    """Which statuses keep a surfaced pick LIVE at read time -- the ONE home for
+    the play-type-aware liveness rule (the digest's ``_drop_already_ran`` and the
+    cockpit's ``/api/picks`` both call it, so the two surfaces cannot drift).
+
+    CONTINUATION drops on ``extended`` (ran past the ceiling: the chase the
+    freshness gate exists to prevent) and on ``broken`` (stop violated). A
+    REVERSAL is a RESTING LIMIT with a multi-bar fill window: sitting above its
+    ceiling is its NORMAL state (a confirmed reversal closes above the flip high
+    by definition), so ``extended`` is kept and only ``broken`` drops it -- the
+    old drop-on-extended rule silently deleted every confirmed reversal during
+    the 2026-07 rotation. ``unknown`` (no quote / degenerate zone) is always
+    kept: fail-open, a quote outage never empties a surface.
+    """
+    if play_type == "reversal":
+        return ("actionable", "unknown", "extended")
+    return ("actionable", "unknown")

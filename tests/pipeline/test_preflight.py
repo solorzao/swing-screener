@@ -200,7 +200,10 @@ def test_no_go_when_broker_raises_and_never_propagates(tmp_path) -> None:
     reachable = _check(report, "reachable")
     assert reachable.ok is False
     assert reachable.critical is True
-    assert "unreachable" in reachable.detail
+    # Leak posture: the detail carries the exception CLASS only -- broker messages
+    # embed venue hosts/URLs/credentials and this detail reaches the cockpit wire.
+    assert reachable.detail == "broker error (RuntimeError)"
+    assert "connection refused" not in reachable.detail
     # funding can't be evaluated without an account -> it is also not ok (not a crash).
     assert _check(report, "funded").ok is False
 
@@ -231,6 +234,70 @@ def test_go_stays_true_even_when_gate_not_ready(tmp_path) -> None:
 
     assert _check(report, "autonomy_gate").ok is False  # advisory: not ready
     assert report.go is True  # ...but GO holds: every CRITICAL check passed
+
+
+# --- broker=None: the cockpit's default local setup is a REPORT, not a crash --
+def test_none_broker_is_a_no_go_report_never_a_crash(tmp_path) -> None:
+    """``broker=None`` with SWING_BROKER unset (the cockpit's default local setup):
+    config is the NO-GO 'no broker configured' line -- the REAL ``_check_config``
+    output, not a hardcoded string; reachable/funded/is_real_money read as
+    explicit not-applicable lines (never evaluated against a missing client, never
+    an AttributeError); caps + the autonomy gate stay REAL -- neither needs the
+    broker. ``go`` is False."""
+    edge_dir = _ready_edge_dir(tmp_path)
+    with _session() as s:
+        s.add_all(_calibrated_calls("continuation"))
+        s.commit()
+        report = preflight(s, _settings(broker=""), broker=None, edge_dir=edge_dir)
+
+    assert report.go is False
+    config = _check(report, "config")
+    assert config.ok is False and config.critical is True
+    assert "no broker configured" in config.detail
+    for name in ("reachable", "funded"):
+        check = _check(report, name)
+        assert check.ok is False and check.critical is True
+        assert check.detail == "not applicable -- no broker"
+    real = _check(report, "is_real_money")
+    assert real.ok is False and real.critical is False
+    assert real.detail == "not applicable -- no broker"
+    # caps + gate never needed the broker: both evaluated for real.
+    assert _check(report, "caps").ok is True
+    assert _check(report, "autonomy_gate").ok is True
+
+
+def test_none_broker_with_configured_settings_keeps_config_honest(tmp_path) -> None:
+    """``broker=None`` while SWING_BROKER IS set -- the cockpit's raising-factory
+    degrade path: the config line evaluates the settings for real and must NOT
+    claim 'SWING_BROKER is unset' (the factory failed; the configuration did not).
+    ``go`` stays False -- reachable/funded are still critical failures."""
+    edge_dir = _ready_edge_dir(tmp_path)
+    with _session() as s:
+        s.add_all(_calibrated_calls("continuation"))
+        s.commit()
+        report = preflight(s, _settings(), broker=None, edge_dir=edge_dir)
+
+    assert report.go is False
+    config = _check(report, "config")
+    assert config.ok is True
+    assert "broker=alpaca" in config.detail
+    assert "SWING_BROKER is unset" not in config.detail
+    assert _check(report, "reachable").detail == "not applicable -- no broker"
+
+
+def test_none_broker_keeps_the_caps_check_real(tmp_path) -> None:
+    """A missing cap must still read as the caps NO-GO even without a broker --
+    the cockpit's safety screen shows the caps mandate on the default local setup."""
+    edge_dir = tmp_path / "edge"
+    edge_dir.mkdir()
+    with _session() as s:
+        report = preflight(
+            s, _settings(max_concurrent=None), broker=None, edge_dir=edge_dir)
+
+    assert report.go is False
+    caps = _check(report, "caps")
+    assert caps.ok is False
+    assert "max_concurrent" in caps.detail
 
 
 # --- config coherence (critical) ---------------------------------------------

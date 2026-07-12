@@ -49,6 +49,7 @@ limit sums (notional / open-count / realized-loss) cleanly separate.
 """
 
 import hashlib
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
@@ -69,6 +70,7 @@ from swing_screener.db.repo import (
 from swing_screener.pipeline.arms import BASELINE
 from swing_screener.pipeline.broker import BrokerClient, BrokerOrderSpec
 from swing_screener.pipeline.insight import OrderIntent
+from swing_screener.pipeline.preflight import broker_error_detail
 from swing_screener.pipeline.variants import DEFAULT_VARIANT
 from swing_screener.settings import (
     Limits,
@@ -77,6 +79,8 @@ from swing_screener.settings import (
     load_settings,
     real_money_limits_ok,
 )
+
+log = logging.getLogger(__name__)
 
 # the account the manual adapter books tickets under -- NOT "paper" / "research".
 MANUAL_ACCOUNT = "manual"
@@ -465,7 +469,13 @@ class LiveAdapter:
                 take_profit=intent.target if bracket else None,
             ))
         except Exception as e:  # noqa: BLE001 -- a venue boundary: any failure must not raise.
-            detail = f"broker error: {e}"
+            # Leak posture: the stored detail reaches the cockpit wire (the Zone E
+            # ticker serves ExecutionLog.detail verbatim), and broker/httpx messages
+            # embed venue hosts and credentials -- class name only (preflight's
+            # broker_error_detail, the one home for this wording); the full
+            # traceback goes to the LOG for the operator.
+            log.error("broker submit failed for %s", intent.ticker, exc_info=True)
+            detail = broker_error_detail(e)
             self._log(session, intent, run_date=run_date, key=key,
                       status="rejected_live", detail=detail)
             return OrderResult(status="rejected", account=LIVE_ACCOUNT, detail=detail)

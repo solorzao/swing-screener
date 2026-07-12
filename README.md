@@ -16,7 +16,7 @@ hypothesize → test → adjust → re-evaluate) — that ultimately executes au
 edges it has proven, sized by a rule, under hard limits a human can always override.*
 
 > **Status:** the full arc is built and deployed. The original **screener foundation** (engine →
-> pipeline + shadow book → dashboard → digests → Azure) runs as six scheduled jobs; the
+> pipeline + shadow book → cockpit → digests → Azure) runs as six scheduled jobs; the
 > **learning loop** (honest stats → edge-file playbooks → the insight engine) and the
 > **execution arc** (adapters → Alpaca paper → armable-when-ready real money) are live.
 > **Default posture is `off`** — it moves no money until a human deliberately arms it. See
@@ -64,7 +64,7 @@ digest, only on the last business day). Unattended, day to day:
 | `evening-screen` | every weekday, ~4pm (after close) | the full screen → persist + charts → advance the shadow book → (deep on) the insight engine + order intents → execution-adapter dispatch (`off` by default) |
 | `daily-digest` | every weekday, ~8am | emails the daily digest (summary + PDF) + the reversal Top-5 + (deep on) the order intents + the autonomy-gate countdown |
 | `intraday-exit` | weekdays, hourly 9am–4pm | checks open trades for exit triggers → emails exit alerts (deduped per event) |
-| `on-demand-analysis` | every 15 min | drains the dashboard's deep-analysis request queue |
+| `on-demand-analysis` | every 15 min | drains the cockpit's deep-analysis request queue |
 | `weekly-digest` | Fridays, ~4pm | the weekly digest |
 | `monthly-digest` | last business day of the month, ~4pm | the monthly digest |
 
@@ -110,7 +110,7 @@ A counter-trend complement: a run of **≥3 red HA candles below `EMA50`** that 
 `early` (fresh flip) or `confirmed` (flip + follow-through). Entry is a **0.382–0.618 pullback**
 into the bounce, stop below the bounce origin, target at the **0.786 retrace** toward the prior
 breakdown. Surfaced as a "Reversal Plays" list in the daily digest and a Continuation/Reversal
-filter throughout the dashboard.
+filter throughout the cockpit.
 
 ### Scoring & exits
 
@@ -262,18 +262,19 @@ py -3.12 -m venv .venv
 Full run instructions, flags, and how to inspect results:
 [`docs/running-locally.md`](docs/running-locally.md).
 
-**Dashboard** — a sidebar app: Overview, Today's Candidates (continuation/reversal filter + a
-live **actionability** status — each pick graded against its latest price as ✅ actionable /
-🏃 already ran / ⛔ stopped), Deep Analysis (request on-demand reports), Active Trades (inline
-close + live P/L), Trade Entry, Closed Trades (equity curve), Analyst Calibration, Exit Log
-(research/paper/live account facet), Universe, Digest Log. The Screener Performance and
-System Health pages retired to the desktop cockpit ([docs/cockpit.md](docs/cockpit.md)).
+**Desktop cockpit** — a native desktop app (a pywebview window, or a browser tab) over the same
+database, launched from the Start menu or the CLI. Mission Control plus screens for Candidates
+(continuation/reversal + a live **actionability** status — each pick graded against its latest
+close as ✅ actionable / 🏃 already ran / ⛔ stopped), Positions & Ledger (log/close trades,
+live P/L, equity curve), Playbooks, Analyst, Deep Analysis (request on-demand reports),
+Execution Safety (the DISARM venue sweep), Market Weather, and Reference (Universe, Digest Log,
+the filterable Exit Log). It replaces the retired Streamlit dashboard.
 
 ```powershell
-.\.venv\Scripts\python -m streamlit run src\swing_screener\dashboard\app.py --server.address 127.0.0.1
+.\.venv\Scripts\python -m swing_screener.cockpit --browser
 ```
 
-See [`docs/dashboard.md`](docs/dashboard.md).
+See [`docs/cockpit.md`](docs/cockpit.md).
 
 **Email digests** (summary email + detailed PDF, daily/weekly/monthly, + exit alerts):
 
@@ -320,11 +321,11 @@ src/swing_screener/
   indicators/          heiken_ashi, trend (EMA/ATR/RSI/MACD)                 [pure]
   signals/             classify, frame, detect, entry_zone, fill, exits,     [pure]
                        score, build_score, reversal
-  data/                universe (+ S&P 500 seed), resample, fetch            [I/O]
+  data/                universe (+ S&P 500 seed), resample, fetch, quotes    [I/O]
   db/                  models, session, repo (SQLAlchemy + SQLite/mssql)     [I/O]
   charts/              render (annotated Heiken Ashi via mplfinance)         [I/O]
   analytics/           performance (clustered-CI shadow-book QC),            [pure]
-                       calibration (the autonomy gate's conviction test)
+                       calibration (the autonomy gate's conviction test), pl
   pipeline/            analyze, shadow (multi-arm shadow book), arms, variants,
                        regime, replay (offline backtest), optimize (walk-forward),
                        propose (auto config PR), exitcheck, run (nightly CLI),
@@ -338,13 +339,14 @@ src/swing_screener/
                        ondemand, ticker_report, pdf, body, proposals
                        ("Proposed orders" surface), acs / smtp / transport, alerts
   storage/             blob (Azure Blob for charts/PDFs)                      [I/O]
-  dashboard/           app (Streamlit), ui, pl, quotes
+  cockpit/             FastAPI app factory + routers (the desktop UI backend) [I/O]
 edge/                  per-strategy playbooks (continuation.md, reversal.md)
-tests/                 mirrors src/ — engine + pipeline + db + data + dashboard
+cockpit-ui/            React + TS frontend, built into cockpit/static
+tests/                 mirrors src/ — engine + pipeline + db + data + cockpit
 scripts/               make_amd_fixture, make_universe_seed, run_local
 alembic/               schema migrations (applied on job startup)
 infra/                 Bicep IaC (Container Apps Jobs, Azure SQL, Blob, Key Vault)
-docs/                  running-locally, dashboard, email-digests, azure-deploy
+docs/                  running-locally, cockpit, email-digests, azure-deploy
 docs/runbooks/         arming-alpaca-live (the deliberate human flip to real money)
 docs/plans/            NORTH_STAR-governed design docs + per-phase implementation plans
 ```

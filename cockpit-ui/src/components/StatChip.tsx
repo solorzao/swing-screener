@@ -1,8 +1,19 @@
+import { useId, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import type { Stat } from '../lib/api'
+import { costGlyph, fmtStatValue } from '../lib/fmt'
+import { ProvenancePopover } from './ProvenancePopover'
 
 /* StatChip is the ONLY numeric renderer in the app. Its props type takes a full
    Stat object — there is no code path that accepts a bare number, so a statistic
-   without provenance is unrepresentable (design rule 1). */
+   without provenance is unrepresentable (design rule 1).
+
+   Clicking a chip opens the ProvenancePopover (Task 19): the full provenance of
+   the number lives one click away everywhere a StatChip renders — Task 17's
+   cohort chip, the leaderboard, the settlement cards. The chip's visible face is
+   unchanged; the whole face becomes ONE button so the affordance is keyboard-
+   reachable, and BOTH branches (the no-read badge and the full chip) open it —
+   even an n<5 chip has a facet / cost / sample worth inspecting. */
 
 /* The API's ci_low..ci_high is the 95% interval. The 80/50% bands are narrower
    fractions of it, centered on the point estimate — normal z-ratios, a simple
@@ -17,34 +28,51 @@ function clamp01(x: number): number {
   return Math.min(1, Math.max(0, x))
 }
 
-/** Sign always shown, 2–3 decimals, unit suffix — e.g. "+0.057R". Negative-zero
- * guard: a tiny negative like -0.0004 rounds to all-zero digits and must render
- * "+0.000R", never "-0.000R" — a minus on a zero reads as a real loss. */
-function formatValue(value: number, unit: string): string {
-  const decimals = Math.abs(value) >= 10 ? 2 : 3
-  let fixed = value.toFixed(decimals)
-  if (Number(fixed) === 0) fixed = (0).toFixed(decimals) // strips the "-" of "-0.000"
-  const sign = fixed.startsWith('-') ? '' : '+'
-  return `${sign}${fixed}${unit}`
-}
-
-/** Cost level arrives as the backend's raw string, e.g. "0.05" → "@05",
- * "0.10" → "@10"; anything not matching `0.xx` is prefixed with "@" verbatim. */
-function costGlyph(costLevel: string): string {
-  return `@${costLevel.replace(/^0\./, '')}`
-}
-
 export function StatChip({ stat, label }: { stat: Stat; label?: string }) {
+  const [open, setOpen] = useState(false)
+  const wrapRef = useRef<HTMLSpanElement>(null)
+  const popId = useId()
   const labelEl =
     label !== undefined ? <span className="statchip-label">{label}</span> : null
 
+  // The provenance affordance wraps whichever face renders below. The wrap is
+  // the popover's fixed-position anchor AND its outside-click "inside" region
+  // (button + a portaled popover positioned off it), so a click on the button
+  // toggles it closed rather than reading as an outside dismissal. The popover
+  // is role="tooltip" (a read-only disclosure, not a modal), so the trigger
+  // advertises it via aria-describedby, never aria-haspopup. A closed chip is
+  // visually identical to before.
+  const wrap = (face: ReactNode) => (
+    <span className="statchip-wrap" ref={wrapRef}>
+      <button
+        type="button"
+        className="statchip-btn"
+        aria-expanded={open}
+        aria-describedby={open ? popId : undefined}
+        title="show this number's provenance"
+        onClick={() => setOpen((v) => !v)}
+      >
+        {face}
+      </button>
+      {open && (
+        <ProvenancePopover
+          stat={stat}
+          label={label}
+          id={popId}
+          triggerRef={wrapRef}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </span>
+  )
+
   // n-gating, rule 2: below 5 there is no read at all — a badge, never a value.
   if (stat.n < 5) {
-    return (
+    return wrap(
       <span className="statchip">
         {labelEl}
         <span className="noread-badge">n&lt;5 — no read</span>
-      </span>
+      </span>,
     )
   }
 
@@ -68,7 +96,7 @@ export function StatChip({ stat, label }: { stat: Stat; label?: string }) {
   const span = stat.ci_high - stat.ci_low
   const pos = span > 0 ? clamp01((stat.value - stat.ci_low) / span) : 0.5
 
-  return (
+  return wrap(
     <span className="statchip">
       {labelEl}
       <span className="stat-block">
@@ -82,7 +110,7 @@ export function StatChip({ stat, label }: { stat: Stat; label?: string }) {
                 : undefined
             }
           >
-            {formatValue(stat.value, stat.unit)}
+            {fmtStatValue(stat.value, stat.unit)}
           </span>
           <sup className="stat-n">
             n={stat.n.toLocaleString('en-US')}·{stat.n_clusters.toLocaleString('en-US')}c
@@ -110,6 +138,6 @@ export function StatChip({ stat, label }: { stat: Stat; label?: string }) {
           <span className="ci-tick" style={{ left: `calc(${pos * 100}% - 0.75px)` }} />
         </span>
       </span>
-    </span>
+    </span>,
   )
 }

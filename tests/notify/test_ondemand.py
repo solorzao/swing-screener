@@ -115,7 +115,7 @@ def test_process_pending_is_idempotent(settings, _patch_fetch, _patch_analyze):
 
 def test_process_one_isolates_failure(settings, monkeypatch):
     def boom(ticker, *, cache_dir, today, cfg):
-        raise RuntimeError("fetch exploded")
+        raise RuntimeError("fetch exploded https://secret-host.example/key=abc")
 
     monkeypatch.setattr(ondemand, "_fetch_all_timeframes", boom)
     engine = get_engine(settings.db_url)
@@ -130,7 +130,10 @@ def test_process_one_isolates_failure(settings, monkeypatch):
         assert n == 1
         failed = repo.get_analysis_request(s, req.id)
         assert failed.status == "failed"
-        assert failed.error and "fetch exploded" in failed.error
+        # Leak posture: the stored error reaches the cockpit wire -- exception
+        # CLASS only; the message (hosts/URLs/keys) belongs in the log.
+        assert failed.error == "error (RuntimeError)"
+        assert "secret-host" not in failed.error
     assert sender.calls == []  # no email on failure
 
 

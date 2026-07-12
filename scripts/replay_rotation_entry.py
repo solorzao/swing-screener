@@ -28,7 +28,7 @@ import pandas as pd
 
 from swing_screener.analytics.performance import breakdown
 from swing_screener.config import StrategyConfig
-from swing_screener.pipeline.replay import _load_cached_daily, format_leaderboard, replay_book
+from swing_screener.pipeline.replay import load_cached_daily, format_leaderboard, replay_book
 
 log = logging.getLogger(__name__)
 
@@ -92,11 +92,11 @@ def main() -> None:
         shard_tag = f"_s{i}"
     frames: dict[str, pd.DataFrame] = {}
     for t in tickers:
-        df = _load_cached_daily(t, args.cache_dir)
+        df = load_cached_daily(t, args.cache_dir)
         if df is not None and len(df) > 60:
             frames[t] = df
-    spy = _load_cached_daily("SPY", args.cache_dir)
-    vix = _load_cached_daily("^VIX", args.cache_dir)
+    spy = load_cached_daily("SPY", args.cache_dir)
+    vix = load_cached_daily("^VIX", args.cache_dir)
     log.info("rotation entry: %d tickers, slip=%.2f, spy=%s vix=%s",
              len(frames), args.slippage, spy is not None, vix is not None)
 

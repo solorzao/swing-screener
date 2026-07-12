@@ -33,13 +33,12 @@ from swing_screener.analytics.calibration import (
 )
 from swing_screener.db import repo
 from swing_screener.db.session import get_engine
-from swing_screener.pipeline.reflect import Verdict, load_verdicts
+from swing_screener.pipeline.proposed import PLAY_TYPES
+from swing_screener.pipeline.reflect import Verdict, load_verdicts, verdicts_filename
 from swing_screener.settings import load_settings, resolve_edge_dir
 
 log = logging.getLogger(__name__)
 
-# The play types the gate evaluates -- the same family the reflection grades.
-_PLAY_TYPES = ("continuation", "reversal")
 # The proven-edge tier: a verdict that cleared the multiple-comparisons-corrected lower
 # bound on the LIVE forward shadow book (gold, not a backtest screen).
 _CONFIRMED_TIER = "forward_confirmed"
@@ -68,7 +67,7 @@ def _read_verdicts(edge_dir: Path, play_type: str) -> list[Verdict]:
     """Parse ``edge/<pt>.verdicts.json`` (the code-owned sidecar), or [] if it is missing.
     READ-ONLY: a missing or unreadable sidecar yields no proven edge, never an exception
     that would block the advisory run."""
-    path = edge_dir / f"{play_type}.verdicts.json"
+    path = edge_dir / verdicts_filename(play_type)
     if not path.exists():
         return []
     try:
@@ -95,7 +94,7 @@ def autonomy_gate(session: Session, *, edge_dir: Path = _EDGE_DIR) -> AutonomyRe
     # clears the gate -- once one does, the overall gate is ready and nothing is blocking.
     shortfalls: list[str] = []
 
-    for pt in _PLAY_TYPES:
+    for pt in PLAY_TYPES:
         confirmed = _confirmed_edges(_read_verdicts(edge_dir, pt))
         edge_confirmed = bool(confirmed)
 
