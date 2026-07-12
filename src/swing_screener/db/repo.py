@@ -227,7 +227,9 @@ def load_scored_analyst_calls(
 # for 1d/4h (1-3 calendar days across a weekend), the period-end run + weekend for 1wk
 # (~7-9 days). Anything beyond is a DIFFERENT setup that happens to share the pick keys --
 # grading a call against it poisons the calibration record the autonomy gate reads.
-_ANALYST_SCORE_WINDOW_DAYS = 10
+# PUBLIC: the cockpit's freshness split (``analyst_call_freshness``) keys on the same
+# window so the endpoint and the scorer agree by construction.
+ANALYST_SCORE_WINDOW_DAYS = 10
 
 
 def score_analyst_calls(session: Session) -> int:
@@ -238,7 +240,7 @@ def score_analyst_calls(session: Session) -> int:
     that FILLED on the first run AFTER ``d`` for that same pick -- i.e. the closed
     ``PaperTrade`` (``arm == BASELINE``, ``variant == DEFAULT_VARIANT``, filled, with a
     realized R) whose ``opened_date`` is the EARLIEST strictly greater than the call's
-    ``run_date`` AND within ``_ANALYST_SCORE_WINDOW_DAYS`` of it. The shadow book
+    ``run_date`` AND within ``ANALYST_SCORE_WINDOW_DAYS`` of it. The shadow book
     paper-trades the PRIOR-bar signal (fired on ``d``, booked the next run; a 1wk pick
     books on its period-end run), so the bounded convention join on the pick keys is the
     robust link -- no Signal FK required. The bound is what keeps the join honest: a
@@ -257,7 +259,7 @@ def score_analyst_calls(session: Session) -> int:
     for call in unscored:
         # `==` for the string/enum facets (renders `col = 'x'`); `.is_not(None)` for the
         # NULL guard -- both portable to SQL Server, unlike a boolean `.is_(0)`.
-        window_end = call.run_date + timedelta(days=_ANALYST_SCORE_WINDOW_DAYS)
+        window_end = call.run_date + timedelta(days=ANALYST_SCORE_WINDOW_DAYS)
         trade = session.scalars(
             select(PaperTrade).where(
                 PaperTrade.ticker == call.ticker,
@@ -280,6 +282,41 @@ def score_analyst_calls(session: Session) -> int:
         scored += 1
     session.commit()
     return scored
+
+
+def analyst_call_freshness(
+    calls: Sequence[AnalystCall], today: date
+) -> dict[str, int]:
+    """Three-way freshness split of ``calls`` -- the "unfilled fraction" read.
+
+    PURE, beside ``score_analyst_calls`` on purpose: both key on the SAME
+    ``ANALYST_SCORE_WINDOW_DAYS``, so the cockpit's split and the scorer's join
+    agree by construction (a window change moves both at once).
+
+      * ``scored``: ``scored_at`` set -- the call's own pick booked, filled, and
+        closed inside the window; its R is on the record.
+      * ``pending_in_window``: unscored with ``today <= run_date + WINDOW`` -- a
+        trade can still open inside the scorer's join bound, so the call may yet
+        score.
+      * ``expired_unfilled``: unscored with the window passed -- the scorer will
+        never borrow a later trade for it, so it stays unscored forever. This is
+        the fraction of the analyst's judgments the shadow book never tested.
+
+    Stated approximation: a pick that FILLED inside the window but has not CLOSED
+    yet also counts here (calls alone cannot see open trades) -- it moves to
+    ``scored`` when the close lands, so the count self-corrects; it never
+    undercounts the true expired set.
+    """
+    scored = pending = expired = 0
+    for call in calls:
+        if call.scored_at is not None:
+            scored += 1
+        elif today <= call.run_date + timedelta(days=ANALYST_SCORE_WINDOW_DAYS):
+            pending += 1
+        else:
+            expired += 1
+    return {"scored": scored, "pending_in_window": pending,
+            "expired_unfilled": expired}
 
 
 # the statuses that COUNT against the per-day hard limits: a row only loads against the

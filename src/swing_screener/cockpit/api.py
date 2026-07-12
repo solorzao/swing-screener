@@ -46,13 +46,16 @@ from swing_screener.cockpit.routers.analysis import (
     _STALE_AFTER,  # noqa: F401 -- re-export: the lockstep test pins api._STALE_AFTER
     build_analysis_router,
 )
+from swing_screener.cockpit.routers.analyst import build_analyst_router
 from swing_screener.cockpit.routers.books import build_books_router
 from swing_screener.cockpit.routers.events import build_events_router
 from swing_screener.cockpit.routers.picks import build_picks_router
+from swing_screener.cockpit.routers.playbooks import build_playbooks_router
 from swing_screener.cockpit.routers.proposals import build_proposals_router
 from swing_screener.cockpit.routers.reference import build_reference_router
 from swing_screener.cockpit.routers.safety import build_safety_router
 from swing_screener.cockpit.routers.trades import build_trades_router
+from swing_screener.cockpit.routers.weather import build_weather_router
 from swing_screener.data import quotes
 from swing_screener.pipeline.broker import BrokerClient
 from swing_screener.pipeline.broker_alpaca import build_broker
@@ -170,6 +173,9 @@ def create_app(
     app.include_router(build_picks_router(_session=_session, quote_cache=quote_cache))
     app.include_router(build_reference_router(_session=_session))
     app.include_router(build_proposals_router(edge_dir=edge_dir))
+    app.include_router(build_playbooks_router(_session=_session, edge_dir=edge_dir))
+    app.include_router(build_weather_router(_session=_session))
+    app.include_router(build_analyst_router(_session=_session))
     app.include_router(build_events_router(_engine=_engine, edge_dir=edge_dir))
 
     resolved_static = static_dir if static_dir is not None else Path(__file__).parent / "static"

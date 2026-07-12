@@ -7,6 +7,7 @@ import dataclasses
 from dataclasses import fields
 from datetime import UTC, date, datetime, timedelta
 import itertools
+import json
 from pathlib import Path
 import sys
 from typing import Any
@@ -47,6 +48,7 @@ from swing_screener.db.models import (
     EmailLog,
     ExecutionLog,
     ExitEvent,
+    MarketReport,
     PaperTrade,
     Signal,
     Trade,
@@ -56,7 +58,11 @@ from swing_screener.notify import select as sel
 from swing_screener.notify.run import _drop_already_ran
 from swing_screener.settings import _EXECUTION_MODES
 from swing_screener.storage import blob
-from swing_screener.db.repo import save_reversal_funnel
+from swing_screener.db.repo import (
+    ANALYST_SCORE_WINDOW_DAYS,
+    analyst_call_freshness,
+    save_reversal_funnel,
+)
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.broker import BrokerAccount, BrokerOrderSpec, FakeBroker
 from swing_screener.pipeline.proposed import (
@@ -65,6 +71,7 @@ from swing_screener.pipeline.proposed import (
     proposed_to_json,
     store_filename,
 )
+from swing_screener.pipeline.reflect import Verdict, render_edge_file, verdicts_to_json
 from swing_screener.pipeline.registry import Experiment
 
 STAT_KEYS = {"value", "n", "n_clusters", "ci_low", "ci_high", "cost_level",
@@ -3450,3 +3457,366 @@ def test_ticker_analysis_window_orders_by_lifecycle_not_id(tmp_path: Path) -> No
         s.commit()
     events = client.get("/api/ticker", params={"limit": 1}).json()["events"]
     assert [e["ticker"] for e in events] == ["OLD"]  # id-desc would starve OLD out
+
+
+# ---- Task 11 reads: /api/playbooks, /api/weather, /api/analyst, /api/attention
+
+
+PLAYBOOKS_KEYS = {"books", "due_play_types", "store_errors", "ci_note"}
+BOOK_KEYS = {"play_type", "md", "frontmatter", "verdicts", "verdicts_error",
+             "drift", "falsified", "reflection_due"}
+# The verdict wire row: EVERY Verdict field by name, a closed set like STAT_KEYS
+# -- deliberately NOT a Stat dict (tier rides verdict rows; scope decision 11),
+# and deliberately NO ci_high (the wire's ci_note says why).
+VERDICT_ROW_KEYS = {"play_type", "dimension", "bucket", "tier", "n",
+                    "expectancy_r", "ci_low", "n_clusters", "source",
+                    "cost_level", "corpus_id"}
+ATTENTION_KEYS = {"proposals_queued", "proposals_approved_pending",
+                  "reflection_due", "latest_analysis_id"}
+ANALYST_KEYS = {"play_types", "spend", "today", "r_basis"}
+ANALYST_PT_KEYS = {"play_type", "calibration", "nudge", "freshness", "progress"}
+PROGRESS_KEYS = {"calibrated", "high_minus_low", "ci_low", "n_high", "n_low",
+                 "n_clusters_high", "n_clusters_low", "reason", "min_per_bucket",
+                 "cluster_floor"}
+SPEND_KEYS = {"today_usd", "last_7d_usd", "last_30d_usd", "uncosted_calls_30d",
+              "note"}
+WEATHER_KEYS = {"run_date", "ha_alignment", "flipped", "spy_vs_200dma",
+                "vol_bucket", "vix", "vix_rank", "vix_spike", "ten_year",
+                "three_month", "yield_inverted", "bond_trend", "vix_term_ratio",
+                "vix_backwardation", "credit_chg_4w", "credit_pctile",
+                "cyc_def_trend", "cyc_def_chg_4w", "breadth_trend",
+                "breadth_chg_4w", "recession_prob", "is_deep", "core", "report",
+                "created_at"}
+
+
+def _sidecar_verdict(**over: object) -> Verdict:
+    base: dict = dict(
+        play_type="reversal", dimension="market_trend", bucket="bear",
+        tier="replay_screened", n=2387, expectancy_r=0.196, ci_low=0.104,
+        n_clusters=100, source="replay",
+    )
+    base.update(over)
+    return Verdict(**base)
+
+
+def test_playbooks_verdicts_carry_cost_corpus(tmp_path: Path) -> None:
+    """Verdict wire rows are the SIDECAR verbatim: the closed 11-key set with the
+    provenance stamps riding along. A stamped row serves cost_level/corpus_id
+    verbatim; a PRE-Phase-3 row (both keys ABSENT from the committed JSON)
+    serves an explicit None for each -- backfilling any default there is the
+    fabricated-provenance mutation this test exists to kill. ``ci_note`` states
+    the bound's meaning on the wire (Bonferroni-corrected lower, no ci_high)."""
+    stamped = _sidecar_verdict(cost_level="0.05",
+                               corpus_id="corpus sha=abc as_of=20260705")
+    legacy = {  # a committed pre-Phase-3 sidecar row: NO cost/corpus keys at all
+        "play_type": "reversal", "dimension": "volatility_tier", "bucket": "low",
+        "tier": "hunch", "n": 1950, "expectancy_r": 0.0506, "ci_low": -0.0568,
+        "n_clusters": 72, "source": "none",
+    }
+    rows_json = json.loads(verdicts_to_json([stamped])) + [legacy]
+    (tmp_path / "reversal.verdicts.json").write_text(
+        json.dumps(rows_json), encoding="utf-8")
+    r = _client(tmp_path).get("/api/playbooks")
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body) == PLAYBOOKS_KEYS
+    assert "Bonferroni" in body["ci_note"] and "no ci_high" in body["ci_note"]
+    books = {b["play_type"]: b for b in body["books"]}
+    assert set(books) == {"continuation", "reversal"}
+    assert all(set(b) == BOOK_KEYS for b in body["books"])
+    rows = books["reversal"]["verdicts"]
+    assert [set(row) for row in rows] == [VERDICT_ROW_KEYS] * 2
+    assert rows[0]["cost_level"] == "0.05"
+    assert rows[0]["corpus_id"] == "corpus sha=abc as_of=20260705"
+    assert rows[1]["cost_level"] is None  # served None, never fabricated
+    assert rows[1]["corpus_id"] is None
+    assert rows[1]["n"] == 1950 and rows[1]["ci_low"] == -0.0568
+
+
+def test_playbooks_md_verbatim_drift_lamp_and_falsified(tmp_path: Path) -> None:
+    """The md is served VERBATIM (prose only -- numbers come from the sidecar),
+    the drift lamp is the structural md-vs-sidecar check, and the Falsified body
+    rides pre-extracted through the reflection's own parser. Continuation is
+    faithful -> drift ok; reversal's md files the sidecar's screened condition
+    under Hunches (the stale-verdicts hazard, exactly) -> that token flags."""
+    cont = _sidecar_verdict(play_type="continuation")
+    cont_md = render_edge_file("continuation", "thesis", [cont], n_closed_now=7,
+                               prior_falsified="- old claim REFUTED 2026-07-03")
+    (tmp_path / "continuation.md").write_text(cont_md, encoding="utf-8")
+    (tmp_path / "continuation.verdicts.json").write_text(
+        verdicts_to_json([cont]), encoding="utf-8")
+
+    rev = _sidecar_verdict()
+    stale_md = render_edge_file(
+        "reversal", "thesis", [dataclasses.replace(rev, tier="hunch")],
+        n_closed_now=3)
+    (tmp_path / "reversal.md").write_text(stale_md, encoding="utf-8")
+    (tmp_path / "reversal.verdicts.json").write_text(
+        verdicts_to_json([rev]), encoding="utf-8")
+
+    books = {b["play_type"]: b for b in
+             _client(tmp_path).get("/api/playbooks").json()["books"]}
+    c = books["continuation"]
+    assert c["md"] == cont_md  # verbatim, never re-rendered
+    assert c["frontmatter"] == {"forward_closed_at_last_reflection": 7,
+                                "last_reflected": None}
+    assert c["drift"] == {"ok": True, "missing": []}
+    assert "old claim REFUTED" in c["falsified"]
+    r = books["reversal"]
+    assert r["md"] == stale_md
+    assert r["drift"] == {"ok": False, "missing": [
+        {"token": "market_trend=bear", "tier": "replay_screened"}]}
+
+
+def test_playbooks_degrades_per_book_and_drift_never_fabricates_ok(
+    tmp_path: Path,
+) -> None:
+    """A corrupt sidecar degrades ITS book only: verdicts empty, the error names
+    the exception CLASS only (never the parser message), top-level store_errors
+    names the play type (the proposals-GET precedent), and drift is null --
+    explicitly UNKNOWN, never a fabricated ok. The healthy book still renders."""
+    good = _sidecar_verdict(play_type="continuation")
+    (tmp_path / "continuation.verdicts.json").write_text(
+        verdicts_to_json([good]), encoding="utf-8")
+    (tmp_path / "reversal.verdicts.json").write_text(
+        '{"oops": "truncated', encoding="utf-8")
+    r = _client(tmp_path).get("/api/playbooks")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["store_errors"] == ["reversal"]
+    books = {b["play_type"]: b for b in body["books"]}
+    assert books["continuation"]["verdicts_error"] is None
+    assert len(books["continuation"]["verdicts"]) == 1
+    rev = books["reversal"]
+    assert rev["verdicts"] == []
+    assert rev["verdicts_error"] == "unreadable (JSONDecodeError)"  # class only
+    assert rev["drift"] is None  # unknown -- a drift lamp must not read ok here
+
+
+def test_playbooks_empty_edge_dir_is_a_setup_state(tmp_path: Path) -> None:
+    """A fresh clone (no md, no sidecars, empty DB) is a SETUP state, not an
+    error: md "", verdicts_error 'missing' (distinct from corrupt -- it never
+    lands in store_errors), drift null (unknown), nothing due."""
+    body = _client(tmp_path).get("/api/playbooks").json()
+    assert body["store_errors"] == []
+    assert body["due_play_types"] == []
+    for b in body["books"]:
+        assert b["md"] == ""
+        assert b["verdicts"] == []
+        assert b["verdicts_error"] == "missing"
+        assert b["drift"] is None
+        assert b["falsified"] == ""
+        assert b["frontmatter"] == {"forward_closed_at_last_reflection": 0,
+                                    "last_reflected": None}
+        assert b["reflection_due"] is False
+
+
+def test_playbooks_reflection_due_mirrors_the_reflection_gate(
+    tmp_path: Path,
+) -> None:
+    """``reflection_due`` comes from ``due_play_types`` -- the reflection's OWN
+    re-arm gate (>= trigger new closes at the baseline/default forward facet
+    since the frontmatter counter; the trigger is pinned to MIN_LEADERBOARD_N).
+    Twenty closed reversal rows against a missing-file counter of 0 arm
+    reversal; continuation stays quiet; /api/attention agrees (same loader)."""
+    client, engine = _client_and_engine(tmp_path)
+    with Session(engine) as s:
+        for i in range(MIN_LEADERBOARD_N):
+            s.add(_book_trade(f"T{i}", 0.5))
+        s.commit()
+    body = client.get("/api/playbooks").json()
+    books = {b["play_type"]: b for b in body["books"]}
+    assert body["due_play_types"] == ["reversal"]
+    assert books["reversal"]["reflection_due"] is True
+    assert books["continuation"]["reflection_due"] is False
+    assert client.get("/api/attention").json()["reflection_due"] == ["reversal"]
+
+
+def test_weather_null_then_latest(tmp_path: Path) -> None:
+    """``{weather: null}`` on an empty table (weekly job; a fresh DB has none --
+    a setup state, not an error). With rows, the newest run_date wins, EVERY
+    column rides -- including ``is_deep=False``, the deterministic-fallback
+    badge that keeps a canned report from passing as the analyst's -- and the
+    history is the flip log, newest first."""
+    client, engine = _client_and_engine(tmp_path)
+    r = client.get("/api/weather")
+    assert r.status_code == 200
+    assert r.json() == {"weather": None, "history": []}
+
+    with Session(engine) as s:
+        s.add(MarketReport(run_date=date(2026, 6, 28), ha_alignment="mixed",
+                           flipped=True, core="old core", report="old report",
+                           is_deep=True, vix=15.0))
+        s.add(MarketReport(run_date=date(2026, 7, 5),
+                           ha_alignment="aligned_bull", flipped=False,
+                           core="new core", report="full text", is_deep=False,
+                           vix=13.2, vix_rank=0.31, spy_vs_200dma="above",
+                           yield_inverted=False, recession_prob=0.18,
+                           created_at=datetime(2026, 7, 5, 13, 0)))
+        s.commit()
+    body = client.get("/api/weather").json()
+    w = body["weather"]
+    assert set(w) == WEATHER_KEYS
+    assert w["run_date"] == "2026-07-05"
+    assert w["is_deep"] is False  # the fallback badge, served honestly
+    assert w["core"] == "new core" and w["report"] == "full text"
+    assert w["vix"] == 13.2 and w["spy_vs_200dma"] == "above"
+    assert w["yield_inverted"] is False and w["recession_prob"] == 0.18
+    assert w["created_at"] == "2026-07-05T13:00:00+00:00"  # unambiguous UTC
+    assert body["history"] == [
+        {"run_date": "2026-07-05", "ha_alignment": "aligned_bull",
+         "flipped": False, "core": "new core"},
+        {"run_date": "2026-06-28", "ha_alignment": "mixed",
+         "flipped": True, "core": "old core"},
+    ]
+
+
+def test_analyst_inf_ci_serializes_null(tmp_path: Path) -> None:
+    """Below the data floors ``conviction_calibrated`` answers ``ci_low=-inf``;
+    JSON cannot carry inf, so the WIRE CONTRACT is null -- the endpoint maps it
+    explicitly (pydantic's json mode would also null it, but the contract must
+    not hang on a serializer default) and the lamp reads 'insufficient data',
+    never green. Mutation-proof: any mutation that FABRICATES a finite bound
+    here (a number where no data exists) fails the ``is None`` pin."""
+    r = _client(tmp_path).get("/api/analyst")
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body) == ANALYST_KEYS
+    assert body["r_basis"] == "shadow-book"  # every R here is the shadow book's
+    assert len(body["play_types"]) == 2
+    for pt in body["play_types"]:
+        assert set(pt) == ANALYST_PT_KEYS
+        p = pt["progress"]
+        assert set(p) == PROGRESS_KEYS
+        assert p["ci_low"] is None
+        assert p["calibrated"] is False
+        assert p["reason"].startswith("insufficient data")
+        assert p["min_per_bucket"] == MIN_LEADERBOARD_N  # the countdown targets
+        assert p["cluster_floor"] == _CLUSTER_FLOOR
+
+
+def test_calibration_includes_zero_count_grades(tmp_path: Path) -> None:
+    """The calibration reshape serves ALL four grades in canonical order: a grade
+    with no scored history is an explicit ``{n: 0, mean_r: null}`` ('unproven'),
+    never omitted -- dropping the zero rows is the mutation this kills. The
+    nudge row aggregates only the MOVED scored calls (final != baseline); an
+    unscored call appears in neither."""
+    client, engine = _client_and_engine(tmp_path)
+    with Session(engine) as s:
+        s.add(_grade_call("AAA", final="high", realized_r=0.5, scored_at=_RUN_D))
+        s.add(_grade_call("BBB", final="high", realized_r=0.1, scored_at=_RUN_D))
+        s.add(_grade_call("CCC", final="high"))  # unscored: rides nowhere
+        s.commit()
+    body = client.get("/api/analyst").json()
+    rev = next(p for p in body["play_types"] if p["play_type"] == "reversal")
+    assert rev["calibration"] == [
+        {"grade": "high", "n": 2, "mean_r": pytest.approx(0.3)},
+        {"grade": "medium", "n": 0, "mean_r": None},
+        {"grade": "low", "n": 0, "mean_r": None},
+        {"grade": "avoid", "n": 0, "mean_r": None},
+    ]
+    # both scored calls ARE nudges (the helper's baseline is medium, final high)
+    assert rev["nudge"] == {"n": 2, "mean_r": pytest.approx(0.3)}
+    cont = next(p for p in body["play_types"] if p["play_type"] == "continuation")
+    assert cont["nudge"] is None
+    assert all(row["n"] == 0 and row["mean_r"] is None
+               for row in cont["calibration"])
+
+
+def test_unfilled_fraction_three_way(tmp_path: Path) -> None:
+    """``freshness`` splits ALL of a play type's calls against the SCORER'S OWN
+    window (``ANALYST_SCORE_WINDOW_DAYS`` -- shared constant, agree by
+    construction): scored / unscored-but-in-window / expired (the pick never
+    filled; unscored forever). Boundary pinned on the pure helper: on the exact
+    window-end day a trade can still open, so the call is pending; one day past
+    it is expired."""
+    today = date.today()
+    client, engine = _client_and_engine(tmp_path)
+    with Session(engine) as s:
+        s.add(_grade_call("SCR", run_date=today - timedelta(days=20),
+                          realized_r=0.4, scored_at=today - timedelta(days=15)))
+        s.add(_grade_call("PEND", run_date=today))
+        s.add(_grade_call(
+            "EXP",
+            run_date=today - timedelta(days=ANALYST_SCORE_WINDOW_DAYS + 1)))
+        s.commit()
+    body = client.get("/api/analyst").json()
+    assert body["today"] == today.isoformat()  # the date the split used
+    rev = next(p for p in body["play_types"] if p["play_type"] == "reversal")
+    assert rev["freshness"] == {"scored": 1, "pending_in_window": 1,
+                                "expired_unfilled": 1}
+
+    edge = AnalystCall(
+        created_date=today, ticker="EDGE", timeframe="1d", play_type="reversal",
+        run_date=today - timedelta(days=ANALYST_SCORE_WINDOW_DAYS),
+        baseline_conviction="medium", final_conviction="high",
+        nudge_reason="x", model="m")
+    assert analyst_call_freshness([edge], today) == {
+        "scored": 0, "pending_in_window": 1, "expired_unfilled": 0}
+    assert analyst_call_freshness([edge], today + timedelta(days=1)) == {
+        "scored": 0, "pending_in_window": 0, "expired_unfilled": 1}
+
+
+def test_analyst_spend_windows_and_undercount(tmp_path: Path) -> None:
+    """Spend sums ``est_cost_usd`` over calendar windows INCLUDING today (today /
+    7d / 30d); a NULL-cost row (deterministic path, legacy) is COUNTED and
+    disclosed, never silently summed as zero -- the note says the totals
+    undercount. A 40-day-old row is outside every window."""
+    today = date.today()
+    client, engine = _client_and_engine(tmp_path)
+
+    def _costed(ticker: str, days_ago: int, cost: float | None) -> AnalystCall:
+        call = _grade_call(ticker, run_date=today - timedelta(days=days_ago))
+        call.est_cost_usd = cost
+        return call
+
+    with Session(engine) as s:
+        s.add(_costed("T0", 0, 1.0))
+        s.add(_costed("T3", 3, 2.0))
+        s.add(_costed("T10", 10, 4.0))
+        s.add(_costed("T40", 40, 8.0))    # outside the 30d window entirely
+        s.add(_costed("NUL", 0, None))    # no estimate recorded
+        s.commit()
+    spend = client.get("/api/analyst").json()["spend"]
+    assert set(spend) == SPEND_KEYS
+    assert spend["today_usd"] == pytest.approx(1.0)
+    assert spend["last_7d_usd"] == pytest.approx(3.0)
+    assert spend["last_30d_usd"] == pytest.approx(7.0)
+    assert spend["uncosted_calls_30d"] == 1
+    assert "undercount" in spend["note"]
+
+
+def test_attention_shape(tmp_path: Path) -> None:
+    """The permanent-poll strip feed's EXACT four-key shape. Queued and
+    approved-pending are DISTINCT lists -- an approval only MARKS, so the strip
+    must keep showing it until a human promotes and the row leaves the store; a
+    withdrawn row appears in neither. A corrupt store degrades QUIETLY (its
+    names absent, still 200 -- the loud marker lives on /api/proposals);
+    ``latest_analysis_id`` is the max id or null."""
+    client, engine = _client_and_engine(tmp_path)
+    empty = client.get("/api/attention")
+    assert empty.status_code == 200
+    assert empty.json() == {"proposals_queued": [],
+                            "proposals_approved_pending": [],
+                            "reflection_due": [], "latest_analysis_id": None}
+
+    _write_proposals(tmp_path, "reversal", [
+        _proposal("r_q", "reversal", {"max_extension_atr": 1.5}),
+        _proposal("r_ok", "reversal", {"min_target_r": 2.0}, status="approved"),
+        _proposal("r_out", "reversal", {"min_target_r": 3.0},
+                  status="withdrawn"),
+    ])
+    (tmp_path / store_filename("continuation")).write_text(
+        "{broken", encoding="utf-8")
+    with Session(engine) as s:
+        s.add(_analysis_row(ticker="AMD"))
+        newest = _analysis_row(ticker="NVDA")
+        s.add(newest)
+        s.commit()
+        latest_id = newest.id
+    body = client.get("/api/attention").json()
+    assert set(body) == ATTENTION_KEYS
+    assert body["proposals_queued"] == ["r_q"]
+    assert body["proposals_approved_pending"] == ["r_ok"]  # distinct, visible
+    assert body["reflection_due"] == []
+    assert body["latest_analysis_id"] == latest_id
