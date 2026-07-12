@@ -29,7 +29,7 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 
 import anyio.to_thread
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -58,13 +58,14 @@ from swing_screener.analytics.performance import (
     score_stamped,
     summarize,
 )
+from swing_screener.analytics.pl import PositionPL, position_pl
 from swing_screener.cockpit.gh import latest_workflow_run
 from swing_screener.cockpit.heartbeats import (
     Heartbeat,
     collect_heartbeats,
     newest_verdicts_mtime,
 )
-from swing_screener.cockpit.livedata import BrokerSnapshot, QuoteCache
+from swing_screener.cockpit.livedata import BrokerSnapshot, QuoteCache, Snapshot
 from swing_screener.cockpit.settlement import (
     STATES,
     SettlementCard,
@@ -76,6 +77,7 @@ from swing_screener.data import quotes
 from swing_screener.db.models import (
     AnalystCall,
     EmailLog,
+    ExecutionLog,
     ExitEvent,
     MarketReport,
     PaperTrade,
@@ -86,18 +88,39 @@ from swing_screener.db.repo import (
     AlreadyClosedError,
     add_trade,
     close_trade_with_event,
+    count_open_positions,
+    execution_logs_for_day,
+    get_closed_trades,
+    get_open_trades,
     latest_reversal_funnel,
+    latest_run_date,
     load_closed_paper_trades,
+    load_open_live_trades,
     load_research_paper_trades,
+    realized_r_on,
 )
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.arms import BASELINE
 from swing_screener.pipeline.autonomy import autonomy_gate, gate_countdown
 from swing_screener.pipeline.broker import BrokerClient
 from swing_screener.pipeline.broker_alpaca import build_broker
+from swing_screener.pipeline.disarm import _STOP_TYPES
+from swing_screener.pipeline.execution import (
+    LIVE_ACCOUNT,
+    MANUAL_ACCOUNT,
+    OFF_ACCOUNT,
+    PAPER_ACCOUNT,
+)
+from swing_screener.pipeline.insight import size_order
 from swing_screener.pipeline.registry import load_experiments
 from swing_screener.pipeline.variants import DEFAULT_VARIANT
-from swing_screener.settings import load_settings, resolve_edge_dir
+from swing_screener.settings import (
+    load_settings,
+    resolve_edge_dir,
+    resolve_execution,
+    resolve_risk_unit,
+)
+from swing_screener.signals.actionability import classify
 
 
 def connection_label(db_url: str) -> str:
@@ -184,8 +207,11 @@ def _require_cockpit(request: Request) -> None:
     cross-origin simple request, so any webpage's form/fetch dies in the CORS
     preflight; a request without it is a 403 before ANY other dependency runs
     (attached via the decorator's ``dependencies=[...]``, which FastAPI solves
-    ahead of parameter dependencies -- so no engine touch, no body parse). Every
-    new action endpoint takes the guard by copying one decorator argument."""
+    ahead of parameter dependencies -- no model validation, no engine touch; the
+    raw JSON decode still precedes the guard, so a syntactically-broken body 422s
+    first -- harmless, nothing side-effectful runs). Ordering pin: headerless +
+    invalid-FIELDS body -> 403, never 422. Every new action endpoint takes the
+    guard by copying one decorator argument."""
     if request.headers.get("x-cockpit") != "1":
         raise HTTPException(status_code=403, detail="missing X-Cockpit header")
 
@@ -779,6 +805,189 @@ def create_app(
             "exit_reason": trade.exit_reason,
         }
 
+    @app.get("/api/positions")
+    def positions(session: Session = Depends(_session)) -> dict[str, object]:
+        """The whole trades screen in one read: open positions with per-row P/L,
+        the three cap gauges, closed history, and the realized equity curve.
+
+        Nuances, each deliberate:
+
+        * PER-ROW degradation: ONE malformed trade or missing quote must never
+          503 the zone. Every open row is KEPT; a row whose ``position_pl``
+          raises (non-positive risk, or a degenerate zero price) degrades to
+          ``pl: null`` + ``badge: "unknown"``; a missing quote (absent from the
+          cache's dict) additionally nulls ``last_close``. ``last_close`` is the
+          close form's prefill source, so it stays populated whenever the quote
+          exists -- even on a row whose P/L math is broken.
+        * ``pl.unrealized_pct`` is a FRACTION on the wire (0.04, not 4.0) --
+          the frontend formats percents, mirroring ``analytics.pl``.
+        * ``badge``: ``red`` price <= stop, ``yellow`` price >= target,
+          ``green`` between, ``unknown`` without a price (or unusable geometry).
+        * LIVE rows (open ``account="live"`` PaperTrades) have NO size column:
+          ``size``/dollar P/L come from the spec'd ExecutionLog join -- the
+          NEWEST row for the ticker with status ``submitted_live``/``filled_live``
+          (``_live_shares``) -- else both stay null with the R-multiple still
+          rendered from the persisted per-share ``risk``; the size-independent
+          percent fields stay honest either way. A pending-entry live row
+          (``entry_price`` null) carries ``pl: null``; its badge still reads off
+          the quote (stop/target are always recorded).
+        * BRACKET lamp, per kind: no broker snapshot -> ``unknown`` (absence of
+          evidence is never a claim); a venue-held protective sell order
+          (``order_type`` in disarm's ``_STOP_TYPES``) for the symbol ->
+          ``armed``; else ``db-only`` -- the recorded stop exists only as a DB
+          number. A REAL/manual row is NEVER ``unprotected``: the venue does not
+          know it exists, so ``db-only`` is its honest ceiling. ``unprotected``
+          is reserved for a row with no recorded stop at all (both stop columns
+          are NOT NULL today, so it is a wire-contract state, not a live one).
+        * CAPS mirror ``execution._limit_block``'s reads EXACTLY: ``notional``
+          sums ``ExecutionLog.notional`` over ``execution_logs_for_day`` (the
+          REPO filters to the counting statuses -- skipped/canceled/rejected
+          never reserved notional); ``loss_r`` is ``realized_r_on`` -- an R
+          THRESHOLD, today's realized R with sign preserved (the breaker fires
+          at ``used <= -limit``), NOT a spent-dollars meter; ``concurrent`` is
+          ``count_open_positions`` (PaperTrade rows only -- exactly what the
+          adapter checks; open manual Trades don't count there either).
+          ``account`` maps from the CURRENT execution mode (off -> the research
+          label, per the adapter constants); ``run_date = latest_run_date``;
+          with no runs yet the day-scoped used values are an honest 0.0 and
+          ``run_date`` null. A ``None`` cap is unbounded: ``limit: null`` on the
+          wire, NEVER 0/0.
+        * ``closed`` arrives newest-exit first (the repo's order); ``equity`` is
+          the retired Streamlit ``_render_closed`` math verbatim: dated closes
+          ascending, running sum of ``((exit or entry) - entry) * size`` rounded
+          to cents, an undated close listed but never plotted.
+        * ONE ``QuoteCache.get`` for all open tickers per request (the TTL cache
+          makes a cold fetch at most once per window); ``quotes_as_of``
+          timestamps the window's latest contribution, not each price.
+          ``broker_as_of`` is null without a snapshot.
+        """
+        open_real = get_open_trades(session)
+        open_live = load_open_live_trades(session)
+        quote_cache: QuoteCache = app.state.quote_cache
+        quote_result = quote_cache.get(
+            [t.ticker for t in open_real] + [p.ticker for p in open_live])
+        prices = quote_result.prices
+        broker_snapshot: BrokerSnapshot = app.state.broker_snapshot
+        snapshot = broker_snapshot.get()
+        armed = _armed_symbols(snapshot)
+
+        open_rows: list[dict[str, object]] = [
+            _real_position_row(t, prices.get(t.ticker), snapshot=snapshot, armed=armed)
+            for t in open_real
+        ]
+        open_rows += [
+            _live_position_row(p, prices.get(p.ticker),
+                               _live_shares(session, p.ticker),
+                               snapshot=snapshot, armed=armed)
+            for p in open_live
+        ]
+
+        mode, limits = resolve_execution(load_settings())
+        account = _ACCOUNT_FOR_MODE[mode]  # total: load_settings coerces unknown->off
+        run_d = latest_run_date(session)
+        if run_d is None:  # no runs yet: no day to sum -- honest zeros, null date
+            notional_used, loss_used = 0.0, 0.0
+        else:
+            notional_used = sum(e.notional for e in execution_logs_for_day(
+                session, run_date=run_d, account=account))
+            loss_used = realized_r_on(session, run_date=run_d, account=account)
+
+        closed_trades = get_closed_trades(session)
+        dated = sorted((t for t in closed_trades if t.exit_date is not None),
+                       key=lambda t: cast(date, t.exit_date))
+        equity: list[list[object]] = []
+        running = 0.0
+        for t in dated:
+            running += _realized_usd(t)
+            equity.append([cast(date, t.exit_date).isoformat(), round(running, 2)])
+
+        return {
+            "open": open_rows,
+            "caps": {
+                "account": account,
+                "run_date": run_d.isoformat() if run_d is not None else None,
+                "notional": {"used": notional_used,
+                             "limit": limits.max_daily_notional},
+                "loss_r": {"used": loss_used, "limit": limits.max_daily_loss},
+                "concurrent": {
+                    "used": count_open_positions(session, account=account),
+                    "limit": limits.max_concurrent,
+                },
+            },
+            "closed": [{
+                "trade_id": t.id,
+                "ticker": t.ticker,
+                "entry_date": t.entry_date.isoformat(),
+                "exit_date": (t.exit_date.isoformat()
+                              if t.exit_date is not None else None),
+                "entry_price": t.entry_price,
+                "exit_price": t.exit_price,
+                "size": t.size,
+                "realized_usd": _realized_usd(t),
+                "exit_reason": t.exit_reason,
+            } for t in closed_trades],
+            "equity": equity,
+            "quotes_as_of": quote_result.as_of.isoformat(),
+            "broker_as_of": (snapshot.as_of.isoformat()
+                             if snapshot is not None else None),
+        }
+
+    @app.get("/api/trade-defaults")
+    def trade_defaults(
+        signal_id: int, session: Session = Depends(_session)
+    ) -> dict[str, object]:
+        """The log-trade form's prefill for one Signal: the engine's levels
+        VERBATIM (never recomputed -- the analyst/UI can never move a level),
+        live actionability, a suggested entry, and the conviction-'medium' size.
+
+        404 on an unknown ``signal_id`` (missing/garbage is FastAPI's 422).
+        ``actionability`` classifies the entry zone at the cached quote
+        (``signals.actionability.classify``) and is null WITHOUT a quote -- so is
+        ``suggested_entry``, which is the quote CLAMPED into
+        ``[entry_floor, entry_ceiling]``: the prefill never chases an extended
+        price above the ceiling nor bids below the zone. ``sizing`` is
+        ``insight.size_order`` at conviction 'medium' over
+        ``resolve_risk_unit(load_settings())``; ``shares == 0`` is the deliberate
+        'sizing unconfigured' signal (``unconfigured: true`` -- the UI renders
+        R-multiples, never a guessed dollar). One ``QuoteCache.get`` per request.
+        """
+        sig = session.get(Signal, signal_id)
+        if sig is None:
+            raise HTTPException(
+                status_code=404, detail=f"no signal with id {signal_id}")
+        quote_cache: QuoteCache = app.state.quote_cache
+        price = quote_cache.get([sig.ticker]).prices.get(sig.ticker)
+        actionability: dict[str, object] | None = None
+        suggested: float | None = None
+        if price is not None:
+            result = classify(entry_floor=sig.entry_floor,
+                              entry_ceiling=sig.entry_ceiling,
+                              stop=sig.stop, price=price)
+            actionability = {"status": result.status, "dist_r": result.dist_r}
+            suggested = min(max(price, sig.entry_floor), sig.entry_ceiling)
+        risk_unit, max_shares = resolve_risk_unit(load_settings())
+        shares, risk_dollars = size_order(
+            conviction="medium", entry_ceiling=sig.entry_ceiling, stop=sig.stop,
+            risk_unit_dollars=risk_unit, max_shares=max_shares)
+        return {
+            "signal": {
+                "ticker": sig.ticker,
+                "timeframe": sig.timeframe,
+                "horizon": sig.horizon,
+                "play_type": sig.play_type,
+                "entry_floor": sig.entry_floor,
+                "entry_ceiling": sig.entry_ceiling,
+                "stop": sig.stop,
+                "target": sig.target,
+                "conviction_tier": sig.conviction_tier,
+            },
+            "last_close": price,
+            "actionability": actionability,
+            "suggested_entry": suggested,
+            "sizing": {"shares": shares, "risk_dollars": risk_dollars,
+                       "unconfigured": shares == 0},
+        }
+
     @app.get("/api/events")
     async def events() -> EventSourceResponse:
         """The SSE wake channel: a ``change`` event whenever the change token moves
@@ -1073,3 +1282,172 @@ def _beat_dict(b: Heartbeat) -> dict[str, object]:
         "grace_s": b.grace_s,
         "detail": b.detail,
     }
+
+
+# Execution mode -> the account its adapter books under (execution.py's constants;
+# "off" books nothing and carries the research label purely as a label). Total over
+# the mode enum: load_settings coerces any unknown mode to "off" before it gets here.
+_ACCOUNT_FOR_MODE = {
+    "manual": MANUAL_ACCOUNT,
+    "paper": PAPER_ACCOUNT,
+    "live": LIVE_ACCOUNT,
+    "off": OFF_ACCOUNT,
+}
+
+
+def _badge(price: float, *, stop: float, target: float) -> str:
+    """The attention lamp for a priced open row: ``red`` at/under the stop (the
+    exit case), ``yellow`` at/over the target (the take-profit case), ``green``
+    between. The no-price/unusable-geometry ``unknown`` is the CALLER's branch --
+    this helper only speaks when there is a price to compare."""
+    if price <= stop:
+        return "red"
+    if price >= target:
+        return "yellow"
+    return "green"
+
+
+def _pl_dict(pl: PositionPL) -> dict[str, object]:
+    """``PositionPL``'s wire form, hand-rolled like ``_beat_dict`` (never
+    ``dataclasses.asdict`` on the wire). ``unrealized_pct`` is a FRACTION."""
+    return {
+        "unrealized_pl": pl.unrealized_pl,
+        "unrealized_pct": pl.unrealized_pct,
+        "r_multiple": pl.r_multiple,
+        "dist_to_stop_pct": pl.dist_to_stop_pct,
+        "dist_to_target_pct": pl.dist_to_target_pct,
+    }
+
+
+def _armed_symbols(snapshot: Snapshot | None) -> frozenset[str]:
+    """Symbols holding a live protective sell order at the venue -- ``order_type``
+    in disarm's ``_STOP_TYPES`` (imported, so the two definitions cannot drift).
+    Empty for a None snapshot: the caller's lamp answers ``unknown`` there."""
+    if snapshot is None:
+        return frozenset()
+    return frozenset(o.symbol for o in snapshot.open_orders
+                     if o.side == "sell" and o.order_type in _STOP_TYPES)
+
+
+def _bracket(ticker: str, stop: float | None, *, snapshot: Snapshot | None,
+             armed: frozenset[str]) -> str:
+    """One row's bracket lamp (per-kind semantics in the ``positions`` docstring):
+    no snapshot -> ``unknown``; a venue-held stop for the symbol -> ``armed``; a
+    recorded DB stop -> ``db-only``; ``unprotected`` only with NO recorded stop --
+    unreachable today (both stop columns are NOT NULL) but kept as the wire
+    contract's honest floor."""
+    if snapshot is None:
+        return "unknown"
+    if ticker in armed:
+        return "armed"
+    return "db-only" if stop is not None else "unprotected"
+
+
+def _real_position_row(t: Trade, price: float | None, *,
+                       snapshot: Snapshot | None,
+                       armed: frozenset[str]) -> dict[str, object]:
+    """One REAL (manual) open-trade row. The per-row guard: ``position_pl`` raises
+    ``ValueError`` on non-positive risk and a zero price would ZeroDivision the
+    distance math -- either degrades THIS row to ``pl: null`` + ``badge:
+    "unknown"`` and the row is KEPT (one malformed trade never 503s the zone).
+    ``last_close`` stays whatever the quote said: the close form prefills from it
+    even when the P/L math is broken."""
+    pl: dict[str, object] | None = None
+    badge = "unknown"
+    if price is not None:
+        try:
+            pl = _pl_dict(position_pl(entry=t.entry_price, stop=t.stop,
+                                      target=t.target, size=t.size,
+                                      current_price=price))
+            badge = _badge(price, stop=t.stop, target=t.target)
+        except (ValueError, ZeroDivisionError):
+            pl = None  # badge stays "unknown": the row's geometry is untrustable
+    return {
+        "kind": "real",
+        "trade_id": t.id,
+        "ticker": t.ticker,
+        "timeframe": t.timeframe,
+        "entry_price": t.entry_price,
+        "size": t.size,
+        "stop": t.stop,
+        "target": t.target,
+        "last_close": price,
+        "pl": pl,
+        "badge": badge,
+        "bracket": _bracket(t.ticker, t.stop, snapshot=snapshot, armed=armed),
+        "override": t.override,
+        "signal_id": t.signal_id,
+        "unlinked": t.signal_id is None,
+    }
+
+
+def _live_shares(session: Session, ticker: str) -> int | None:
+    """The NEWEST live ticket's share count for ``ticker``, or None -- the spec'd
+    join for a live row's missing size column. Only ``submitted_live`` /
+    ``filled_live`` rows count (the statuses that created venue exposure --
+    canceled/rejected tickets never did); newest-by-id mirrors
+    ``repo.latest_recorded_stop``'s ordering convention."""
+    stmt = (
+        select(ExecutionLog.shares)
+        .where(
+            ExecutionLog.ticker == ticker,
+            ExecutionLog.status.in_(("submitted_live", "filled_live")),
+        )
+        .order_by(ExecutionLog.id.desc())
+        .limit(1)
+    )
+    return session.scalars(stmt).first()
+
+
+def _live_position_row(p: PaperTrade, price: float | None, shares: int | None, *,
+                       snapshot: Snapshot | None,
+                       armed: frozenset[str]) -> dict[str, object]:
+    """One LIVE (broker-owned) open-position row. ``size`` is the ExecutionLog
+    join's shares (``_live_shares``) or null; without it the dollar P/L is null
+    while the R-multiple still renders from the persisted per-share ``risk`` and
+    the size-independent percent fields stay honest. A pending entry
+    (``entry_price`` null) carries ``pl: null``; the badge still reads off the
+    quote (stop/target are always recorded). Each denominator is guarded per
+    FIELD (risk/entry/price non-positive -> that field null) -- same never-503
+    posture as the real rows. Live rows have no ``override`` column: null, with
+    ``unlinked`` still keyed off ``signal_id`` (a reconciler-materialized fill
+    carries none)."""
+    pl: dict[str, object] | None = None
+    badge = "unknown"
+    if price is not None:
+        badge = _badge(price, stop=p.stop, target=p.target)
+        if p.entry_price is not None:
+            entry = p.entry_price
+            pl = {
+                "unrealized_pl": ((price - entry) * shares
+                                  if shares is not None else None),
+                "unrealized_pct": (price - entry) / entry if entry > 0 else None,
+                "r_multiple": (price - entry) / p.risk if p.risk > 0 else None,
+                "dist_to_stop_pct": (price - p.stop) / price if price > 0 else None,
+                "dist_to_target_pct": ((p.target - price) / price
+                                       if price > 0 else None),
+            }
+    return {
+        "kind": "live",
+        "paper_id": p.id,
+        "ticker": p.ticker,
+        "timeframe": p.timeframe,
+        "entry_price": p.entry_price,
+        "size": float(shares) if shares is not None else None,
+        "stop": p.stop,
+        "target": p.target,
+        "last_close": price,
+        "pl": pl,
+        "badge": badge,
+        "bracket": _bracket(p.ticker, p.stop, snapshot=snapshot, armed=armed),
+        "override": None,
+        "signal_id": p.signal_id,
+        "unlinked": p.signal_id is None,
+    }
+
+
+def _realized_usd(t: Trade) -> float:
+    """The retired Streamlit ``_render_closed`` realized math, verbatim: an
+    exit-less close falls back to the entry price (realized 0.0), never a guess."""
+    exit_price = t.exit_price if t.exit_price is not None else t.entry_price
+    return (exit_price - t.entry_price) * t.size
