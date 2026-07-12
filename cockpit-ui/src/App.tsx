@@ -20,6 +20,7 @@ import { CandidatesScreen } from './screens/CandidatesScreen'
 import { ForwardScreen } from './screens/ForwardScreen'
 import { MissionControlScreen } from './screens/MissionControlScreen'
 import { PlaceholderScreen } from './screens/PlaceholderScreen'
+import { PlaybooksScreen } from './screens/PlaybooksScreen'
 import { PositionsScreen } from './screens/PositionsScreen'
 import { SafetyScreen } from './screens/SafetyScreen'
 import { SystemsScreen } from './screens/SystemsScreen'
@@ -170,6 +171,8 @@ export default function App() {
             />
           ) : screen === 'positions' ? (
             <PositionsScreen wake={wake} />
+          ) : screen === 'playbooks' ? (
+            <PlaybooksScreen wake={wake} />
           ) : screen === 'forward' ? (
             <ForwardScreen fb={fb} facet={facet} />
           ) : screen === 'safety' ? (

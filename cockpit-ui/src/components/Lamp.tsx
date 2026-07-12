@@ -10,7 +10,7 @@
    replay_screened amber / hunch gray) composes this too — extend LampColor +
    add the matching .plamp-* class rather than re-implementing the pattern. */
 
-export type LampColor = 'green' | 'yellow' | 'red' | 'unknown'
+export type LampColor = 'green' | 'yellow' | 'red' | 'gray' | 'unknown'
 
 export function Lamp({ color, title }: { color: LampColor; title: string }) {
   return (
