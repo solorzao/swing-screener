@@ -1,4 +1,4 @@
-# The Trading Suite — Architecture & Module Contract
+# Meridian — Architecture & Module Contract
 
 **Status:** adopted 2026-07-11. This document declares the direction; the filesystem follows
 incrementally (see "Extraction policy"). The repo/package keeps the `swing_screener` name
@@ -14,15 +14,26 @@ and validate trading edges with honest statistics — in the system's behavior A
 of every trade, the P&L record, and the journal that feeds insight analysis are permanent
 core infrastructure.
 
+**Governance hierarchy.** [NORTH_STAR.md](NORTH_STAR.md) is the suite constitution — its
+principles bind every module and every platform layer. Each module has a **charter**
+(`docs/modules/<module>.md`) that rules its own scope — instruments, horizon, universe,
+module non-goals — and may never contradict a North Star principle. This document is the
+engineering companion: the structure of what is shared and the contract between modules and
+platform. Scope restrictions are charter-level, not suite law (the swing module's "not
+day-trading" does not bind the GEX lab, and vice versa).
+
+**Taxonomy.** Suite (Meridian) → **module** (a strategy package: one charter, one frozen
+config, its own tables/books/edge files, a cockpit presence) → **strategy** (a play type
+within a module — the swing module carries `continuation` and `reversal`; the GEX lab
+carries `gex`). Statistics and playbooks live at strategy level; scope and firewalls at
+module level; principles and platform at suite level.
+
 Current modules:
 
 | # | Module | Charter | Horizon | Book(s) |
 |---|--------|---------|---------|---------|
-| 1 | Swing screener (HA continuation + reversal) | [NORTH_STAR.md](NORTH_STAR.md) | days–weeks | `research` / `live` |
-| 2 | GEX options lab | [OPTIONS_LAB.md](OPTIONS_LAB.md) | intraday | `options-lab` / `robinhood` |
-
-Module charters are sovereign within their scope: module 1's "not day-trading" non-goal
-does not bind module 2, and vice versa. This document governs only what is *shared*.
+| 1 | Swing screener (HA continuation + reversal) | [modules/swing-screener.md](modules/swing-screener.md) | days–weeks | `research` / `paper` / `live` (+ `manual` tickets) |
+| 2 | GEX options lab | [modules/gex-lab.md](modules/gex-lab.md) | intraday | `options-lab` / `robinhood` |
 
 ## Platform layers (what every module gets)
 
@@ -35,7 +46,7 @@ does not bind module 2, and vice versa. This document governs only what is *shar
    Book/account fencing (`account`, `strategy` columns) keeps every aggregate module-pure.
 3. **Evidence & learning** — the honesty machinery: unit-agnostic R-multiple stats core with
    clustered bootstrap CIs (`analytics/performance.py`), pre-registered experiment registry +
-   settlement state machine, reflection/verdict grader, per-module `edge/<module>.md`
+   settlement state machine, reflection/verdict grader, per-strategy `edge/<strategy>.md`
    playbooks. Each module declares its own **cluster key** (swing: ticker; GEX lab: session)
    and its own reflection family. Numbers cross module boundaries only as clearly-labeled
    comparisons, never pooled.
@@ -63,13 +74,14 @@ does not bind module 2, and vice versa. This document governs only what is *shar
 
 A new module ships, at minimum:
 
-1. **A charter** — `docs/<MODULE>.md`: purpose, scope, principles, non-goals. Its learning
-   prompts reason from its own charter.
+1. **A charter** — `docs/modules/<module>.md`: purpose, scope, module non-goals. Its learning
+   prompts reason from the suite North Star plus its own charter.
 2. **A frozen config dataclass** in its own package — never new fields on another module's
    config (optimizer/variant sweeps are scoped per config).
 3. **Its own tables** on the shared Base + Alembic chain, with `account`/book fencing and
    lifecycle granularity matching its horizon (Date for daily books, DateTime intraday).
-4. **An edge file** (`edge/<module>.md`) and a declared cluster key for all of its statistics.
+4. **Edge file(s)** — one `edge/<strategy>.md` per strategy the module carries — and a
+   declared cluster key for all of its statistics.
 5. **A cockpit presence** — router factory + registered view — and/or a CLI
    (`python -m swing_screener.<module>.run`).
 6. **Test discipline** — pure engines, no-network seams, tests mirroring the package.
@@ -91,6 +103,10 @@ proven need, not aesthetics:
 
 ## Naming
 
-Until a rename earns its cost: the repo and Python package stay `swing-screener` /
-`swing_screener`; docs and the cockpit masthead may say "trading suite". The dissonance is
-acknowledged and accepted — identity lives in the charters, not the import path.
+The suite is named **Meridian** (2026-07-11, reviving the owner's prior journal project whose
+concepts this suite absorbs). Until a rename earns its cost: the repo and Python package stay
+`swing-screener` / `swing_screener`; docs say Meridian, and the cockpit adopts the wordmark
+when the module nav lands (GEX lab Phase 1, Task 18). The dissonance is acknowledged and
+accepted — identity lives in the North Star and charters, not the import path. If/when the
+physical rename happens (post-platform-namespaces, third module), `meridian` is the obvious
+target.

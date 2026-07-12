@@ -16,7 +16,7 @@
 - UI: `npm run lint` / `npm run build` inside `cockpit-ui/` (Node 20). The Vite build lands in `src/swing_screener/cockpit/static/` and **must be committed** — CI has a byte-drift check.
 
 **Coordination hazards (read before starting):**
-1. An unexecuted cockpit Phase-3 plan exists (`docs/plans/2026-07-11-desktop-ui-phase3.md`) that restructures `App.tsx` into screens. This plan touches `App.tsx` too (view switcher). Whichever executes second rebases; keep this plan's `App.tsx` diff minimal (Task 16).
+1. An unexecuted cockpit Phase-3 plan exists **on its own unmerged branch** (`docs/plans/2026-07-11-desktop-ui-phase3.md`, commit 85eab95 — NOT in this worktree or on main) that restructures `App.tsx` into screens. This plan touches `App.tsx` too (view switcher + wordmark). Whichever executes second rebases; keep this plan's `App.tsx` diff minimal (Task 18).
 2. Alembic head was `d7e4b2f9a1c6` when this plan was written. At execution time run `$PY -m alembic heads` (from worktree root) and use the *current* single head as `down_revision`.
 3. **Never commit `C:/Users/Oliver/OneDrive/Desktop/robinhood_report.csv`** — it contains account-transfer history. The test fixture is an anonymized reconstruction (Task 10).
 
@@ -32,17 +32,16 @@
 
 ---
 
-## Task 1: Lab charter
+## Task 1: Lab charter — ALREADY DONE (verify only)
 
-**Files:**
-- Create: `docs/OPTIONS_LAB.md`
-- Modify: `docs/NORTH_STAR.md` (one line only)
+**Superseded by the 2026-07-11 Meridian governance pass**, which landed on this branch before
+execution started: `docs/NORTH_STAR.md` is now the suite constitution, the swing module
+charter is `docs/modules/swing-screener.md`, and the lab charter exists at
+`docs/modules/gex-lab.md` (the `docs/OPTIONS_LAB.md` path in the design doc is superseded).
 
-**Step 1:** Write `docs/OPTIONS_LAB.md` — the lab's own charter, ~60 lines, mirroring NORTH_STAR.md's tone. Required content: Purpose (learn and validate the GEX day-trading method with paper trades and imported real trades; produce evidence, not adrenaline); Scope (SPY/QQQ watchlist + any-ticker ad-hoc analysis; single-leg long calls/puts; day-trade horizon); Principles inherited verbatim from the North Star (evidence gates promotion; honest uncertainty — session-clustered CIs; deterministic levels are ground truth; human gate — no automation of order flow; small, interpretable, reversible); Lab-specific rules (primary metric = R-multiples on the underlying; the `robinhood` book is premium-denominated and never pools with paper stats; checklist grade is recorded before outcome is known); Non-goals (real-money execution, multi-leg strategies, intraday GEX drift, non-index prediction claims). Reference the strategy source guide and the design doc.
+**Files:** none to create.
 
-**Step 2:** In `docs/NORTH_STAR.md`, find the non-goals section (contains "Not day-trading — swing horizons only") and append one line immediately after that bullet: `  - (The GEX options lab is governed by its own charter, [OPTIONS_LAB.md](OPTIONS_LAB.md) — this document does not apply to it, nor it to this document. Suite-level structure: [ARCHITECTURE.md](ARCHITECTURE.md).)` Do not change anything else. `docs/OPTIONS_LAB.md` should likewise link to `docs/ARCHITECTURE.md` (the module contract it satisfies).
-
-**Step 3:** Commit: `git add docs/OPTIONS_LAB.md docs/NORTH_STAR.md && git commit -m "docs: OPTIONS_LAB charter; cross-reference from North Star"`
+**Step 1 (verify only):** Confirm `docs/modules/gex-lab.md` and `docs/modules/swing-screener.md` exist, `docs/NORTH_STAR.md`'s Modules table links both, and `docs/ARCHITECTURE.md`'s charter table points at `docs/modules/*`. If all true (expected), proceed straight to Task 2 — no edits, no commit.
 
 ---
 
@@ -128,7 +127,7 @@ def test_broker_fill_import_hash_unique() -> None:
 class GexSnapshot(Base):
     """One computed GEX map per (underlying, snapshot time). Options-lab table:
     lifecycle columns are DateTime, not Date -- the lab trades inside the session
-    (see docs/OPTIONS_LAB.md; equity tables stay day-keyed)."""
+    (see docs/modules/gex-lab.md; equity tables stay day-keyed)."""
 
     __tablename__ = "gex_snapshots"
 
@@ -397,7 +396,7 @@ Convention (the standard public-dashboard model): dealers are long gamma on
 customer-sold calls and short gamma on customer-bought puts, so per-strike
 dollar GEX = gamma * OI * 100 * spot^2 * 0.01 with calls positive and puts
 negative. This ignores actual dealer positioning -- documented assumption,
-see docs/OPTIONS_LAB.md. Levels are for structure, not prophecy.
+see docs/modules/gex-lab.md. Levels are for structure, not prophecy.
 """
 
 import math
@@ -807,6 +806,19 @@ def test_duplicate_lines_get_distinct_hashes() -> None:
     assert dupes[0].import_hash != dupes[1].import_hash
 
 
+def test_hashes_stable_when_newer_rows_are_prepended() -> None:
+    # A later re-export prepends newer activity; existing rows must keep their
+    # hashes or overlapping re-imports duplicate every fill.
+    text = FIXTURE.read_text(encoding="utf-8")
+    header, rest = text.split("\n", 1)
+    new_row = '"7/11/2026","7/11/2026","7/14/2026","AAA","AAA 7/17/2026 Call $13.00","STC","5","$0.09","$44.80"'
+    reexport = f"{header}\n{new_row}\n{rest}"
+    old = {f.import_hash for f in parse_activity_csv(text)}
+    new = {f.import_hash for f in parse_activity_csv(reexport)}
+    assert old <= new
+    assert len(new - old) == 1
+
+
 def test_unrecognized_header_fails_loudly() -> None:
     import pytest
     with pytest.raises(ValueError, match="unrecognized"):
@@ -822,7 +834,7 @@ def test_unrecognized_header_fails_loudly() -> None:
 - `_money(s) -> float | None`: empty → None; strip `$`, `,`; `(x)` → `-x`.
 - `_qty(s) -> int`: strip a trailing `S`, int().
 - OCC symbol: `f"{u:<6}{exp:%y%m%d}{right}{int(round(strike * 1000)):08d}"` (right is "C"/"P").
-- `import_hash = hashlib.sha256("|".join([...all 9 raw fields..., str(line_number)]).encode()).hexdigest()` — **include the CSV line number** so byte-identical duplicate fills (real: two 15-lot STCs) stay distinct, while re-importing the same file reproduces identical hashes. Document: re-exporting a LONGER date range shifts line numbers, so dedup also needs the fields themselves — hash = fields + position *within the day's identical-row group* is overkill; fields + line number is accepted Phase-1 behavior and re-imports of overlapping exports may re-add rows whose line numbers moved. Mitigation: `store_fills` (Task 11) also dedups on exact-field-match count per day. Keep it simple; note the limitation in the module docstring.
+- `import_hash = hashlib.sha256("|".join([...all 9 raw fields..., str(ordinal)]).encode()).hexdigest()` where **`ordinal` is the 0-based occurrence index of this exact row content within the file** (count prior byte-identical rows during the parse walk). This makes byte-identical duplicate fills (real: two 15-lot STCs) distinct (ordinals 0 and 1) while staying **stable across re-exports** — a longer/overlapping export shifts line numbers but not per-content ordinals, so `store_fills`' unique-hash dedup (Task 11) works on overlapping re-imports, and a re-export containing a genuinely NEW identical fill gets a new ordinal and inserts correctly. Do NOT use the line number — it breaks dedup the moment Robinhood prepends newer rows.
 
 **Step 5:** PASS, lint, commit: `feat(gex-lab): Robinhood activity-CSV parser pinned to the real export format`
 
@@ -935,7 +947,7 @@ def test_commit_episodes_respects_tags_and_is_idempotent() -> None:
         assert commit_episodes(s, episodes, tags) == 0
 ```
 
-**Step 2:** FAIL. **Step 3: Implement** `commit_episodes(session, episodes, tags: dict[str, str]) -> int`: for each episode whose `import_key` maps to "gex" or "other": build `OptionPaperTrade(account="robinhood", strategy=tag, underlying=..., direction="long" if not needs_review else "long", occ_symbol=..., strike, expiry, right, contracts, entry_premium, exit_premium, premium_pnl=e.pnl, opened_at=datetime combine(opened_on, 00:00), closed_at=combine(closed_on) if closed, status=e.status ("open" stays open), exit_reason=e.exit_reason, import_key=e.import_key, needs_review=e.needs_review)`. Insert with the IntegrityError-idempotency pattern keyed on the unique `import_key`; count only fresh inserts. Tags with value "skip" or missing → not committed.
+**Step 2:** FAIL. **Step 3: Implement** `commit_episodes(session, episodes, tags: dict[str, str]) -> int`: for each episode whose `import_key` maps to "gex" or "other": build `OptionPaperTrade(account="robinhood", strategy=tag, underlying=..., direction="long" (unconditionally — for `needs_review` STO-origin episodes the direction is provisional pending human review; Phase 1 records long and lets the flag carry the doubt), occ_symbol=..., strike, expiry, right, contracts, entry_premium, exit_premium, premium_pnl=e.pnl, opened_at=datetime combine(opened_on, 00:00), closed_at=combine(closed_on) if closed, status=e.status ("open" stays open), exit_reason=e.exit_reason, import_key=e.import_key, needs_review=e.needs_review)`. Insert with the IntegrityError-idempotency pattern keyed on the unique `import_key`; count only fresh inserts. Tags with value "skip" or missing → not committed.
 
 **Step 4:** PASS, lint, commit: `feat(gex-lab): tagged episode commit into the robinhood book`
 
@@ -1162,16 +1174,39 @@ def test_lab_summary_clusters_by_session() -> None:
 
 
 def test_robinhood_book_is_never_pooled() -> None:
+    # Imported episodes carry premium_pnl, NOT realized_r (commit_episodes never
+    # sets it) — seed them the way the importer actually writes them.
     engine = get_engine("sqlite:///:memory:")
     with Session(engine) as s:
-        s.add(_closed(0, 5.0, account="robinhood", import_key="k1"))
+        s.add(_closed(0, None, account="robinhood", import_key="k1",
+                      realized_r=None, premium_pnl=250.0))
         s.add(_closed(1, 1.0))
         s.commit()
         stat = lab_summary(s, account="options-lab")
     assert stat["n"] == 1
+
+
+def test_robinhood_summary_reads_premium_pnl_as_plain_values() -> None:
+    from swing_screener.options.stats import robinhood_summary
+
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add(_closed(0, None, account="robinhood", strategy="gex", import_key="k1",
+                      realized_r=None, premium_pnl=250.0))
+        s.add(_closed(1, None, account="robinhood", strategy="other", import_key="k2",
+                      realized_r=None, premium_pnl=-80.0))
+        s.commit()
+        summary = robinhood_summary(s)
+    assert summary["gex"] == {"n": 1, "total_pnl": 250.0, "wins": 1, "losses": 0, "open": 0}
+    assert summary["other"]["total_pnl"] == -80.0
+    # Plain labeled values by design — no CI keys; the premium book is a display,
+    # not pooled inference (docs/modules/gex-lab.md).
+    assert "ci_low" not in summary["gex"]
 ```
 
 **Step 2:** FAIL. **Step 3: Implement** `lab_summary(session, *, account: str, strategy: str = "gex") -> dict`: select closed trades with non-null `realized_r` for that account+strategy; build `{opened_at.date(): [r, ...]}` cluster mapping; feed the performance.py clustered-CI primitive; wrap in a `Stat`-shaped dict (`cost_level="0.00"` — no cost model in the lab yet, `corpus_id="gex-lab-v1"`, `facet="gex-lab"`, `unit="R"`; `thin_clusters` per the primitive's threshold — pass through whatever it reports, or `n_clusters < 8` if the primitive doesn't). Add `by_grade(session, *, account) -> list[dict]` grouping joined setups by `grade` (join `OptionSetup` via `setup_id`), one Stat-shaped dict per grade bucket — same clustering. Exact reuse mechanics depend on performance.py's actual API — read it and adapt; the test contract above is what matters.
+
+Also add `robinhood_summary(session) -> dict[str, dict]` — the **premium-denominated** book: per `strategy` tag ("gex"/"other"), plain labeled aggregates over `account='robinhood'` rows using `premium_pnl` (which is what `commit_episodes` writes; imported rows have NO `realized_r`): `{n, total_pnl, wins, losses, open}` (wins/losses by `premium_pnl` sign over closed rows; `open` = count of status "open"). **Deliberately NOT Stat dicts** — the charter (docs/modules/gex-lab.md) calls this book "a labeled display, not pooled inference", so no CI machinery and no `unit="R"` anywhere near it.
 
 **Step 4:** PASS, lint, commit: `feat(gex-lab): session-clustered lab stats`
 
@@ -1261,7 +1296,7 @@ def test_run_plan_persists_snapshots_and_returns_plans() -> None:
 | POST | `/api/gex/setups/{id}/status` | `{"status": "taken"\|"skipped"}` | updated setup |
 | POST | `/api/gex/import/parse` | `{"csv_text": "..."}` | `{episodes: [...], fills_added, fills_skipped}` — stores fills, commits NO episodes |
 | POST | `/api/gex/import/commit` | `{"tags": {import_key: "gex"\|"other"\|"skip"}}` | `{committed: n}` — re-pairs episodes from stored fills, commits tagged |
-| GET | `/api/gex/stats` | — | `{overall: Stat, by_grade: [...], robinhood: {gex: Stat, other: Stat}}` |
+| GET | `/api/gex/stats` | — | `{overall: Stat, by_grade: [...], robinhood: {gex: {n, total_pnl, wins, losses, open}, other: {...}}}` — the robinhood section is `robinhood_summary()`'s plain labeled values (premium book: display, not inference), NOT Stat dicts |
 
 Note `import/parse` takes JSON `csv_text`, not multipart — the file is small, the UI reads it client-side with `FileReader`, and it avoids adding python-multipart as a dependency. `import/commit` re-derives episodes from `BrokerFill` rows (`select` all fills → `FillRecord`s → `pair_episodes`) so parse/commit can happen in different processes.
 
@@ -1293,7 +1328,7 @@ No UI test framework exists — the gates are `npm run lint`, `npm run build`, a
 1. **DAY PLAN** — table of plans (underlying, spot, call wall, put wall, flip, regime badge, bias, call); "thin chain — levels unreliable" warning line when `thin_chain`; "Build today's plan" button → `postGexBuild()` then bump a local refresh key; an "Analyze ticker" text input + button → `postGexBuild(ticker)`.
 2. **CHECKLIST GRADER** — controlled form: underlying, direction (long/put toggle), entry/stop/target/pivot numeric inputs, pattern + notes text, 12 checkboxes grouped under the four block headings (labels from a local const mirroring `CHECKLIST_ITEMS`), live computed grade preview (A+/B/no_trade — same rule, duplicated client-side for instant feedback), submit → `postGexSetup`.
 3. **JOURNAL** — today's setups list: time, underlying, grade chip, status; buttons taken/skipped on `idea` rows; settled outcome (exit reason + R) when the linked trade is closed.
-4. **LAB STATS** — `StatChip` rows (reuse the existing `StatChip` component) for overall + by-grade + the robinhood gex/other comparison.
+4. **LAB STATS** — `StatChip` rows (reuse the existing `StatChip` component) for overall + by-grade; the robinhood gex/other comparison renders as plain labeled rows ($-P&L, W/L, n — no StatChip, it's not a Stat).
 5. **IMPORT** — `<input type="file">` → `FileReader.readAsText` → `postGexImportParse` → review grid (one row per episode: occ symbol, span, contracts, P&L, open/closed, needs-review badge; a three-way select gex/other/skip per row, default "skip") → "Commit tagged" button → `postGexImportCommit` → result line.
 
 Local component state only (form fields, parse results); no new libraries; hand-rolled table markup in the existing panel CSS vocabulary.
@@ -1310,6 +1345,8 @@ type ModuleKey = (typeof MODULES)[number]['key']
 
 `const [view, setView] = useState<ModuleKey>('swing')`; the nav renders `MODULES.map(...)` as segmented buttons (existing `.mh-seg`/`.seg-on` classes) so module #3 is a one-entry addition; when `view === 'gex'` render `<GexLab wake={wake} />` INSTEAD of the swing grid (masthead stays). Keep the diff otherwise small — the unexecuted Phase-3 plan will restructure this file.
 
+Also the **Meridian wordmark** (ARCHITECTURE's naming policy says the cockpit adopts the suite name when the module nav lands — this is that moment): in `cockpit-ui/src/components/Masthead.tsx` change the wordmark `<b>SWING SCREENER</b> · COCKPIT` → `<b>MERIDIAN</b> · COCKPIT`; in `cockpit-ui/index.html` retitle to `Meridian — Cockpit` (file is eol=lf-pinned — don't let the editor flip it); in `src/swing_screener/cockpit/__main__.py` change `WINDOW_TITLE` to `"Meridian"`. Three string edits, no logic.
+
 **Step 5:** `npm run lint && npm run build`; verify `git status` shows only expected static changes; **manual verify** — from the worktree: `$PY -m swing_screener.cockpit --browser --port 8901` against a scratch DB seeded by the Task-17 test helpers (or point `SWING_DB_URL` at a tmp sqlite), click through: view toggle, build plan (will fail politely without network — the PanelBody error line is the acceptance), grade + submit a setup, import the FIXTURE csv, tag, commit. Screenshot for the PR.
 
 **Step 6:** Commit (source + static together): `feat(gex-lab): GEX Lab cockpit view — day plan, grader, journal, stats, import review`
@@ -1322,7 +1359,7 @@ type ModuleKey = (typeof MODULES)[number]['key']
 - Create: `edge/gex.md`
 - Modify: `README.md`
 
-**Step 1:** `edge/gex.md` — follow the existing `edge/<play_type>.md` shape (read `edge/continuation.md` for the section skeleton): thesis ("GEX pivots + EMA alignment + A+ discipline produce positive expectancy on SPY/QQQ day trades — unproven, n=0"), status "accruing — no verdicts until the reflection family is registered (Phase 1.5)", links to the charter and design doc. No verdicts.json yet — the deterministic grader integration is explicitly deferred.
+**Step 1:** `edge/gex.md` **already exists** (stubbed in the 2026-07-11 governance pass so the charter's link resolves): thesis with n=0, status "accruing — no verdicts until the reflection family is registered (Phase 1.5)", links to charter + design doc. Verify it still matches what was built; extend only if the build changed an assumption. No verdicts.json yet — the deterministic grader integration is explicitly deferred.
 
 **Step 2:** README — add a short "GEX options lab" subsection under the system map: the four CLI commands, the cockpit tab, the charter link, and the phrase "paper + imported trades only; no execution path exists."
 
@@ -1340,7 +1377,10 @@ type ModuleKey = (typeof MODULES)[number]['key']
 ## Explicitly deferred (do NOT build in Phase 1)
 
 - Reflection-family registration / verdicts for the lab (needs ~20 closed trades first).
-- `run.py validate` beyond printing levels (the dashboard cross-check is a human ritual).
+- A `validate` subcommand — folded into `analyze` (which prints the levels); the dashboard
+  cross-check stays a human ritual, not code.
 - Azure job, heartbeats, email — the lab is local-only by design.
 - Intraday polling, TTL bar cache, live alerts, premium tracking for paper trades (Phase 2).
 - Setup↔imported-trade linking UI (design has it; ship the journal first — linking lands with Phase 1.5 when there are trades to link).
+- Lab Stats by-regime and per-checklist-item breakdowns, and planned-vs-realized on linked trades (Phase 1.5, alongside the reflection family).
+- Journal panel extras from the design: manual close with notes, tag re-editing, and the imported-episode `needs review` queue (Phase 1.5).
