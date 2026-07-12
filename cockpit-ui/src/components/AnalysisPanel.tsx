@@ -130,7 +130,7 @@ function RequestRow({ row }: { row: AnalysisRequestRow }) {
         <StatusChip row={row} />
         <span className="spacer" />
         <span className="an-times mono">
-          req {fmtClock(row.requested_at ?? '')}
+          req {row.requested_at === null ? '—' : fmtClock(row.requested_at)}
           {row.started_at !== null && ` · started ${fmtClock(row.started_at)}`}
           {row.finished_at !== null && ` · done ${fmtClock(row.finished_at)}`}
         </span>

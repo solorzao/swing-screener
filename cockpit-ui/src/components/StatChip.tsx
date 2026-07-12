@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useId, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { Stat } from '../lib/api'
 import { costGlyph, fmtStatValue } from '../lib/fmt'
@@ -30,26 +30,38 @@ function clamp01(x: number): number {
 
 export function StatChip({ stat, label }: { stat: Stat; label?: string }) {
   const [open, setOpen] = useState(false)
+  const wrapRef = useRef<HTMLSpanElement>(null)
+  const popId = useId()
   const labelEl =
     label !== undefined ? <span className="statchip-label">{label}</span> : null
 
-  // The provenance affordance wraps whichever face renders below — a positioned
-  // container so the popover anchors to the chip; the button carries the click +
-  // keyboard open. A closed chip is visually identical to before.
+  // The provenance affordance wraps whichever face renders below. The wrap is
+  // the popover's fixed-position anchor AND its outside-click "inside" region
+  // (button + a portaled popover positioned off it), so a click on the button
+  // toggles it closed rather than reading as an outside dismissal. The popover
+  // is role="tooltip" (a read-only disclosure, not a modal), so the trigger
+  // advertises it via aria-describedby, never aria-haspopup. A closed chip is
+  // visually identical to before.
   const wrap = (face: ReactNode) => (
-    <span className="statchip-wrap">
+    <span className="statchip-wrap" ref={wrapRef}>
       <button
         type="button"
         className="statchip-btn"
-        aria-haspopup="dialog"
         aria-expanded={open}
+        aria-describedby={open ? popId : undefined}
         title="show this number's provenance"
         onClick={() => setOpen((v) => !v)}
       >
         {face}
       </button>
       {open && (
-        <ProvenancePopover stat={stat} label={label} onClose={() => setOpen(false)} />
+        <ProvenancePopover
+          stat={stat}
+          label={label}
+          id={popId}
+          triggerRef={wrapRef}
+          onClose={() => setOpen(false)}
+        />
       )}
     </span>
   )

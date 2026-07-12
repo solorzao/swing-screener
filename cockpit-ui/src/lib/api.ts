@@ -412,9 +412,11 @@ export interface AnalysisRequestRow {
 
 export interface AnalysisList {
   requests: AnalysisRequestRow[]
-  // Who drains the queue: "cloud (*/15min)" for an Azure DB, else "manual" —
-  // manual means requests wait for `python -m swing_screener.notify.ondemand`.
-  worker: string
+  // Who drains the queue — the exact two strings `_worker_label` returns: the
+  // cloud value (an Azure DB, drained every 15 min) or 'manual' (requests wait
+  // for a manual `python -m swing_screener.notify.ondemand` run). A real union,
+  // not a magic literal, so the AnalysisPanel branch is type-checked.
+  worker: 'manual' | 'cloud (*/15min)'
 }
 
 /* ---------- Phase 3 wire shapes (routers/proposals.py) ---------- */
