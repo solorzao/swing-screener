@@ -8,6 +8,12 @@
 
 import { useEffect, useRef, useState } from 'react'
 
+/* Poll budget: forward-books + performance each cost ~1s server-side, so 60s is
+   the floor for EVERY poll; the SSE wake (useEventWake) makes changes feel
+   instant without touching that budget. Screens import this — one budget, one
+   spelling. */
+export const POLL_MS = 60_000
+
 /** A statistic with full provenance — the wire form of cockpit/stats.py `Stat`. */
 export interface Stat {
   value: number
@@ -783,19 +789,71 @@ export interface Attention {
   latest_analysis_id: number | null
 }
 
+/** One 422 field error, flattened from FastAPI's Pydantic detail row: `loc` is
+ * the dotted field path with the leading 'body' segment dropped ("stop",
+ * "signal_id"), `msg` the validator's own message. */
+export interface FieldError {
+  loc: string
+  msg: string
+}
+
+/** Every non-2xx response throws this. `message` is ALWAYS human-renderable —
+ * the backend's one safe {detail} string (503 "database unreachable (...)",
+ * 409 conflicts), or the joined field messages on a Pydantic 422 — so naive
+ * `err.message` renderers (PanelBody's error line, usePolling) keep working
+ * unchanged. `fieldErrors` carries the per-field rows only when the body had
+ * the Pydantic LIST shape, for forms that want to mark individual inputs;
+ * `status` lets an action surface branch (409 vs 422 vs 503) without string
+ * matching. Additive over Error — instanceof Error still holds. */
+export class ApiError extends Error {
+  readonly status: number
+  readonly fieldErrors: FieldError[] | null
+
+  constructor(message: string, status: number, fieldErrors: FieldError[] | null = null) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.fieldErrors = fieldErrors
+  }
+}
+
+/** One Pydantic detail row → FieldError, defensively: rows are backend-shaped
+ * ({loc: (string|number)[], msg, type}) but this never trusts that. */
+function toFieldError(row: unknown): FieldError {
+  const r = (typeof row === 'object' && row !== null ? row : {}) as {
+    loc?: unknown
+    msg?: unknown
+  }
+  const loc = Array.isArray(r.loc)
+    ? r.loc.filter((part) => part !== 'body').map(String).join('.')
+    : ''
+  return { loc, msg: typeof r.msg === 'string' ? r.msg : JSON.stringify(row) }
+}
+
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init)
   if (!res.ok) {
-    // The backend 503s with {"detail": "database unreachable (...)"} — surface
-    // that one safe line; anything else keeps the bare status.
+    // Backend errors come in TWO shapes, both under {"detail": ...}: the
+    // hand-raised endpoints put ONE safe string there, while Pydantic
+    // validation (422) puts a LIST of {loc, msg, type} rows — TradeCreate's
+    // field messages ride that shape and must reach the screen, not collapse
+    // into a bare "HTTP 422". Anything else keeps the bare status line.
     let message = `HTTP ${res.status}`
+    let fieldErrors: FieldError[] | null = null
     try {
       const body = (await res.json()) as { detail?: unknown }
-      if (typeof body.detail === 'string') message = body.detail
+      if (typeof body.detail === 'string') {
+        message = body.detail
+      } else if (Array.isArray(body.detail) && body.detail.length > 0) {
+        fieldErrors = body.detail.map(toFieldError)
+        message = fieldErrors
+          .map((fe) => (fe.loc === '' ? fe.msg : `${fe.loc}: ${fe.msg}`))
+          .join('; ')
+      }
     } catch {
       /* non-JSON error body — keep the status line */
     }
-    throw new Error(message)
+    throw new ApiError(message, res.status, fieldErrors)
   }
   return (await res.json()) as T
 }
@@ -984,13 +1042,23 @@ export interface Polled<T> {
  * instant fetch plus a fresh `ms` cadence from the wake moment. `ms` stays the
  * floor, so a dead wake source degrades to plain polling.
  *
- * A changed FETCHER does NOT trigger a refetch: new params captured in an
- * inline lambda update the ref, but no tick fires — a facet/window flip would
- * show the old params' data under the new label for up to `ms`. The sanctioned
- * idiom is to remount the consuming component via a React key (e.g.
- * key={`${facet}-${win}`}), which both forces an immediate fetch and honestly
- * drops the wrong-params data while it is in flight. */
-export function usePolling<T>(fetcher: () => Promise<T>, ms: number, wake = 0): Polled<T> {
+ * A changed FETCHER alone does NOT trigger a refetch: new params captured in
+ * an inline lambda update the ref, but no tick fires — a facet/window flip
+ * would show the old params' data under the new label for up to `ms`. The
+ * sanctioned idiom is `paramsKey`: pass a stable string/number derived from
+ * the fetcher's params (e.g. `${facet}|${win}`). On a paramsKey change the
+ * state resets to null FIRST — the honest drop: wrong-params data must never
+ * render under the new label while the fresh fetch is in flight — then an
+ * immediate tick fires with a fresh `ms` cadence. (This replaces the Phase-2
+ * key-remount idiom, which also wiped unrelated sibling state — form input,
+ * scroll — wherever the key sat above it.) A wake bump deliberately does NOT
+ * reset state: it is a refetch trigger, not a params change. */
+export function usePolling<T>(
+  fetcher: () => Promise<T>,
+  ms: number,
+  wake = 0,
+  paramsKey: string | number = '',
+): Polled<T> {
   const [state, setState] = useState<Polled<T>>({
     data: null,
     error: null,
@@ -999,8 +1067,15 @@ export function usePolling<T>(fetcher: () => Promise<T>, ms: number, wake = 0): 
 
   const fetcherRef = useRef(fetcher)
   fetcherRef.current = fetcher // always the latest; the effect reads through the ref
+  const lastParamsRef = useRef(paramsKey)
 
   useEffect(() => {
+    if (lastParamsRef.current !== paramsKey) {
+      lastParamsRef.current = paramsKey
+      // The honest drop (see the contract above). Only a PARAMS change blanks
+      // the panel — ms/wake re-runs keep the last good data on screen.
+      setState({ data: null, error: null, lastFetched: null })
+    }
     let alive = true
     let issued = 0 // ticks fired
     let applied = 0 // newest tick whose response has landed in state
@@ -1028,7 +1103,7 @@ export function usePolling<T>(fetcher: () => Promise<T>, ms: number, wake = 0): 
       alive = false
       clearInterval(id)
     }
-  }, [ms, wake])
+  }, [ms, wake, paramsKey])
 
   return state
 }

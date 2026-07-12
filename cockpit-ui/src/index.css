@@ -272,6 +272,25 @@ button.mh-ref:hover {
   border-color: var(--line);
 }
 
+/* The current-screen indicator (registry-rendered, e.g. "3 · POSITIONS &
+   LEDGER") — doubles as the mouse road home: click = Mission Control (key 1). */
+button.mh-screen {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  padding: 4px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  color: var(--txt);
+  background: var(--panel2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button.mh-screen:hover {
+  border-color: var(--line);
+}
+
 /* ---------- Needs-Your-Hand strip (under the masthead) ---------- */
 
 .needs-hand {
@@ -504,9 +523,11 @@ button.mh-ref:hover {
 
 /* ---------- Playbook integrity (Systems screen) ---------- */
 
-/* One row per play type: sidecar health, md health, drift, cadence. Theme via
-   these row-scoped classes, not bare element selectors (the .seg rule's
-   convention: ancestor compounds keep specificity honest). */
+/* One row per play type: sidecar health, md health, drift, cadence. Theming
+   discipline here is FLAT NAMESPACED classes (pbint-*) — the OTHER sanctioned
+   pattern beside .seg's ancestor compounds: a unique prefix can't collide with
+   anyone else's selector, so it needs no ancestor to win. Pick one per block —
+   a prefix or a compound — never a bare .row/.cell that ties at (0,1,0). */
 .pbint-row {
   display: flex;
   align-items: center;

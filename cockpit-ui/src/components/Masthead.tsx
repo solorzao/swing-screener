@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { postAzureLogin } from '../lib/api'
 import type { Facet, Gate, Health, Heartbeat } from '../lib/api'
+import { screenDef, screenNumber } from '../lib/screens'
+import type { ScreenId } from '../lib/screens'
 import { FacetToggle } from './FacetToggle'
 import { Segmented } from './Segmented'
 
@@ -33,7 +35,8 @@ export function Masthead({
   onFacet,
   cost,
   onCost,
-  onReference,
+  screen,
+  onNavigate,
 }: {
   health: Health | null
   beats: Heartbeat[] | null
@@ -44,9 +47,13 @@ export function Masthead({
   onFacet: (facet: Facet) => void
   cost: CostLevel
   onCost: (cost: CostLevel) => void
-  /** Screen 10 (Reference) has no digit key — this masthead link is its one door. */
-  onReference: () => void
+  /** The active screen — the indicator renders it from the registry. */
+  screen: ScreenId
+  /** Screen navigation: the REFERENCE link (screen 10 has no digit key — this
+   * is its one door) and the indicator's click-home both route here. */
+  onNavigate: (id: ScreenId) => void
 }) {
+  const def = screenDef(screen)
   const anyLit =
     beats !== null && beats.some((b) => b.state === 'late' || b.state === 'down')
   // No data at all counts as unknown — a dead poller is never allowed to look green.
@@ -87,6 +94,18 @@ export function Masthead({
       <span className="mh-wordmark">
         <b>SWING SCREENER</b> · COCKPIT
       </span>
+
+      {/* Where you are, registry-rendered ("3 · POSITIONS & LEDGER") — and the
+          mouse road home from digitless screens: clicking returns to Mission
+          Control, same as pressing 1. */}
+      <button
+        type="button"
+        className="mh-screen"
+        title={`current screen ${screenNumber(def)} · ${def.title} — click (or press 1) for Mission Control`}
+        onClick={() => onNavigate('mission')}
+      >
+        {screenNumber(def)} · {def.title}
+      </button>
 
       <span className={anyLit ? 'caution lit' : 'caution'}>MASTER CAUTION</span>
       {!anyLit && anyUnknown && <span className="unknown-tag">UNKNOWN</span>}
@@ -166,7 +185,7 @@ export function Masthead({
         type="button"
         className="mh-ref"
         title="Reference — screen 10 (universe, digest log, exit log)"
-        onClick={onReference}
+        onClick={() => onNavigate('reference')}
       >
         REFERENCE
       </button>
