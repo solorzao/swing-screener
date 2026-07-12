@@ -4704,9 +4704,400 @@ button.needs-hand-btn:hover {
 .jr-rec-chip {
   font-size: 9px;
   letter-spacing: 0.02em;
+/* ============================================================================
+   GEX LAB (digitless masthead screen) — the options lab. Reuses the shared
+   .panel / .panel-head / StatChip / Segmented / PanelBody chrome; everything
+   below is screen-local layout in the same token vocabulary as the ref-/pos-/
+   ltf- families above (no new visual language, no new colors).
+   ========================================================================== */
+
+/* --- tables (day plan snapshots, built plans, journal, import review) --- */
+.gex-table-wrap {
+  overflow-x: auto;
+  padding: 4px 12px 12px;
+}
+.gex-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 11.5px;
+}
+.gex-table th {
+  text-align: right;
+  font-weight: 400;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+  padding: 4px 12px 4px 0;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.gex-table th.left {
+  text-align: left;
+}
+.gex-table td {
+  padding: 5px 12px 5px 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+  color: var(--txt);
+}
+.gex-table th.gex-num,
+.gex-table td.gex-num {
+  text-align: right;
+  font-family: var(--mono);
+  color: var(--dim);
+  white-space: nowrap;
+}
+.gex-tkr {
+  color: var(--txt);
+  white-space: nowrap;
+}
+
+.gex-watchlist {
+  font-size: 10.5px;
+  color: var(--faint);
+  padding: 8px 12px 0;
+}
+
+/* --- thin-chain warning: LOUD amber, levels unreliable --- */
+.gex-thin {
+  margin-left: 6px;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: var(--amber);
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--line2));
+  background: color-mix(in srgb, var(--amber) 12%, transparent);
+  border-radius: 2px;
+  padding: 0 5px;
+  white-space: nowrap;
+}
+.gex-thin-reasons {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 11px;
+  color: var(--amber);
+}
+
+/* --- action result boxes (build / analyze) --- */
+.gex-actionbox {
+  margin: 0 12px 12px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel2);
+}
+.gex-actionbox-head,
+.gex-stats-head,
+.gex-block-head {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--faint);
+  padding: 7px 12px 0;
+}
+.gex-actionbox .gex-table-wrap {
+  padding-top: 4px;
+}
+.gex-actionnote {
+  font-size: 10.5px;
+  color: var(--dim);
+  padding: 8px 12px 0;
+}
+.gex-analyzed {
+  padding: 8px 12px 12px;
+}
+.gex-analyzed-head {
+  font-size: 12px;
+  color: var(--txt);
+}
+.gex-analyzed-levels {
+  font-size: 11px;
+  color: var(--dim);
+  margin-top: 3px;
+}
+
+/* --- inputs / buttons (mirror the ltf- form primitives) --- */
+.gex-in {
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  color: var(--txt);
+  font-size: 12px;
+  padding: 4px 7px;
+  width: 100%;
+  min-width: 0;
+}
+.gex-in:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+.gex-in:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--blue) 60%, transparent);
+  outline-offset: 1px;
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+.gex-in-tkr {
+  width: 96px;
+}
+.gex-select {
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  color: var(--txt);
+  font-size: 11px;
+  padding: 2px 4px;
+}
+
+.gex-btn {
+  font-size: 10.5px;
+  padding: 4px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+  color: var(--dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.gex-btn:hover {
+  color: var(--txt);
+  border-color: var(--line);
+}
+.gex-btn:disabled {
+  color: var(--faint);
+  cursor: wait;
+}
+.gex-btn-sm {
+  font-size: 9.5px;
+  padding: 2px 8px;
+  letter-spacing: 0.06em;
+}
+.gex-btn-quiet {
+  color: var(--faint);
+}
+/* the commit / journal submits: blue-tinted (neutral-info accent), never green */
+.gex-btn.gex-submit {
+  letter-spacing: 0.08em;
+  color: var(--txt);
+  background: color-mix(in srgb, var(--blue) 16%, var(--panel2));
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+.gex-submit:disabled {
+  color: var(--dim);
+}
+
+/* the file <input> hidden behind a .gex-btn label */
+.gex-file {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+}
+.gex-file-input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+  font-size: 0;
+}
+
+/* --- grade chips (qualitative label, never the green edge claim) --- */
+.gex-grade {
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  border-radius: 2px;
+  padding: 1px 6px;
+  white-space: nowrap;
+  border: 1px solid var(--line2);
+  color: var(--dim);
+}
+.gex-grade-aplus {
+  color: var(--txt);
+  background: color-mix(in srgb, var(--blue) 16%, transparent);
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+.gex-grade-b {
+  color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 12%, transparent);
+  border-color: color-mix(in srgb, var(--amber) 40%, var(--line2));
+}
+.gex-grade-notrade {
+  color: var(--faint);
+  border-style: dashed;
+}
+
+/* --- grader form --- */
+.gex-grader {
+  padding: 10px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.gex-grader-top {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px 10px;
+}
+.gex-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.gex-field-wide {
+  grid-column: 1 / -1;
+}
+.gex-lab {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.gex-blocks {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+.gex-block {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel2);
+  padding: 6px 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.gex-block-head {
+  padding: 0 0 2px;
+}
+.gex-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--txt);
+  cursor: pointer;
+  line-height: 1.3;
+}
+.gex-check input {
+  margin-top: 1px;
+  accent-color: var(--blue);
+  flex: none;
+}
+
+.gex-grader-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 0 12px 4px;
+}
+.gex-grade-preview {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--dim);
+}
+.gex-note {
+  font-size: 10.5px;
+  color: var(--faint);
+}
+.gex-err {
+  font-size: 11px;
+  color: var(--red);
+  padding: 6px 12px 0;
+}
+.gex-done {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--txt);
+  padding: 0 12px;
+}
+.gex-done-inline {
+  font-size: 11px;
+  color: var(--green);
+}
+
+/* --- journal --- */
+.gex-row-actions {
+  display: flex;
+  gap: 6px;
+}
+.gex-noaction {
+  color: var(--faint);
+}
+.gex-status {
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
   color: var(--dim);
   border: 1px solid var(--line2);
   border-radius: 2px;
   padding: 0 5px;
   white-space: nowrap;
+}
+.gex-status-taken {
+  color: var(--txt);
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+.gex-status-skipped {
+  color: var(--faint);
+  border-style: dashed;
+}
+
+/* --- lab stats --- */
+.gex-stats {
+  padding: 10px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.gex-stats-head {
+  padding: 0 0 6px;
+}
+.gex-stats-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  align-items: flex-start;
+}
+.gex-rh {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.gex-rh-row {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+}
+.gex-rh-tag {
+  min-width: 56px;
+  color: var(--txt);
+  letter-spacing: 0.04em;
+}
+.gex-rh-cell {
+  color: var(--dim);
+  font-size: 11px;
+}
+
+/* --- import review --- */
+.gex-review {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: var(--amber);
+  border: 1px solid color-mix(in srgb, var(--amber) 40%, var(--line2));
+  border-radius: 2px;
+  padding: 0 5px;
+  white-space: nowrap;
+}
+
+/* --- grader + blocks collapse to a single column when the panel is narrow --- */
+@media (max-width: 900px) {
+  .gex-grader-top,
+  .gex-blocks {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }

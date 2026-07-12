@@ -215,6 +215,17 @@ export function Masthead({
         JOURNAL
       </button>
 
+      {/* GEX LAB — the second digitless screen (options lab: day plan, checklist
+          grader, journal, lab stats, broker import). Same masthead-link door. */}
+      <button
+        type="button"
+        className="mh-ref"
+        title="GEX LAB — the options lab (day plan, checklist grader, setup journal, lab stats, broker import)"
+        onClick={() => onNavigate('gexlab')}
+      >
+        GEX LAB
+      </button>
+
       {/* DISARM enablement keys on the PERMANENT gate poll's broker_configured
           (settings truthiness, never connectivity); App force-nulls the gate on
           a fetch error, so a stale broker_configured can never arm the button. */}

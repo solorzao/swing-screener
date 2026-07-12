@@ -22,6 +22,7 @@ import { AnalystScreen } from './screens/AnalystScreen'
 import { CandidatesScreen } from './screens/CandidatesScreen'
 import { ForwardScreen } from './screens/ForwardScreen'
 import { JournalScreen } from './screens/JournalScreen'
+import { GexLabScreen } from './screens/GexLabScreen'
 import { MissionControlScreen } from './screens/MissionControlScreen'
 import { PlaceholderScreen } from './screens/PlaceholderScreen'
 import { PlaybooksScreen } from './screens/PlaybooksScreen'
@@ -237,6 +238,8 @@ export default function App() {
             <SystemsScreen beats={beats} wake={wake} />
           ) : screen === 'weather' ? (
             <WeatherScreen wake={wake} />
+          ) : screen === 'gexlab' ? (
+            <GexLabScreen wake={wake} />
           ) : screen === 'reference' ? (
             <ReferenceScreen wake={wake} />
           ) : screen === 'journal' ? (

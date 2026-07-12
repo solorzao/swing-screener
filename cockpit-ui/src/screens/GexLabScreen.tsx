@@ -1,0 +1,978 @@
+import { useCallback, useState } from 'react'
+import type { ChangeEvent } from 'react'
+import {
+  POLL_MS,
+  getGexPlan,
+  getGexSetups,
+  getGexStats,
+  postGexBuild,
+  postGexImportCommit,
+  postGexImportParse,
+  postGexSetup,
+  postGexSetupStatus,
+  usePolling,
+} from '../lib/api'
+import type {
+  GexAnalyzed,
+  GexChecklist,
+  GexDayPlan,
+  GexEpisode,
+  GexGrade,
+  GexParseResult,
+  GexSetup,
+  GexSetupCreate,
+  GexSnapshot,
+  RobinhoodBook,
+} from '../lib/api'
+import { dashOr, fmtSignedUsd, fmtUsd } from '../lib/fmt'
+import { PanelBody } from '../components/PanelBody'
+import { Segmented } from '../components/Segmented'
+import { StatChip } from '../components/StatChip'
+
+/* GEX LAB (digitless masthead screen) — the options lab, wired to the firewalled
+   swing_screener.options package via routers/gex.py. Five panels:
+     1. DAY PLAN     — GET /api/gex/plan snapshots + build/analyze POSTs
+     2. GRADER       — the 12-point A+ checklist, graded live, POST /api/gex/setups
+     3. JOURNAL      — today's setups, take/skip on `idea` rows
+     4. LAB STATS    — overall + by-grade Stats, plus the Robinhood premium book
+     5. IMPORT       — a broker CSV → parse review → tagged commit
+
+   HONESTY POSTURE (mirrors the equity cockpit):
+   - GEX levels (spot, walls, flip) are deterministic FACTS — plain nullable
+     numbers, never Stats; a null renders an em dash, never a fabricated 0.
+   - the thin-chain warning rides LOUD inline (a snapshot row badge + the analyze
+     result) — thin levels are unreliable and say so.
+   - lab expectancy IS a Stat (session-clustered) and renders through StatChip;
+     the Robinhood book is premium dollars, deliberately PLAIN labeled rows.
+   - the grade preview replicates checklist.py exactly (all checked → A+; only the
+     confirmation candle missing → B; anything else → no_trade) but is advisory —
+     the server grades authoritatively at insert.
+
+   Every write bumps a screen-local counter threaded into all polls (the
+   PositionsScreen local-bump idiom), so an action refreshes the sibling panels
+   immediately; the server action-nonce + SSE cover other windows. */
+
+const MINUS = '−'
+
+/** Parse a numeric input the honest way: '' / garbage → null, and the SERVER's
+ * validator names any problem — no client-side guess. */
+const num = (s: string): number | null => {
+  if (s.trim() === '') return null
+  const v = Number(s)
+  return Number.isFinite(v) ? v : null
+}
+
+/** A GEX price level → mono string; null → em dash. */
+const level = (v: number | null): string => dashOr(v, (n) => fmtUsd(n))
+
+/** spacing_pct arrives already as a percent number (bias.py); null → em dash. */
+const pct = (v: number | null): string =>
+  v === null ? '—' : `${v < 0 ? MINUS : ''}${Math.abs(v).toFixed(2)}%`
+
+/* ---------------- Checklist definition (mirror of checklist.py) ---------------- */
+
+interface ChkItem {
+  key: keyof GexChecklist
+  label: string
+  block: 'bias' | 'structure' | 'trigger' | 'risk'
+}
+
+const CHK_ITEMS: ChkItem[] = [
+  { key: 'chk_daily_bias_clear', label: 'Daily bias is clear, not chop', block: 'bias' },
+  { key: 'chk_daily_stack_ordered', label: 'Daily EMA stack is cleanly ordered', block: 'bias' },
+  { key: 'chk_m5_agrees', label: '5-minute trend agrees with the daily', block: 'bias' },
+  { key: 'chk_gex_levels_marked', label: 'GEX walls and flip are marked', block: 'structure' },
+  { key: 'chk_price_at_pivot', label: 'Price is at the pivot level, not mid-range', block: 'structure' },
+  { key: 'chk_regime_match', label: 'Gamma regime matches the play', block: 'structure' },
+  { key: 'chk_pattern_clean', label: 'Entry pattern is clean, not forced', block: 'trigger' },
+  { key: 'chk_volume_confirming', label: 'Volume confirms the move', block: 'trigger' },
+  { key: 'chk_risk_sized', label: 'Position is risk-sized to the plan', block: 'risk' },
+  { key: 'chk_stop_structural', label: 'Stop sits behind structure', block: 'risk' },
+  { key: 'chk_rr_at_least_2', label: 'Reward-to-risk is at least 2R', block: 'risk' },
+  { key: 'chk_confirmation_candle', label: 'Confirmation candle has printed', block: 'risk' },
+]
+
+const BLOCKS: { id: ChkItem['block']; label: string }[] = [
+  { id: 'bias', label: 'Bias' },
+  { id: 'structure', label: 'Structure' },
+  { id: 'trigger', label: 'Trigger' },
+  { id: 'risk', label: 'Risk' },
+]
+
+const EMPTY_CHECKS: GexChecklist = {
+  chk_daily_bias_clear: false,
+  chk_daily_stack_ordered: false,
+  chk_m5_agrees: false,
+  chk_gex_levels_marked: false,
+  chk_price_at_pivot: false,
+  chk_regime_match: false,
+  chk_pattern_clean: false,
+  chk_volume_confirming: false,
+  chk_risk_sized: false,
+  chk_stop_structural: false,
+  chk_rr_at_least_2: false,
+  chk_confirmation_candle: false,
+}
+
+/** The client-side grade preview — checklist.py's rule verbatim. Advisory: the
+ * server recomputes at insert. */
+function previewGrade(checks: GexChecklist): GexGrade {
+  const unchecked = CHK_ITEMS.filter((it) => !checks[it.key])
+  if (unchecked.length === 0) return 'A+'
+  if (unchecked.length === 1 && unchecked[0].key === 'chk_confirmation_candle') return 'B'
+  return 'no_trade'
+}
+
+/** A CSS-safe token for a grade string (no '+' / '_' in class names). */
+const gradeToken = (g: string): string =>
+  g === 'A+' ? 'aplus' : g === 'B' ? 'b' : g === 'no_trade' ? 'notrade' : 'other'
+
+const gradeText = (g: string): string => (g === 'no_trade' ? 'no trade' : g)
+
+function GradeChip({ grade }: { grade: string }) {
+  return <span className={`gex-grade gex-grade-${gradeToken(grade)}`}>{gradeText(grade)}</span>
+}
+
+/** Local calendar date (YYYY-MM-DD) — the cockpit runs beside its server, so the
+ * client's local day matches the server-naive `ts` day the journal filters on. */
+function localToday(): string {
+  const d = new Date()
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+/* ============================ 1 · DAY PLAN ============================ */
+
+function ThinBadge({ title }: { title?: string }) {
+  return (
+    <span className="gex-thin" title={title ?? 'thin chain — these levels are unreliable'}>
+      thin chain
+    </span>
+  )
+}
+
+function SnapshotsTable({ rows }: { rows: GexSnapshot[] }) {
+  if (rows.length === 0) {
+    return <div className="panel-wait">no snapshots yet — build today’s plan</div>
+  }
+  return (
+    <div className="gex-table-wrap">
+      <table className="gex-table">
+        <thead>
+          <tr>
+            <th className="left">underlying</th>
+            <th className="gex-num">spot</th>
+            <th className="gex-num">call wall</th>
+            <th className="gex-num">put wall</th>
+            <th className="gex-num">gamma flip</th>
+            <th className="left">regime</th>
+            <th className="left">flags</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((s) => (
+            <tr key={s.underlying}>
+              <td className="mono gex-tkr">{s.underlying}</td>
+              <td className="mono gex-num">{level(s.spot)}</td>
+              <td className="mono gex-num">{level(s.call_wall)}</td>
+              <td className="mono gex-num">{level(s.put_wall)}</td>
+              <td className="mono gex-num">{level(s.gamma_flip)}</td>
+              <td>{s.regime === '' ? '—' : s.regime}</td>
+              <td>{s.thin_chain && <ThinBadge />}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function BuiltPlans({ plans }: { plans: GexDayPlan[] }) {
+  if (plans.length === 0) {
+    return <div className="gex-actionnote">built — no plans returned (no watchlist snapshots)</div>
+  }
+  return (
+    <div className="gex-table-wrap">
+      <table className="gex-table">
+        <thead>
+          <tr>
+            <th className="left">underlying</th>
+            <th className="left">bias</th>
+            <th className="left">regime</th>
+            <th className="left">call</th>
+            <th className="gex-num">spacing</th>
+            <th className="gex-num">spot</th>
+            <th className="gex-num">call wall</th>
+            <th className="gex-num">put wall</th>
+            <th className="gex-num">flip</th>
+          </tr>
+        </thead>
+        <tbody>
+          {plans.map((p) => (
+            <tr key={p.underlying}>
+              <td className="mono gex-tkr">{p.underlying}</td>
+              <td>{p.bias}</td>
+              <td>{p.regime}</td>
+              <td className="mono">{p.call}</td>
+              <td className="mono gex-num">{pct(p.spacing_pct)}</td>
+              <td className="mono gex-num">{level(p.spot)}</td>
+              <td className="mono gex-num">{level(p.call_wall)}</td>
+              <td className="mono gex-num">{level(p.put_wall)}</td>
+              <td className="mono gex-num">{level(p.gamma_flip)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function AnalyzedCard({ a }: { a: GexAnalyzed }) {
+  return (
+    <div className="gex-analyzed">
+      <div className="gex-analyzed-head mono">
+        {a.underlying} · regime {a.regime === '' ? '—' : a.regime}
+        {a.thin_chain && <ThinBadge />}
+      </div>
+      <div className="gex-analyzed-levels mono">
+        spot {level(a.spot)} · call wall {level(a.call_wall)} · put wall{' '}
+        {level(a.put_wall)} · flip {level(a.gamma_flip)}
+      </div>
+      {a.thin_chain && a.thin_reasons.length > 0 && (
+        <ul className="gex-thin-reasons">
+          {a.thin_reasons.map((r, i) => (
+            <li key={i}>{r}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+function DayPlanPanel({ wake, onAction }: { wake: number; onAction: () => void }) {
+  const plan = usePolling(getGexPlan, POLL_MS, wake)
+  const [building, setBuilding] = useState(false)
+  const [analyzing, setAnalyzing] = useState(false)
+  const [ticker, setTicker] = useState('')
+  const [built, setBuilt] = useState<GexDayPlan[] | null>(null)
+  const [analyzed, setAnalyzed] = useState<GexAnalyzed | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const build = () => {
+    setBuilding(true)
+    setError(null)
+    setBuilt(null)
+    setAnalyzed(null)
+    postGexBuild().then(
+      (res) => {
+        setBuilding(false)
+        setBuilt(res.plans ?? [])
+        onAction()
+      },
+      (err: unknown) => {
+        setBuilding(false)
+        setError(err instanceof Error ? err.message : String(err))
+      },
+    )
+  }
+
+  const analyze = () => {
+    if (ticker.trim() === '') {
+      setError('enter a ticker to analyze')
+      return
+    }
+    setAnalyzing(true)
+    setError(null)
+    setBuilt(null)
+    setAnalyzed(null)
+    postGexBuild(ticker).then(
+      (res) => {
+        setAnalyzing(false)
+        setAnalyzed(res.analyzed ?? null)
+        onAction()
+      },
+      (err: unknown) => {
+        setAnalyzing(false)
+        setError(err instanceof Error ? err.message : String(err))
+      },
+    )
+  }
+
+  const busy = building || analyzing
+
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        DAY PLAN
+        <span className="panel-caption">
+          latest GEX snapshot per watchlist name · levels are deterministic facts,
+          not statistics
+        </span>
+        <span className="spacer" />
+        <button type="button" className="gex-btn" onClick={build} disabled={busy}>
+          {building ? 'building…' : 'Build today’s plan'}
+        </button>
+        <input
+          className="gex-in gex-in-tkr mono"
+          value={ticker}
+          maxLength={16}
+          placeholder="ticker…"
+          aria-label="ticker to analyze"
+          onChange={(e) => setTicker(e.target.value.toUpperCase())}
+        />
+        <button type="button" className="gex-btn" onClick={analyze} disabled={busy}>
+          {analyzing ? 'analyzing…' : 'Analyze ticker'}
+        </button>
+      </div>
+      {error !== null && (
+        <div className="gex-err" role="alert">
+          {error}
+        </div>
+      )}
+      <PanelBody polled={plan} noun="gex plan">
+        {(data) => (
+          <>
+            {data.watchlist.length > 0 && (
+              <div className="gex-watchlist mono">watchlist: {data.watchlist.join(' · ')}</div>
+            )}
+            <SnapshotsTable rows={data.snapshots} />
+          </>
+        )}
+      </PanelBody>
+      {analyzed !== null && (
+        <div className="gex-actionbox">
+          <div className="gex-actionbox-head">ANALYZE RESULT</div>
+          <AnalyzedCard a={analyzed} />
+        </div>
+      )}
+      {built !== null && (
+        <div className="gex-actionbox">
+          <div className="gex-actionbox-head">BUILT PLANS</div>
+          <BuiltPlans plans={built} />
+        </div>
+      )}
+    </section>
+  )
+}
+
+/* ============================ 2 · CHECKLIST GRADER ============================ */
+
+type Direction = 'long' | 'short'
+
+function GraderPanel({ onAction }: { onAction: () => void }) {
+  const [underlying, setUnderlying] = useState('')
+  const [direction, setDirection] = useState<Direction>('long')
+  const [entry, setEntry] = useState('')
+  const [stop, setStop] = useState('')
+  const [target, setTarget] = useState('')
+  const [pivot, setPivot] = useState('')
+  const [regime, setRegime] = useState('')
+  const [pattern, setPattern] = useState('')
+  const [notes, setNotes] = useState('')
+  const [checks, setChecks] = useState<GexChecklist>(EMPTY_CHECKS)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [done, setDone] = useState<GexSetup | null>(null)
+
+  const toggle = (key: keyof GexChecklist) =>
+    setChecks((c) => ({ ...c, [key]: !c[key] }))
+
+  const grade = previewGrade(checks)
+
+  const reset = () => {
+    setUnderlying('')
+    setDirection('long')
+    setEntry('')
+    setStop('')
+    setTarget('')
+    setPivot('')
+    setRegime('')
+    setPattern('')
+    setNotes('')
+    setChecks(EMPTY_CHECKS)
+  }
+
+  const submit = () => {
+    setSubmitting(true)
+    setError(null)
+    setDone(null)
+    const body: GexSetupCreate = {
+      underlying: underlying.trim(),
+      direction,
+      checklist: checks,
+      entry: num(entry),
+      stop: num(stop),
+      target: num(target),
+      pivot_level: num(pivot),
+      regime: regime.trim() === '' ? undefined : regime.trim(),
+      pattern: pattern.trim(),
+      notes: notes.trim(),
+    }
+    postGexSetup(body).then(
+      (row) => {
+        setSubmitting(false)
+        setDone(row)
+        reset()
+        onAction()
+      },
+      (err: unknown) => {
+        setSubmitting(false)
+        setError(err instanceof Error ? err.message : String(err))
+      },
+    )
+  }
+
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        CHECKLIST GRADER
+        <span className="panel-caption">
+          the 12-point A+ checklist · graded live (server regrades at insert)
+        </span>
+      </div>
+      <div className="gex-grader">
+        <div className="gex-grader-top">
+          <label className="gex-field gex-field-tkr">
+            <span className="gex-lab">underlying</span>
+            <input
+              className="gex-in mono"
+              value={underlying}
+              maxLength={16}
+              onChange={(e) => setUnderlying(e.target.value.toUpperCase())}
+            />
+          </label>
+          <span className="gex-field">
+            <span className="gex-lab">direction</span>
+            <Segmented
+              title="direction"
+              options={[
+                { value: 'long', label: 'long' },
+                { value: 'short', label: 'short' },
+              ]}
+              value={direction}
+              onChange={setDirection}
+            />
+          </span>
+          <label className="gex-field">
+            <span className="gex-lab">entry</span>
+            <input
+              className="gex-in mono"
+              type="number"
+              step="0.01"
+              value={entry}
+              onChange={(e) => setEntry(e.target.value)}
+            />
+          </label>
+          <label className="gex-field">
+            <span className="gex-lab">stop</span>
+            <input
+              className="gex-in mono"
+              type="number"
+              step="0.01"
+              value={stop}
+              onChange={(e) => setStop(e.target.value)}
+            />
+          </label>
+          <label className="gex-field">
+            <span className="gex-lab">target</span>
+            <input
+              className="gex-in mono"
+              type="number"
+              step="0.01"
+              value={target}
+              onChange={(e) => setTarget(e.target.value)}
+            />
+          </label>
+          <label className="gex-field">
+            <span className="gex-lab">pivot level</span>
+            <input
+              className="gex-in mono"
+              type="number"
+              step="0.01"
+              value={pivot}
+              onChange={(e) => setPivot(e.target.value)}
+            />
+          </label>
+          <label className="gex-field">
+            <span className="gex-lab">regime</span>
+            <input
+              className="gex-in mono"
+              value={regime}
+              maxLength={16}
+              placeholder="e.g. positive"
+              onChange={(e) => setRegime(e.target.value)}
+            />
+          </label>
+          <label className="gex-field gex-field-wide">
+            <span className="gex-lab">pattern</span>
+            <input
+              className="gex-in"
+              value={pattern}
+              maxLength={256}
+              onChange={(e) => setPattern(e.target.value)}
+            />
+          </label>
+          <label className="gex-field gex-field-wide">
+            <span className="gex-lab">notes</span>
+            <input
+              className="gex-in"
+              value={notes}
+              maxLength={2048}
+              onChange={(e) => setNotes(e.target.value)}
+            />
+          </label>
+        </div>
+
+        <div className="gex-blocks">
+          {BLOCKS.map((block) => (
+            <div key={block.id} className="gex-block">
+              <div className="gex-block-head">{block.label}</div>
+              {CHK_ITEMS.filter((it) => it.block === block.id).map((it) => (
+                <label key={it.key} className="gex-check">
+                  <input
+                    type="checkbox"
+                    checked={checks[it.key]}
+                    onChange={() => toggle(it.key)}
+                  />
+                  <span>{it.label}</span>
+                </label>
+              ))}
+            </div>
+          ))}
+        </div>
+
+        <div className="gex-grader-foot">
+          <span className="gex-grade-preview">
+            live grade <GradeChip grade={grade} />
+          </span>
+          <button
+            type="button"
+            className="gex-btn gex-submit"
+            onClick={submit}
+            disabled={submitting || underlying.trim() === ''}
+          >
+            {submitting ? 'saving…' : 'Grade & journal setup'}
+          </button>
+          <span className="gex-note">journals an idea — takes no trade</span>
+        </div>
+
+        {error !== null && (
+          <div className="gex-err" role="alert">
+            {error}
+          </div>
+        )}
+        {done !== null && (
+          <div className="gex-done" role="status">
+            journaled setup #{done.id} · {done.underlying} · graded{' '}
+            <GradeChip grade={done.grade} />
+            <button type="button" className="gex-btn gex-btn-quiet" onClick={() => setDone(null)}>
+              dismiss
+            </button>
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+/* ============================ 3 · JOURNAL ============================ */
+
+function JournalRow({
+  setup,
+  busy,
+  onStatus,
+}: {
+  setup: GexSetup
+  busy: boolean
+  onStatus: (id: number, status: 'taken' | 'skipped') => void
+}) {
+  const time = setup.ts.slice(11, 16) || setup.ts
+  return (
+    <tr>
+      <td className="mono gex-num">{time}</td>
+      <td className="mono gex-tkr">{setup.underlying}</td>
+      <td>{setup.direction}</td>
+      <td>
+        <GradeChip grade={setup.grade} />
+      </td>
+      <td className="mono gex-num">{level(setup.entry)}</td>
+      <td className="mono gex-num">{level(setup.stop)}</td>
+      <td className="mono gex-num">{level(setup.target)}</td>
+      <td>
+        <span className={`gex-status gex-status-${setup.status}`}>{setup.status}</span>
+      </td>
+      <td>
+        {setup.status === 'idea' ? (
+          <div className="gex-row-actions">
+            <button
+              type="button"
+              className="gex-btn gex-btn-sm"
+              disabled={busy}
+              onClick={() => onStatus(setup.id, 'taken')}
+            >
+              take
+            </button>
+            <button
+              type="button"
+              className="gex-btn gex-btn-sm gex-btn-quiet"
+              disabled={busy}
+              onClick={() => onStatus(setup.id, 'skipped')}
+            >
+              skip
+            </button>
+          </div>
+        ) : (
+          <span className="gex-noaction">—</span>
+        )}
+      </td>
+    </tr>
+  )
+}
+
+function JournalPanel({ wake, onAction }: { wake: number; onAction: () => void }) {
+  const day = localToday()
+  const setups = usePolling(() => getGexSetups(day), POLL_MS, wake, day)
+  const [busyId, setBusyId] = useState<number | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const onStatus = (id: number, status: 'taken' | 'skipped') => {
+    setBusyId(id)
+    setError(null)
+    postGexSetupStatus(id, status).then(
+      () => {
+        setBusyId(null)
+        onAction()
+      },
+      (err: unknown) => {
+        setBusyId(null)
+        setError(err instanceof Error ? err.message : String(err))
+      },
+    )
+  }
+
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        JOURNAL
+        <span className="panel-caption">
+          today’s setups, newest first · taking one opens a paper trade on the
+          firewalled lab book
+        </span>
+      </div>
+      {error !== null && (
+        <div className="gex-err" role="alert">
+          {error}
+        </div>
+      )}
+      <PanelBody polled={setups} noun="setups">
+        {(data) =>
+          data.setups.length === 0 ? (
+            <div className="panel-wait">no setups journaled today</div>
+          ) : (
+            <div className="gex-table-wrap">
+              <table className="gex-table">
+                <thead>
+                  <tr>
+                    <th className="gex-num">time</th>
+                    <th className="left">underlying</th>
+                    <th className="left">dir</th>
+                    <th className="left">grade</th>
+                    <th className="gex-num">entry</th>
+                    <th className="gex-num">stop</th>
+                    <th className="gex-num">target</th>
+                    <th className="left">status</th>
+                    <th className="left">action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.setups.map((s) => (
+                    <JournalRow
+                      key={s.id}
+                      setup={s}
+                      busy={busyId === s.id}
+                      onStatus={onStatus}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        }
+      </PanelBody>
+    </section>
+  )
+}
+
+/* ============================ 4 · LAB STATS ============================ */
+
+function RobinhoodRow({ tag, book }: { tag: string; book: RobinhoodBook }) {
+  return (
+    <div className="gex-rh-row">
+      <span className="gex-rh-tag">{tag}</span>
+      <span className="gex-rh-cell mono">P&amp;L {fmtSignedUsd(book.total_pnl)}</span>
+      <span className="gex-rh-cell mono">
+        W/L {book.wins}/{book.losses}
+      </span>
+      <span className="gex-rh-cell mono">n {book.n}</span>
+      <span className="gex-rh-cell mono">open {book.open}</span>
+    </div>
+  )
+}
+
+function LabStatsPanel({ wake }: { wake: number }) {
+  const stats = usePolling(getGexStats, POLL_MS, wake)
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        LAB STATS
+        <span className="panel-caption">
+          lab expectancy is session-clustered (a Stat) · the Robinhood book is
+          premium dollars, a labeled display
+        </span>
+      </div>
+      <PanelBody polled={stats} noun="lab stats">
+        {(data) => {
+          const rhTags = Object.keys(data.robinhood).sort((a, b) => {
+            const order = (t: string) => (t === 'gex' ? 0 : t === 'other' ? 1 : 2)
+            return order(a) - order(b) || a.localeCompare(b)
+          })
+          return (
+            <div className="gex-stats">
+              <div className="gex-stats-group">
+                <div className="gex-stats-head">EXPECTANCY</div>
+                <div className="gex-stats-chips">
+                  <StatChip stat={data.overall} label="overall" />
+                  {data.by_grade.map((row) => (
+                    <StatChip key={row.grade} stat={row} label={row.grade} />
+                  ))}
+                </div>
+              </div>
+              <div className="gex-stats-group">
+                <div className="gex-stats-head">ROBINHOOD (imported premium)</div>
+                {rhTags.length === 0 ? (
+                  <div className="panel-wait">no imported Robinhood rows yet</div>
+                ) : (
+                  <div className="gex-rh">
+                    {rhTags.map((tag) => (
+                      <RobinhoodRow key={tag} tag={tag} book={data.robinhood[tag]} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )
+        }}
+      </PanelBody>
+    </section>
+  )
+}
+
+/* ============================ 5 · IMPORT ============================ */
+
+const TAG_OPTIONS = ['gex', 'other', 'skip']
+
+function ImportRow({
+  ep,
+  tag,
+  onTag,
+}: {
+  ep: GexEpisode
+  tag: string
+  onTag: (importKey: string, value: string) => void
+}) {
+  const span = `${ep.opened_on} → ${ep.closed_on ?? 'open'}`
+  return (
+    <tr>
+      <td className="mono gex-tkr">{ep.occ_symbol}</td>
+      <td className="mono">{span}</td>
+      <td className="mono gex-num">{ep.contracts}</td>
+      <td className="mono gex-num">{dashOr(ep.pnl, fmtSignedUsd)}</td>
+      <td>{ep.needs_review && <span className="gex-review">needs review</span>}</td>
+      <td>
+        <select
+          className="gex-select mono"
+          value={tag}
+          aria-label={`tag for ${ep.occ_symbol}`}
+          onChange={(e) => onTag(ep.import_key, e.target.value)}
+        >
+          {TAG_OPTIONS.map((o) => (
+            <option key={o} value={o}>
+              {o}
+            </option>
+          ))}
+        </select>
+      </td>
+    </tr>
+  )
+}
+
+function ImportPanel({ onAction }: { onAction: () => void }) {
+  const [csvText, setCsvText] = useState<string | null>(null)
+  const [fileName, setFileName] = useState('')
+  const [parsed, setParsed] = useState<GexParseResult | null>(null)
+  const [tags, setTags] = useState<Record<string, string>>({})
+  const [parsing, setParsing] = useState(false)
+  const [committing, setCommitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [committed, setCommitted] = useState<number | null>(null)
+
+  const parse = (text: string) => {
+    setParsing(true)
+    setError(null)
+    setCommitted(null)
+    setParsed(null)
+    postGexImportParse(text).then(
+      (res) => {
+        setParsing(false)
+        setParsed(res)
+        const t: Record<string, string> = {}
+        for (const ep of res.episodes) t[ep.import_key] = 'skip'
+        setTags(t)
+      },
+      (err: unknown) => {
+        setParsing(false)
+        setError(err instanceof Error ? err.message : String(err))
+      },
+    )
+  }
+
+  const onFile = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file === undefined) return
+    setFileName(file.name)
+    const reader = new FileReader()
+    reader.onload = () => {
+      const text = typeof reader.result === 'string' ? reader.result : ''
+      setCsvText(text)
+      parse(text)
+    }
+    reader.onerror = () => setError('could not read the file')
+    reader.readAsText(file)
+  }
+
+  const onTag = (importKey: string, value: string) =>
+    setTags((t) => ({ ...t, [importKey]: value }))
+
+  const commit = () => {
+    if (csvText === null) return
+    setCommitting(true)
+    setError(null)
+    postGexImportCommit(csvText, tags).then(
+      (res) => {
+        setCommitting(false)
+        setCommitted(res.committed)
+        onAction()
+      },
+      (err: unknown) => {
+        setCommitting(false)
+        setError(err instanceof Error ? err.message : String(err))
+      },
+    )
+  }
+
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        IMPORT
+        <span className="panel-caption">
+          a broker activity CSV → paired episodes → tag each gex / other / skip,
+          then commit
+        </span>
+        <span className="spacer" />
+        <label className="gex-btn gex-file">
+          {parsing ? 'parsing…' : 'Choose CSV…'}
+          <input
+            type="file"
+            accept=".csv,text/csv"
+            className="gex-file-input"
+            onChange={onFile}
+          />
+        </label>
+      </div>
+      {fileName !== '' && (
+        <div className="gex-actionnote mono">
+          {fileName}
+          {parsed !== null &&
+            ` · ${parsed.fills_added} fills added · ${parsed.fills_skipped} skipped (already stored)`}
+        </div>
+      )}
+      {error !== null && (
+        <div className="gex-err" role="alert">
+          {error}
+        </div>
+      )}
+      {parsed !== null &&
+        (parsed.episodes.length === 0 ? (
+          <div className="panel-wait">no episodes paired from this CSV</div>
+        ) : (
+          <>
+            <div className="gex-table-wrap">
+              <table className="gex-table">
+                <thead>
+                  <tr>
+                    <th className="left">occ symbol</th>
+                    <th className="left">span</th>
+                    <th className="gex-num">contracts</th>
+                    <th className="gex-num">P&amp;L</th>
+                    <th className="left">flags</th>
+                    <th className="left">tag</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {parsed.episodes.map((ep) => (
+                    <ImportRow
+                      key={ep.import_key}
+                      ep={ep}
+                      tag={tags[ep.import_key] ?? 'skip'}
+                      onTag={onTag}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="gex-grader-foot">
+              <button
+                type="button"
+                className="gex-btn gex-submit"
+                onClick={commit}
+                disabled={committing}
+              >
+                {committing ? 'committing…' : 'Commit tagged'}
+              </button>
+              <span className="gex-note">
+                skip-tagged episodes are left untouched · re-parses the same CSV
+                server-side
+              </span>
+              {committed !== null && (
+                <span className="gex-done-inline" role="status">
+                  committed {committed} episode{committed === 1 ? '' : 's'}
+                </span>
+              )}
+            </div>
+          </>
+        ))}
+    </section>
+  )
+}
+
+/* ============================ screen ============================ */
+
+export function GexLabScreen({ wake }: { wake: number }) {
+  // Screen-local action bump summed into every panel's wake — a write refreshes
+  // the siblings immediately (PositionsScreen idiom); SSE covers other windows.
+  const [bump, setBump] = useState(0)
+  const wakeAll = wake + bump
+  const onAction = useCallback(() => setBump((b) => b + 1), [])
+
+  return (
+    <main className="grid-single">
+      <DayPlanPanel wake={wakeAll} onAction={onAction} />
+      <GraderPanel onAction={onAction} />
+      <JournalPanel wake={wakeAll} onAction={onAction} />
+      <LabStatsPanel wake={wakeAll} />
+      <ImportPanel onAction={onAction} />
+    </main>
+  )
+}

@@ -1,7 +1,7 @@
 """create journal tables (tags, trade-tags, notes, theses) with source provenance
 
 Revision ID: a4e7c1b9f2d6
-Revises: e4b8a2d6f1c9
+Revises: f2a9c4e7b1d8
 Create Date: 2026-07-12
 
 The Journal layer v1 overlays three annotation tables on the existing paper-trade
@@ -25,7 +25,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "a4e7c1b9f2d6"
-down_revision: Union[str, Sequence[str], None] = "e4b8a2d6f1c9"
+down_revision: Union[str, Sequence[str], None] = "f2a9c4e7b1d8"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
