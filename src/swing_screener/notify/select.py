@@ -168,12 +168,20 @@ def monthly_picks(session: Session, run_date: date, *, top_n: int = 5,
 
 
 def pending_exit_alerts(session: Session, run_date: date) -> list[ExitEvent]:
-    """Exit events for REAL trades on the given date (paper-trade events excluded)."""
+    """Exit events for REAL trades on the given date (paper-trade events excluded).
+
+    ``manual_close`` events are excluded too: the cockpit's close-trade action writes
+    a real ExitEvent (it feeds the change token and the audit trail), but the hourly
+    exit job must never email an URGENT alert about a close Oliver just performed
+    himself seconds earlier.
+    """
     # `== False` renders `is_paper = 0`; `.is_(False)` renders `IS 0`, which is a
-    # syntax error on SQL Server (valid only on SQLite).
+    # syntax error on SQL Server (valid only on SQLite). `!=` renders `<>` on
+    # mssql -- portable, unlike the `.is_not()` form.
     stmt = (
         select(ExitEvent)
-        .where(ExitEvent.created_date == run_date, ExitEvent.is_paper == False)  # noqa: E712
+        .where(ExitEvent.created_date == run_date, ExitEvent.is_paper == False,  # noqa: E712
+               ExitEvent.reason != "manual_close")
         .order_by(ExitEvent.id.desc())
     )
     return list(session.scalars(stmt))

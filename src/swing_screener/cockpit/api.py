@@ -34,6 +34,7 @@ import anyio.to_thread
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, make_url, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
@@ -76,11 +77,16 @@ from swing_screener.db.models import (
     MarketReport,
     PaperTrade,
     Signal,
+    Trade,
 )
 from swing_screener.db.repo import (
+    AlreadyClosedError,
+    add_trade,
+    close_trade,
     latest_reversal_funnel,
     load_closed_paper_trades,
     load_research_paper_trades,
+    record_exit_event,
 )
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.arms import BASELINE
@@ -169,6 +175,87 @@ class _LoginFlight:
             and self.proc.poll() is None
             and (now - self.started) < _LOGIN_TTL_S
         )
+
+
+class TradeCreate(BaseModel):
+    """POST /api/trades body. The validation LIVES HERE -- ``repo.add_trade`` is a
+    pure persist that checks nothing -- so every rule the retired Streamlit entry
+    form enforced is a model rule: ticker required (stripped + uppercased), entry
+    and size positive, stop below entry, target above entry (long-only book).
+    ``max_length`` bounds mirror the Trade columns so Azure SQL never truncates."""
+
+    ticker: str = Field(max_length=16)
+    timeframe: str = Field(default="1d", max_length=32)
+    horizon: str = Field(default="medium", max_length=32)
+    entry_price: float = Field(gt=0)
+    size: float = Field(gt=0)
+    stop: float
+    target: float
+    notes: str = Field(default="", max_length=256)
+    signal_id: int | None = None
+
+    @field_validator("ticker")
+    @classmethod
+    def _ticker_required_upper(cls, v: str) -> str:
+        v = v.strip().upper()
+        if not v:
+            raise ValueError("ticker is required")
+        return v
+
+    @model_validator(mode="after")
+    def _long_geometry(self) -> "TradeCreate":
+        if self.stop >= self.entry_price:
+            raise ValueError("stop must be below the entry price (long)")
+        if self.target <= self.entry_price:
+            raise ValueError("target must be above the entry price (long)")
+        return self
+
+
+class TradeClose(BaseModel):
+    """POST /api/trades/{id}/close body. ``exit_date`` defaults to today at the
+    endpoint (a request body should not bake in the server's clock); a blank
+    reason falls back to ``manual`` -- the Streamlit close form's behavior."""
+
+    exit_price: float = Field(gt=0)
+    exit_date: date | None = None
+    exit_reason: str = Field(default="manual", max_length=32)
+
+    @field_validator("exit_reason")
+    @classmethod
+    def _reason_or_manual(cls, v: str) -> str:
+        return v.strip() or "manual"
+
+
+# Prices within this absolute tolerance count as EQUAL for override stamping: the
+# prefill round-trips through JSON floats and a UI number input, so exact equality
+# would stamp phantom "moved 0.0%" overrides on faithful fills.
+_FAITHFUL_TOL = 0.005
+
+
+def _override_note(body: TradeCreate, sig: Signal) -> str | None:
+    """The honest-flagging stamp: how ``body`` deviates from ``sig``'s plan, or None.
+
+    Entry deviation is expressed in zone-R (risk = entry_ceiling - stop, the unit the
+    signal's own R math uses); stop/target moves in percent of the signal's level.
+    Format (rendered VERBATIM by the UI -- see the endpoint docstring):
+    ``entry +0.50R above ceiling; stop moved +1.1%; target moved -2.0%``. A
+    degenerate zone (ceiling <= stop, no R unit to speak in) skips the entry part
+    rather than dividing by zero.
+    """
+    parts: list[str] = []
+    risk = sig.entry_ceiling - sig.stop
+    if risk > _FAITHFUL_TOL:
+        if body.entry_price > sig.entry_ceiling + _FAITHFUL_TOL:
+            over = (body.entry_price - sig.entry_ceiling) / risk
+            parts.append(f"entry +{over:.2f}R above ceiling")
+        elif body.entry_price < sig.entry_floor - _FAITHFUL_TOL:
+            under = (sig.entry_floor - body.entry_price) / risk
+            parts.append(f"entry -{under:.2f}R below floor")
+    if abs(body.stop - sig.stop) > _FAITHFUL_TOL and sig.stop > 0:
+        parts.append(f"stop moved {(body.stop - sig.stop) / sig.stop:+.1%}")
+    if abs(body.target - sig.target) > _FAITHFUL_TOL and sig.target > 0:
+        parts.append(f"target moved {(body.target - sig.target) / sig.target:+.1%}")
+    return "; ".join(parts)[:256] if parts else None  # cap: the column is String(256)
 
 
 def create_app(
@@ -562,6 +649,83 @@ def create_app(
             login_flight.proc = proc
             login_flight.started = time.monotonic()
         return {"started": True}
+
+    @app.post("/api/trades")
+    def log_trade(
+        body: TradeCreate, request: Request, session: Session = Depends(_session)
+    ) -> dict[str, object]:
+        """Log a REAL trade Oliver actually took -- records it, places no order.
+
+        Contract: header-guarded like every cockpit mutation; ``TradeCreate`` is the
+        only validation gate (422 with field detail -- the repo persists blindly);
+        the server stamps ``entry_date`` = today, never the client. When the body
+        carries a ``signal_id`` whose Signal row exists, the fill is verified against
+        the engine's plan and any deviation is stamped into ``override`` in the
+        format the UI renders verbatim: ``entry +0.50R above ceiling`` /
+        ``entry -0.25R below floor`` (zone-R: risk = entry_ceiling - stop),
+        ``stop moved +1.1%``, ``target moved -2.0%``, parts joined by ``'; '``,
+        capped at 256 chars. ``override`` is null when the fill is faithful OR
+        unprefilled -- the UI's unlinked tag (``signal_id`` null) tells those apart.
+        A dangling ``signal_id`` (no such Signal row) is kept as given -- the link
+        claim is the client's -- but can verify nothing, so ``override`` stays null.
+        """
+        if request.headers.get("x-cockpit") != "1":
+            raise HTTPException(status_code=403, detail="missing X-Cockpit header")
+        override: str | None = None
+        if body.signal_id is not None:
+            sig = session.get(Signal, body.signal_id)
+            if sig is not None:
+                override = _override_note(body, sig)
+        trade = add_trade(session, Trade(
+            ticker=body.ticker, timeframe=body.timeframe, horizon=body.horizon,
+            entry_date=date.today(), entry_price=body.entry_price, size=body.size,
+            stop=body.stop, target=body.target, notes=body.notes,
+            signal_id=body.signal_id, override=override,
+        ))
+        return {"trade_id": trade.id, "override": trade.override,
+                "entry_date": trade.entry_date.isoformat()}
+
+    @app.post("/api/trades/{trade_id}/close")
+    def close_trade_action(
+        trade_id: int, body: TradeClose, request: Request,
+        session: Session = Depends(_session),
+    ) -> dict[str, object]:
+        """Close a real trade at the price Oliver reports.
+
+        Header-guarded; 404 on an unknown id, 409 when already closed (the repo's
+        ``AlreadyClosedError`` -- re-closing would overwrite the recorded exit).
+        Writes the paired ``ExitEvent(reason='manual_close')`` for the audit trail
+        and the change token; that reason is EXCLUDED from ``pending_exit_alerts``,
+        so the hourly exit job never emails an urgent alert about a close performed
+        seconds ago in the cockpit. ``realized_r`` is ``(exit - entry) / (entry -
+        stop)`` and null when the recorded risk is degenerate (stop raised to/above
+        entry, e.g. breakeven management) -- the close itself still happens;
+        ``realized_usd`` is ``(exit - entry) * size`` and always computes.
+        """
+        if request.headers.get("x-cockpit") != "1":
+            raise HTTPException(status_code=403, detail="missing X-Cockpit header")
+        exit_date = body.exit_date if body.exit_date is not None else date.today()
+        try:
+            trade = close_trade(session, trade_id, exit_date=exit_date,
+                                exit_price=body.exit_price, exit_reason=body.exit_reason)
+        except AlreadyClosedError as exc:  # BEFORE ValueError: it subclasses it
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        record_exit_event(
+            session, is_paper=False, trade_id=trade.id, tier="", reason="manual_close",
+            message=f"{trade.ticker} closed manually @ {body.exit_price:g}",
+            created_date=date.today(), account="research",
+        )
+        risk = trade.entry_price - trade.stop
+        realized_r = (body.exit_price - trade.entry_price) / risk if risk > 0 else None
+        return {
+            "trade_id": trade.id,
+            "realized_r": realized_r,
+            "realized_usd": (body.exit_price - trade.entry_price) * trade.size,
+            "exit_date": exit_date.isoformat(),
+            "exit_reason": trade.exit_reason,
+        }
 
     @app.get("/api/events")
     async def events() -> EventSourceResponse:

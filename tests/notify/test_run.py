@@ -406,6 +406,25 @@ def _exit_event(ticker, tier="hard", reason="stop"):
                      message=f"{ticker} stopped @ 95")
 
 
+def test_emit_skips_a_manual_close_only_day(tmp_path):
+    # the cockpit's manual close writes ExitEvent(reason='manual_close'); with ONLY
+    # that event pending the hourly emit path must send NOTHING and log NOTHING --
+    # Oliver performed the close himself seconds ago.
+    url = f"sqlite:///{tmp_path / 'mc.sqlite'}"
+    engine = get_engine(url)
+    with Session(engine) as s:
+        s.add(_exit_event("AMD", tier="", reason="manual_close"))
+        s.commit()
+
+    sent = []
+    with Session(engine) as s:
+        assert run._emit_pending_exit_alert(
+            s, RUN, "me@example.com", lambda **kw: sent.append(kw)) is False
+    assert sent == []
+    with Session(engine) as s:
+        assert list(s.scalars(select(EmailLog).where(EmailLog.kind == "exit"))) == []
+
+
 def test_exit_alert_key_distinguishes_event_sets(tmp_path):
     # the key is a deterministic hash over the SET of event ids, so {1,2},
     # {1,2,3}, and {1,3} all map to distinct keys (and order doesn't matter).

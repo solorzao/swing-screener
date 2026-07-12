@@ -438,11 +438,25 @@ def get_closed_trades(session: Session) -> list[Trade]:
     return list(session.scalars(stmt))
 
 
+class AlreadyClosedError(ValueError):
+    """Raised by ``close_trade`` on a trade that is already closed.
+
+    A ``ValueError`` SUBCLASS so any existing caller catching ``ValueError`` keeps
+    working; the cockpit close endpoint tells the two flavors apart by type
+    (unknown id -> 404, already closed -> 409) instead of string-matching messages.
+    """
+
+
 def close_trade(session: Session, trade_id: int, *, exit_date: date, exit_price: float,
                 exit_reason: str) -> Trade:
     trade = session.get(Trade, trade_id)
     if trade is None:
         raise ValueError(f"no trade with id {trade_id}")
+    if trade.status == "closed":
+        # re-closing would silently overwrite the recorded exit -- refuse here, once,
+        # rather than in every caller (the Streamlit form only OFFERED open trades;
+        # an HTTP endpoint can be raced or replayed).
+        raise AlreadyClosedError(f"trade {trade_id} is already closed")
     trade.status = "closed"
     trade.exit_date = exit_date
     trade.exit_price = exit_price

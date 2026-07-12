@@ -84,6 +84,11 @@ class Trade(Base):
     exit_reason: Mapped[str | None] = mapped_column(String(32), default=None)
     notes: Mapped[str] = mapped_column(String(256), default="")
     signal_id: Mapped[int | None] = mapped_column(ForeignKey("signals.id"), default=None)
+    # honest flagging, not enforcement: how the logged fill deviated from the sourcing
+    # signal's plan ("entry +0.50R above ceiling; stop moved +1.1%"), stamped by the
+    # cockpit's log-trade endpoint and rendered verbatim. None = engine-faithful OR
+    # unprefilled -- the UI's unlinked tag (signal_id NULL) tells those apart, not this.
+    override: Mapped[str | None] = mapped_column(String(256), default=None)
 
 
 class PaperTrade(Base):

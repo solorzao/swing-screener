@@ -87,6 +87,26 @@ def test_migration_adds_analyst_call_token_spend_columns(tmp_path, monkeypatch):
     assert {"input_tokens", "output_tokens", "web_searches", "est_cost_usd"} <= cols
 
 
+def test_migration_adds_trade_override_column(tmp_path, monkeypatch):
+    # The cockpit's log-trade action stamps HOW a fill deviated from the engine's
+    # plan into trades.override -- nullable, NO server_default (NULL means
+    # engine-faithful or unprefilled). Assert the upgraded schema carries it.
+    db = tmp_path / "ov.db"
+    url = f"sqlite:///{db}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    command.upgrade(_config(url), "head")
+
+    con = sqlite3.connect(db)
+    try:
+        info = {r[1]: r for r in con.execute("PRAGMA table_info(trades)")}
+    finally:
+        con.close()
+
+    assert "override" in info
+    assert info["override"][3] == 0     # nullable (notnull flag off)
+    assert info["override"][4] is None  # no server default
+
+
 def test_migration_enforces_reversal_funnel_run_date_unique(tmp_path, monkeypatch):
     # ONE funnel row per run_date: the unique index must reject a duplicate (the
     # backstop behind the write site's delete-then-insert on a forced resend).
