@@ -51,16 +51,17 @@ function LockRow({
 }
 
 /** The force-null wrapper: renders children only from a LIVE read; an errored
- * or not-yet-fetched read renders the panel's UNKNOWN form instead. */
+ * or not-yet-fetched read renders the panel's UNKNOWN form instead. The
+ * force-null derivation lives HERE, from `polled` alone — a caller can't hand
+ * in a stale `safe` that disagrees with the poll it came from. */
 function SafetyBody({
-  safe,
   polled,
   children,
 }: {
-  safe: ExecutionSafety | null
   polled: Polled<ExecutionSafety>
   children: (s: ExecutionSafety) => ReactNode
 }) {
+  const safe = polled.error === null ? polled.data : null
   if (safe !== null) return <>{children(safe)}</>
   return (
     <div className="sfy-unknown-block">
@@ -97,7 +98,7 @@ export function SafetyScreen({ wake }: { wake: number }) {
               EXECUTION STATUS
               <span className="panel-caption">settings truthiness, not connectivity</span>
             </div>
-            <SafetyBody safe={safe} polled={safety}>
+            <SafetyBody polled={safety}>
               {(s) => (
                 <>
                   <div className="sfy-row">
@@ -135,7 +136,7 @@ export function SafetyScreen({ wake }: { wake: number }) {
               ARMING LOCKS
               <span className="panel-caption">off is the safe state — calm by design</span>
             </div>
-            <SafetyBody safe={safe} polled={safety}>
+            <SafetyBody polled={safety}>
               {(s) => (
                 <>
                   <LockRow
@@ -204,7 +205,7 @@ export function SafetyScreen({ wake }: { wake: number }) {
                 ))}
               <span className="panel-caption">read-only; arms nothing, moves no money</span>
             </div>
-            <SafetyBody safe={safe} polled={safety}>
+            <SafetyBody polled={safety}>
               {(s) => (
                 <>
                   {s.preflight.checks.map((c) => (
@@ -229,7 +230,7 @@ export function SafetyScreen({ wake }: { wake: number }) {
               BRACKET SHIELD
               <span className="panel-caption">venue truth — UNKNOWN is never green</span>
             </div>
-            <SafetyBody safe={safe} polled={safety}>
+            <SafetyBody polled={safety}>
               {(s) =>
                 s.bracket_shield.known ? (
                   <>

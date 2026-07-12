@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
+import type { ReactNode, Ref } from 'react'
 
 /* The destructive-action gesture (design rule 3): a HOLD, never a click. A
    simple click does nothing by construction — the fire path runs only off the
@@ -18,7 +18,15 @@ import type { ReactNode } from 'react'
      flips true. This is DISARM's preview gate: a completed hold waits on the
      dry-run response, it never fires blind. Releasing while waiting still
      aborts — the fire happens only under a live hold. `armed === undefined`
-     means ungated (the light decision buttons). */
+     means ungated (the light decision buttons).
+
+   Accessibility: a visually-hidden live region INSIDE the component announces
+   the phase transitions (holding / waiting / fired / aborted), so every
+   consumer — Task 18's approve/withdraw included — inherits screen-reader
+   narration without wiring its own; parents announce only their OWN content
+   (previews, results). `buttonRef` exposes the button so a parent can restore
+   focus after a fire's disable/enable round trip (a fire disables the button,
+   which would otherwise drop keyboard focus to <body>). */
 export function HoldToConfirm({
   holdMs,
   label,
@@ -28,6 +36,7 @@ export function HoldToConfirm({
   disabled = false,
   armed,
   vetoed = false,
+  buttonRef,
   onHoldStart,
   onFire,
   onAbort,
@@ -44,12 +53,16 @@ export function HoldToConfirm({
   /** Flip true to force-abort an in-progress hold (the preview REJECTED —
    * there is nothing trustworthy left to confirm). */
   vetoed?: boolean
+  /** The underlying button, for parents that manage focus around fires. */
+  buttonRef?: Ref<HTMLButtonElement>
   onHoldStart?: () => void
   onFire: () => void
   onAbort?: () => void
 }) {
   const [holding, setHolding] = useState(false)
   const [holdDone, setHoldDone] = useState(false)
+  // The screen-reader phase narration — terse, one word per transition.
+  const [live, setLive] = useState('')
   const firedRef = useRef(false)
 
   // Latest callbacks behind a ref so the effects below depend on state alone —
@@ -62,6 +75,7 @@ export function HoldToConfirm({
     firedRef.current = false
     setHoldDone(false)
     setHolding(true)
+    setLive('holding')
     cbRef.current.onHoldStart?.()
   }
 
@@ -69,6 +83,7 @@ export function HoldToConfirm({
     if (!holding || firedRef.current) return
     setHolding(false)
     setHoldDone(false)
+    setLive('aborted')
     cbRef.current.onAbort?.()
   }
   const abortRef = useRef(abort)
@@ -91,6 +106,7 @@ export function HoldToConfirm({
     firedRef.current = true
     setHolding(false)
     setHoldDone(false)
+    setLive('fired')
     cbRef.current.onFire()
   }, [holding, holdDone, armed])
 
@@ -112,46 +128,61 @@ export function HoldToConfirm({
   }, [vetoed, disabled])
 
   const waiting = holding && holdDone && armed === false
+
+  // The waiting phase is entered by a TIMER, not a user gesture — announce it
+  // from state, where the transition actually happens.
+  useEffect(() => {
+    if (waiting) setLive('waiting')
+  }, [waiting])
+
   const classes = ['htc']
   if (className !== undefined) classes.push(className)
   if (holding) classes.push('htc-holding')
   if (waiting) classes.push('htc-waiting')
 
   return (
-    <button
-      type="button"
-      className={classes.join(' ')}
-      title={title}
-      disabled={disabled}
-      aria-pressed={holding}
-      onPointerDown={(e) => {
-        if (e.button === 0) begin()
-      }}
-      onPointerUp={abort}
-      onPointerLeave={abort}
-      onKeyDown={(e) => {
-        if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) {
-          e.preventDefault() // no synthesized click — the hold is the gesture
-          begin()
-        }
-      }}
-      onKeyUp={(e) => {
-        if (e.key === ' ' || e.key === 'Enter') {
-          e.preventDefault()
-          abort()
-        }
-      }}
-      onClick={(e) => e.preventDefault()}
-      onBlur={abort}
-    >
-      {/* The fill's transition duration IS the hold duration while holding;
-          the snap-back on abort is fast (CSS default). */}
-      <span
-        className="htc-fill"
-        aria-hidden="true"
-        style={holding ? { transitionDuration: `${holdMs}ms` } : undefined}
-      />
-      <span className="htc-body">{waiting ? (waitingLabel ?? label) : label}</span>
-    </button>
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        className={classes.join(' ')}
+        title={title}
+        disabled={disabled}
+        aria-pressed={holding}
+        onPointerDown={(e) => {
+          if (e.button === 0) begin()
+        }}
+        onPointerUp={abort}
+        onPointerLeave={abort}
+        onKeyDown={(e) => {
+          if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) {
+            e.preventDefault() // no synthesized click — the hold is the gesture
+            begin()
+          }
+        }}
+        onKeyUp={(e) => {
+          if (e.key === ' ' || e.key === 'Enter') {
+            e.preventDefault()
+            abort()
+          }
+        }}
+        onClick={(e) => e.preventDefault()}
+        onBlur={abort}
+      >
+        {/* The fill's transition duration IS the hold duration while holding;
+            the snap-back on abort is fast (CSS default). */}
+        <span
+          className="htc-fill"
+          aria-hidden="true"
+          style={holding ? { transitionDuration: `${holdMs}ms` } : undefined}
+        />
+        <span className="htc-body">{waiting ? (waitingLabel ?? label) : label}</span>
+      </button>
+      {/* The inherited phase narration (see the contract above) — outside the
+          button so a disabled button never mutes it. */}
+      <span className="vh" role="status">
+        {live}
+      </span>
+    </>
   )
 }

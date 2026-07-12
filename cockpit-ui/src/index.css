@@ -1182,6 +1182,20 @@ button.mh-screen:hover {
   height: auto;
 }
 
+/* Visually hidden but screen-reader live: the standard clip-rect recipe.
+   display:none/visibility:hidden would mute the live region — this must not. */
+.vh {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
 /* ---------- HoldToConfirm (components/HoldToConfirm.tsx) ---------- */
 
 /* The hold gesture's chrome: a fill sweeping left-to-right for exactly the
@@ -1251,7 +1265,7 @@ button.mh-screen:hover {
 }
 
 .dz-btn-label small {
-  font-size: 8px;
+  font-size: 8.5px; /* the app's floor — never below the thin-chip size */
   letter-spacing: 0.01em;
   text-transform: none;
   color: color-mix(in srgb, var(--red) 40%, var(--dim));

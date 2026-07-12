@@ -886,8 +886,14 @@ export const getGate = (): Promise<Gate> => fetchJson<Gate>('/api/gate')
  * forces cross-origin callers into a failing CORS preflight; same-origin us
  * attaches it trivially). Backend errors surface their one safe {detail} line
  * via fetchJson. Every action fetcher routes here — an action POST without the
- * header is a 403 by construction. */
-export const postAction = <T>(url: string, body?: object): Promise<T> =>
+ * header is a 403 by construction. `signal` lets a caller cancel a request it
+ * no longer wants (an aborted fetch rejects with an AbortError DOMException —
+ * a caller that passes one owns that rejection). */
+export const postAction = <T>(
+  url: string,
+  body?: object,
+  signal?: AbortSignal,
+): Promise<T> =>
   fetchJson<T>(url, {
     method: 'POST',
     headers:
@@ -895,6 +901,7 @@ export const postAction = <T>(url: string, body?: object): Promise<T> =>
         ? { 'X-Cockpit': '1' }
         : { 'X-Cockpit': '1', 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
   })
 
 export interface AzureLoginResponse {
@@ -974,9 +981,14 @@ export const postWithdrawProposal = (
 
 /** The DISARM runbook step: pull entry-side orders, keep the stops. dry_run
  * previews what a real run WOULD do — the venue is untouched. 409 = no broker
- * configured (a state, not a crash) or a disarm already in flight. */
-export const postDisarm = (dryRun: boolean): Promise<DisarmResult> =>
-  postAction<DisarmResult>(`/api/disarm?dry_run=${dryRun ? 1 : 0}`)
+ * configured (a state, not a crash) or a disarm already in flight. `signal`
+ * exists for the PREVIEW only: an aborted hold cancels its in-flight dry run
+ * outright instead of orphaning it server-side. */
+export const postDisarm = (
+  dryRun: boolean,
+  signal?: AbortSignal,
+): Promise<DisarmResult> =>
+  postAction<DisarmResult>(`/api/disarm?dry_run=${dryRun ? 1 : 0}`, undefined, signal)
 
 export const getExecutionSafety = (): Promise<ExecutionSafety> =>
   fetchJson<ExecutionSafety>('/api/execution/safety')
