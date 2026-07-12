@@ -7,6 +7,7 @@ factory, so there is no cycle to trip over.
 """
 
 import math
+import re
 import shutil
 import subprocess
 import sys
@@ -151,6 +152,26 @@ def _down_summary(exc: Exception) -> str:
     """One safe line for a dead DB: the exception CLASS only -- driver messages can
     embed the file path or DSN, so the message itself never reaches a response."""
     return f"database unreachable ({type(exc).__name__})"
+
+
+# The two error shapes the on-demand worker writes TODAY (notify/ondemand.py): the
+# curated no-data line and the class-name-only form. Anything else in the column is
+# a legacy row persisted before the leak fix -- raw ``str(exc)`` that can embed
+# hosts, URLs, or keys.
+_SAFE_STORED_ERROR = re.compile(r"no data for \S+|error \([A-Za-z_][\w.]*\)")
+
+
+def _stored_error_detail(error: str | None) -> str | None:
+    """A stored ``AnalysisRequest.error`` made wire-safe by WHITELIST, not by
+    sanitizing: only the worker's two known-safe shapes pass through verbatim;
+    any other content (legacy pre-fix rows carrying raw exception messages) is
+    replaced with a pointer to the log. Shared by every endpoint that serves the
+    column (/api/analysis and the Zone E ticker) so the posture has one home."""
+    if error is None:
+        return None
+    if _SAFE_STORED_ERROR.fullmatch(error):
+        return error
+    return "error (details in log)"
 
 
 def build_engine_seams(

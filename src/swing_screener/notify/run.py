@@ -89,7 +89,7 @@ from swing_screener.settings import (
     resolve_execution,
     resolve_risk_unit,
 )
-from swing_screener.signals.actionability import classify
+from swing_screener.signals.actionability import classify, surface_keep
 from swing_screener.storage.blob import blob_enabled, download_bytes
 
 log = logging.getLogger(__name__)
@@ -237,16 +237,12 @@ def _drop_already_ran(
     latest_closes_fn: Callable[[list[str]], dict[str, float]],
 ) -> list[Signal]:
     """Drop picks whose entry is no longer live at digest time -- with PLAY-TYPE-AWARE
-    semantics.
+    semantics (``actionability.surface_keep``, the shared rule the cockpit's
+    ``/api/picks`` also applies, so the email and the screen cannot drift).
 
-    CONTINUATION picks drop on ``extended`` (ran past the ceiling: the chase the freshness
-    gate exists to prevent) and on ``broken`` (stop violated). A REVERSAL pick is a RESTING
-    LIMIT with a multi-bar fill window: sitting above its ceiling at digest time is its
-    NORMAL state (a confirmed reversal closes above the flip high by definition), so
-    ``extended`` is kept and only ``broken`` drops it -- the old drop-on-extended rule
-    silently deleted every confirmed reversal during the 2026-07 rotation. Fail-open: a
-    pick with no live quote -- or ANY fetch error -- is KEPT, so a quote outage never
-    silences the digest. Caller passes ``latest_closes_fn=None`` to skip entirely."""
+    Fail-open: a pick with no live quote -- or ANY fetch error -- is KEPT, so a quote
+    outage never silences the digest. Caller passes ``latest_closes_fn=None`` to skip
+    entirely."""
     if not signals:
         return signals
     try:
@@ -258,9 +254,7 @@ def _drop_already_ran(
     for s in signals:
         status = classify(entry_floor=s.entry_floor, entry_ceiling=s.entry_ceiling,
                           stop=s.stop, price=prices.get(s.ticker)).status
-        keep = ("actionable", "unknown", "extended") if s.play_type == "reversal" else (
-            "actionable", "unknown")
-        if status in keep:
+        if status in surface_keep(s.play_type):
             out.append(s)
     return out
 

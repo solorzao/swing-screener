@@ -156,10 +156,15 @@ def process_one(session, request, *, settings, cfg, today, now,
             session, request.id, summary=summary, pdf_blob_key=pdf_key,
             chart_blob_keys=",".join(chart_keys), finished_at=now)
     except Exception as exc:  # noqa: BLE001 -- per-request isolation; never abort the batch
-        log.warning("on-demand request %s failed", request.id, exc_info=True)
+        # Leak posture: the stored error reaches the cockpit wire (/api/analysis and
+        # the Zone E ticker), and fetch/SDK messages can embed hosts, URLs, and keys
+        # -- persist the exception CLASS only (the broker_error_detail convention);
+        # the full traceback goes to the LOG for the operator. The curated
+        # "no data for {ticker}" branch above stays verbatim (safe by construction).
+        log.error("on-demand request %s failed", request.id, exc_info=True)
         session.rollback()
         repo.fail_analysis_request(
-            session, request.id, error=str(exc)[:1024], finished_at=now)
+            session, request.id, error=f"error ({type(exc).__name__})", finished_at=now)
 
 
 def process_pending(session, *, settings, now, today=None, cfg=None,

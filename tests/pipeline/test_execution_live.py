@@ -235,10 +235,14 @@ def test_broker_raise_on_submit_is_graceful() -> None:
         result = adapter.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
 
         assert result.status == "rejected"
-        assert "broker error" in result.detail.lower()
+        # Leak posture: the stored detail reaches the cockpit wire, so it carries
+        # the exception CLASS only (preflight's broker_error_detail wording) --
+        # the raw message (which can embed venue hosts) lives in the LOG.
+        assert result.detail == "broker error (RuntimeError)"
         assert s.query(PaperTrade).count() == 0
         rejected = s.query(ExecutionLog).filter_by(status="rejected_live").one()
-        assert "connection refused" in rejected.detail
+        assert rejected.detail == "broker error (RuntimeError)"
+        assert "connection refused" not in rejected.detail
 
 
 # ---------------------------------------------------------------------------

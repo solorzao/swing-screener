@@ -10,7 +10,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
-from swing_screener.cockpit.common import _is_azure, _require_cockpit, _utc_iso
+from swing_screener.cockpit.common import (
+    _is_azure,
+    _require_cockpit,
+    _stored_error_detail,
+    _utc_iso,
+)
 from swing_screener.db.models import Signal
 from swing_screener.db.repo import (
     create_analysis_request,
@@ -105,7 +110,8 @@ def build_analysis_router(
                 "started_at": _utc_iso(r.started_at),
                 "finished_at": _utc_iso(r.finished_at),
                 "summary": r.summary,
-                "error": r.error,
+                # whitelist, not sanitize: legacy pre-fix rows hold raw str(exc)
+                "error": _stored_error_detail(r.error),
                 "has_pdf": bool(r.pdf_blob_key),
                 "chart_count": len(_chart_keys(r.chart_blob_keys)),
             } for r in rows],

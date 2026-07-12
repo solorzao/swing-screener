@@ -13,10 +13,10 @@ from datetime import UTC, date, datetime, time
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from swing_screener.cockpit.common import _utc_iso
+from swing_screener.cockpit.common import _stored_error_detail, _utc_iso
 from swing_screener.db.models import (
     AnalysisRequest,
     AnalystCall,
@@ -53,8 +53,10 @@ def build_reference_router(
         analyst) anchor at end-of-day UTC (the heartbeats' ``_eod_utc`` rule);
         an AnalysisRequest rides its most recent lifecycle stamp
         (finished > started > requested), so a finishing report resurfaces as the
-        event it is. Ordering is (ts, source, id) descending -- deterministic;
-        same-instant rows group by source then newest id.
+        event it is -- and its sub-select orders by that SAME coalesced stamp, so
+        an old request finishing today can't be starved out of the candidate
+        window by ``limit`` newer ids. Ordering is (ts, source, id) descending --
+        deterministic; same-instant rows group by source then newest id.
 
         Row: ``{source, ts, ticker|null, headline, detail}``; exit rows
         ADDITIONALLY carry ``account`` / ``is_paper`` / ``reason`` / ``tier``
@@ -75,11 +77,16 @@ def build_reference_router(
         for x in session.scalars(select(ExecutionLog)
                                  .order_by(ExecutionLog.id.desc()).limit(limit)):
             ts = _day_ts(x.created_date)
+            # Historical-row shim: rows written before the write-time leak fix
+            # carry `broker error: <raw message>` (which can embed the venue host)
+            # -- serve the bare label; post-fix rows are class-name-only already.
+            detail = ("broker error" if x.detail.startswith("broker error:")
+                      else x.detail)
             entries.append((ts, "execution", x.id, {
                 "source": "execution", "ts": ts.isoformat(), "ticker": x.ticker,
                 "headline": f"{x.side} {x.shares} {x.ticker} "
                             f"@ {x.limit_price:g} ({x.status})",
-                "detail": x.detail,
+                "detail": detail,
             }))
         for m in session.scalars(select(EmailLog)
                                  .order_by(EmailLog.id.desc()).limit(limit)):
@@ -96,13 +103,22 @@ def build_reference_router(
                 "headline": f"{c.final_conviction} conviction on {c.ticker}",
                 "detail": c.nudge_reason,
             }))
-        for r in session.scalars(select(AnalysisRequest)
-                                 .order_by(AnalysisRequest.id.desc()).limit(limit)):
+        # Ordered by the SAME lifecycle stamp the merge sorts on -- id order would
+        # let >limit newer requests starve an old one that just finished out of
+        # the candidate window entirely.
+        analysis_recency = func.coalesce(
+            AnalysisRequest.finished_at, AnalysisRequest.started_at,
+            AnalysisRequest.requested_at)
+        for r in session.scalars(
+                select(AnalysisRequest)
+                .order_by(analysis_recency.desc(), AnalysisRequest.id.desc())
+                .limit(limit)):
             ts = _aware(r.finished_at or r.started_at or r.requested_at)
             entries.append((ts, "analysis", r.id, {
                 "source": "analysis", "ts": ts.isoformat(), "ticker": r.ticker,
                 "headline": f"deep analysis {r.status}: {r.ticker}",
-                "detail": r.summary or (r.error or ""),
+                # error text is whitelist-gated (legacy rows hold raw str(exc))
+                "detail": r.summary or (_stored_error_detail(r.error) or ""),
             }))
         entries.sort(key=lambda e: (e[0], e[1], e[2]), reverse=True)
         return {"events": [row for _, _, _, row in entries[:limit]]}

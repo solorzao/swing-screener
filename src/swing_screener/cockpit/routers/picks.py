@@ -30,8 +30,7 @@ from swing_screener.config import StrategyConfig
 from swing_screener.db.models import AnalystCall, Signal
 from swing_screener.db.repo import latest_run_date, load_scored_analyst_calls
 from swing_screener.notify import select as sel
-from swing_screener.pipeline.reflect import analyst_calibration
-from swing_screener.signals.actionability import classify
+from swing_screener.signals.actionability import classify, surface_keep
 
 
 def build_picks_router(
@@ -130,22 +129,17 @@ def build_picks_router(
 def _split_by_liveness(
     signals: list[Signal], prices: dict[str, float]
 ) -> tuple[list[Signal], list[Signal]]:
-    """``(kept, dropped)`` under the digest's play-type-aware keep rule, RESTATED
-    from ``notify.run._drop_already_ran`` rather than imported (its module drags
-    the whole notify/pipeline graph -- the ``analysis.py`` ``_STALE_AFTER``
-    precedent; the parity test computes its expectation THROUGH the real function,
-    so the two cannot drift silently). Continuation drops on ``extended`` (the
-    chase) and ``broken`` (stop violated); a reversal is a resting limit whose
-    normal state is above its ceiling, so ``extended`` is kept and only ``broken``
-    drops it. No quote -> ``unknown`` -> kept (fail-open, like the digest)."""
+    """``(kept, dropped)`` under the SHARED play-type-aware keep rule
+    (``actionability.surface_keep`` -- the same call the digest's
+    ``_drop_already_ran`` makes, so the two surfaces agree by construction).
+    The split -- rather than the digest's keep-only filter -- is this endpoint's
+    plumbing: the dropped half rides the wire as the flagged extras."""
     kept: list[Signal] = []
     dropped: list[Signal] = []
     for s in signals:
         status = classify(entry_floor=s.entry_floor, entry_ceiling=s.entry_ceiling,
                           stop=s.stop, price=prices.get(s.ticker)).status
-        keep = ("actionable", "unknown", "extended") if s.play_type == "reversal" \
-            else ("actionable", "unknown")
-        (kept if status in keep else dropped).append(s)
+        (kept if status in surface_keep(s.play_type) else dropped).append(s)
     return kept, dropped
 
 
@@ -183,6 +177,9 @@ def _analyst_block(
     if call is None:
         return None
     if s.play_type not in calib_cache:
+        # Lazy: pipeline.reflect drags anthropic (+ the replay stack) at module
+        # scope -- the cockpit must not pay that import on startup.
+        from swing_screener.pipeline.reflect import analyst_calibration
         calib_cache[s.play_type] = analyst_calibration(
             load_scored_analyst_calls(session, play_type=s.play_type))
     scored = calib_cache[s.play_type]["by_conviction"].get(call.final_conviction)

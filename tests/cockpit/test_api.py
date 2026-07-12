@@ -1881,8 +1881,10 @@ def test_trade_defaults_sizing_unconfigured_no_quote_and_404(
 ) -> None:
     """shares == 0 is the deliberate 'sizing unconfigured' signal (no risk unit set:
     the UI renders R-multiples, never a guessed dollar); a missing quote nulls
-    last_close, actionability, AND suggested_entry; an unknown signal_id is a 404
-    and a missing/garbage one FastAPI's 422."""
+    last_close and suggested_entry while actionability stays TOTAL in the
+    /api/picks wire form ({"status": "unknown", "dist_r": null} -- one shape
+    everywhere); an unknown signal_id is a 404 and a missing/garbage one
+    FastAPI's 422."""
     for var in ("SWING_RISK_PER_TRADE_DOLLARS", "SWING_ACCOUNT_EQUITY"):
         monkeypatch.delenv(var, raising=False)
     client, engine = _positions_client(tmp_path)  # no quotes at all
@@ -1894,7 +1896,7 @@ def test_trade_defaults_sizing_unconfigured_no_quote_and_404(
     body = client.get(f"/api/trade-defaults?signal_id={sig_id}").json()
     assert body["sizing"] == {"shares": 0, "risk_dollars": 0.0, "unconfigured": True}
     assert body["last_close"] is None
-    assert body["actionability"] is None
+    assert body["actionability"] == {"status": "unknown", "dist_r": None}
     assert body["suggested_entry"] is None
     assert client.get("/api/trade-defaults?signal_id=999").status_code == 404
     assert client.get("/api/trade-defaults").status_code == 422
@@ -3012,12 +3014,14 @@ def test_picks_match_digest_surfaced_set(tmp_path: Path) -> None:
     """PARITY BY CONSTRUCTION: the endpoint's reversal five equal the digest's own
     call chain over the same store -- a liveness-broken pick frees its slot for
     backfill from below the top-5 AND rides as a flagged extra; a cooldown-stale
-    pick and an ``early`` pick (confirmed_only bar) appear NOWHERE. Mutation-proof:
+    pick and an ``early`` pick (confirmed_only bar) appear NOWHERE. R5 has NO
+    quote at all, so the fail-open ``unknown`` status flows through BOTH the
+    digest chain and the endpoint in this same test. Mutation-proof:
     dropping ``confirmed_only=`` surfaces EARLY (rank 0 -- it would sort FIRST),
     dropping ``max_age_days=`` surfaces STALE, reordering drop-after-cap loses the
     R6 backfill; each diverges from both the computed AND the literal pin."""
-    prices = {"R1": 100.0, "R2": 108.0, "R3": 94.0, "R4": 100.0, "R5": 100.0,
-              "R6": 100.0, "STALE": 100.0, "EARLY": 100.0}
+    prices = {"R1": 100.0, "R2": 108.0, "R3": 94.0, "R4": 100.0,
+              "R6": 100.0, "STALE": 100.0, "EARLY": 100.0}  # R5: quote miss
     client, engine = _positions_client(tmp_path, prices)
     with Session(engine) as s:
         # a prior run anchors the cooldown calendar (cutoff = second-newest run)
@@ -3046,7 +3050,10 @@ def test_picks_match_digest_surfaced_set(tmp_path: Path) -> None:
     everywhere = {p["ticker"] for p in body["reversal"] + body["extras"]}
     assert {"STALE", "EARLY"}.isdisjoint(everywhere)  # bars, not liveness: no ride
 
-    row = {p["ticker"]: p for p in body["reversal"]}["R1"]
+    by_ticker = {p["ticker"]: p for p in body["reversal"]}
+    assert by_ticker["R5"]["actionability"]["status"] == "unknown"  # kept, fail-open
+    assert by_ticker["R5"]["last_close"] is None
+    row = by_ticker["R1"]
     assert set(row) == PICK_ROW_KEYS
     assert row["last_close"] == 100.0
     assert (row["entry_floor"], row["entry_ceiling"], row["stop"], row["target"]) \
@@ -3361,3 +3368,74 @@ def test_emails_limit_default_100(tmp_path: Path) -> None:
     assert emails[-1]["subject"] == "digest 5"
     assert len(client.get("/api/emails", params={"limit": 5}).json()["emails"]) == 5
     assert client.get("/api/emails", params={"limit": 0}).status_code == 422
+
+
+# ---- review fixes: stored-error leak posture + the lifecycle-ordered window
+
+
+def test_ticker_execution_detail_shims_historical_broker_errors(
+    tmp_path: Path,
+) -> None:
+    """Pre-fix ExecutionLog rows carry ``broker error: <raw message>`` with the
+    venue host embedded -- the wire serves the bare label. Post-fix rows
+    (class-name-only) and ordinary details pass through verbatim: the shim is
+    read-time only, for rows persisted before the write-time fix."""
+    client, engine = _client_and_engine(tmp_path)
+    with Session(engine) as s:
+        s.add(_exec_log(detail="broker error: secret-venue.example 401 denied"))
+        s.add(_exec_log(detail="broker error (RuntimeError)"))
+        s.add(_exec_log(detail="order submitted"))
+        s.commit()
+    r = client.get("/api/ticker")
+    details = sorted(e["detail"] for e in r.json()["events"]
+                     if e["source"] == "execution")
+    assert details == ["broker error", "broker error (RuntimeError)",
+                       "order submitted"]
+    assert "secret-venue" not in r.text
+
+
+def test_stored_analysis_error_is_whitelisted_on_both_wire_paths(
+    tmp_path: Path,
+) -> None:
+    """``AnalysisRequest.error`` reaches the wire on TWO paths (/api/analysis and
+    the Zone E ticker); both route through the shared whitelist
+    (``common._stored_error_detail``): the worker's two known-safe shapes pass
+    verbatim, while a legacy raw-``str(exc)`` row (which can embed hosts, URLs,
+    keys) serves the log pointer instead. Mutation-proof: serving the column raw
+    puts 'secret-host' on the wire and both leak assertions fail."""
+    client, engine = _client_and_engine(tmp_path)
+    with Session(engine) as s:
+        s.add(_analysis_row(ticker="AAA", status="failed", error="no data for AAA"))
+        s.add(_analysis_row(ticker="BBB", status="failed",
+                            error="error (RuntimeError)"))
+        s.add(_analysis_row(ticker="CCC", status="failed",
+                            error="RuntimeError: https://secret-host.example?key=abc"))
+        s.commit()
+    r = client.get("/api/analysis")
+    errors = {row["ticker"]: row["error"] for row in r.json()["requests"]}
+    assert errors == {"AAA": "no data for AAA", "BBB": "error (RuntimeError)",
+                      "CCC": "error (details in log)"}
+    assert "secret-host" not in r.text
+
+    t = client.get("/api/ticker")
+    details = {e["ticker"]: e["detail"] for e in t.json()["events"]
+               if e["source"] == "analysis"}
+    assert details == {"AAA": "no data for AAA", "BBB": "error (RuntimeError)",
+                       "CCC": "error (details in log)"}
+    assert "secret-host" not in t.text
+
+
+def test_ticker_analysis_window_orders_by_lifecycle_not_id(tmp_path: Path) -> None:
+    """The AnalysisRequest sub-select orders by the coalesced lifecycle stamp
+    (finished > started > requested): an OLD request that finished today beats a
+    NEWER id still queued -- under the old id-desc order it would be starved out
+    of a limit-1 candidate window entirely."""
+    client, engine = _client_and_engine(tmp_path)
+    with Session(engine) as s:
+        s.add(_analysis_row(ticker="OLD", requested_at=datetime(2026, 7, 1, 9, 0),
+                            status="done",
+                            finished_at=datetime(2026, 7, 10, 15, 0)))
+        s.add(_analysis_row(ticker="NEW", requested_at=datetime(2026, 7, 9, 9, 0)))
+        s.commit()
+    events = client.get("/api/ticker", params={"limit": 1}).json()["events"]
+    assert [e["ticker"] for e in events] == ["OLD"]  # id-desc would starve OLD out

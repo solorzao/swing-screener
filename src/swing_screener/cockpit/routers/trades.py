@@ -380,11 +380,13 @@ def build_trades_router(
 
         404 on an unknown ``signal_id`` (missing/garbage is FastAPI's 422).
         ``actionability`` classifies the entry zone at the cached quote
-        (``signals.actionability.classify``) and is null WITHOUT a quote -- so is
-        ``suggested_entry``, which is the quote CLAMPED into
-        ``[entry_floor, entry_ceiling]``: the prefill never chases an extended
-        price above the ceiling nor bids below the zone. ``sizing`` is
-        ``insight.size_order`` at conviction 'medium' over
+        (``signals.actionability.classify``) and is TOTAL -- the /api/picks wire
+        form: a missing quote reads ``{"status": "unknown", "dist_r": null}``,
+        never null, so the frontend has ONE actionability shape everywhere.
+        ``suggested_entry`` stays null without a quote; with one it is the quote
+        CLAMPED into ``[entry_floor, entry_ceiling]``: the prefill never chases
+        an extended price above the ceiling nor bids below the zone. ``sizing``
+        is ``insight.size_order`` at conviction 'medium' over
         ``resolve_risk_unit(load_settings())``; ``shares == 0`` is the deliberate
         'sizing unconfigured' signal (``unconfigured: true`` -- the UI renders
         R-multiples, never a guessed dollar). One ``QuoteCache.get`` per request.
@@ -394,13 +396,12 @@ def build_trades_router(
             raise HTTPException(
                 status_code=404, detail=f"no signal with id {signal_id}")
         price = quote_cache.get([sig.ticker]).prices.get(sig.ticker)
-        actionability: dict[str, object] | None = None
+        result = classify(entry_floor=sig.entry_floor,
+                          entry_ceiling=sig.entry_ceiling,
+                          stop=sig.stop, price=price)
+        actionability = {"status": result.status, "dist_r": result.dist_r}
         suggested: float | None = None
         if price is not None:
-            result = classify(entry_floor=sig.entry_floor,
-                              entry_ceiling=sig.entry_ceiling,
-                              stop=sig.stop, price=price)
-            actionability = {"status": result.status, "dist_r": result.dist_r}
             suggested = min(max(price, sig.entry_floor), sig.entry_ceiling)
         risk_unit, max_shares = resolve_risk_unit(load_settings())
         shares, risk_dollars = size_order(
