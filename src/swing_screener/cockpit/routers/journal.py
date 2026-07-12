@@ -48,7 +48,12 @@ from swing_screener.journal.curve import drawdown_series, max_drawdown
 from swing_screener.journal.discipline import discipline_report
 from swing_screener.journal.excursions import excursion_summary
 from swing_screener.journal.mistakes import mistake_cost
-from swing_screener.journal.record import TradeRecord, trade_records
+from swing_screener.journal.record import (
+    TradeRecord,
+    manual_equity_records,
+    robinhood_records,
+    trade_records,
+)
 from swing_screener.journal.repo import add_note, add_tag, notes_for_day, tag_trade
 
 # The note's slot in the trading day / the tag vocabulary partition -- constrained at
@@ -261,8 +266,15 @@ def build_journal_router(
         book: str = "research", session: Session = Depends(_session)
     ) -> list[dict[str, object]]:
         """The book's trades as display records (with tags + theses). Display only --
-        never an aggregate."""
-        return [_record_dict(rec) for rec in trade_records(session, book=book)]
+        never an aggregate. The two PERSONAL books dispatch to their own producers
+        (Trade / robinhood OptionPaperTrade); every machine book reads PaperTrade."""
+        if book == "manual_equity":
+            recs = manual_equity_records(session)
+        elif book == "robinhood":
+            recs = robinhood_records(session)
+        else:
+            recs = trade_records(session, book=book)
+        return [_record_dict(rec) for rec in recs]
 
     return router
 
