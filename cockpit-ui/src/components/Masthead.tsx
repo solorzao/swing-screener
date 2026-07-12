@@ -195,8 +195,8 @@ export function Masthead({
 
       <FacetToggle facet={facet} onFacet={onFacet} />
 
-      {/* Screen 10 — the one screen without a digit key (design numbering
-          stops at 9); this link is its only entrance. */}
+      {/* The digitless screens (design numbering stops at 9) — these masthead
+          links are their only entrance. */}
       <button
         type="button"
         className="mh-ref"
@@ -204,6 +204,15 @@ export function Masthead({
         onClick={() => onNavigate('reference')}
       >
         REFERENCE
+      </button>
+
+      <button
+        type="button"
+        className="mh-ref"
+        title="Journal — screen 11 (P&L calendar, equity + drawdown, breakdowns, discipline, notebook)"
+        onClick={() => onNavigate('journal')}
+      >
+        JOURNAL
       </button>
 
       {/* DISARM enablement keys on the PERMANENT gate poll's broker_configured

@@ -1034,6 +1034,177 @@ export const getAnalyst = (): Promise<AnalystReport> =>
 export const getAttention = (): Promise<Attention> =>
   fetchJson<Attention>('/api/attention')
 
+/* ---------- Phase 3 wire shapes (routers/journal.py) ---------- */
+
+/** The journal's per-account firewall: one book selects one account. Distinct
+ * from the masthead `Facet` (research/gold) — these are the trade accounts. */
+export type JournalBook = 'research' | 'paper' | 'live'
+
+/** One P&L calendar cell: summed R (null under the non-finite→null rule) + count.
+ * Shared by the day grid and the month roll-up. */
+export interface CalendarCell {
+  r: number | null
+  n: number
+}
+
+/** GET /api/journal/calendar — days keyed by ISO date, months by "YYYY-MM".
+ * `cost_level` is the BOOK's vintage stamp (null = mixed/unstamped), never
+ * per-cell. With no `month` param `days` spans every closed day. */
+export interface JournalCalendar {
+  days: Record<string, CalendarCell>
+  months: Record<string, CalendarCell>
+  cost_level: string | null
+}
+
+/** GET /api/journal/curve — the realized equity curve, its underwater series,
+ * and max drawdown, all in R. Points are [ISO date, value] with value null
+ * under the non-finite→null rule (a caller filters nulls before plotting). */
+export interface JournalCurve {
+  curve: [string, number | null][]
+  drawdown: [string, number | null][]
+  max_drawdown: number | null
+}
+
+/** GET /api/journal/excursions — MAE/MFE means + medians in R (descriptive
+ * floats, NOT Stats: no CI machinery behind an excursion mean). null = the
+ * cohort had no instrumented rows to measure. */
+export interface JournalExcursions {
+  n: number
+  avg_mae_r: number | null
+  avg_mfe_r: number | null
+  median_mae_r: number | null
+  median_mfe_r: number | null
+}
+
+/** The breakdown axis — day-of-week / hold-time / symbol. */
+export type BreakdownBy = 'dow' | 'hold' | 'symbol'
+
+/** GET /api/journal/breakdowns — each bucket is a full Stat (design rule 1),
+ * keyed by its label (Mon..Fri, hold ranges, or ticker) in server order. */
+export interface JournalBreakdowns {
+  buckets: Record<string, Stat>
+}
+
+/** GET /api/journal/discipline — swing discipline metrics with their counts.
+ * The three metric floats are None-safe (null = unmeasured cohort);
+ * `stop_honored_rate` is a 0..1 fraction, the two R metrics are R. Counts are
+ * structural ints. */
+export interface JournalDiscipline {
+  giveback_r: number | null
+  stop_honored_rate: number | null
+  avg_mae_before_win: number | null
+  n_closed: number
+  n_with_excursion: number
+  n_wins: number
+  n_stopped: number
+  n_with_exit_reason: number
+}
+
+/** One GET /api/journal/mistakes row (worst-first): `total_r`/`n` are the plain
+ * aggregate cost + count (like a KPI), while `stat` is the per-trade expectancy
+ * as a full Stat so the edge claim carries its CI. */
+export interface MistakeRow {
+  mistake: string
+  n: number
+  total_r: number | null
+  stat: Stat
+}
+
+/** A note's slot in the trading day (the wire-constrained enum). */
+export type NoteKind = 'premarket' | 'postmarket' | 'adhoc'
+
+/** GET /api/journal/notes row. `source` is stamped server-side ('human' for a
+ * cockpit-written note); `module` is optional free text. */
+export interface JournalNote {
+  id: number
+  day: string
+  kind: NoteKind
+  module: string | null
+  body: string
+  source: string
+  created_at: string
+}
+
+/** POST /api/journal/notes body — `source` is NOT a field (stamped 'human'
+ * server-side; a client can never claim screener/analyst provenance). */
+export interface NoteCreate {
+  day: string
+  kind: NoteKind
+  body: string
+  module?: string | null
+}
+
+/** A tag as displayed on a record (read-only here — the tagging UI is deferred). */
+export interface JournalTagView {
+  name: string
+  kind: string
+  source: string
+}
+
+/** A thesis as displayed on a record: which event, who wrote it, the prose. */
+export interface JournalThesisView {
+  event_kind: string
+  source: string
+  body: string
+}
+
+/** One GET /api/journal/records row — a display TradeRecord with its tags +
+ * theses. Display only, never an aggregate. `opened`/`closed` are ISO (closed
+ * null while open); `r` is realized R (null until closed); the swing book is
+ * long-only (`direction: 'long'`, `unit: 'R'`). */
+export interface TradeRecordRow {
+  trade_id: number
+  book: string
+  module: string
+  symbol: string
+  direction: string
+  opened: string | null
+  closed: string | null
+  unit: string
+  r: number | null
+  tags: JournalTagView[]
+  theses: JournalThesisView[]
+}
+
+export const getJournalCalendar = (
+  book: JournalBook,
+  month?: string,
+): Promise<JournalCalendar> =>
+  fetchJson<JournalCalendar>(
+    month === undefined || month === ''
+      ? `/api/journal/calendar?book=${book}`
+      : `/api/journal/calendar?book=${book}&month=${month}`,
+  )
+
+export const getJournalCurve = (book: JournalBook): Promise<JournalCurve> =>
+  fetchJson<JournalCurve>(`/api/journal/curve?book=${book}`)
+
+export const getJournalExcursions = (book: JournalBook): Promise<JournalExcursions> =>
+  fetchJson<JournalExcursions>(`/api/journal/excursions?book=${book}`)
+
+export const getJournalBreakdowns = (
+  book: JournalBook,
+  by: BreakdownBy,
+): Promise<JournalBreakdowns> =>
+  fetchJson<JournalBreakdowns>(`/api/journal/breakdowns?book=${book}&by=${by}`)
+
+export const getJournalDiscipline = (book: JournalBook): Promise<JournalDiscipline> =>
+  fetchJson<JournalDiscipline>(`/api/journal/discipline?book=${book}`)
+
+export const getJournalMistakes = (book: JournalBook): Promise<MistakeRow[]> =>
+  fetchJson<MistakeRow[]>(`/api/journal/mistakes?book=${book}`)
+
+export const getJournalRecords = (book: JournalBook): Promise<TradeRecordRow[]> =>
+  fetchJson<TradeRecordRow[]>(`/api/journal/records?book=${book}`)
+
+/** Notes are DAY-scoped, not book-scoped (a bad date is the server's 422). */
+export const getJournalNotes = (day: string): Promise<JournalNote[]> =>
+  fetchJson<JournalNote[]>(`/api/journal/notes?day=${day}`)
+
+/** Write a human notebook entry (X-Cockpit guarded; `source` stamped server-side). */
+export const postJournalNote = (body: NoteCreate): Promise<JournalNote> =>
+  postAction<JournalNote>('/api/journal/notes', body)
+
 export interface Polled<T> {
   data: T | null
   error: string | null

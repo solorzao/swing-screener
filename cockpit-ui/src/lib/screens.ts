@@ -20,6 +20,7 @@ export type ScreenId =
   | 'weather'
   | 'systems'
   | 'reference'
+  | 'journal'
 
 export interface ScreenDef {
   id: ScreenId
@@ -42,6 +43,7 @@ export const SCREENS: ScreenDef[] = [
   { id: 'weather', digit: '8', title: 'MARKET WEATHER' },
   { id: 'systems', digit: '9', title: 'SYSTEMS' },
   { id: 'reference', digit: null, title: 'REFERENCE' },
+  { id: 'journal', digit: null, title: 'JOURNAL' },
 ]
 
 const BY_ID = new Map(SCREENS.map((s) => [s.id, s]))
@@ -54,6 +56,11 @@ export function screenDef(id: ScreenId): ScreenDef {
   return def
 }
 
-/** The display NUMBER (design numbering): the digit key, or '10' for the
- * digitless Reference screen. */
-export const screenNumber = (def: ScreenDef): string => def.digit ?? '10'
+/** The display NUMBER (design numbering): the digit key for 1-9, else the
+ * digitless screens number on from 10 in registry order (Reference '10',
+ * Journal '11') — so a second masthead-only screen never collides on '10'. */
+export const screenNumber = (def: ScreenDef): string => {
+  if (def.digit !== null) return def.digit
+  const idx = SCREENS.filter((s) => s.digit === null).findIndex((s) => s.id === def.id)
+  return String(10 + idx)
+}
