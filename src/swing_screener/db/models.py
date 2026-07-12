@@ -89,6 +89,9 @@ class Trade(Base):
     # cockpit's log-trade endpoint and rendered verbatim. None = engine-faithful OR
     # unprefilled -- the UI's unlinked tag (signal_id NULL) tells those apart, not this.
     override: Mapped[str | None] = mapped_column(String(256), default=None)
+    # Journal v2: the discretionary emotion at entry/close (FOMO, revenge, calm...).
+    # Manual actions ONLY -- never on machine entries (design v1 Principle 5).
+    emotional_state: Mapped[str | None] = mapped_column(String(32), default=None)
 
 
 class PaperTrade(Base):
@@ -477,6 +480,99 @@ class JournalThesis(Base):
     body: Mapped[str] = mapped_column(Text, default="")
     snapshot_json: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime | None] = mapped_column(default=None)
+
+
+class JournalReview(Base):
+    """Journal v2 -- Personal Trade Coach artifact: one per-trade review or a weekly
+    rollup. ``facts_json`` is the authoritative code-written scorecard (incl. parked
+    auto-tag proposals); ``narrative`` is advisory LLM prose (null -> template); the
+    displayed figures are always rendered from ``facts_json``, never from the prose.
+    ``book`` is a personal book (manual_equity | robinhood). No FK into the read-model."""
+
+    __tablename__ = "journal_reviews"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Idempotency key the writer computes so a re-fired job never double-writes:
+    # trade_close -> "trade_close:{book}:{trade_id}"; rollup -> "weekly_rollup:
+    # {book}:{covered_from}:{covered_to}". A single UNIQUE avoids the NULL-in-
+    # composite-unique trap (nullable window cols make NULLs distinct in SQL).
+    identity_key: Mapped[str] = mapped_column(String(128), unique=True)
+    # trade_close | weekly_rollup
+    kind: Mapped[str] = mapped_column(String(16))
+    book: Mapped[str] = mapped_column(String(16), index=True)
+    trade_id: Mapped[int | None] = mapped_column(default=None)  # null for rollups
+    covered_from: Mapped[date | None] = mapped_column(default=None)  # rollup window
+    covered_to: Mapped[date | None] = mapped_column(default=None)
+    facts_json: Mapped[str] = mapped_column(Text, default="{}")
+    narrative: Mapped[str | None] = mapped_column(Text, default=None)
+    human_edit: Mapped[str | None] = mapped_column(Text, default=None)
+    source: Mapped[str] = mapped_column(String(16))
+    model: Mapped[str | None] = mapped_column(String(64), default=None)
+    # APPROXIMATE token spend (notify.analysis.Usage); NULL on the no-LLM/fallback path.
+    input_tokens: Mapped[int | None] = mapped_column(default=None)
+    output_tokens: Mapped[int | None] = mapped_column(default=None)
+    est_cost_usd: Mapped[float | None] = mapped_column(default=None)
+    generated_at: Mapped[datetime | None] = mapped_column(default=None)
+
+
+class SystemAudit(Base):
+    """Journal v2 -- System Behavior Auditor artifact: a weekly conduct sweep or an
+    immediate breach row. ``findings_json`` is authoritative; ``narrative`` advisory.
+    Machine-conduct only; never reads personal books. ``breach_key`` disambiguates
+    breach rows within a period ("" for weekly)."""
+
+    __tablename__ = "system_audits"
+    __table_args__ = (
+        UniqueConstraint(
+            "kind", "period_from", "period_to", "breach_key",
+            name="uq_system_audits_identity",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16))  # weekly | breach
+    period_from: Mapped[date]
+    period_to: Mapped[date]
+    breach_key: Mapped[str] = mapped_column(String(64), default="")
+    findings_json: Mapped[str] = mapped_column(Text, default="{}")
+    severity: Mapped[str] = mapped_column(String(16), default="info")
+    narrative: Mapped[str | None] = mapped_column(Text, default=None)
+    acknowledged_by_human: Mapped[bool] = mapped_column(default=False)
+    model: Mapped[str | None] = mapped_column(String(64), default=None)
+    input_tokens: Mapped[int | None] = mapped_column(default=None)
+    output_tokens: Mapped[int | None] = mapped_column(default=None)
+    est_cost_usd: Mapped[float | None] = mapped_column(default=None)
+    generated_at: Mapped[datetime | None] = mapped_column(default=None)
+
+
+class WeaknessesProfile(Base):
+    """Journal v2 -- the living distillation of the trader's recurring weaknesses.
+    Append-only; the latest row is current. ``items_json`` evidence keys on
+    ``(book, trade_id)`` pairs -- Coach producer id spaces overlap. Staleness-stamped."""
+
+    __tablename__ = "weaknesses_profiles"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    scope: Mapped[str] = mapped_column(String(16), default="personal")
+    items_json: Mapped[str] = mapped_column(Text, default="[]")
+    covered_from: Mapped[date | None] = mapped_column(default=None)
+    covered_to: Mapped[date | None] = mapped_column(default=None)
+    model: Mapped[str | None] = mapped_column(String(64), default=None)
+    generated_at: Mapped[datetime | None] = mapped_column(default=None)
+
+
+class DisarmEvent(Base):
+    """Journal v2 -- a persisted disarm so the Auditor can see an unexpected disarm
+    (POST /api/disarm logs only today). Machine-conduct telemetry."""
+
+    __tablename__ = "disarm_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[datetime]
+    reason: Mapped[str] = mapped_column(String(256), default="")
+    orders_cancelled: Mapped[int] = mapped_column(default=0)
+
+
 class GexSnapshot(Base):
     """One computed GEX map per (underlying, snapshot time). Options-lab table:
     lifecycle columns are DateTime, not Date -- the lab trades inside the session
