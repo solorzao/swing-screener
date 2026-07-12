@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
-from swing_screener.cockpit.common import _is_azure, _require_cockpit
+from swing_screener.cockpit.common import _is_azure, _require_cockpit, _utc_iso
 from swing_screener.db.models import Signal
 from swing_screener.db.repo import (
     create_analysis_request,
@@ -198,17 +198,6 @@ def _stalled(status: str, started_at: datetime | None, *, now: datetime) -> bool
     if started_at.tzinfo is None:
         started_at = started_at.replace(tzinfo=UTC)
     return (now - started_at) > _STALE_AFTER
-
-
-def _utc_iso(value: datetime | None) -> str | None:
-    """A stored datetime as an unambiguous UTC wire string ('+00:00'-suffixed).
-
-    DB datetimes come back tz-naive (see ``_stalled``); served naive, JS's
-    ``Date()`` would parse them as LOCAL time and skew every relative-time render
-    by the zone offset. The worker/cockpit stamp UTC, so stamping UTC here is
-    correct; legacy Streamlit ``requested_at`` rows were naive LOCAL and wear a
-    bounded display offset until they age out (disclosed at the endpoints)."""
-    return value.replace(tzinfo=UTC).isoformat() if value is not None else None
 
 
 def _worker_label(db_url: str) -> str:

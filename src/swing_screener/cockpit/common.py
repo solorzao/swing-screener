@@ -13,6 +13,7 @@ import sys
 import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -131,6 +132,19 @@ def _json_safe_floats(obj: object) -> object:
     if isinstance(obj, list):
         return [_json_safe_floats(v) for v in obj]
     return obj
+
+
+def _utc_iso(value: datetime | None) -> str | None:
+    """A stored datetime as an unambiguous UTC wire string ('+00:00'-suffixed).
+
+    DB datetimes come back tz-naive (sqlite/mssql DATETIME drop tzinfo); served
+    naive, JS's ``Date()`` would parse them as LOCAL time and skew every
+    relative-time render by the zone offset. The cockpit/worker writers stamp
+    UTC, so stamping UTC here is correct; legacy Streamlit rows were naive LOCAL
+    and wear a bounded display offset until they age out (disclosed at the
+    endpoints). Moved here from ``routers/analysis.py`` (verbatim) once the
+    reference router became its second consumer."""
+    return value.replace(tzinfo=UTC).isoformat() if value is not None else None
 
 
 def _down_summary(exc: Exception) -> str:
