@@ -1,3 +1,4 @@
+import type { KeyboardEvent } from 'react'
 import type { Polled, TickerEvent, TickerFeed, TickerSource } from '../lib/api'
 
 /* Zone E — the event ticker (plan Task 20): the merged reverse-chron activity
@@ -7,13 +8,16 @@ import type { Polled, TickerEvent, TickerFeed, TickerSource } from '../lib/api'
    /api/ticker poll lives at App level on the permanent roster (like health /
    beats / gate / forward-books / attention); this component only renders.
 
-   Scroll idiom (per the plan's Task-20 guidance — "a simple scrollable strip is
-   fine, DON'T use a janky animation"): a single horizontally-scrollable row of
-   source-tagged pills, newest on the LEFT (the wire is already newest-first — the
-   merge sorts (ts, source, id) descending — so this maps events in order and
-   NEVER re-sorts). Left-to-right is the one unambiguous reading of a reverse-chron
-   feed; a two-row column-flow (the design's literal "2 rows") scrambles recency,
-   so this collapses to one honest row — a disclosed deviation.
+   Scroll idiom — a DELIBERATE DEVIATION from the spec, stated plainly: the plan
+   (Task 20) and the design doc both specify a TWO-ROW strip. This ships ONE
+   horizontally-scrollable row instead, because a two-row column-flow layout
+   scrambles the newest-first recency — an event and the one before it would land
+   in the same column (top vs bottom), so reading down-then-right no longer tracks
+   time. A single row keeps reverse-chron unambiguous: newest on the LEFT (the wire
+   is already newest-first — the merge sorts (ts, source, id) descending — so this
+   maps events in order and NEVER re-sorts), older to the right. No animation; the
+   row scrolls by wheel, drag, or keyboard (the region is focusable + arrow-key
+   scrollable). The two-row layout is a straightforward follow-up if wanted.
 
    Every field renders WIRE-VERBATIM: source / ticker / headline in the pill,
    detail + the exit facets (account · book · reason · tier) in the hover title.
@@ -50,7 +54,7 @@ function eventTitle(ev: TickerEvent): string {
 
 function EventPill({ ev }: { ev: TickerEvent }) {
   return (
-    <span className={`et-pill et-src-${ev.source}`} title={eventTitle(ev)}>
+    <span className={`et-pill et-src-${ev.source}`} role="listitem" title={eventTitle(ev)}>
       <span className="et-tag">{SOURCE_LABEL[ev.source]}</span>
       {ev.ticker !== null && ev.ticker !== '' && (
         <span className="et-ticker mono">{ev.ticker}</span>
@@ -66,10 +70,39 @@ export function EventTicker({ feed }: { feed: Polled<TickerFeed> }) {
   // yet" (…) from "the feed is genuinely empty" (no events yet).
   const events = feed.data?.events ?? null
 
+  // role: NOT "log" — a log is an append-at-END live region that assistive tech
+  // reads in DOM order, which would both mis-announce this newest-on-LEFT feed and
+  // chatter on every 60s poll. A plain list is the honest shape: an ordered set of
+  // items with no live-region claim, labelled with its direction. The role rides
+  // only the populated branch so the empty/loading text is never an orphan child
+  // of a list (a strict-a11y flag). The region is focusable (tabIndex) so a
+  // keyboard-only user can Tab to it and arrow-scroll to older events.
+  const populated = events !== null && events.length > 0
+  // EXPLICIT keyboard scroll: a focused tabIndex=0 overflow div does NOT reliably
+  // arrow-scroll on its own in Chromium (verified: focused, 12×ArrowRight, no
+  // movement) — so the region owns the gesture rather than trusting a flaky
+  // browser default. Arrows nudge, Home/End jump; horizontal only (there is no
+  // vertical overflow to steal). preventDefault stops the page from also moving.
+  const onScrollKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    const el = e.currentTarget
+    const step = 160
+    if (e.key === 'ArrowRight') el.scrollBy({ left: step })
+    else if (e.key === 'ArrowLeft') el.scrollBy({ left: -step })
+    else if (e.key === 'Home') el.scrollTo({ left: 0 })
+    else if (e.key === 'End') el.scrollTo({ left: el.scrollWidth })
+    else return
+    e.preventDefault()
+  }
   return (
-    <div className="et" role="log" aria-label="event ticker">
+    <div className="et">
       <span className="et-label">FEED</span>
-      <div className="et-scroll">
+      <div
+        className="et-scroll"
+        tabIndex={0}
+        role={populated ? 'list' : undefined}
+        aria-label="event ticker, newest first"
+        onKeyDown={onScrollKey}
+      >
         {events === null ? (
           <span className="et-empty">…</span>
         ) : events.length === 0 ? (

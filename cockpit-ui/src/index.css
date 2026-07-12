@@ -3948,6 +3948,15 @@ button.needs-hand-btn:hover {
   scrollbar-width: thin;
 }
 
+/* The region is focusable (tabIndex=0) so a keyboard-only user can Tab to it and
+   arrow-scroll to older events — a visible focus ring makes that reachable, not a
+   dead outline suppression. Only on keyboard focus (:focus-visible), not mouse. */
+.et-scroll:focus-visible {
+  outline: 1px solid var(--blue);
+  outline-offset: -1px;
+  border-radius: 3px;
+}
+
 .et-empty {
   font-size: 11px;
   color: var(--faint);
@@ -3976,7 +3985,11 @@ button.needs-hand-btn:hover {
   white-space: nowrap;
 }
 
-/* Per-source hue on the tag only — quiet, one accent each. */
+/* Per-source hue on the tag only — quiet accents on the notable trading-activity
+   sources: exit=amber, execution+analysis=blue (order/analysis flow), analyst=green.
+   email is DELIBERATELY left at the neutral --dim default (the .et-tag base above):
+   a routine digest notification is the lowest-signal event on the strip, so it is
+   de-emphasized rather than given a fifth hue in a four-color palette. */
 .et-src-exit .et-tag {
   color: var(--amber);
   border-color: color-mix(in srgb, var(--amber) 45%, var(--line2));
