@@ -1,4 +1,5 @@
 import type { CapUsage } from '../lib/api'
+import { fmtR, fmtUsd } from '../lib/fmt'
 
 /* One hard-limit cap as a gauge (routers/trades.py caps semantics):
    - `limit: null` is UNBOUNDED — "no cap set" rendered on a dashed track,
@@ -7,12 +8,10 @@ import type { CapUsage } from '../lib/api'
      is today's realized R with sign preserved and only losses consume the
      budget (the breaker fires at used <= -limit), so a winning day fills 0%;
    - fill turns amber at 80% and red (breach) at 100% — red always pairs with
-     the BREACH text, never hue alone. */
+     the BREACH text, never hue alone.
 
-const fmtUsd = (v: number): string =>
-  `$${v.toLocaleString('en-US', { maximumFractionDigits: 0 })}`
-
-const fmtR = (v: number): string => `${v >= 0 ? '+' : ''}${v.toFixed(2)}R`
+   Money/R cells route through lib/fmt (U+2212 minus, grouped thousands) — the
+   one spelling shared with the trade screens; whole-dollar caps pass 0 decimals. */
 
 export function CapGauge({
   label,
@@ -40,7 +39,7 @@ export function CapGauge({
   const level = frac >= 1 ? 'cg-breach' : frac >= 0.8 ? 'cg-warn' : ''
   const text =
     kind === 'usd'
-      ? `${fmtUsd(cap.used)} / ${fmtUsd(cap.limit)}`
+      ? `${fmtUsd(cap.used, 0)} / ${fmtUsd(cap.limit, 0)}`
       : kind === 'r'
         ? `today ${fmtR(cap.used)} · breaker at −${cap.limit.toFixed(2)}R`
         : `${cap.used} / ${cap.limit} open`

@@ -3,6 +3,7 @@ import {
   getCohorts,
   getFunnel,
   getPerformance,
+  getPicks,
   getPositions,
   usePolling,
 } from '../lib/api'
@@ -14,6 +15,8 @@ import type {
   Polled,
   Window,
 } from '../lib/api'
+import { fmtClock } from '../lib/fmt'
+import { resolveCohortStat } from '../lib/picks'
 import { FacetCaption } from '../components/FacetToggle'
 import { ForwardBooksPanel } from '../components/ForwardBooksPanel'
 import { FunnelBar } from '../components/FunnelBar'
@@ -21,6 +24,7 @@ import { HeartbeatRail } from '../components/HeartbeatRail'
 import { PanelBody } from '../components/PanelBody'
 import { PerformancePanel } from '../components/PerformancePanel'
 import type { BreakdownTab } from '../components/PerformancePanel'
+import { PickCard } from '../components/PickCard'
 import { RiskStrip } from '../components/RiskStrip'
 import { Segmented } from '../components/Segmented'
 import { StatChip } from '../components/StatChip'
@@ -52,6 +56,78 @@ function CohortsSection({ facet, wake }: { facet: Facet; wake: number }) {
             ))
           )
         }
+      </PanelBody>
+    </section>
+  )
+}
+
+/* Zone D — TODAY (the design's right-column pick surface, plan Task 17). The
+   digest's surfaced picks in digest order as compact PickCards, then the
+   liveness-dropped extras flagged beneath — never counted in the surfaced five.
+   Its own picks + cohorts polls (per-screen; die with Mission Control); the
+   cohort join is facet-scoped. The LOG action hands the pick's signal id up to
+   App, which navigates to the Candidates screen and prefills the form there
+   (Mission Control has no room to host it). */
+function TodayZone({
+  facet,
+  wake,
+  onLogPick,
+}: {
+  facet: Facet
+  wake: number
+  onLogPick: (signalId: number) => void
+}) {
+  const picks = usePolling(getPicks, POLL_MS, wake)
+  const cohorts = usePolling(() => getCohorts(facet), POLL_MS, wake, facet)
+  const cohortRows = cohorts.data?.cohorts ?? []
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        TODAY
+        <span className="panel-caption">
+          the digest’s surfaced picks · prices as of last close
+          {picks.data !== null && ` · quotes ${fmtClock(picks.data.quotes_as_of)}`}
+        </span>
+      </div>
+      <PanelBody polled={picks} noun="picks">
+        {(data) => {
+          const surfaced = [...data.daily, ...data.reversal]
+          if (surfaced.length === 0 && data.extras.length === 0) {
+            return (
+              <div className="panel-wait">
+                no picks today — next evening screen ~18:05 ET
+              </div>
+            )
+          }
+          return (
+            <div className="pk-list">
+              {surfaced.map((p) => (
+                <PickCard
+                  key={p.signal_id}
+                  pick={p}
+                  cohortStat={resolveCohortStat(cohortRows, p.cohort)}
+                  onLog={onLogPick}
+                />
+              ))}
+              {data.extras.length > 0 && (
+                <>
+                  <div className="pk-extra-head">
+                    flagged extras · dropped for liveness, never in the five
+                  </div>
+                  {data.extras.map((p) => (
+                    <PickCard
+                      key={p.signal_id}
+                      pick={p}
+                      isExtra
+                      cohortStat={resolveCohortStat(cohortRows, p.cohort)}
+                      onLog={onLogPick}
+                    />
+                  ))}
+                </>
+              )}
+            </div>
+          )
+        }}
       </PanelBody>
     </section>
   )
@@ -132,6 +208,7 @@ export function MissionControlScreen({
   onWin,
   onPlayType,
   onTab,
+  onLogPick,
 }: {
   beats: Polled<Heartbeat[]>
   fb: Polled<ForwardBooks>
@@ -143,6 +220,8 @@ export function MissionControlScreen({
   onWin: (win: Window) => void
   onPlayType: (playType: PlayType) => void
   onTab: (tab: BreakdownTab) => void
+  /** Zone D LOG hand-off: navigate to Candidates and prefill there. */
+  onLogPick: (signalId: number) => void
 }) {
   const funnel = usePolling(getFunnel, POLL_MS, wake)
   const positions = usePolling(getPositions, POLL_MS, wake)
@@ -182,6 +261,7 @@ export function MissionControlScreen({
         </div>
 
         <div className="col-stack">
+          <TodayZone facet={facet} wake={wake} onLogPick={onLogPick} />
           <CohortsSection facet={facet} wake={wake} />
           <PerformanceSection
             facet={facet}

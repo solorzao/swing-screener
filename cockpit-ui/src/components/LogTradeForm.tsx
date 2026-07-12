@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { ApiError, getTradeDefaults, postLogTrade } from '../lib/api'
 import type { FieldError, LogTradeResult, TradeDefaults } from '../lib/api'
@@ -114,7 +114,16 @@ type Phase =
  * out of sync (loc '' is the model-level bucket; handled separately). */
 const KNOWN_FIELDS: readonly string[] = [...Object.keys(EMPTY), 'signal_id']
 
-export function LogTradeForm({ onLogged }: { onLogged: () => void }) {
+export function LogTradeForm({
+  onLogged,
+  initialSignalId,
+}: {
+  onLogged: () => void
+  /** When set (a pick's LOG action), the form mounts already loading that
+   * signal's engine defaults — the same path the manual "load" button takes.
+   * The caller keys the form on this id so a new pick remounts + reloads. */
+  initialSignalId?: number
+}) {
   const [fields, setFields] = useState<Fields>(EMPTY)
   const [signalIdInput, setSignalIdInput] = useState('')
   const [defaults, setDefaults] = useState<TradeDefaults | null>(null)
@@ -156,6 +165,10 @@ export function LogTradeForm({ onLogged }: { onLogged: () => void }) {
       setDefaultsError('enter a numeric signal id')
       return
     }
+    loadDefaultsFor(id)
+  }
+
+  const loadDefaultsFor = (id: number) => {
     setLoadingDefaults(true)
     setDefaultsError(null)
     getTradeDefaults(id).then(
@@ -197,6 +210,18 @@ export function LogTradeForm({ onLogged }: { onLogged: () => void }) {
     setSignalIdInput('')
     setDefaultsError(null)
   }
+
+  // Prefill-on-mount: a pick's LOG action mounts this form (keyed on the id, so
+  // a different pick remounts) with initialSignalId set — auto-load its engine
+  // defaults exactly as the manual "load" button would. Mount-only: the id is
+  // fixed for this instance's lifetime by the key.
+  useEffect(() => {
+    if (initialSignalId !== undefined) {
+      setSignalIdInput(String(initialSignalId))
+      loadDefaultsFor(initialSignalId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only; the id is pinned by the caller's key
+  }, [])
 
   const submit = () => {
     setPhase({ kind: 'submitting' })

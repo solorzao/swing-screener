@@ -33,7 +33,7 @@ export interface ScreenDef {
 
 export const SCREENS: ScreenDef[] = [
   { id: 'mission', digit: '1', title: 'MISSION CONTROL' },
-  { id: 'candidates', digit: '2', title: 'CANDIDATES', task: 17 },
+  { id: 'candidates', digit: '2', title: 'CANDIDATES' },
   { id: 'positions', digit: '3', title: 'POSITIONS & LEDGER' },
   { id: 'forward', digit: '4', title: 'FORWARD BOOKS' },
   { id: 'playbooks', digit: '5', title: 'PLAYBOOKS', task: 18 },

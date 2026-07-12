@@ -2335,3 +2335,352 @@ button.pos-close:hover {
   font-size: 12.5px;
   color: var(--txt);
 }
+
+/* ---------- Candidates / Zone D: PickCard, LevelRail, ConvictionChip ----------
+
+   All prefixes are flat + namespaced (pk- / lr- / cvc-) per index.css's
+   convention. The actionability lamp REUSES the .plamp-* swatch vocabulary
+   (see PickCard.tsx), and the status TEXT color reuses .ltf-act-<status> — one
+   spelling of the four-state actionability palette, never a second definition. */
+
+/* The card: dense, quiet, one per surfaced pick. */
+.pk {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px 11px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+
+/* A liveness-dropped extra: dashed + dimmed, visibly not one of the five. */
+.pk-extra {
+  border-style: dashed;
+  border-color: var(--line2);
+  opacity: 0.82;
+}
+
+.pk-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pk-act {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pk-act-txt {
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+
+.pk-act-dist {
+  color: var(--dim);
+}
+
+.pk-ticker {
+  font-size: 13px;
+  color: var(--txt);
+}
+
+.pk-meta {
+  font-size: 9.5px;
+  color: var(--faint);
+}
+
+.pk-spacer {
+  flex: 1;
+}
+
+/* The extra flag — amber tag: flagged, not forbidden (same hue as pos-override). */
+.pk-flag {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--amber);
+  border: 1px dashed var(--lamp-amber-border);
+  border-radius: 2px;
+  padding: 0 5px;
+  white-space: nowrap;
+}
+
+.pk-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.pk-tag {
+  font-size: 9.5px;
+  color: var(--dim);
+  border: 1px solid var(--line2);
+  border-radius: 2px;
+  padding: 0 5px;
+  white-space: nowrap;
+}
+
+.pk-repeat {
+  color: var(--faint);
+  border-style: dashed;
+}
+
+/* ConvictionChip — the analyst grade + that grade's scored record. Blue is the
+   neutral-info accent (never green: a mean R here is not a saturated edge). */
+.cvc {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  font-size: 10px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--blue) 32%, var(--line2));
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+/* Unproven grade: dashed amber — a posture cue, same family as ltf-unconf. */
+.cvc-unproven {
+  border-color: color-mix(in srgb, var(--amber) 45%, var(--line2));
+  border-style: dashed;
+}
+
+.cvc-grade {
+  color: var(--txt);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cvc-track {
+  font-family: var(--mono);
+  color: var(--dim);
+}
+
+.cvc-n {
+  color: var(--faint);
+}
+
+.cvc-unproven-txt {
+  color: var(--amber);
+}
+
+/* LevelRail — the entry geometry as one bar; every price is copied to labels. */
+.lr {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.lr-track {
+  position: relative;
+  height: 8px;
+  background: var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+/* Degenerate zone (collapsed levels): a dim dashed strip, no plotted geometry. */
+.lr-degenerate {
+  background: repeating-linear-gradient(
+    90deg,
+    var(--line) 0 4px,
+    transparent 4px 8px
+  );
+}
+
+/* The entry window [floor, ceiling] — blue-tinted band (neutral info). */
+.lr-zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: color-mix(in srgb, var(--blue) 26%, transparent);
+  border-left: 1px solid color-mix(in srgb, var(--blue) 45%, var(--line2));
+  border-right: 1px solid color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+
+.lr-tick {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  width: 2px;
+  transform: translateX(-1px);
+}
+
+.lr-stop {
+  background: var(--red);
+}
+
+/* Target is an engine level, not a proven edge — dim, never green. */
+.lr-target {
+  background: var(--dim);
+}
+
+/* The live position: a bright vertical mark (var(--txt)) at last_close. */
+.lr-mark {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  transform: translateX(-1px);
+  background: var(--txt);
+  box-shadow: 0 0 3px color-mix(in srgb, var(--txt) 60%, transparent);
+}
+
+.lr-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 10px;
+  font-size: 9.5px;
+}
+
+.lr-lab {
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.lr-lab-stop {
+  color: color-mix(in srgb, var(--red) 55%, var(--dim));
+}
+
+.lr-lab-target,
+.lr-lab-last {
+  color: var(--txt);
+}
+
+.pk-cohort {
+  min-height: 1px;
+}
+
+.pk-nocohort {
+  font-size: 9.5px;
+  color: var(--faint);
+  font-style: italic;
+}
+
+.pk-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pk-chart {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-decoration: none;
+}
+
+.pk-chart-thumb {
+  max-height: 40px;
+  max-width: 120px;
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+}
+
+.pk-chart-cap {
+  font-size: 9.5px;
+  color: var(--blue);
+}
+
+.pk-nochart {
+  font-size: 9.5px;
+  color: var(--faint);
+}
+
+/* The one row action — blue-tinted, the affordance vocabulary of ctf-submit. */
+button.pk-log {
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  padding: 3px 12px;
+  border-radius: 3px;
+  color: var(--txt);
+  background: color-mix(in srgb, var(--blue) 16%, var(--panel2));
+  border: 1px solid color-mix(in srgb, var(--blue) 45%, var(--line2));
+  cursor: pointer;
+}
+
+button.pk-log:hover {
+  background: color-mix(in srgb, var(--blue) 24%, var(--panel2));
+}
+
+/* Zone D list (Mission Control right column): one card per row. */
+.pk-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.pk-extra-head {
+  margin-top: 4px;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+  border-top: 1px dashed var(--line2);
+  padding-top: 8px;
+}
+
+/* Candidates screen: sectioned card grid + the view toggle's extras hint. */
+.pk-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 12px;
+}
+
+.pk-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pk-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--dim);
+}
+
+.pk-section-cap {
+  letter-spacing: 0;
+  text-transform: none;
+  font-size: 10px;
+  color: var(--faint);
+}
+
+.pk-section-empty {
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.pk-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 10px;
+}
+
+.pk-extra-hint {
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
+button.pk-log-close {
+  font-size: 9.5px;
+  padding: 2px 9px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+  color: var(--dim);
+  cursor: pointer;
+}
+
+button.pk-log-close:hover {
+  color: var(--txt);
+  border-color: var(--line);
+}

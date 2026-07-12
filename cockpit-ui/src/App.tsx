@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   POLL_MS,
   getAttention,
@@ -16,6 +16,7 @@ import { Masthead } from './components/Masthead'
 import type { CostLevel } from './components/Masthead'
 import { NeedsHandStrip } from './components/NeedsHandStrip'
 import type { BreakdownTab } from './components/PerformancePanel'
+import { CandidatesScreen } from './screens/CandidatesScreen'
 import { ForwardScreen } from './screens/ForwardScreen'
 import { MissionControlScreen } from './screens/MissionControlScreen'
 import { PlaceholderScreen } from './screens/PlaceholderScreen'
@@ -52,6 +53,16 @@ export default function App() {
   // Lives here, not in PerformancePanel: a screen switch unmounts Mission
   // Control entirely, and the breakdown-tab choice must survive the round trip.
   const [tab, setTab] = useState<BreakdownTab>('timeframe')
+  // Zone D → Candidates prefill hand-off: a LOG click on a Mission Control pick
+  // card sets the signal id here and navigates to Candidates, which consumes it
+  // once into its local logging state. `clearPrefill` is stable so the consuming
+  // effect settles in one pass.
+  const [prefillSignalId, setPrefillSignalId] = useState<number | null>(null)
+  const clearPrefill = useCallback(() => setPrefillSignalId(null), [])
+  const onLogPick = useCallback((signalId: number) => {
+    setPrefillSignalId(signalId)
+    setScreen('candidates')
+  }, [])
 
   // The 1-9 keys, one App-level listener (plan scope decision 9): digits follow
   // the design's fixed numbering (the SCREENS registry); typing contexts and
@@ -148,6 +159,14 @@ export default function App() {
               onWin={setWin}
               onPlayType={setPlayType}
               onTab={setTab}
+              onLogPick={onLogPick}
+            />
+          ) : screen === 'candidates' ? (
+            <CandidatesScreen
+              facet={facet}
+              wake={wake}
+              prefillSignalId={prefillSignalId}
+              onPrefillConsumed={clearPrefill}
             />
           ) : screen === 'positions' ? (
             <PositionsScreen wake={wake} />
