@@ -233,6 +233,50 @@ def test_go_stays_true_even_when_gate_not_ready(tmp_path) -> None:
     assert report.go is True  # ...but GO holds: every CRITICAL check passed
 
 
+# --- broker=None: the cockpit's default local setup is a REPORT, not a crash --
+def test_none_broker_is_a_no_go_report_never_a_crash(tmp_path) -> None:
+    """``broker=None`` mirrors the CLI's early-exit wording as a report: config is
+    the NO-GO 'no broker configured' line; reachable/funded/is_real_money read as
+    explicit not-applicable lines (never evaluated against a missing client, never
+    an AttributeError); caps + the autonomy gate stay REAL -- neither needs the
+    broker. ``go`` is False."""
+    edge_dir = _ready_edge_dir(tmp_path)
+    with _session() as s:
+        s.add_all(_calibrated_calls("continuation"))
+        s.commit()
+        report = preflight(s, _settings(), broker=None, edge_dir=edge_dir)
+
+    assert report.go is False
+    config = _check(report, "config")
+    assert config.ok is False and config.critical is True
+    assert "no broker configured" in config.detail
+    for name in ("reachable", "funded"):
+        check = _check(report, name)
+        assert check.ok is False and check.critical is True
+        assert check.detail == "not applicable -- no broker"
+    real = _check(report, "is_real_money")
+    assert real.ok is False and real.critical is False
+    assert real.detail == "not applicable -- no broker"
+    # caps + gate never needed the broker: both evaluated for real.
+    assert _check(report, "caps").ok is True
+    assert _check(report, "autonomy_gate").ok is True
+
+
+def test_none_broker_keeps_the_caps_check_real(tmp_path) -> None:
+    """A missing cap must still read as the caps NO-GO even without a broker --
+    the cockpit's safety screen shows the caps mandate on the default local setup."""
+    edge_dir = tmp_path / "edge"
+    edge_dir.mkdir()
+    with _session() as s:
+        report = preflight(
+            s, _settings(max_concurrent=None), broker=None, edge_dir=edge_dir)
+
+    assert report.go is False
+    caps = _check(report, "caps")
+    assert caps.ok is False
+    assert "max_concurrent" in caps.detail
+
+
 # --- config coherence (critical) ---------------------------------------------
 def test_no_go_when_broker_not_configured(tmp_path) -> None:
     edge_dir = _ready_edge_dir(tmp_path)

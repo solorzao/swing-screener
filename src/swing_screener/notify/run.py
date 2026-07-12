@@ -672,10 +672,19 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                                     "and pulling entry-side resting orders", kind, run_date)
                         if live_broker is not None:
                             pull_entry_orders(live_broker)
-                            ensure_stop_protection(
+                            restored, unprotected = ensure_stop_protection(
                                 live_broker,
                                 lambda sym: repo.latest_recorded_stop(session, sym),
                                 key_suffix=f"kill-{run_date:%Y%m%d}")
+                            if restored:
+                                log.warning(
+                                    "kill switch: re-submitted %d protective "
+                                    "stop(s): %s",
+                                    len(restored), ", ".join(restored))
+                            if unprotected:
+                                log.error(
+                                    "kill switch: %d position(s) left UNPROTECTED: "
+                                    "%s", len(unprotected), ", ".join(unprotected))
                         break
                     result = adapter.submit(
                         intent, session=session, run_date=run_date, limits=limits)

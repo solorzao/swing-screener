@@ -26,7 +26,7 @@ import sys
 import threading
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Literal, Protocol, cast
@@ -95,6 +95,7 @@ from swing_screener.db.repo import (
     get_analysis_request,
     get_closed_trades,
     get_open_trades,
+    latest_recorded_stop,
     latest_reversal_funnel,
     latest_run_date,
     list_analysis_requests,
@@ -108,7 +109,11 @@ from swing_screener.pipeline.arms import BASELINE
 from swing_screener.pipeline.autonomy import autonomy_gate, gate_countdown
 from swing_screener.pipeline.broker import BrokerClient
 from swing_screener.pipeline.broker_alpaca import build_broker
-from swing_screener.pipeline.disarm import _STOP_TYPES
+from swing_screener.pipeline.disarm import (
+    _STOP_TYPES,
+    ensure_stop_protection,
+    pull_entry_orders,
+)
 from swing_screener.pipeline.execution import (
     LIVE_ACCOUNT,
     MANUAL_ACCOUNT,
@@ -116,6 +121,7 @@ from swing_screener.pipeline.execution import (
     PAPER_ACCOUNT,
 )
 from swing_screener.pipeline.insight import size_order
+from swing_screener.pipeline.preflight import PreflightReport, preflight
 from swing_screener.pipeline.proposed import (
     ProposedVariant,
     decide_proposal,
@@ -127,6 +133,7 @@ from swing_screener.pipeline.registry import load_experiments
 from swing_screener.pipeline.variants import DEFAULT_VARIANT
 from swing_screener.settings import (
     load_settings,
+    real_money_limits_ok,
     resolve_edge_dir,
     resolve_execution,
     resolve_risk_unit,
@@ -412,12 +419,16 @@ def create_app(
     # Livedata instances (Phase 3 Task 4): constructed here, consumed by Tasks
     # 6/9/10 from app.state (the FastAPI-idiomatic home for per-app singletons).
     # Construction is inert -- neither cache calls upstream until a consumer asks.
+    # The resolved factory is ALSO the action endpoints' seam: DISARM needs a live
+    # client (a cached snapshot is a read, never something to cancel through), and
+    # the safety report resolves a fresh client per request.
+    resolved_broker_factory = (
+        broker_factory if broker_factory is not None else _default_broker_factory
+    )
     app.state.quote_cache = QuoteCache(
         latest_closes_fn if latest_closes_fn is not None else _default_quote_fetch()
     )
-    app.state.broker_snapshot = BrokerSnapshot(
-        broker_factory if broker_factory is not None else _default_broker_factory
-    )
+    app.state.broker_snapshot = BrokerSnapshot(resolved_broker_factory)
 
     @app.exception_handler(SQLAlchemyError)
     def _database_error(request: Request, exc: SQLAlchemyError) -> JSONResponse:
@@ -733,16 +744,132 @@ def create_app(
         ``execution_mode`` reads the env-backed settings at request time;
         ``analyst_spend_today_usd`` sums ``est_cost_usd`` over TODAY's AnalystCall
         rows (NULL costs -- the deterministic/fallback path -- count 0.0).
+        ``broker_configured`` is settings TRUTHINESS (is ``SWING_BROKER`` set),
+        NEVER connectivity: DISARM's enablement keys on it, and it rides this
+        already-polled endpoint so the always-visible masthead needs no extra poll.
         """
         report = autonomy_gate(session, edge_dir=resolve_edge_dir(edge_dir))
         calls = session.scalars(
             select(AnalystCall).where(AnalystCall.created_date == date.today())
         )
+        settings = load_settings()
         return {
             "ready": report.ready,
             "countdown": gate_countdown(report),
-            "execution_mode": load_settings().execution_mode,
+            "execution_mode": settings.execution_mode,
+            "broker_configured": bool(settings.broker),
             "analyst_spend_today_usd": sum((c.est_cost_usd or 0.0 for c in calls), 0.0),
+        }
+
+    @app.post("/api/disarm", dependencies=[Depends(_require_cockpit)])
+    def disarm_book(
+        dry_run: bool = Query(default=False),
+        session: Session = Depends(_session),
+    ) -> dict[str, object]:
+        """The DISARM runbook step over HTTP: pull entry-side orders, keep the stops.
+
+        Semantics are ``pipeline.disarm``'s, exactly: ONLY ``side == 'buy'`` open
+        orders are cancelled (a blanket cancel would strip the bracket stop legs off
+        the very positions disarm deliberately does NOT close -- the 2026-07-04
+        bug); every remaining position must end stop-protected, a dead stop leg
+        re-submitted as a plain GTC stop at the ExecutionLog ticket's RECORDED
+        level (COPIED, never computed -- North Star #4); no recorded level -> the
+        position is named in ``unprotected`` and LEFT ALONE (never auto-closed --
+        North Star #3). Header-guarded (``_require_cockpit``). The broker comes
+        from the FACTORY seam, live per request -- the cached snapshot is a READ
+        and nothing to cancel through. A None factory answer (no broker
+        configured) is a 409 STATE, not a crash; a broker/factory error is a 503
+        carrying the exception CLASS only (leak posture). ``dry_run=1`` previews
+        -- ``cancelled`` / ``stops_restored`` say what a real run WOULD do, the
+        venue is untouched. After a REAL run the broker snapshot cache is
+        invalidated (in ``finally`` -- a partial disarm has still moved venue
+        state), so the UI never renders pre-disarm orders for up to a TTL.
+        """
+        try:
+            broker = resolved_broker_factory()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503, detail=f"broker error ({type(exc).__name__})"
+            ) from exc
+        if broker is None:
+            raise HTTPException(status_code=409, detail="no broker configured")
+        broker_snapshot: BrokerSnapshot = app.state.broker_snapshot
+        try:
+            entries, sells = pull_entry_orders(broker, dry_run=dry_run)
+            restored, unprotected = ensure_stop_protection(
+                broker, lambda sym: latest_recorded_stop(session, sym),
+                key_suffix=f"cockpit-{datetime.now(UTC):%Y%m%d%H%M%S}",
+                dry_run=dry_run)
+        except SQLAlchemyError:
+            raise  # the app-level handler's 503: a DB failure is not a broker error
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503, detail=f"broker error ({type(exc).__name__})"
+            ) from exc
+        finally:
+            if not dry_run:
+                broker_snapshot.invalidate()
+        return {
+            "dry_run": dry_run,
+            "cancelled": [{"symbol": o.symbol, "broker_order_id": o.broker_order_id}
+                          for o in entries],
+            "sells_kept": len(sells),
+            "stops_restored": restored,
+            "unprotected": unprotected,
+        }
+
+    @app.get("/api/execution/safety")
+    def execution_safety(session: Session = Depends(_session)) -> dict[str, object]:
+        """The Execution Safety screen in one read: is real money possible, and why not.
+
+        ``broker_configured`` is settings TRUTHINESS, never connectivity (same rule
+        as ``/api/gate``). ``preflight`` is ``pipeline.preflight``'s report over a
+        FRESH client from the factory seam; a None factory answer takes the report's
+        None-broker shape (config NO-GO, explicit not-applicable lines -- the
+        default local setup is never a 500), and a RAISING factory degrades to that
+        same shape with the reachable line carrying the exception CLASS only (leak
+        posture). ``locks`` renders ``can_arm_real_money``'s three components
+        individually (``gate_ready`` reuses the report's advisory gate line -- one
+        evaluation per request); ``caps_mandate`` is ``real_money_limits_ok`` over
+        the resolved limits. ``env_scope`` is the honesty label: everything here
+        reads THIS process's env -- the Azure jobs run under their own.
+        ``bracket_shield`` reads the CACHED broker snapshot (the venue-truth table:
+        see ``_bracket_shield`` -- UNKNOWN is never rendered green).
+        """
+        settings = load_settings()
+        broker: BrokerClient | None
+        broker_error: str | None = None
+        try:
+            broker = resolved_broker_factory()
+        except Exception as exc:
+            broker = None
+            broker_error = f"broker error ({type(exc).__name__})"
+        report = preflight(session, settings, broker=broker,
+                           edge_dir=resolve_edge_dir(edge_dir))
+        if broker_error is not None:
+            report = PreflightReport(go=report.go, checks=[
+                replace(c, detail=broker_error) if c.name == "reachable" else c
+                for c in report.checks])
+        gate_ready = next(c.ok for c in report.checks if c.name == "autonomy_gate")
+        mode, limits = resolve_execution(settings)
+        caps_ok, caps_reason = real_money_limits_ok(limits)
+        broker_snapshot: BrokerSnapshot = app.state.broker_snapshot
+        return {
+            "broker_configured": bool(settings.broker),
+            "mode": mode,
+            "env_scope": "this process",
+            "locks": {
+                "mode_is_live": mode == "live",
+                "allow_real_money": settings.allow_real_money,
+                "gate_ready": gate_ready,
+            },
+            "caps_mandate": {"ok": caps_ok, "reason": caps_reason},
+            "preflight": {
+                "go": report.go,
+                "checks": [{"name": c.name, "ok": c.ok, "detail": c.detail,
+                            "critical": c.critical} for c in report.checks],
+            },
+            "bracket_shield": _bracket_shield(session, broker_snapshot.get()),
         }
 
     spawner = login_spawner if login_spawner is not None else _spawn_az_login
@@ -1183,12 +1310,14 @@ def create_app(
         in ``_proposal_row``) -- computed against the incumbent ``StrategyConfig()``,
         the same base the optimizer sweeps. A missing proposed.json is a play type
         with nothing queued: its rows are simply absent, never an error. A CORRUPT
-        store (malformed JSON, or a row ``load_proposed`` can't rebuild) degrades
-        per play type: its rows are absent and ``store_errors`` names it, while the
-        healthy play type still renders -- one broken file never blanks the screen.
-        ``store_errors`` carries play-type names ONLY, never the parser message or
-        a path (leak posture). Filesystem only -- no DB session, so a down database
-        never blanks this screen either."""
+        store (malformed JSON, a row ``load_proposed`` can't rebuild, OR a row with
+        the right keys but wrong TYPES -- e.g. ``"delta": 1.5`` -- that only fails
+        when ``_proposal_row`` renders it) degrades per play type: its rows are
+        absent and ``store_errors`` names it, while the healthy play type still
+        renders -- one broken file never blanks the screen. ``store_errors``
+        carries play-type names ONLY, never the parser message or a path (leak
+        posture). Filesystem only -- no DB session, so a down database never blanks
+        this screen either."""
         edir = resolve_edge_dir(edge_dir)
         base = StrategyConfig()
         rows: list[dict[str, object]] = []
@@ -1196,10 +1325,15 @@ def create_app(
         for pt in ("continuation", "reversal"):
             try:
                 items = load_proposed_for(pt, edir)
+                # Rows are BUILT inside the try, list-then-extend -- never
+                # extend-with-generator, which would append the healthy rows a lazy
+                # generator had already yielded before the wrong-TYPES row raised,
+                # leaking a partial store onto the wire.
+                built = [_proposal_row(pv, base) for pv in items]
             except (ValueError, TypeError):  # JSONDecodeError IS a ValueError
                 store_errors.append(pt)
                 continue
-            rows.extend(_proposal_row(pv, base) for pv in items)
+            rows.extend(built)
         return {"proposals": rows, "store_errors": store_errors}
 
     def _decide(
@@ -1695,6 +1829,29 @@ def _bracket(ticker: str, stop: float | None, *, snapshot: Snapshot | None,
     if ticker in armed:
         return "armed"
     return "db-only" if stop is not None else "unprotected"
+
+
+def _bracket_shield(session: Session, snapshot: Snapshot | None) -> dict[str, object]:
+    """The safety screen's venue-truth table: one row per VENUE position, each with
+    its ``_bracket`` state -- ``armed`` (a live protective sell stop at the venue),
+    ``db-only`` (only a recorded ExecutionLog level -- ``latest_recorded_stop``,
+    the same lookup disarm restores from), or ``unprotected`` (no level anywhere,
+    loud). No snapshot (no broker configured, or the venue read failed/degraded)
+    -> ``known: False`` with an empty table: absence of evidence is never a claim,
+    so UNKNOWN can never render green."""
+    if snapshot is None:
+        return {"known": False, "as_of": None, "positions": []}
+    armed = _armed_symbols(snapshot)
+    return {
+        "known": True,
+        "as_of": snapshot.as_of.isoformat(),
+        "positions": [
+            {"symbol": pos.symbol, "qty": pos.qty,
+             "state": _bracket(pos.symbol, latest_recorded_stop(session, pos.symbol),
+                               snapshot=snapshot, armed=armed)}
+            for pos in snapshot.positions
+        ],
+    }
 
 
 def _real_position_row(t: Trade, price: float | None, *,

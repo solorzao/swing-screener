@@ -964,12 +964,16 @@ def _call(created: date, cost: float | None) -> AnalystCall:
 
 
 def test_gate_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """{"ready", "countdown", "execution_mode", "analyst_spend_today_usd"}: the report
-    comes from pipeline.autonomy verbatim (missing verdicts sidecars read as not-ready,
-    never an error), the mode from live settings at request time, and the spend sums
-    est_cost_usd over TODAY's AnalystCall rows (NULL costs -- deterministic-path rows
-    -- count 0; yesterday's spend never bleeds in)."""
+    """{"ready", "countdown", "execution_mode", "analyst_spend_today_usd",
+    "broker_configured"}: the report comes from pipeline.autonomy verbatim (missing
+    verdicts sidecars read as not-ready, never an error), the mode from live settings
+    at request time, and the spend sums est_cost_usd over TODAY's AnalystCall rows
+    (NULL costs -- deterministic-path rows -- count 0; yesterday's spend never bleeds
+    in). ``broker_configured`` is settings TRUTHINESS (is SWING_BROKER set), never
+    connectivity -- it rides the gate so the always-visible masthead needs no extra
+    poll."""
     monkeypatch.setenv("SWING_EXECUTION_MODE", "manual")
+    monkeypatch.delenv("SWING_BROKER", raising=False)
     url = _db_url(tmp_path)
     engine = get_engine(url)
     today = date.today()
@@ -981,7 +985,7 @@ def test_gate_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert r.status_code == 200
     body = r.json()
     assert set(body) == {"ready", "countdown", "execution_mode",
-                         "analyst_spend_today_usd"}
+                         "analyst_spend_today_usd", "broker_configured"}
     assert body["ready"] is False  # no verdicts sidecars in tmp_path, no scored calls
     # gate_countdown VERBATIM (line format pinned by tests/pipeline/
     # test_autonomy_countdown.py); denominators are the live floor constants.
@@ -991,6 +995,21 @@ def test_gate_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         for pt in ("continuation", "reversal"))
     assert body["execution_mode"] == "manual"
     assert body["analyst_spend_today_usd"] == pytest.approx(0.42)
+    assert body["broker_configured"] is False
+
+
+def test_gate_carries_broker_configured_from_settings_truthiness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SWING_BROKER set -> True, without any venue call: the flag is read from the
+    settings snapshot (truthiness), NEVER from connectivity -- an unreachable venue
+    still shows a configured broker (DISARM enablement keys on this)."""
+    monkeypatch.setenv("SWING_BROKER", "alpaca")
+    url = _db_url(tmp_path)
+    get_engine(url)
+    r = TestClient(create_app(url, edge_dir=tmp_path)).get("/api/gate")
+    assert r.status_code == 200
+    assert r.json()["broker_configured"] is True
 
 
 # --- /api/events (SSE wake channel) ---------------------------------------------------
@@ -2354,6 +2373,37 @@ def test_proposals_get_corrupt_store_degrades_per_play_type(
     assert tmp_path.name not in r.text  # leak posture holds on the degrade path
 
 
+def test_proposals_get_wrong_typed_row_degrades_not_500(tmp_path: Path) -> None:
+    """The THIRD corruption flavor, GET-only: right keys, wrong TYPES (e.g.
+    ``"delta": 1.5``). ``load_proposed`` rebuilds the row fine (ProposedVariant
+    does no type validation), so the failure fires later, in ``_proposal_row`` --
+    which must therefore run INSIDE the try: the play type degrades into
+    ``store_errors`` and the healthy one still renders, never a 500. NOT in
+    _CORRUPT_STORES: POST behaves differently on this flavor (it 200s,
+    defensibly -- decide_proposal reads only status/rationale)."""
+    _write_proposals(tmp_path, "reversal",
+                     [_proposal("r1", "reversal", {"max_extension_atr": 1.5})])
+    # A HEALTHY row ahead of the wrong-typed one: rows must be built list-first
+    # (extend-with-generator would append 'fine' before raising, leaking a
+    # partial store onto the wire).
+    wrong_types = (
+        '[{"name": "fine", "play_type": "continuation", '
+        '"delta": {"max_extension_atr": 1.2}, "rationale": "r", '
+        '"hunch_ref": "h", "status": "queued", "drafted_at": "2026-07-10", '
+        '"provenance": "p"},'
+        ' {"name": "x", "play_type": "continuation", "delta": 1.5, '
+        '"rationale": "r", "hunch_ref": "h", "status": "queued", '
+        '"drafted_at": "2026-07-10", "provenance": "p"}]')
+    (tmp_path / store_filename("continuation")).write_text(
+        wrong_types, encoding="utf-8")
+    r = _client(tmp_path).get("/api/proposals")
+    assert r.status_code == 200
+    body = r.json()
+    assert [row["name"] for row in body["proposals"]] == ["r1"]  # no partial leak
+    assert body["store_errors"] == ["continuation"]
+    assert tmp_path.name not in r.text  # leak posture holds on the degrade path
+
+
 @pytest.mark.parametrize("corrupt", _CORRUPT_STORES)
 def test_proposal_decision_corrupt_store_is_503_never_409(
     tmp_path: Path, corrupt: str,
@@ -2517,3 +2567,294 @@ def test_proposal_decision_validation(tmp_path: Path, url: str,
     assert client.post(url, json=body, headers=_HDR).status_code == 422
     (row,) = load_proposed_for("reversal", tmp_path)
     assert row.status == "queued"
+
+
+# ---- POST /api/disarm + GET /api/execution/safety (Task 9) ----
+
+DISARM_KEYS = {"dry_run", "cancelled", "sells_kept", "stops_restored", "unprotected"}
+SAFETY_KEYS = {"broker_configured", "mode", "env_scope", "locks", "caps_mandate",
+               "preflight", "bracket_shield"}
+LOCK_KEYS = {"mode_is_live", "allow_real_money", "gate_ready"}
+CHECK_KEYS = {"name", "ok", "detail", "critical"}
+
+
+def _disarm_broker() -> FakeBroker:
+    """The disarm scenario at the venue: a resting AMD entry limit (fake-0) plus a
+    bracket-filled NVDA position whose protective sell legs (stop + target) are
+    LIVE open orders."""
+    broker = FakeBroker()
+    broker.submit_order(BrokerOrderSpec(
+        client_order_id="resting-entry", symbol="AMD", side="buy", qty=3,
+        order_type="limit", limit_price=90.0, time_in_force="day"))
+    entry = broker.submit_order(BrokerOrderSpec(
+        client_order_id="bracket-entry", symbol="NVDA", side="buy", qty=8,
+        order_type="limit", limit_price=100.0, time_in_force="day",
+        stop_loss=95.0, take_profit=110.0))
+    broker.fill(entry.broker_order_id, 100.0)
+    return broker
+
+
+def _kill_sell_legs(broker: FakeBroker) -> None:
+    """Strip the venue-held sell legs (the pre-fix blanket-disarm damage)."""
+    for order in list(broker.list_open_orders()):
+        if order.side == "sell":
+            broker.cancel_order(order.broker_order_id)
+
+
+def _broker_app(
+    tmp_path: Path, broker: FakeBroker | None,
+) -> tuple[TestClient, Engine, dict[str, int]]:
+    """(client, engine, factory-call counter) wired through the broker seam; the
+    counter observes snapshot refreshes + the disarm endpoint's live resolution."""
+    url = _db_url(tmp_path)
+    engine = get_engine(url)
+    calls = {"n": 0}
+
+    def factory() -> FakeBroker | None:
+        calls["n"] += 1
+        return broker
+
+    app = create_app(url, edge_dir=tmp_path,
+                     latest_closes_fn=lambda tickers: {}, broker_factory=factory)
+    return TestClient(app), engine, calls
+
+
+def _recorded_stop_row(ticker: str, stop: float) -> ExecutionLog:
+    """A live ticket whose recorded stop latest_recorded_stop reads back."""
+    return _exec_log(ticker=ticker, account="live", mode="live", stop=stop,
+                     shares=8, status="submitted_live")
+
+
+def test_disarm_requires_the_cockpit_header(tmp_path: Path) -> None:
+    broker = _disarm_broker()
+    client, _engine, _calls = _broker_app(tmp_path, broker)
+    assert client.post("/api/disarm").status_code == 403
+    assert len(broker.list_open_orders()) == 3  # the guard ran before any cancel
+
+
+def test_disarm_409_when_no_broker_configured(tmp_path: Path) -> None:
+    """A None factory (the default local setup) is a STATE, not a crash: 409 with
+    a fixed detail -- there is nothing at a venue to disarm."""
+    client, _engine, _calls = _broker_app(tmp_path, None)
+    r = client.post("/api/disarm", headers=_HDR)
+    assert r.status_code == 409
+    assert r.json()["detail"] == "no broker configured"
+
+
+def test_disarm_dry_run_cancels_nothing_and_previews_everything(
+    tmp_path: Path,
+) -> None:
+    """dry_run=1 answers the full preview -- what would be cancelled, the sells
+    kept, the stop that would be restored -- while the venue stays byte-for-byte
+    untouched (the FakeBroker's orders and spec count are the proof)."""
+    broker = _disarm_broker()
+    _kill_sell_legs(broker)  # NVDA's stop leg is dead -> the restore path previews
+    n_specs = len(broker.submitted_specs)
+    client, engine, _calls = _broker_app(tmp_path, broker)
+    with Session(engine) as s:
+        s.add(_recorded_stop_row("NVDA", 95.0))
+        s.commit()
+    r = client.post("/api/disarm?dry_run=1", headers=_HDR)
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body) == DISARM_KEYS
+    assert body["dry_run"] is True
+    assert body["cancelled"] == [{"symbol": "AMD", "broker_order_id": "fake-0"}]
+    assert body["sells_kept"] == 0  # the legs are dead; nothing sell-side survives
+    assert body["stops_restored"] == ["NVDA"]  # the hold preview names the symbol
+    assert body["unprotected"] == []
+    # the venue: AMD entry still OPEN, nothing submitted, the position untouched.
+    assert [o.symbol for o in broker.list_open_orders() if o.side == "buy"] == ["AMD"]
+    assert len(broker.submitted_specs) == n_specs
+    assert len(broker.get_positions()) == 1
+
+
+def test_disarm_real_run_cancels_buys_only_and_keeps_sells(tmp_path: Path) -> None:
+    """The real run: entry-side buys pulled, BOTH venue-held sell legs kept (the
+    2026-07-04 bug this module exists to prevent), the position NEVER closed."""
+    broker = _disarm_broker()
+    client, _engine, _calls = _broker_app(tmp_path, broker)
+    r = client.post("/api/disarm", headers=_HDR)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["dry_run"] is False
+    assert body["cancelled"] == [{"symbol": "AMD", "broker_order_id": "fake-0"}]
+    assert body["sells_kept"] == 2  # NVDA's protective stop + target legs
+    assert body["stops_restored"] == []  # the stop leg is alive; nothing to restore
+    assert body["unprotected"] == []
+    open_orders = broker.list_open_orders()
+    assert [o for o in open_orders if o.side == "buy"] == []      # entries pulled
+    assert sorted(o.order_type for o in open_orders
+                  if o.side == "sell") == ["limit", "stop"]        # legs SURVIVE
+    assert len(broker.get_positions()) == 1                        # never closed
+
+
+def test_disarm_restores_dead_stop_at_the_recorded_level(tmp_path: Path) -> None:
+    """A dead stop leg is re-submitted at the ExecutionLog ticket's RECORDED level
+    -- COPIED, never computed (North Star #4) -- as a plain GTC stop covering the
+    whole position, and the response's restored list names the symbol."""
+    broker = _disarm_broker()
+    _kill_sell_legs(broker)
+    client, engine, _calls = _broker_app(tmp_path, broker)
+    with Session(engine) as s:
+        s.add(_recorded_stop_row("NVDA", 90.0))   # older ticket
+        s.add(_recorded_stop_row("NVDA", 95.0))   # newest live ticket wins
+        s.commit()
+    r = client.post("/api/disarm", headers=_HDR)
+    assert r.status_code == 200
+    assert r.json()["stops_restored"] == ["NVDA"]
+    restored = broker.submitted_specs[-1]
+    assert restored.side == "sell"
+    assert restored.order_type == "stop"
+    assert restored.stop_price == 95.0        # COPIED from the ticket, not computed
+    assert restored.qty == 8                  # covers the whole position
+    assert restored.time_in_force == "gtc"    # protection must not expire at EOD
+    assert restored.client_order_id.startswith("disarm-stop-NVDA-cockpit-")
+
+
+def test_disarm_unprotected_is_loud_and_nothing_is_invented(tmp_path: Path) -> None:
+    """No live stop and no recorded ticket level: the position is named in
+    ``unprotected`` and LEFT ALONE -- no invented level, no auto-close."""
+    broker = _disarm_broker()
+    _kill_sell_legs(broker)
+    client, _engine, _calls = _broker_app(tmp_path, broker)  # no ExecutionLog rows
+    r = client.post("/api/disarm", headers=_HDR)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["stops_restored"] == []
+    assert body["unprotected"] == ["NVDA"]
+    assert [o for o in broker.list_open_orders() if o.side == "sell"] == []
+    assert len(broker.get_positions()) == 1
+
+
+def test_disarm_real_run_invalidates_the_broker_snapshot(tmp_path: Path) -> None:
+    """After a REAL run the cached venue snapshot is busted (the next read hits the
+    factory again); a DRY run leaves the warm cache alone -- the factory-call
+    counter is the observable."""
+    broker = _disarm_broker()
+    client, _engine, calls = _broker_app(tmp_path, broker)
+    client.get("/api/positions")                      # primes the snapshot
+    assert calls["n"] == 1
+    client.post("/api/disarm?dry_run=1", headers=_HDR)
+    assert calls["n"] == 2                            # the endpoint's live client
+    client.get("/api/positions")
+    assert calls["n"] == 2                            # dry run: cache still warm
+    client.post("/api/disarm", headers=_HDR)
+    assert calls["n"] == 3
+    client.get("/api/positions")
+    assert calls["n"] == 4                            # real run: snapshot re-read
+
+
+def test_execution_safety_none_factory_is_200_never_a_500(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The default local setup (no broker anywhere): 200 with broker_configured
+    False, the preflight report in its None-broker shape (config NO-GO, explicit
+    not-applicable lines), all three locks open, the caps mandate named, and an
+    UNKNOWN bracket shield -- no-broker is a STATE, never a crash."""
+    for var in ("SWING_BROKER", "SWING_EXECUTION_MODE", "SWING_MAX_DAILY_NOTIONAL",
+                "SWING_MAX_DAILY_LOSS", "SWING_MAX_CONCURRENT",
+                "SWING_BROKER_ALLOW_REAL_MONEY"):
+        monkeypatch.delenv(var, raising=False)
+    client, _engine, _calls = _broker_app(tmp_path, None)
+    r = client.get("/api/execution/safety")
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body) == SAFETY_KEYS
+    assert body["broker_configured"] is False
+    assert body["mode"] == "off"
+    assert body["env_scope"] == "this process"
+    assert set(body["locks"]) == LOCK_KEYS
+    assert body["locks"] == {"mode_is_live": False, "allow_real_money": False,
+                             "gate_ready": False}
+    assert body["caps_mandate"]["ok"] is False
+    assert body["caps_mandate"]["reason"] == "max_daily_notional is not set"
+    pf = body["preflight"]
+    assert pf["go"] is False
+    checks = {c["name"]: c for c in pf["checks"]}
+    assert all(set(c) == CHECK_KEYS for c in pf["checks"])
+    assert checks["config"]["ok"] is False
+    assert "no broker configured" in checks["config"]["detail"]
+    for name in ("reachable", "funded"):
+        assert checks[name]["ok"] is False
+        assert checks[name]["detail"] == "not applicable -- no broker"
+    assert checks["caps"]["ok"] is False  # the mandate line, evaluated for real
+    shield = body["bracket_shield"]
+    assert shield == {"known": False, "as_of": None, "positions": []}
+
+
+def test_execution_safety_reports_locks_caps_and_bracket_shield(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The armed-paper picture: broker_configured from settings truthiness, the
+    lock components rendered individually (paper -> mode_is_live False), the caps
+    mandate green, preflight GO, and the bracket shield read from the SNAPSHOT --
+    per venue position: armed (venue-held sell stop) / db-only (recorded level
+    only) / unprotected (no level anywhere; never silently green)."""
+    monkeypatch.setenv("SWING_BROKER", "alpaca")
+    monkeypatch.setenv("SWING_EXECUTION_MODE", "paper")
+    monkeypatch.setenv("SWING_MAX_DAILY_NOTIONAL", "10000")
+    monkeypatch.setenv("SWING_MAX_DAILY_LOSS", "500")
+    monkeypatch.setenv("SWING_MAX_CONCURRENT", "3")
+    monkeypatch.delenv("SWING_BROKER_ALLOW_REAL_MONEY", raising=False)
+    broker = FakeBroker()
+    armed_entry = broker.submit_order(BrokerOrderSpec(
+        client_order_id="armed", symbol="AMD", side="buy", qty=5,
+        order_type="limit", limit_price=100.0, time_in_force="day",
+        stop_loss=95.0, take_profit=110.0))
+    broker.fill(armed_entry.broker_order_id, 100.0)     # venue-held legs LIVE
+    for symbol in ("NVDA", "XYZY"):                     # plain fills: no legs
+        plain = broker.submit_order(BrokerOrderSpec(
+            client_order_id=f"plain-{symbol}", symbol=symbol, side="buy", qty=8,
+            order_type="limit", limit_price=50.0, time_in_force="day"))
+        broker.fill(plain.broker_order_id, 50.0)
+    client, engine, _calls = _broker_app(tmp_path, broker)
+    with Session(engine) as s:
+        s.add(_recorded_stop_row("NVDA", 45.0))  # NVDA: recorded level -> db-only
+        s.commit()                               # XYZY: nothing -> unprotected
+    r = client.get("/api/execution/safety")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["broker_configured"] is True
+    assert body["mode"] == "paper"
+    assert body["locks"] == {"mode_is_live": False, "allow_real_money": False,
+                             "gate_ready": False}
+    assert body["caps_mandate"] == {"ok": True, "reason": ""}
+    pf = body["preflight"]
+    assert pf["go"] is True  # config/reachable/funded/caps all green (FakeBroker)
+    checks = {c["name"]: c for c in pf["checks"]}
+    assert checks["reachable"]["ok"] is True
+    assert checks["funded"]["ok"] is True
+    shield = body["bracket_shield"]
+    assert shield["known"] is True
+    assert datetime.fromisoformat(shield["as_of"])
+    states = {row["symbol"]: row["state"] for row in shield["positions"]}
+    assert states == {"AMD": "armed", "NVDA": "db-only", "XYZY": "unprotected"}
+    assert all(row["qty"] > 0 for row in shield["positions"])
+
+
+def test_execution_safety_broker_error_degrades_by_class_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A RAISING factory degrades to the no-broker-shaped report with the
+    reachable line carrying the exception CLASS only -- the message (which can
+    embed hosts or credentials) never reaches the wire; still 200."""
+    monkeypatch.setenv("SWING_BROKER", "alpaca")
+    url = _db_url(tmp_path)
+    get_engine(url)
+
+    def exploding() -> FakeBroker | None:
+        raise RuntimeError("secret-host.alpaca.markets credential nope")
+
+    app = create_app(url, edge_dir=tmp_path,
+                     latest_closes_fn=lambda tickers: {}, broker_factory=exploding)
+    r = TestClient(app).get("/api/execution/safety")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["broker_configured"] is True  # settings truthiness, NOT connectivity
+    checks = {c["name"]: c for c in body["preflight"]["checks"]}
+    assert checks["reachable"]["ok"] is False
+    assert checks["reachable"]["detail"] == "broker error (RuntimeError)"
+    assert body["preflight"]["go"] is False
+    assert body["bracket_shield"]["known"] is False  # UNKNOWN, never green
+    assert "secret-host" not in r.text  # leak posture: class name only
