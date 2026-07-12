@@ -33,13 +33,12 @@ from swing_screener.analytics.calibration import (
 )
 from swing_screener.db import repo
 from swing_screener.db.session import get_engine
+from swing_screener.pipeline.proposed import PLAY_TYPES
 from swing_screener.pipeline.reflect import Verdict, load_verdicts
 from swing_screener.settings import load_settings, resolve_edge_dir
 
 log = logging.getLogger(__name__)
 
-# The play types the gate evaluates -- the same family the reflection grades.
-_PLAY_TYPES = ("continuation", "reversal")
 # The proven-edge tier: a verdict that cleared the multiple-comparisons-corrected lower
 # bound on the LIVE forward shadow book (gold, not a backtest screen).
 _CONFIRMED_TIER = "forward_confirmed"
@@ -95,7 +94,7 @@ def autonomy_gate(session: Session, *, edge_dir: Path = _EDGE_DIR) -> AutonomyRe
     # clears the gate -- once one does, the overall gate is ready and nothing is blocking.
     shortfalls: list[str] = []
 
-    for pt in _PLAY_TYPES:
+    for pt in PLAY_TYPES:
         confirmed = _confirmed_edges(_read_verdicts(edge_dir, pt))
         edge_confirmed = bool(confirmed)
 

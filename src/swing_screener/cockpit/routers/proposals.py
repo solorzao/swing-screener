@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 from swing_screener.cockpit.common import ActionNonce, _require_cockpit
 from swing_screener.config import StrategyConfig
 from swing_screener.pipeline.proposed import (
+    PLAY_TYPES,
     ProposedVariant,
     decide_proposal,
     load_proposed_for,
@@ -74,7 +75,7 @@ def build_proposals_router(
         base = StrategyConfig()
         rows: list[dict[str, object]] = []
         store_errors: list[str] = []
-        for pt in ("continuation", "reversal"):
+        for pt in PLAY_TYPES:
             try:
                 items = load_proposed_for(pt, edir)
                 # Rows are BUILT inside the try, list-then-extend -- never

@@ -22,9 +22,13 @@ from sqlalchemy.orm import Session
 from swing_screener.cockpit.common import _finite_or_none
 from swing_screener.cockpit.playbooks import DriftReport, playbook_drift
 from swing_screener.db.models import AnalysisRequest
-from swing_screener.pipeline.proposed import APPROVED, QUEUED, load_proposed_for
+from swing_screener.pipeline.proposed import (
+    APPROVED,
+    PLAY_TYPES,
+    QUEUED,
+    load_proposed_for,
+)
 from swing_screener.pipeline.reflect import (
-    _PLAY_TYPES,
     Verdict,
     _edge_text,
     _section_body,
@@ -102,7 +106,7 @@ def build_playbooks_router(
         due = _due_or_empty(session, edir)
         books: list[dict[str, object]] = []
         store_errors: list[str] = []
-        for pt in _PLAY_TYPES:
+        for pt in PLAY_TYPES:
             md_error: str | None = None
             try:
                 md = _edge_text(edir, pt)
@@ -179,7 +183,7 @@ def build_playbooks_router(
         edir = resolve_edge_dir(edge_dir)
         queued: list[str] = []
         approved: list[str] = []
-        for pt in _PLAY_TYPES:
+        for pt in PLAY_TYPES:
             try:
                 items = load_proposed_for(pt, edir)
             except (ValueError, TypeError):

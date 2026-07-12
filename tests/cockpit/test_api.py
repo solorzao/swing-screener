@@ -8,11 +8,10 @@ from dataclasses import fields
 from datetime import UTC, date, datetime, timedelta
 import itertools
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any
-
-import os
 
 import anyio
 from fastapi.testclient import TestClient
@@ -79,7 +78,12 @@ from swing_screener.pipeline.proposed import (
     proposed_to_json,
     store_filename,
 )
-from swing_screener.pipeline.reflect import Verdict, render_edge_file, verdicts_to_json
+from swing_screener.pipeline.reflect import (
+    Verdict,
+    render_edge_file,
+    verdicts_filename,
+    verdicts_to_json,
+)
 from swing_screener.pipeline.registry import Experiment
 
 STAT_KEYS = {"value", "n", "n_clusters", "ci_low", "ci_high", "cost_level",
@@ -1278,6 +1282,27 @@ def test_change_token_watches_proposal_stores_and_registry(tmp_path: Path) -> No
     assert _change_token(engine, tmp_path)["registry"] != after_rewrite["registry"]
 
 
+def test_change_token_watches_verdicts_sidecar_rewrites(tmp_path: Path) -> None:
+    """The verdicts key rides ``_file_watermark`` (st_mtime_ns) over the two
+    play-type sidecars -- NOT the heartbeat's float-mtime ``newest_verdicts_mtime``
+    (which genuinely wants a datetime): reflect's ``--verdicts-only`` mode REWRITES
+    ``edge/<pt>.verdicts.json`` IN PLACE, and only the integer-ns clock promises
+    same-second rewrite detection. A sidecar appearing and an in-place rewrite
+    (mtime bumped +1s via os.utime -- the NTFS-honest technique) each move the
+    token; the path comes from reflect's own ``verdicts_filename``, so the test
+    breaks if the token ever watches a differently-named file than reflect writes."""
+    url = _db_url(tmp_path)
+    engine = get_engine(url)
+    before = _change_token(engine, tmp_path)
+    sidecar = tmp_path / verdicts_filename("reversal")
+    sidecar.write_text(verdicts_to_json([]), encoding="utf-8")
+    after_write = _change_token(engine, tmp_path)
+    assert after_write["verdicts"] != before["verdicts"]
+    st = sidecar.stat()
+    os.utime(sidecar, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+    assert _change_token(engine, tmp_path)["verdicts"] != after_write["verdicts"]
+
+
 # ---- Task 12: the post-action nonce ----
 
 
@@ -1342,10 +1367,11 @@ def test_action_nonce_bumps_once_per_successful_action_post(tmp_path: Path) -> N
 
 
 def test_disarm_bumps_the_nonce_only_on_a_real_run(tmp_path: Path) -> None:
-    """DISARM bumps on a REAL successful run only: a dry-run preview changes
-    nothing at the venue (and Task 15's hold-to-confirm fires one on every
-    hold-start -- waking all windows per hold would be noise), and the no-broker
-    409 never bumps."""
+    """DISARM bumps on a REAL run only: a dry-run preview changes nothing at the
+    venue (and Task 15's hold-to-confirm fires one on every hold-start -- waking
+    all windows per hold would be noise), and the no-broker 409 never bumps
+    (nothing touched the venue). A real run that FAILS partway still bumps --
+    pinned by test_disarm_broker_failure_is_503_class_only_and_busts_the_snapshot."""
     broker = _disarm_broker()
     client, _engine, _calls = _broker_app(tmp_path, broker)
     nonce = _nonce_of(client.app)
@@ -3093,11 +3119,13 @@ def test_disarm_broker_failure_is_503_class_only_and_busts_the_snapshot(
 ) -> None:
     """A mid-disarm venue failure: 503 whose detail is the exception CLASS only
     (the message can embed the venue host), AND the snapshot is still invalidated
-    -- the ``finally`` -- because a PARTIAL disarm may already have moved venue
-    state; the factory-call counter is the observable (as in the invalidation
-    test above). A SECOND disarm answers 503 again, never 409: the single-flight
-    lock is released on the EXCEPTION path too (the outer ``finally``), so a
-    failed run never wedges the endpoint shut."""
+    AND the post-action nonce still bumps -- both in the ``finally`` -- because a
+    PARTIAL disarm may already have moved venue state: other windows must wake
+    NOW, not at the 60s poll floor, on exactly the action where staleness is
+    scariest; the factory-call counter is the invalidation observable (as in the
+    invalidation test above). A SECOND disarm answers 503 again, never 409: the
+    single-flight lock is released on the EXCEPTION path too (the outer
+    ``finally``), so a failed run never wedges the endpoint shut."""
 
     class _CancelRefusedBroker(FakeBroker):
         def cancel_order(self, broker_order_id: str) -> None:
@@ -3105,17 +3133,20 @@ def test_disarm_broker_failure_is_503_class_only_and_busts_the_snapshot(
 
     broker = _disarm_broker(_CancelRefusedBroker())
     client, _engine, calls = _broker_app(tmp_path, broker)
+    nonce = _nonce_of(client.app)
     client.get("/api/positions")                      # primes the snapshot
     assert calls["n"] == 1
     r = client.post("/api/disarm", headers=_HDR)      # live client: n -> 2
     assert r.status_code == 503
     assert r.json()["detail"] == "broker error (RuntimeError)"
     assert "secret-venue-host" not in r.text          # leak posture: class only
+    assert nonce.value == 1  # the partial run moved venue state: wake despite 503
     client.get("/api/positions")
     assert calls["n"] == 3                            # partial run STILL busted it
     # 503, NOT 409: the failed run released the lock (a success-only release
     # would leave it held and this request would read 'already in flight').
     assert client.post("/api/disarm", headers=_HDR).status_code == 503
+    assert nonce.value == 2  # every real attempt that reached the venue wakes
 
 
 def test_execution_safety_none_factory_is_200_never_a_500(

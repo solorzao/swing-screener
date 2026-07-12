@@ -110,6 +110,13 @@ def load_proposed(text: str) -> list[ProposedVariant]:
     return [ProposedVariant(**d) for d in json.loads(text)]
 
 
+# The play-type family every per-play-type artifact is keyed by (proposal stores,
+# verdicts sidecars, playbooks, the reflection/gate loops). ONE owner, the same
+# argument as ``store_filename`` below: reflect, autonomy, and the cockpit routers
+# all iterate this tuple, so the family cannot drift apart across sites.
+PLAY_TYPES = ("continuation", "reversal")
+
+
 def store_filename(play_type: str) -> str:
     """The ONE owner of the proposal store's filename shape: one play type's store
     lives at ``<edge_dir>/<this>``. Every reader/writer (here; ``reflect``'s draft

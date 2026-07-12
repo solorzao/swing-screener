@@ -18,7 +18,6 @@ from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
 from swing_screener.cockpit.common import ActionNonce
-from swing_screener.cockpit.heartbeats import newest_verdicts_mtime
 from swing_screener.db.models import (
     AnalysisRequest,
     AnalystCall,
@@ -31,7 +30,8 @@ from swing_screener.db.models import (
     Trade,
 )
 from swing_screener.db.repo import latest_reversal_funnel
-from swing_screener.pipeline.proposed import store_filename
+from swing_screener.pipeline.proposed import PLAY_TYPES, store_filename
+from swing_screener.pipeline.reflect import verdicts_filename
 from swing_screener.settings import resolve_edge_dir
 
 
@@ -145,8 +145,13 @@ def _change_token(engine: Engine, edge_dir: Path) -> dict[str, str]:
 
     One short-lived Session per call, never held across the stream loop's
     sleeps. ``edge_dir`` is the RESOLVED edge directory (the caller threads
-    ``resolve_edge_dir`` -- same seam as the heartbeats); the proposal stores
-    and the experiment registry are file mtimes there, like the verdicts."""
+    ``resolve_edge_dir`` -- same seam as the heartbeats); the verdicts
+    sidecars, proposal stores, and experiment registry are ``_file_watermark``
+    ns-mtimes there. The verdicts key deliberately does NOT reuse the
+    heartbeat's ``newest_verdicts_mtime`` (float mtime, and the heartbeat
+    genuinely wants a datetime): reflect's ``--verdicts-only`` mode REWRITES
+    ``edge/<pt>.verdicts.json`` in place, and only the integer-ns clock
+    promises same-second rewrite detection."""
     with Session(engine) as session:
         funnel = latest_reversal_funnel(session)
         token = {
@@ -183,10 +188,11 @@ def _change_token(engine: Engine, edge_dir: Path) -> dict[str, str]:
                 )),
             )),
         }
-    token["verdicts"] = _watermark(newest_verdicts_mtime(edge_dir))
+    token["verdicts"] = "|".join(
+        _file_watermark(edge_dir / verdicts_filename(pt)) for pt in PLAY_TYPES
+    )
     token["proposals"] = "|".join(
-        _file_watermark(edge_dir / store_filename(pt))
-        for pt in ("continuation", "reversal")
+        _file_watermark(edge_dir / store_filename(pt)) for pt in PLAY_TYPES
     )
     token["registry"] = _file_watermark(edge_dir / "experiments.json")
     return token

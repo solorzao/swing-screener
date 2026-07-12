@@ -24,9 +24,9 @@ from swing_screener.analytics.performance import _CLUSTER_FLOOR, MIN_LEADERBOARD
 from swing_screener.cockpit.common import _finite_or_none
 from swing_screener.db.models import AnalystCall
 from swing_screener.db.repo import analyst_call_freshness
+from swing_screener.pipeline.proposed import PLAY_TYPES
 from swing_screener.pipeline.reflect import (
     _CALIBRATION_ORDER,
-    _PLAY_TYPES,
     analyst_calibration,
 )
 
@@ -83,7 +83,7 @@ def build_analyst_router(
         """
         today = date.today()
         play_types: list[dict[str, object]] = []
-        for pt in _PLAY_TYPES:
+        for pt in PLAY_TYPES:
             calls = list(session.scalars(
                 select(AnalystCall).where(AnalystCall.play_type == pt)))
             calib = analyst_calibration(calls)

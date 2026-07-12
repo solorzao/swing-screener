@@ -110,8 +110,10 @@ def build_safety_router(
         carrying the exception CLASS only (leak posture). ``dry_run=1`` previews
         -- ``cancelled`` / ``stops_restored`` say what a real run WOULD do, the
         venue is untouched. After a REAL run the broker snapshot cache is
-        invalidated (in ``finally`` -- a partial disarm has still moved venue
-        state), so the UI never renders pre-disarm orders for up to a TTL.
+        invalidated AND the post-action nonce bumps (both in ``finally`` -- a
+        partial disarm has still moved venue state), so the UI never renders
+        pre-disarm orders for up to a TTL and other windows wake immediately
+        even when the run 503s partway.
         """
         if not disarm_lock.acquire(blocking=False):
             raise HTTPException(status_code=409, detail="disarm already in flight")
@@ -138,13 +140,17 @@ def build_safety_router(
                 ) from exc
             finally:
                 if not dry_run:
+                    # A PARTIAL disarm has still moved venue state, so BOTH run on
+                    # the failure path too: invalidate FIRST (a woken fetch must
+                    # never hit the stale cache), then the post-action wake -- the
+                    # venue calls that returned before a raise are durable, and
+                    # other windows must refetch NOW, not at the 60s poll floor;
+                    # staleness is scariest on exactly this action. A dry run does
+                    # neither: it changed nothing, and Task 15's hold-to-confirm
+                    # fires a preview on EVERY hold-start -- waking all windows
+                    # per hold would be noise.
                     broker_snapshot.invalidate()
-            if not dry_run:
-                # Post-action wake: the venue calls all returned. A dry run never
-                # bumps -- it changed nothing, and Task 15's hold-to-confirm fires
-                # a preview on EVERY hold-start; waking all windows per hold would
-                # be noise. Success-only by position: any raise above skipped this.
-                action_nonce.bump()
+                    action_nonce.bump()
             return {
                 "dry_run": dry_run,
                 "cancelled": [{"symbol": o.symbol,

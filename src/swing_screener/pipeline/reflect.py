@@ -50,6 +50,7 @@ from swing_screener.db.session import get_engine
 from swing_screener.pipeline.arms import BASELINE
 from swing_screener.pipeline.optimize import fetch_daily
 from swing_screener.pipeline.proposed import (
+    PLAY_TYPES,
     QUEUED,
     ProposedVariant,
     _write_proposed,
@@ -260,6 +261,14 @@ def verdicts_to_json(verdicts: list[Verdict]) -> str:
 def load_verdicts(text: str) -> list[Verdict]:
     """Inverse of ``verdicts_to_json``: parse the sidecar JSON back into ``Verdict`` rows."""
     return [Verdict(**d) for d in json.loads(text)]
+
+
+def verdicts_filename(play_type: str) -> str:
+    """The ONE owner of the verdicts sidecar's filename shape (the
+    ``proposed.store_filename`` convention): one play type's code-owned sidecar
+    lives at ``<edge_dir>/<this>``. The writer (``run_reflection``) and the
+    cockpit's change token both derive from it, so the shape cannot drift."""
+    return f"{play_type}.verdicts.json"
 
 
 # ===========================================================================
@@ -1016,7 +1025,6 @@ def draft_variants(
 # workflow PRs the edge/*.md diff for a human to merge.
 # ===========================================================================
 
-_PLAY_TYPES = ("continuation", "reversal")
 # New closed FORWARD trades (per play type) required to re-arm a reflection. Tied to the
 # leaderboard's trust floor so a reflection never fires on a sample too thin to grade.
 _REFLECT_TRIGGER_N = MIN_LEADERBOARD_N
@@ -1084,7 +1092,7 @@ def due_play_types(session: Session, edge_dir: Path = _EDGE_DIR) -> list[str]:
     grades. A play type is due iff ``current - last >= _REFLECT_TRIGGER_N``.
     """
     due: list[str] = []
-    for pt in _PLAY_TYPES:
+    for pt in PLAY_TYPES:
         last = parse_state(_edge_text(edge_dir, pt)).forward_closed_at_last_reflection
         current = len(repo.load_closed_paper_trades(
             session, play_type=pt, arm=BASELINE, variant=DEFAULT_VARIANT,
@@ -1151,7 +1159,7 @@ def run_reflection(
     # verdicts_only implies force-all: a sidecar regen re-grades what already exists, so
     # the "enough NEW closes" due-gate would simply no-op it.
     all_types = force or verdicts_only
-    due = list(_PLAY_TYPES) if all_types else due_play_types(session, edge_dir=edge_dir)
+    due = list(PLAY_TYPES) if all_types else due_play_types(session, edge_dir=edge_dir)
     if not due:
         return []
 
@@ -1186,7 +1194,7 @@ def run_reflection(
 
         # Emit the machine-readable sidecar FIRST -- it is deterministic + code-owned, so it
         # is written whether or not the (optional, fallible) LLM authoring below succeeds.
-        (edge_dir / f"{pt}.verdicts.json").write_text(
+        (edge_dir / verdicts_filename(pt)).write_text(
             verdicts_to_json(verdicts), encoding="utf-8"
         )
 
