@@ -141,7 +141,7 @@ def test_migration_creates_journal_v2_tables(tmp_path, monkeypatch):
         con.close()
 
     assert {"journal_reviews", "system_audits", "weaknesses_profiles",
-            "disarm_events"} <= tables
+            "disarm_events", "coach_draft_requests"} <= tables
 
 
 def test_migration_adds_trade_emotional_state_column(tmp_path, monkeypatch):

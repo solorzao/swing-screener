@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from swing_screener.db.models import (
     AnalysisRequest,
+    CoachDraftRequest,
     AnalystCall,
     EmailLog,
     ExecutionLog,
@@ -728,6 +729,67 @@ def complete_analysis_request(session: Session, request_id: int, *, summary: str
 def fail_analysis_request(session: Session, request_id: int, *, error: str,
                           finished_at: datetime) -> None:
     req = session.get(AnalysisRequest, request_id)
+    if req is None:
+        return
+    req.status = "failed"
+    req.error = error
+    req.finished_at = finished_at
+    session.commit()
+
+
+def create_coach_draft_request(session: Session, *, review_id: int,
+                               requested_at: datetime) -> CoachDraftRequest:
+    req = CoachDraftRequest(review_id=review_id, requested_at=requested_at)
+    session.add(req)
+    session.commit()
+    session.refresh(req)
+    return req
+
+
+def claim_queued_coach_drafts(session: Session, *, now: datetime,
+                              limit: int = 10) -> list[CoachDraftRequest]:
+    """Atomically flip queued->running and return the claimed rows (self-identifying
+    read-back by ``started_at == now`` -- race-safe across concurrent workers)."""
+    ids = list(session.scalars(
+        select(CoachDraftRequest.id).where(CoachDraftRequest.status == "queued")
+        .order_by(CoachDraftRequest.requested_at).limit(limit)))
+    if not ids:
+        return []
+    session.execute(update(CoachDraftRequest)
+        .where(CoachDraftRequest.id.in_(ids), CoachDraftRequest.status == "queued")
+        .values(status="running", started_at=now))
+    session.commit()
+    return list(session.scalars(
+        select(CoachDraftRequest).where(CoachDraftRequest.id.in_(ids),
+                                        CoachDraftRequest.status == "running",
+                                        CoachDraftRequest.started_at == now)
+        .order_by(CoachDraftRequest.requested_at)))
+
+
+def requeue_stale_coach_drafts(session: Session, *, cutoff: datetime) -> int:
+    """Reset rows stuck 'running' since before `cutoff` back to 'queued' (crashed-worker
+    recovery). Returns the count requeued."""
+    result = session.execute(
+        update(CoachDraftRequest)
+        .where(CoachDraftRequest.status == "running", CoachDraftRequest.started_at < cutoff)
+        .values(status="queued", started_at=None))
+    session.commit()
+    return cast("CursorResult[Any]", result).rowcount
+
+
+def complete_coach_draft_request(session: Session, request_id: int, *,
+                                 finished_at: datetime) -> None:
+    req = session.get(CoachDraftRequest, request_id)
+    if req is None:
+        return
+    req.status = "done"
+    req.finished_at = finished_at
+    session.commit()
+
+
+def fail_coach_draft_request(session: Session, request_id: int, *, error: str,
+                             finished_at: datetime) -> None:
+    req = session.get(CoachDraftRequest, request_id)
     if req is None:
         return
     req.status = "failed"

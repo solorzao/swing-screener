@@ -328,6 +328,23 @@ class AnalysisRequest(Base):
     error: Mapped[str | None] = mapped_column(String(1024), default=None)
 
 
+class CoachDraftRequest(Base):
+    """Journal v2 -- queue row for the async Coach narrative draft of one on-close
+    review. The synchronous cockpit close writes the JournalReview facts row and
+    enqueues this; a worker (journal.coach_run) drains it and backfills the review's
+    narrative, so the HTTP close stays instant and the Anthropic key stays server-side."""
+
+    __tablename__ = "coach_draft_requests"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    review_id: Mapped[int] = mapped_column(index=True)  # the journal_reviews row to backfill
+    requested_at: Mapped[datetime]
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+    started_at: Mapped[datetime | None] = mapped_column(default=None)
+    finished_at: Mapped[datetime | None] = mapped_column(default=None)
+    error: Mapped[str | None] = mapped_column(String(1024), default=None)
+
+
 class MarketReport(Base):
     """One weekly macro "Market Weather" snapshot: the deterministic market facts + the analyst's
     read. A history of how the market moved (and a flip log) over time."""
