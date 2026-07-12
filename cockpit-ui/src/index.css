@@ -1697,3 +1697,608 @@ button.dz-dismiss:hover {
   color: var(--txt);
   margin-bottom: 4px;
 }
+
+/* ---------- Position badge lamp (RiskStrip + PositionsScreen) ---------- */
+
+/* The get-out lamp, one definition for the strip and the table. Shape
+   redundancy mirrors the heartbeat lamps: green filled circle, yellow amber
+   triangle (take-profit attention), red square (stop breached), unknown
+   dashed hollow circle — never hue alone. */
+.plamp {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.plamp-green {
+  background: color-mix(in srgb, var(--green) 55%, var(--panel));
+}
+
+.plamp-yellow {
+  background: var(--amber);
+  border-radius: 0;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+  filter: var(--lamp-amber-drop);
+}
+
+.plamp-red {
+  background: var(--red);
+  border-radius: 0;
+}
+
+.plamp-unknown {
+  background: transparent;
+  border: 1.5px dashed var(--dim);
+}
+
+/* ---------- Zone B: RiskStrip (components/RiskStrip.tsx) ---------- */
+
+/* The Mission Control top band sits above the grid; the grid's own top
+   padding provides the gap below. */
+.zone-b {
+  padding: 14px 14px 0;
+}
+
+.rs-body {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rs-strips {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rs-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 9px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.rs-ticker {
+  font-size: 12px;
+  color: var(--txt);
+  width: 56px;
+  flex: none;
+}
+
+.rs-kind {
+  font-size: 9.5px;
+  color: var(--dim);
+  border: 1px solid var(--line2);
+  border-radius: 2px;
+  padding: 0 5px;
+  white-space: nowrap;
+}
+
+.rs-cell {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* Distance-to-stop: fill = room left before the stop (15% of price = full).
+   Indeterminate (no usable quote) = the dashed no-claim track. */
+.rs-stopbar {
+  position: relative;
+  flex: none;
+  width: 90px;
+  height: 7px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.rs-stopbar.rs-indet {
+  border-style: dashed;
+  border-color: var(--faint);
+  background: transparent;
+}
+
+.rs-stopfill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: color-mix(in srgb, var(--blue) 35%, var(--panel2));
+}
+
+.rs-caps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+
+/* FLAT is a fresh-fetch-only claim (RiskStrip.tsx) — calm and dim. */
+.rs-flat {
+  padding: 12px;
+  font-size: 11.5px;
+  letter-spacing: 0.1em;
+  color: var(--faint);
+}
+
+/* The no-claim state: fetch failing, nothing asserted — dashed, never calm. */
+.rs-noclaim {
+  margin: 10px 12px;
+  padding: 10px 12px;
+  border: 1.5px dashed var(--dim);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--dim);
+  line-height: 1.5;
+}
+
+/* ---------- Positions & Ledger screen (screens/PositionsScreen.tsx) ---------- */
+
+.pos-cols {
+  display: grid;
+  grid-template-columns: 1fr 380px;
+  gap: 14px;
+  align-items: start;
+}
+
+.pos-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.pos-table th {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+  text-align: right;
+  font-weight: 400;
+  padding: 6px 6px 2px;
+  white-space: nowrap;
+}
+
+.pos-table th.left {
+  text-align: left;
+}
+
+.pos-table td {
+  padding: 5px 6px;
+  border-top: 1px solid var(--panel2);
+  font-size: 11.5px;
+  color: var(--txt);
+  vertical-align: middle;
+}
+
+.pos-table td:first-child,
+.pos-table th:first-child {
+  padding-left: 12px;
+}
+
+.pos-table td:last-child,
+.pos-table th:last-child {
+  padding-right: 12px;
+}
+
+.pos-name {
+  font-size: 11.5px;
+  color: var(--txt);
+  white-space: nowrap;
+}
+
+.pos-tf {
+  font-size: 9.5px;
+  color: var(--faint);
+}
+
+.pos-num {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.pos-tag {
+  font-size: 9.5px;
+  color: var(--dim);
+  border: 1px solid var(--line2);
+  border-radius: 2px;
+  padding: 0 5px;
+  white-space: nowrap;
+}
+
+/* The stamped deviation, verbatim — amber: flagged, not forbidden. */
+.pos-override {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--amber);
+  overflow-wrap: anywhere;
+}
+
+.pos-flags {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  flex-wrap: wrap;
+  max-width: 260px;
+}
+
+.pos-noaction {
+  color: var(--faint);
+}
+
+button.pos-close {
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+  color: var(--dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button.pos-close:hover {
+  color: var(--txt);
+  border-color: var(--line);
+}
+
+/* The 409-resolved line: a state that was handled, not an error — lit amber
+   like every needs-a-glance lamp, dismissible. */
+.pos-notice {
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--amber);
+  border: 1px solid var(--lamp-amber-border);
+  background: var(--lamp-amber-bg);
+  border-radius: 4px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pos-caps {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+.pos-equity {
+  padding: 10px 12px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-bottom: 1px solid var(--panel2);
+}
+
+.pos-equity-cap {
+  font-size: 10px;
+  color: var(--faint);
+}
+
+/* ---------- Log-trade form (components/LogTradeForm.tsx) ---------- */
+
+.ltf {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ltf-prefill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ltf-lab {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.ltf-in {
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  color: var(--txt);
+  font-size: 12px;
+  padding: 4px 7px;
+  width: 100%;
+  min-width: 0;
+}
+
+.ltf-in:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+
+.ltf-in-id {
+  width: 90px;
+}
+
+.ltf-btn {
+  font-size: 10.5px;
+  padding: 4px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+  color: var(--dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ltf-btn:hover {
+  color: var(--txt);
+  border-color: var(--line);
+}
+
+.ltf-btn:disabled {
+  color: var(--faint);
+  cursor: wait;
+}
+
+/* The submit: blue-tinted (neutral-info accent) — an action, never a claim. */
+.ltf-btn.ltf-submit {
+  letter-spacing: 0.1em;
+  color: var(--txt);
+  background: color-mix(in srgb, var(--blue) 16%, var(--panel2));
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+
+.ltf-defaults {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel2);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.ltf-def-row {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+/* Actionability chip — status colors pair with the label text itself. */
+.ltf-act {
+  font-size: 10px;
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
+.ltf-act-actionable {
+  color: color-mix(in srgb, var(--green) 60%, var(--txt));
+  border-color: color-mix(in srgb, var(--green) 35%, var(--line2));
+}
+
+.ltf-act-extended {
+  color: var(--amber);
+  border-color: var(--lamp-amber-border);
+}
+
+.ltf-act-broken {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 45%, var(--line2));
+}
+
+.ltf-act-unknown {
+  color: var(--dim);
+  border-style: dashed;
+}
+
+/* "sizing unconfigured" is a posture problem, same cue as cg-nocap. */
+.ltf-unconf {
+  font-size: 10.5px;
+  color: var(--amber);
+  border: 1px dashed color-mix(in srgb, var(--amber) 55%, var(--line2));
+  border-radius: 3px;
+  padding: 1px 7px;
+}
+
+.ltf-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px 10px;
+}
+
+.ltf-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.ltf-wide {
+  grid-column: 1 / -1;
+}
+
+.ltf-field-err {
+  font-size: 10px;
+  color: var(--red);
+}
+
+.ltf-err {
+  font-size: 11px;
+  color: var(--red);
+}
+
+.ltf-preview {
+  font-size: 11px;
+}
+
+.ltf-override {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--amber);
+  overflow-wrap: anywhere;
+}
+
+.ltf-faithful {
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.ltf-preview-note,
+.ltf-note {
+  font-size: 10px;
+  color: var(--faint);
+}
+
+.ltf-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ltf-done {
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+  border-radius: 4px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  align-items: flex-start;
+}
+
+.ltf-done-head {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--txt);
+}
+
+/* ---------- Close-trade form (components/CloseTradeForm.tsx) ---------- */
+
+.ctf {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  align-items: flex-start;
+}
+
+.ctf-head,
+.ctf-done-head {
+  font-size: 11.5px;
+  color: var(--txt);
+}
+
+.ctf-fields {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ctf-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ctf-lab {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.ctf-noquote {
+  font-style: normal;
+  letter-spacing: normal;
+  color: var(--faint);
+}
+
+.ctf-in {
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  color: var(--txt);
+  font-size: 12px;
+  padding: 4px 7px;
+  width: 160px;
+}
+
+.ctf-in:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+
+.ctf-preview {
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.ctf-preview-note {
+  font-size: 10px;
+  color: var(--faint);
+}
+
+/* "not computable" is a stated absence, not a zero — dashed-amber underline. */
+.ctf-nocompute {
+  color: var(--amber);
+  border-bottom: 1px dashed var(--amber);
+}
+
+.ctf-err {
+  font-size: 11px;
+  color: var(--red);
+}
+
+.ctf-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.ctf-btn {
+  font-size: 10.5px;
+  padding: 4px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+  color: var(--dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ctf-btn:hover {
+  color: var(--txt);
+  border-color: var(--line);
+}
+
+.ctf-btn:disabled {
+  color: var(--faint);
+  cursor: wait;
+}
+
+.ctf-btn.ctf-submit {
+  letter-spacing: 0.1em;
+  color: var(--txt);
+  background: color-mix(in srgb, var(--blue) 16%, var(--panel2));
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+
+.ctf-done-nums {
+  font-size: 12.5px;
+  color: var(--txt);
+}

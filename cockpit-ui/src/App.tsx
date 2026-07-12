@@ -19,6 +19,7 @@ import type { BreakdownTab } from './components/PerformancePanel'
 import { ForwardScreen } from './screens/ForwardScreen'
 import { MissionControlScreen } from './screens/MissionControlScreen'
 import { PlaceholderScreen } from './screens/PlaceholderScreen'
+import { PositionsScreen } from './screens/PositionsScreen'
 import { SafetyScreen } from './screens/SafetyScreen'
 import { SystemsScreen } from './screens/SystemsScreen'
 
@@ -148,6 +149,8 @@ export default function App() {
               onPlayType={setPlayType}
               onTab={setTab}
             />
+          ) : screen === 'positions' ? (
+            <PositionsScreen wake={wake} />
           ) : screen === 'forward' ? (
             <ForwardScreen fb={fb} facet={facet} />
           ) : screen === 'safety' ? (

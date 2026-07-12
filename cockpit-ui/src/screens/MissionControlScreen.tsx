@@ -1,4 +1,11 @@
-import { POLL_MS, getCohorts, getFunnel, getPerformance, usePolling } from '../lib/api'
+import {
+  POLL_MS,
+  getCohorts,
+  getFunnel,
+  getPerformance,
+  getPositions,
+  usePolling,
+} from '../lib/api'
 import type {
   Facet,
   ForwardBooks,
@@ -14,6 +21,7 @@ import { HeartbeatRail } from '../components/HeartbeatRail'
 import { PanelBody } from '../components/PanelBody'
 import { PerformancePanel } from '../components/PerformancePanel'
 import type { BreakdownTab } from '../components/PerformancePanel'
+import { RiskStrip } from '../components/RiskStrip'
 import { Segmented } from '../components/Segmented'
 import { StatChip } from '../components/StatChip'
 
@@ -105,12 +113,14 @@ function PerformanceSection({
   )
 }
 
-/** Mission Control — the Phase-2 grid, verbatim. The funnel poll lives HERE
- * (not in App): it is a per-screen poll and dies with its screen; only the
- * plan's permanent roster (health, heartbeats, gate, forward-books, attention)
- * outlives a screen switch. Cohorts/performance refetch on a param flip via
- * usePolling's paramsKey (the honest drop), never by remounting. Zones B/D/E
- * slot in with Tasks 16/17/20. */
+/** Mission Control — the Phase-2 grid plus Zone B (Task 16). The funnel and
+ * positions polls live HERE (not in App): per-screen polls that die with
+ * their screen; only the plan's permanent roster (health, heartbeats, gate,
+ * forward-books, attention) outlives a screen switch. Cohorts/performance
+ * refetch on a param flip via usePolling's paramsKey (the honest drop), never
+ * by remounting. Zone B is the design's RISK top band — open-position strips
+ * + compact caps off the same /api/positions read the Positions screen uses.
+ * Zones D/E slot in with Tasks 17/20. */
 export function MissionControlScreen({
   beats,
   fb,
@@ -135,50 +145,56 @@ export function MissionControlScreen({
   onTab: (tab: BreakdownTab) => void
 }) {
   const funnel = usePolling(getFunnel, POLL_MS, wake)
+  const positions = usePolling(getPositions, POLL_MS, wake)
   return (
-    <main className="grid">
-      <section className="panel">
-        <div className="panel-head">SYSTEMS</div>
-        <PanelBody polled={beats} noun="heartbeats">
-          {(data) => <HeartbeatRail beats={data} />}
-        </PanelBody>
-      </section>
-
-      <div className="col-stack">
-        <ForwardBooksPanel fb={fb} facet={facet} />
-
+    <>
+      <div className="zone-b">
+        <RiskStrip polled={positions} />
+      </div>
+      <main className="grid">
         <section className="panel">
-          <div className="panel-head">
-            REVERSAL FUNNEL
-            <span className="panel-caption">latest daily digest</span>
-          </div>
-          <PanelBody polled={funnel} noun="funnel">
-            {(data) =>
-              data.funnel === null ? (
-                <div className="panel-wait">
-                  no funnel recorded yet — accrues from the next daily digest
-                </div>
-              ) : (
-                <FunnelBar funnel={data.funnel} />
-              )
-            }
+          <div className="panel-head">SYSTEMS</div>
+          <PanelBody polled={beats} noun="heartbeats">
+            {(data) => <HeartbeatRail beats={data} />}
           </PanelBody>
         </section>
-      </div>
 
-      <div className="col-stack">
-        <CohortsSection facet={facet} wake={wake} />
-        <PerformanceSection
-          facet={facet}
-          win={win}
-          playType={playType}
-          tab={tab}
-          wake={wake}
-          onWin={onWin}
-          onPlayType={onPlayType}
-          onTab={onTab}
-        />
-      </div>
-    </main>
+        <div className="col-stack">
+          <ForwardBooksPanel fb={fb} facet={facet} />
+
+          <section className="panel">
+            <div className="panel-head">
+              REVERSAL FUNNEL
+              <span className="panel-caption">latest daily digest</span>
+            </div>
+            <PanelBody polled={funnel} noun="funnel">
+              {(data) =>
+                data.funnel === null ? (
+                  <div className="panel-wait">
+                    no funnel recorded yet — accrues from the next daily digest
+                  </div>
+                ) : (
+                  <FunnelBar funnel={data.funnel} />
+                )
+              }
+            </PanelBody>
+          </section>
+        </div>
+
+        <div className="col-stack">
+          <CohortsSection facet={facet} wake={wake} />
+          <PerformanceSection
+            facet={facet}
+            win={win}
+            playType={playType}
+            tab={tab}
+            wake={wake}
+            onWin={onWin}
+            onPlayType={onPlayType}
+            onTab={onTab}
+          />
+        </div>
+      </main>
+    </>
   )
 }

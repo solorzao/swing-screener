@@ -818,15 +818,17 @@ export class ApiError extends Error {
 }
 
 /** One Pydantic detail row → FieldError, defensively: rows are backend-shaped
- * ({loc: (string|number)[], msg, type}) but this never trusts that. */
+ * ({loc: (string|number)[], msg, type}) but this never trusts that. Only the
+ * LEADING 'body' segment is dropped (it names the request part, not a field) —
+ * a deeper segment that happens to spell "body" is a real field name and stays. */
 function toFieldError(row: unknown): FieldError {
   const r = (typeof row === 'object' && row !== null ? row : {}) as {
     loc?: unknown
     msg?: unknown
   }
-  const loc = Array.isArray(r.loc)
-    ? r.loc.filter((part) => part !== 'body').map(String).join('.')
-    : ''
+  const rawLoc: unknown[] = Array.isArray(r.loc) ? r.loc : []
+  const parts = rawLoc[0] === 'body' ? rawLoc.slice(1) : rawLoc
+  const loc = parts.map(String).join('.')
   return { loc, msg: typeof r.msg === 'string' ? r.msg : JSON.stringify(row) }
 }
 
