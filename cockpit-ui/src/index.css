@@ -173,7 +173,7 @@ button.db-login:disabled {
   white-space: nowrap;
 }
 
-.mh-spacer {
+.spacer {
   flex: 1;
 }
 
@@ -198,14 +198,14 @@ button.db-login:disabled {
   white-space: nowrap;
 }
 
-/* Segmented controls (masthead + panel heads): buttons in a bordered span.
-   Enabled segments are live; disabled ones stay the Phase-2 "visible commitments,
-   dead controls beat absent ones" treatment. */
-.mh-seg {
+/* Segmented controls (components/Segmented.tsx — masthead + panel heads):
+   buttons in a bordered span. Enabled segments are live; disabled ones stay the
+   Phase-2 "visible commitments, dead controls beat absent ones" treatment. */
+.seg {
   display: flex;
 }
 
-.mh-seg button {
+.seg button {
   font-family: var(--mono);
   font-size: 10.5px;
   padding: 4px 9px;
@@ -215,27 +215,27 @@ button.db-login:disabled {
   cursor: pointer;
 }
 
-.mh-seg button:disabled {
+.seg button:disabled {
   color: var(--faint);
   cursor: not-allowed;
 }
 
 /* Selected segment: blue-tinted, never green (blue is the neutral-info accent). */
-.mh-seg button.seg-on {
+.seg button.seg-on {
   color: var(--txt);
   background: color-mix(in srgb, var(--blue) 14%, var(--panel2));
   border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
 }
 
-.mh-seg button + button {
+.seg button + button {
   border-left: none;
 }
 
-.mh-seg button:first-child {
+.seg button:first-child {
   border-radius: 3px 0 0 3px;
 }
 
-.mh-seg button:last-child {
+.seg button:last-child {
   border-radius: 0 3px 3px 0;
 }
 
@@ -880,11 +880,11 @@ button.disarm {
   gap: 12px;
 }
 
-.perf-head .mh-seg + .mh-seg {
+.perf-head .seg + .seg {
   margin-left: 8px;
 }
 
-.perf-head .mh-seg button {
+.perf-head .seg button {
   font-size: 9.5px;
   padding: 3px 6px;
 }
@@ -1037,7 +1037,12 @@ button.disarm {
   justify-content: center;
 }
 
+/* Responsive: the SVG carries only a viewBox (Sparkline.tsx), so CSS owns the
+   rendered size — fill the row, keep the viewBox aspect ratio for the height. */
 .sparkline {
   display: block;
-  flex: none;
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  height: auto;
 }

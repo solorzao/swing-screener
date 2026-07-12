@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { postAzureLogin } from '../lib/api'
 import type { Facet, Gate, Health, Heartbeat } from '../lib/api'
 import { FacetToggle } from './FacetToggle'
+import { Segmented } from './Segmented'
 
 /** The one selectable cost level. `@0.10` is disabled-honest: replay-only, no
  * re-priced book exists (plan scope decision 4). */
@@ -113,7 +114,7 @@ export function Masthead({
           ))}
       </span>
 
-      <span className="mh-spacer" />
+      <span className="spacer" />
 
       <span className="mh-clock">data as of {fmtClock(asOf)}</span>
 
@@ -135,25 +136,24 @@ export function Masthead({
         </span>
       )}
 
-      <span className="mh-seg">
-        <button
-          type="button"
-          className={cost === '0.05' ? 'seg-on' : undefined}
-          aria-pressed={cost === '0.05'}
-          title="every level exit haircut 0.05 ATR at exit; flip/time-stop exits are never haircut"
-          onClick={() => onCost('0.05')}
-        >
-          net @0.05
-        </button>
-        <button
-          type="button"
-          disabled
-          aria-pressed={cost === '0.10'}
-          title="not measured — replay-only level, no re-priced book exists"
-        >
-          @0.10
-        </button>
-      </span>
+      <Segmented
+        options={[
+          {
+            value: '0.05',
+            label: 'net @0.05',
+            title:
+              'every level exit haircut 0.05 ATR at exit; flip/time-stop exits are never haircut',
+          },
+          {
+            value: '0.10',
+            label: '@0.10',
+            disabled: true,
+            title: 'not measured — replay-only level, no re-priced book exists',
+          },
+        ]}
+        value={cost}
+        onChange={onCost}
+      />
 
       <FacetToggle facet={facet} onFacet={onFacet} />
 

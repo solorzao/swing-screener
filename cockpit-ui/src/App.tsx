@@ -20,6 +20,7 @@ import type { CostLevel } from './components/Masthead'
 import { NeedsHandStrip } from './components/NeedsHandStrip'
 import { PerformancePanel } from './components/PerformancePanel'
 import type { BreakdownTab } from './components/PerformancePanel'
+import { Segmented } from './components/Segmented'
 import { SettlementCard } from './components/SettlementCard'
 import { StatChip } from './components/StatChip'
 
@@ -149,33 +150,25 @@ function PerformanceSection({
     <section className="panel">
       <div className="panel-head perf-head">
         PERFORMANCE <FacetCaption facet={facet} />
-        <span className="mh-spacer" />
-        <span className="mh-seg" title="play type">
-          {PLAY_TYPES.map((p) => (
-            <button
-              key={p}
-              type="button"
-              className={p === playType ? 'seg-on' : undefined}
-              aria-pressed={p === playType}
-              onClick={() => onPlayType(p)}
-            >
-              {p === 'continuation' ? 'cont' : p === 'reversal' ? 'rev' : 'all'}
-            </button>
-          ))}
-        </span>
-        <span className="mh-seg" title="leaderboard window (days)">
-          {WINDOWS.map((w) => (
-            <button
-              key={w}
-              type="button"
-              className={w === win ? 'seg-on' : undefined}
-              aria-pressed={w === win}
-              onClick={() => onWin(w)}
-            >
-              {w === 'all' ? 'all' : `${w}d`}
-            </button>
-          ))}
-        </span>
+        <span className="spacer" />
+        <Segmented
+          title="play type"
+          options={PLAY_TYPES.map((p) => ({
+            value: p,
+            label: p === 'continuation' ? 'cont' : p === 'reversal' ? 'rev' : 'all',
+          }))}
+          value={playType}
+          onChange={onPlayType}
+        />
+        <Segmented
+          title="leaderboard window (days)"
+          options={WINDOWS.map((w) => ({
+            value: w,
+            label: w === 'all' ? 'all' : `${w}d`,
+          }))}
+          value={win}
+          onChange={onWin}
+        />
       </div>
       <PanelBody polled={perf} noun="performance">
         {(data) => <PerformancePanel data={data} tab={tab} onTab={onTab} />}
