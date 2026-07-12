@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from swing_screener.cockpit.common import (
+    ActionNonce,
     _is_azure,
     _require_cockpit,
     _stored_error_detail,
@@ -50,9 +51,11 @@ def build_analysis_router(
     *,
     _session: Callable[[], Iterator[Session]],
     db_url: str,
+    action_nonce: ActionNonce,
 ) -> APIRouter:
-    """The analysis endpoints, closed over the app's seams: the session dependency
-    and the DB URL (``_worker_label`` derives who drains the queue from it)."""
+    """The analysis endpoints, closed over the app's seams: the session dependency,
+    the DB URL (``_worker_label`` derives who drains the queue from it), and the
+    post-action wake nonce (bumped by the queue action here)."""
     router = APIRouter()
 
     @router.post("/api/analysis", dependencies=[Depends(_require_cockpit)])
@@ -73,6 +76,7 @@ def build_analysis_router(
         tz-naive (UTC clock fields, see ``_stalled``)."""
         stamp = datetime.now(UTC)
         req = create_analysis_request(session, ticker=body.ticker, requested_at=stamp)
+        action_nonce.bump()  # post-action wake: create_analysis_request has committed
         return {"id": req.id, "ticker": req.ticker, "status": req.status,
                 "requested_at": stamp.isoformat()}
 

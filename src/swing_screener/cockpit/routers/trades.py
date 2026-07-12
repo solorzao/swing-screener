@@ -12,7 +12,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from swing_screener.analytics.pl import PositionPL, position_pl
-from swing_screener.cockpit.common import _armed_symbols, _bracket, _require_cockpit
+from swing_screener.cockpit.common import (
+    ActionNonce,
+    _armed_symbols,
+    _bracket,
+    _require_cockpit,
+)
 from swing_screener.cockpit.livedata import BrokerSnapshot, QuoteCache, Snapshot
 from swing_screener.db.models import ExecutionLog, PaperTrade, Signal, Trade
 from swing_screener.db.repo import (
@@ -146,9 +151,11 @@ def build_trades_router(
     _session: Callable[[], Iterator[Session]],
     quote_cache: QuoteCache,
     broker_snapshot: BrokerSnapshot,
+    action_nonce: ActionNonce,
 ) -> APIRouter:
-    """The trades endpoints, closed over the app's seams: the session dependency
-    and the two livedata caches (the same instances parked on ``app.state``)."""
+    """The trades endpoints, closed over the app's seams: the session dependency,
+    the two livedata caches (the same instances parked on ``app.state``), and the
+    post-action wake nonce (bumped by the two write actions here)."""
     router = APIRouter()
 
     @router.post("/api/trades", dependencies=[Depends(_require_cockpit)])
@@ -184,6 +191,7 @@ def build_trades_router(
             stop=body.stop, target=body.target, notes=body.notes,
             signal_id=body.signal_id, override=override,
         ))
+        action_nonce.bump()  # post-action wake: add_trade has committed
         return {"trade_id": trade.id, "override": trade.override,
                 "entry_date": trade.entry_date.isoformat()}
 
@@ -229,6 +237,7 @@ def build_trades_router(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:  # unknown id -- unreachable after the fetch, kept
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        action_nonce.bump()  # post-action wake: close + ExitEvent committed together
         risk = trade.entry_price - trade.stop
         realized_r = (body.exit_price - trade.entry_price) / risk if risk > 0 else None
         return {

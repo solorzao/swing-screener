@@ -107,6 +107,42 @@ class _LoginFlight:
         )
 
 
+class ActionNonce:
+    """The post-action wake counter (Phase 3, Task 12): every successful action
+    POST bumps it, and the SSE change token carries the value, so every OTHER
+    cockpit window refetches on the next wake-poll tick (seconds) instead of
+    waiting out its own 60s poll floor. The acting window doesn't need it -- it
+    refetches locally via a key bump.
+
+    One instance per app, built in ``create_app`` and threaded to the routers
+    (the same seam pattern as ``quote_cache``/``broker_snapshot``) rather than
+    a module global: apps in the test suite must not wake each other. Parked on
+    ``app.state.action_nonce`` too, so tests can read it.
+
+    Thread-safety: bumps land on request threads while the SSE stream reads
+    from its own worker thread -- the lock makes both sides exact. The counter
+    only GROWS (single process, never reset), so a token built from a slightly
+    stale read self-heals on the next tick; the lock removes even that window.
+
+    Bump AFTER the write is durable (repo commit / atomic store replace / venue
+    call returned): a bumped nonce with a rolled-back write would wake pollers
+    to see nothing -- harmless, but a lie. Exceptions skip the bump naturally.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._count = 0
+
+    def bump(self) -> None:
+        with self._lock:
+            self._count += 1
+
+    @property
+    def value(self) -> int:
+        with self._lock:
+            return self._count
+
+
 def _require_cockpit(request: Request) -> None:
     """The one mutation guard, as a dependency: the custom header can't ride a
     cross-origin simple request, so any webpage's form/fetch dies in the CORS

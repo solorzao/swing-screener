@@ -14,7 +14,12 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from swing_screener.cockpit.common import _armed_symbols, _bracket, _require_cockpit
+from swing_screener.cockpit.common import (
+    ActionNonce,
+    _armed_symbols,
+    _bracket,
+    _require_cockpit,
+)
 from swing_screener.cockpit.livedata import BrokerSnapshot, Snapshot
 from swing_screener.db.models import AnalystCall
 from swing_screener.db.repo import latest_recorded_stop
@@ -41,11 +46,13 @@ def build_safety_router(
     resolved_broker_factory: Callable[[], BrokerClient | None],
     broker_snapshot: BrokerSnapshot,
     disarm_lock: threading.Lock,
+    action_nonce: ActionNonce,
 ) -> APIRouter:
     """The gate/DISARM/safety endpoints, closed over the app's seams: the session
     dependency, the edge dir, the resolved broker factory (DISARM needs a LIVE
-    client), the cached venue snapshot (also parked on ``app.state``), and the
-    DISARM single-flight lock (also parked on ``app.state`` for tests)."""
+    client), the cached venue snapshot (also parked on ``app.state``), the DISARM
+    single-flight lock (also parked on ``app.state`` for tests), and the
+    post-action wake nonce (bumped by a REAL disarm run)."""
     router = APIRouter()
 
     @router.get("/api/gate")
@@ -132,6 +139,12 @@ def build_safety_router(
             finally:
                 if not dry_run:
                     broker_snapshot.invalidate()
+            if not dry_run:
+                # Post-action wake: the venue calls all returned. A dry run never
+                # bumps -- it changed nothing, and Task 15's hold-to-confirm fires
+                # a preview on EVERY hold-start; waking all windows per hold would
+                # be noise. Success-only by position: any raise above skipped this.
+                action_nonce.bump()
             return {
                 "dry_run": dry_run,
                 "cancelled": [{"symbol": o.symbol,

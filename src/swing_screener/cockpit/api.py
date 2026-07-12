@@ -35,6 +35,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import SQLAlchemyError
 
 from swing_screener.cockpit.common import (
+    ActionNonce,
     _json_safe_floats,
     _LoginProc,
     _spawn_az_login,
@@ -155,6 +156,13 @@ def create_app(
     disarm_lock = threading.Lock()
     app.state.disarm_lock = disarm_lock
 
+    # The post-action wake nonce (Task 12): one per app, threaded to every
+    # mutating router AND the events router -- a successful action POST bumps
+    # it, the SSE change token carries it, so other windows wake within one
+    # token-poll tick. Parked on app.state so tests can read (and bump) it.
+    action_nonce = ActionNonce()
+    app.state.action_nonce = action_nonce
+
     spawner = login_spawner if login_spawner is not None else _spawn_az_login
 
     app.include_router(build_books_router(
@@ -165,18 +173,26 @@ def create_app(
         _session=_session, edge_dir=edge_dir,
         resolved_broker_factory=resolved_broker_factory,
         broker_snapshot=broker_snapshot, disarm_lock=disarm_lock,
+        action_nonce=action_nonce,
     ))
     app.include_router(build_trades_router(
         _session=_session, quote_cache=quote_cache, broker_snapshot=broker_snapshot,
+        action_nonce=action_nonce,
     ))
-    app.include_router(build_analysis_router(_session=_session, db_url=db_url))
+    app.include_router(build_analysis_router(
+        _session=_session, db_url=db_url, action_nonce=action_nonce,
+    ))
     app.include_router(build_picks_router(_session=_session, quote_cache=quote_cache))
     app.include_router(build_reference_router(_session=_session))
-    app.include_router(build_proposals_router(edge_dir=edge_dir))
+    app.include_router(build_proposals_router(
+        edge_dir=edge_dir, action_nonce=action_nonce,
+    ))
     app.include_router(build_playbooks_router(_session=_session, edge_dir=edge_dir))
     app.include_router(build_weather_router(_session=_session))
     app.include_router(build_analyst_router(_session=_session))
-    app.include_router(build_events_router(_engine=_engine, edge_dir=edge_dir))
+    app.include_router(build_events_router(
+        _engine=_engine, edge_dir=edge_dir, action_nonce=action_nonce,
+    ))
 
     resolved_static = static_dir if static_dir is not None else Path(__file__).parent / "static"
     if (resolved_static / "index.html").is_file():

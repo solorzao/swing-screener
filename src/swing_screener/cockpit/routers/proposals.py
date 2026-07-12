@@ -12,7 +12,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
-from swing_screener.cockpit.common import _require_cockpit
+from swing_screener.cockpit.common import ActionNonce, _require_cockpit
 from swing_screener.config import StrategyConfig
 from swing_screener.pipeline.proposed import (
     ProposedVariant,
@@ -43,9 +43,12 @@ class ProposalDecision(BaseModel):
         return v
 
 
-def build_proposals_router(*, edge_dir: Path | None) -> APIRouter:
-    """The proposal endpoints, closed over the app's one seam: the edge dir where
-    the proposed stores live. Filesystem only -- no session dependency."""
+def build_proposals_router(
+    *, edge_dir: Path | None, action_nonce: ActionNonce
+) -> APIRouter:
+    """The proposal endpoints, closed over the app's seams: the edge dir where
+    the proposed stores live, and the post-action wake nonce (bumped by the two
+    decision actions here). Filesystem only -- no session dependency."""
     router = APIRouter()
 
     @router.get("/api/proposals")
@@ -135,6 +138,7 @@ def build_proposals_router(*, edge_dir: Path | None) -> APIRouter:
         row, this flip), landed as ONE commit -- North Star #1: evidence gates
         promotion, and a tool never promotes. 404/409 mapping in ``_decide``."""
         pv = _decide(play_type, name, decision="approved", reason=body.reason)
+        action_nonce.bump()  # post-action wake: the store was atomically replaced
         out = _decision_dict(pv, play_type)
         out["checklist"] = _promotion_checklist(play_type)
         return out
@@ -151,6 +155,7 @@ def build_proposals_router(*, edge_dir: Path | None) -> APIRouter:
         hand-edits the store). Same guard, audit append, working-tree honesty and
         404/409 mapping as approve; no checklist -- there is nothing to promote."""
         pv = _decide(play_type, name, decision="withdrawn", reason=body.reason)
+        action_nonce.bump()  # post-action wake: the store was atomically replaced
         return _decision_dict(pv, play_type)
 
     return router
