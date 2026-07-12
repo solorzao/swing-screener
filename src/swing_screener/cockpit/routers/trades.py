@@ -2,8 +2,11 @@
 the log-trade prefill. Moved verbatim out of ``cockpit/api.py``; validation models,
 override stamping, and every wire shape are unchanged."""
 
+import json
+import logging
 from collections.abc import Callable, Iterator
-from datetime import date
+from dataclasses import asdict
+from datetime import UTC, date, datetime
 from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -19,12 +22,19 @@ from swing_screener.cockpit.common import (
     _require_cockpit,
 )
 from swing_screener.cockpit.livedata import BrokerSnapshot, QuoteCache, Snapshot
-from swing_screener.db.models import ExecutionLog, PaperTrade, Signal, Trade
+from swing_screener.db.models import (
+    ExecutionLog,
+    JournalReview,
+    PaperTrade,
+    Signal,
+    Trade,
+)
 from swing_screener.db.repo import (
     AlreadyClosedError,
     add_trade,
     close_trade_with_event,
     count_open_positions,
+    create_coach_draft_request,
     execution_logs_for_day,
     get_closed_trades,
     get_open_trades,
@@ -32,6 +42,8 @@ from swing_screener.db.repo import (
     load_open_live_trades,
     realized_r_on,
 )
+from swing_screener.journal.auto_tag import propose_tags
+from swing_screener.journal.coach_grade import equity_review_facts, facts_dict
 from swing_screener.pipeline.execution import (
     LIVE_ACCOUNT,
     MANUAL_ACCOUNT,
@@ -66,6 +78,8 @@ class TradeCreate(BaseModel):
     target: float = Field(allow_inf_nan=False)
     notes: str = Field(default="", max_length=256)
     signal_id: int | None = None
+    # Journal v2: the discretionary entry emotion (FOMO, calm...). Manual actions only.
+    emotional_state: str | None = Field(default=None, max_length=32)
 
     @field_validator("ticker")
     @classmethod
@@ -106,6 +120,38 @@ class TradeClose(BaseModel):
 # Mirrored client-side by FAITHFUL_TOL + overridePreview in
 # cockpit-ui/src/components/LogTradeForm.tsx (the live preview) -- keep in sync.
 _FAITHFUL_TOL = 0.005
+
+log = logging.getLogger(__name__)
+
+
+def _write_close_review(session: Session, trade: Trade) -> None:
+    """On a manual close: stamp the deterministic Coach review facts row (with parked
+    auto-tag proposals) and enqueue the async LLM narrative draft. NEVER raises -- the
+    close already committed, so a review failure must not 500 the close. The LLM prose
+    stays server-side (the worker drains the queue); this path calls no model.
+    """
+    try:
+        facts = equity_review_facts(trade)
+        payload = facts_dict(facts)
+        payload["tag_proposals"] = [asdict(p) for p in propose_tags(facts)]
+        review = JournalReview(
+            identity_key=f"trade_close:manual_equity:{trade.id}",
+            kind="trade_close",
+            book="manual_equity",
+            trade_id=trade.id,
+            facts_json=json.dumps(payload),
+            source="analyst",
+            generated_at=datetime.now(UTC),
+        )
+        session.add(review)
+        session.commit()
+        session.refresh(review)
+        create_coach_draft_request(
+            session, review_id=review.id, requested_at=datetime.now(UTC)
+        )
+    except Exception:  # noqa: BLE001 -- review is best-effort; the close must still return
+        log.warning("coach close-review write failed for trade %s", trade.id, exc_info=True)
+        session.rollback()
 
 
 def _pct_part(label: str, actual: float, planned: float) -> str | None:
@@ -197,6 +243,7 @@ def build_trades_router(
             entry_date=date.today(), entry_price=body.entry_price, size=body.size,
             stop=body.stop, target=body.target, notes=body.notes,
             signal_id=body.signal_id, override=override,
+            emotional_state=body.emotional_state,
         ))
         action_nonce.bump()  # post-action wake: add_trade has committed
         return {"trade_id": trade.id, "override": trade.override,
@@ -244,6 +291,7 @@ def build_trades_router(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:  # unknown id -- unreachable after the fetch, kept
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        _write_close_review(session, trade)  # sync facts + enqueue async draft (best-effort)
         action_nonce.bump()  # post-action wake: close + ExitEvent committed together
         risk = trade.entry_price - trade.stop
         realized_r = (body.exit_price - trade.entry_price) / risk if risk > 0 else None

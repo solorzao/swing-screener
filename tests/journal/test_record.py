@@ -57,7 +57,7 @@ def test_trade_records_shape_tags_and_theses():
         assert amd.direction == "long"
         assert amd.opened == date(2026, 7, 1)
         assert amd.closed == date(2026, 7, 5)
-        assert amd.r == 2.0
+        assert amd.result == 2.0
         assert amd.tags == [TagView(name="chased", kind="mistake", source="human")]
         assert amd.theses == [
             ThesisView(event_kind="entry", source="screener", body="pullback into 20EMA")
@@ -65,7 +65,7 @@ def test_trade_records_shape_tags_and_theses():
 
         nvda = by_symbol["NVDA"]
         assert nvda.closed is None
-        assert nvda.r is None
+        assert nvda.result is None
         assert nvda.tags == []
         assert nvda.theses == []
 

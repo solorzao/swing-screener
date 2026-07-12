@@ -83,6 +83,7 @@ interface Fields {
   stop: string
   target: string
   notes: string
+  emotional_state: string
 }
 
 const EMPTY: Fields = {
@@ -94,6 +95,7 @@ const EMPTY: Fields = {
   stop: '',
   target: '',
   notes: '',
+  emotional_state: '',
 }
 
 /** Parse a number input the honest way: '' / garbage becomes null and the
@@ -237,6 +239,10 @@ export function LogTradeForm({
       stop: num(fields.stop) as number,
       target: num(fields.target) as number,
       notes: fields.notes,
+      // Journal v2: the discretionary entry emotion (Coach data), only when set.
+      ...(fields.emotional_state.trim() !== ''
+        ? { emotional_state: fields.emotional_state.trim() }
+        : {}),
       ...(defaultsSignalId !== null ? { signal_id: defaultsSignalId } : {}),
     }
     postLogTrade(body).then(
@@ -440,6 +446,28 @@ export function LogTradeForm({
             {...fieldAria('notes')}
             onChange={(e) => set('notes')(e.target.value)}
           />
+        </Field>
+        <Field
+          name="emotional_state"
+          label="emotion"
+          error={errFor('emotional_state')}
+        >
+          <input
+            className="ltf-in"
+            value={fields.emotional_state}
+            maxLength={32}
+            placeholder="calm / fomo / revenge…"
+            list="ltf-emotions"
+            {...fieldAria('emotional_state')}
+            onChange={(e) => set('emotional_state')(e.target.value)}
+          />
+          <datalist id="ltf-emotions">
+            <option value="calm" />
+            <option value="fomo" />
+            <option value="revenge" />
+            <option value="hesitant" />
+            <option value="greedy" />
+          </datalist>
         </Field>
       </div>
 

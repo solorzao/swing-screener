@@ -3,6 +3,7 @@ the Execution Safety report. Moved verbatim out of ``cockpit/api.py``; lock
 semantics (single-flight, non-blocking acquire, release in the outer ``finally``)
 and every status code are unchanged."""
 
+import logging
 import threading
 from collections.abc import Callable, Iterator
 from dataclasses import replace
@@ -10,7 +11,6 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -21,7 +21,8 @@ from swing_screener.cockpit.common import (
     _require_cockpit,
 )
 from swing_screener.cockpit.livedata import BrokerSnapshot, Snapshot
-from swing_screener.db.models import AnalystCall
+from swing_screener.cockpit.spend import spend_rows_since
+from swing_screener.db.models import DisarmEvent
 from swing_screener.db.repo import latest_recorded_stop
 from swing_screener.pipeline.autonomy import autonomy_gate, gate_countdown
 from swing_screener.pipeline.broker import BrokerClient
@@ -37,6 +38,22 @@ from swing_screener.settings import (
     resolve_edge_dir,
     resolve_execution,
 )
+
+
+log = logging.getLogger(__name__)
+
+
+def _record_disarm(session: Session, *, reason: str, orders_cancelled: int) -> None:
+    """Persist a DisarmEvent so the System Behavior Auditor can see an unexpected
+    disarm. Best-effort: a completed disarm has moved venue state, so a failure to
+    log it must not turn the response into a 503."""
+    try:
+        session.add(DisarmEvent(
+            created_at=datetime.now(UTC), reason=reason, orders_cancelled=orders_cancelled))
+        session.commit()
+    except Exception:  # noqa: BLE001 -- audit logging is best-effort; the disarm stands
+        log.warning("failed to persist DisarmEvent", exc_info=True)
+        session.rollback()
 
 
 def build_safety_router(
@@ -64,15 +81,18 @@ def build_safety_router(
         so the arithmetic is never reimplemented here. A missing verdicts sidecar
         reads as not-ready (the gate's own missing-file posture), never an error.
         ``execution_mode`` reads the env-backed settings at request time;
-        ``analyst_spend_today_usd`` sums ``est_cost_usd`` over TODAY's AnalystCall
-        rows (NULL costs -- the deterministic/fallback path -- count 0.0).
+        ``analyst_spend_today_usd`` sums ``est_cost_usd`` over TODAY's LLM spend
+        UNIONED across analyst calls + Journal v2 coach/audit rows (NULL costs --
+        the deterministic/fallback path -- count 0.0).
         ``broker_configured`` is settings TRUTHINESS (is ``SWING_BROKER`` set),
         NEVER connectivity: DISARM's enablement keys on it, and it rides this
         already-polled endpoint so the always-visible masthead needs no extra poll.
         """
         report = autonomy_gate(session, edge_dir=resolve_edge_dir(edge_dir))
-        calls = session.scalars(
-            select(AnalystCall).where(AnalystCall.created_date == date.today())
+        today = date.today()
+        # union across analyst calls + Journal v2 coach/audit spend (NULL costs -> 0.0)
+        spend_today = sum(
+            (c or 0.0) for d, c in spend_rows_since(session, today) if d == today
         )
         settings = load_settings()
         return {
@@ -80,7 +100,7 @@ def build_safety_router(
             "countdown": gate_countdown(report),
             "execution_mode": settings.execution_mode,
             "broker_configured": bool(settings.broker),
-            "analyst_spend_today_usd": sum((c.est_cost_usd or 0.0 for c in calls), 0.0),
+            "analyst_spend_today_usd": spend_today,
         }
 
     @router.post("/api/disarm", dependencies=[Depends(_require_cockpit)])
@@ -151,6 +171,8 @@ def build_safety_router(
                     # per hold would be noise.
                     broker_snapshot.invalidate()
                     action_nonce.bump()
+            if not dry_run:  # a real disarm moved venue state -> record it for the Auditor
+                _record_disarm(session, reason="cockpit", orders_cancelled=len(entries))
             return {
                 "dry_run": dry_run,
                 "cancelled": [{"symbol": o.symbol,

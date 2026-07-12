@@ -105,6 +105,22 @@ param analysisMaxSearches string = '4'
 @description('Per-run deep-analysis spend ceiling in USD (SWING_DEEP_ANALYSIS_MAX_USD).')
 param deepAnalysisMaxUsd string = '2.50'
 
+// Journal v2 coaches (Personal Trade Coach + System Behavior Auditor). Both default
+// OFF; the enable flags default to '' (empty = off, per the settings _TRUE parse).
+// The per-surface USD ceilings ship a REAL numeric default, never empty -- an empty
+// ceiling would mean unbounded, unacceptable even for a default-off surface.
+@description('Enable the Coach LLM (SWING_COACH_ENABLED; empty = off).')
+param coachEnabled string = ''
+
+@description('Per-run Coach spend ceiling in USD (SWING_COACH_MAX_USD).')
+param coachMaxUsd string = '1.00'
+
+@description('Enable the Auditor LLM (SWING_AUDIT_ENABLED; empty = off).')
+param auditEnabled string = ''
+
+@description('Per-run Auditor spend ceiling in USD (SWING_AUDIT_MAX_USD).')
+param auditMaxUsd string = '1.00'
+
 @description('Tags applied to the jobs.')
 param tags object = {}
 
@@ -207,6 +223,24 @@ var commonEnv = [
   {
     name: 'SWING_ANALYSIS_MAX_SEARCHES'
     value: analysisMaxSearches
+  }
+  // Journal v2 coaches. On commonEnv so the coach/audit jobs read them; the other
+  // jobs ignore them harmlessly (like the deep-analysis knobs on the screen jobs).
+  {
+    name: 'SWING_COACH_ENABLED'
+    value: coachEnabled
+  }
+  {
+    name: 'SWING_COACH_MAX_USD'
+    value: coachMaxUsd
+  }
+  {
+    name: 'SWING_AUDIT_ENABLED'
+    value: auditEnabled
+  }
+  {
+    name: 'SWING_AUDIT_MAX_USD'
+    value: auditMaxUsd
   }
 ]
 
@@ -335,6 +369,56 @@ var jobSpecs = [
       {
         name: 'RUN_IF_ET_HOUR'
         value: '9'
+      }
+    ]
+    timeout: digestTimeoutSeconds
+  }
+  {
+    // Journal v2 -- Personal Trade Coach worker. UN-gated (empty gateEnv) so it runs
+    // every firing: it drains the on-close draft queue (backfilling review narratives)
+    // AND refreshes the weekly Weaknesses Profile. Default-OFF coach still drains the
+    // queue to deterministic-template narratives; the LLM path needs SWING_COACH_ENABLED.
+    name: 'journal-coach'
+    cron: '0 * * * *'
+    args: [
+      '-m'
+      'swing_screener.journal.coach_run'
+    ]
+    gateEnv: []
+    timeout: digestTimeoutSeconds
+  }
+  {
+    // Journal v2 -- System Behavior Auditor weekly sweep. ET-gated to 16:00 Saturday
+    // (the UTC pair fires once, no DST double-run), mirroring the reflection cadence.
+    name: 'journal-audit-weekly'
+    cron: '30 20,21 * * 6'
+    args: [
+      '-m'
+      'swing_screener.journal.audit_run'
+      'weekly'
+    ]
+    gateEnv: [
+      {
+        name: 'RUN_IF_ET_HOUR'
+        value: '16'
+      }
+    ]
+    timeout: digestTimeoutSeconds
+  }
+  {
+    // Journal v2 -- Auditor daily breach scan (caps exceeded, disarms). ET-gated to
+    // 16:00 on weekdays -- "flags on the next run after the breach" (design cadence).
+    name: 'journal-audit-breach'
+    cron: '30 20,21 * * 1-5'
+    args: [
+      '-m'
+      'swing_screener.journal.audit_run'
+      'breach'
+    ]
+    gateEnv: [
+      {
+        name: 'RUN_IF_ET_HOUR'
+        value: '16'
       }
     ]
     timeout: digestTimeoutSeconds

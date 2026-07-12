@@ -25,9 +25,11 @@ from swing_screener.db.models import (
     ExecutionLog,
     ExitEvent,
     JournalNote,
+    JournalReview,
     JournalThesis,
     JournalTradeTag,
     GexSnapshot,
+    SystemAudit,
     MarketReport,
     OptionPaperTrade,
     OptionSetup,
@@ -214,6 +216,22 @@ def _change_token(engine: Engine, edge_dir: Path) -> dict[str, str]:
                 _watermark(session.scalar(select(func.max(OptionSetup.id)))),
                 _watermark(session.scalar(select(func.max(OptionPaperTrade.id)))),
                 _watermark(session.scalar(select(func.max(OptionPaperTrade.closed_at)))),
+            )),
+            # Journal v2. A coach review's narrative is BACKFILLED async (UPDATE, no
+            # new id) and its human_edit is an UPDATE too, so max(id) alone is blind --
+            # pipe counts of the non-null columns beside it (the analyst-scoring idiom).
+            "coach_reviews": "|".join((
+                _watermark(session.scalar(select(func.max(JournalReview.id)))),
+                _watermark(session.scalar(select(func.count(JournalReview.id))
+                                          .where(JournalReview.narrative.is_not(None)))),
+                _watermark(session.scalar(select(func.count(JournalReview.id))
+                                          .where(JournalReview.human_edit.is_not(None)))),
+            )),
+            # A system audit's acknowledged_by_human flag is an UPDATE -> pipe its count.
+            "system_audits": "|".join((
+                _watermark(session.scalar(select(func.max(SystemAudit.id)))),
+                _watermark(session.scalar(select(func.count(SystemAudit.id))
+                                          .where(SystemAudit.acknowledged_by_human.is_(True)))),
             )),
         }
     token["verdicts"] = "|".join(

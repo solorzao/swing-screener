@@ -127,6 +127,81 @@ def test_migration_enforces_reversal_funnel_run_date_unique(tmp_path, monkeypatc
         con.close()
 
 
+def test_migration_creates_journal_v2_tables(tmp_path, monkeypatch):
+    # Journal v2 adds the two coaches' artifact tables + the profile + a disarm log.
+    db = tmp_path / "jv2.db"
+    url = f"sqlite:///{db}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    command.upgrade(_config(url), "head")
+
+    con = sqlite3.connect(db)
+    try:
+        tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    finally:
+        con.close()
+
+    assert {"journal_reviews", "system_audits", "weaknesses_profiles",
+            "disarm_events", "coach_draft_requests"} <= tables
+
+
+def test_migration_adds_trade_emotional_state_column(tmp_path, monkeypatch):
+    # emotional_state is nullable, no server_default (manual actions only; NULL = none).
+    db = tmp_path / "emo.db"
+    url = f"sqlite:///{db}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    command.upgrade(_config(url), "head")
+
+    con = sqlite3.connect(db)
+    try:
+        info = {r[1]: r for r in con.execute("PRAGMA table_info(trades)")}
+    finally:
+        con.close()
+
+    assert "emotional_state" in info
+    assert info["emotional_state"][3] == 0     # nullable
+    assert info["emotional_state"][4] is None  # no server default
+
+
+def test_migration_enforces_journal_review_identity_unique(tmp_path, monkeypatch):
+    # A re-fired on-close/rollup job must not double-write: identity_key is UNIQUE.
+    db = tmp_path / "jr.db"
+    url = f"sqlite:///{db}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    command.upgrade(_config(url), "head")
+
+    con = sqlite3.connect(db)
+    try:
+        row = ("INSERT INTO journal_reviews (identity_key, kind, book, source) "
+               "VALUES ('trade_close:manual_equity:1', 'trade_close', 'manual_equity', 'analyst')")
+        con.execute(row)
+        con.commit()
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute(row)
+            con.commit()
+    finally:
+        con.close()
+
+
+def test_migration_enforces_system_audit_identity_unique(tmp_path, monkeypatch):
+    # One weekly audit per period: the composite unique (all NOT NULL) rejects a dup.
+    db = tmp_path / "sa.db"
+    url = f"sqlite:///{db}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    command.upgrade(_config(url), "head")
+
+    con = sqlite3.connect(db)
+    try:
+        row = ("INSERT INTO system_audits (kind, period_from, period_to, breach_key) "
+               "VALUES ('weekly', '2026-07-06', '2026-07-12', '')")
+        con.execute(row)
+        con.commit()
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute(row)
+            con.commit()
+    finally:
+        con.close()
+
+
 def test_migration_enforces_email_log_dedup(tmp_path, monkeypatch):
     db = tmp_path / "u.db"
     url = f"sqlite:///{db}"

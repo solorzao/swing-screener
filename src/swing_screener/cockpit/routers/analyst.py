@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from swing_screener.analytics.calibration import conviction_calibrated
 from swing_screener.analytics.performance import _CLUSTER_FLOOR, MIN_LEADERBOARD_N
 from swing_screener.cockpit.common import _finite_or_none
+from swing_screener.cockpit.spend import spend_rows_since
 from swing_screener.db.models import AnalystCall
 from swing_screener.db.repo import analyst_call_freshness
 from swing_screener.pipeline.proposed import PLAY_TYPES
@@ -125,13 +126,11 @@ def build_analyst_router(
 
 
 def _spend(session: Session, today: date) -> dict[str, object]:
-    """The three spend windows over one bounded SELECT (30 calendar days including
-    today). Rows with a NULL ``est_cost_usd`` are counted, not summed -- the
-    undercount is disclosed, never silently absorbed as zero-cost."""
-    rows = session.execute(
-        select(AnalystCall.created_date, AnalystCall.est_cost_usd)
-        .where(AnalystCall.created_date >= today - timedelta(days=29))
-    ).all()
+    """The three spend windows over 30 calendar days including today, UNIONED across
+    every LLM-spending table (analyst calls + Journal v2 coach reviews + auditor
+    sweeps) so the gate never under-reports true suite spend. Rows with a NULL
+    ``est_cost_usd`` are counted, not summed -- the undercount is disclosed."""
+    rows = spend_rows_since(session, today - timedelta(days=29))
     d7_cutoff = today - timedelta(days=6)
     today_usd = d7 = d30 = 0.0
     uncosted = 0

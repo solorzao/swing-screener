@@ -24,7 +24,9 @@ from swing_screener.db.models import (
     JournalTag,
     JournalThesis,
     JournalTradeTag,
+    OptionPaperTrade,
     PaperTrade,
+    Trade,
 )
 
 
@@ -58,7 +60,7 @@ class TradeRecord:
     opened: date | None
     closed: date | None
     unit: str
-    r: float | None
+    result: float | None  # interpreted by ``unit`` ("R" for swing/manual, "$" for robinhood)
     tags: list[TagView] = field(default_factory=list)
     theses: list[ThesisView] = field(default_factory=list)
 
@@ -68,8 +70,8 @@ def trade_records(session: Session, *, book: str) -> list[TradeRecord]:
     stable id order, each carrying its book-scoped tags and theses.
 
     ``opened`` prefers ``opened_date`` and falls back to ``entry_date`` (a legacy row
-    may carry only the fill date); ``closed`` is ``exit_date`` (None while open); ``r``
-    is ``realized_r`` (None until closed). Tags/theses are resolved to display views in
+    may carry only the fill date); ``closed`` is ``exit_date`` (None while open);
+    ``result`` is ``realized_r`` (None until closed). Tags/theses are display views in
     application order. Pure read; no aggregation. Empty book -> ``[]``.
     """
     trades = list(session.scalars(
@@ -92,7 +94,88 @@ def trade_records(session: Session, *, book: str) -> list[TradeRecord]:
             opened=t.opened_date if t.opened_date is not None else t.entry_date,
             closed=t.exit_date,
             unit="R",
-            r=t.realized_r,
+            result=t.realized_r,
+            tags=tags_by_trade.get(t.id, []),
+            theses=theses_by_trade.get(t.id, []),
+        )
+        for t in trades
+    ]
+
+
+def manual_equity_records(session: Session) -> list[TradeRecord]:
+    """Oliver's real manual equity trades (the whole ``Trade`` table) as display
+    records under ``book="manual_equity"``. The Personal Trade Coach's equity scope.
+
+    ``Trade`` has NO ``account`` column (the whole table IS the manual book) and NO
+    ``realized_r`` -- R is computed ``(exit-entry)/(entry-stop)`` with the close
+    endpoint's guard (``risk <= 0`` or still open -> ``None``). Overlay tags/theses
+    join under ``book="manual_equity"``. Pure read; empty -> ``[]``.
+    """
+    trades = list(session.scalars(select(Trade).order_by(Trade.id)))
+    if not trades:
+        return []
+
+    book = "manual_equity"
+    trade_ids = [t.id for t in trades]
+    tags_by_trade = _tags_by_trade(session, book=book, trade_ids=trade_ids)
+    theses_by_trade = _theses_by_trade(session, book=book, trade_ids=trade_ids)
+
+    records = []
+    for t in trades:
+        risk = t.entry_price - t.stop
+        result = (
+            (t.exit_price - t.entry_price) / risk
+            if t.exit_price is not None and risk > 0
+            else None
+        )
+        records.append(
+            TradeRecord(
+                book=book,
+                module="swing",
+                trade_id=t.id,
+                symbol=t.ticker,
+                direction="long",  # the manual equity book is long-only
+                opened=t.entry_date,
+                closed=t.exit_date,
+                unit="R",
+                result=result,
+                tags=tags_by_trade.get(t.id, []),
+                theses=theses_by_trade.get(t.id, []),
+            )
+        )
+    return records
+
+
+def robinhood_records(session: Session) -> list[TradeRecord]:
+    """Oliver's real imported Robinhood option episodes (``OptionPaperTrade`` account
+    ``"robinhood"``) as display records. Premium-denominated (``unit="$"``), NEVER R,
+    never pooled. ``opened_at``/``closed_at`` are datetimes -> coerced to date. The
+    ``options-lab`` (paper) account is excluded by the mandatory account guard.
+    """
+    trades = list(session.scalars(
+        select(OptionPaperTrade)
+        .where(OptionPaperTrade.account == "robinhood")
+        .order_by(OptionPaperTrade.id)
+    ))
+    if not trades:
+        return []
+
+    book = "robinhood"
+    trade_ids = [t.id for t in trades]
+    tags_by_trade = _tags_by_trade(session, book=book, trade_ids=trade_ids)
+    theses_by_trade = _theses_by_trade(session, book=book, trade_ids=trade_ids)
+
+    return [
+        TradeRecord(
+            book=book,
+            module="gex",
+            trade_id=t.id,
+            symbol=t.underlying,
+            direction=t.direction,
+            opened=t.opened_at.date() if t.opened_at is not None else None,
+            closed=t.closed_at.date() if t.closed_at is not None else None,
+            unit="$",
+            result=t.premium_pnl,
             tags=tags_by_trade.get(t.id, []),
             theses=theses_by_trade.get(t.id, []),
         )
