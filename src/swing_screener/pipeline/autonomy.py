@@ -34,7 +34,7 @@ from swing_screener.analytics.calibration import (
 from swing_screener.db import repo
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.proposed import PLAY_TYPES
-from swing_screener.pipeline.reflect import Verdict, load_verdicts
+from swing_screener.pipeline.reflect import Verdict, load_verdicts, verdicts_filename
 from swing_screener.settings import load_settings, resolve_edge_dir
 
 log = logging.getLogger(__name__)
@@ -67,7 +67,7 @@ def _read_verdicts(edge_dir: Path, play_type: str) -> list[Verdict]:
     """Parse ``edge/<pt>.verdicts.json`` (the code-owned sidecar), or [] if it is missing.
     READ-ONLY: a missing or unreadable sidecar yields no proven edge, never an exception
     that would block the advisory run."""
-    path = edge_dir / f"{play_type}.verdicts.json"
+    path = edge_dir / verdicts_filename(play_type)
     if not path.exists():
         return []
     try:

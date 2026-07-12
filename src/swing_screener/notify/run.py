@@ -82,7 +82,7 @@ from swing_screener.pipeline.insight import (
     record_analyst_call,
 )
 from swing_screener.pipeline.regime import MARKET_PROXY, classify_regime
-from swing_screener.pipeline.reflect import load_verdicts
+from swing_screener.pipeline.reflect import load_verdicts, verdicts_filename
 from swing_screener.settings import (
     load_settings,
     resolve_edge_dir,
@@ -196,7 +196,7 @@ def _load_playbook(edge_dir: Path, play_type: str) -> tuple[str, list] | None:
     read/parse error degrades to None rather than blocking the digest.
     """
     md = edge_dir / f"{play_type}.md"
-    sidecar = edge_dir / f"{play_type}.verdicts.json"
+    sidecar = edge_dir / verdicts_filename(play_type)
     if not (md.exists() and sidecar.exists()):
         return None
     try:

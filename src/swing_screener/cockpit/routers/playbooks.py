@@ -35,6 +35,7 @@ from swing_screener.pipeline.reflect import (
     due_play_types,
     load_verdicts,
     parse_state,
+    verdicts_filename,
 )
 from swing_screener.settings import resolve_edge_dir
 
@@ -117,7 +118,7 @@ def build_playbooks_router(
             rows: list[dict[str, object]] = []
             drift: dict[str, object] | None = None
             error: str | None = None
-            sidecar = edir / f"{pt}.verdicts.json"
+            sidecar = edir / verdicts_filename(pt)
             if not sidecar.exists():
                 error = "missing"
             else:
