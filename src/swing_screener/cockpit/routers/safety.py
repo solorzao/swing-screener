@@ -3,6 +3,7 @@ the Execution Safety report. Moved verbatim out of ``cockpit/api.py``; lock
 semantics (single-flight, non-blocking acquire, release in the outer ``finally``)
 and every status code are unchanged."""
 
+import logging
 import threading
 from collections.abc import Callable, Iterator
 from dataclasses import replace
@@ -21,7 +22,7 @@ from swing_screener.cockpit.common import (
     _require_cockpit,
 )
 from swing_screener.cockpit.livedata import BrokerSnapshot, Snapshot
-from swing_screener.db.models import AnalystCall
+from swing_screener.db.models import AnalystCall, DisarmEvent
 from swing_screener.db.repo import latest_recorded_stop
 from swing_screener.pipeline.autonomy import autonomy_gate, gate_countdown
 from swing_screener.pipeline.broker import BrokerClient
@@ -37,6 +38,22 @@ from swing_screener.settings import (
     resolve_edge_dir,
     resolve_execution,
 )
+
+
+log = logging.getLogger(__name__)
+
+
+def _record_disarm(session: Session, *, reason: str, orders_cancelled: int) -> None:
+    """Persist a DisarmEvent so the System Behavior Auditor can see an unexpected
+    disarm. Best-effort: a completed disarm has moved venue state, so a failure to
+    log it must not turn the response into a 503."""
+    try:
+        session.add(DisarmEvent(
+            created_at=datetime.now(UTC), reason=reason, orders_cancelled=orders_cancelled))
+        session.commit()
+    except Exception:  # noqa: BLE001 -- audit logging is best-effort; the disarm stands
+        log.warning("failed to persist DisarmEvent", exc_info=True)
+        session.rollback()
 
 
 def build_safety_router(
@@ -151,6 +168,8 @@ def build_safety_router(
                     # per hold would be noise.
                     broker_snapshot.invalidate()
                     action_nonce.bump()
+            if not dry_run:  # a real disarm moved venue state -> record it for the Auditor
+                _record_disarm(session, reason="cockpit", orders_cancelled=len(entries))
             return {
                 "dry_run": dry_run,
                 "cancelled": [{"symbol": o.symbol,

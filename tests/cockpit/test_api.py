@@ -3082,6 +3082,21 @@ def test_disarm_real_run_cancels_buys_only_and_keeps_sells(tmp_path: Path) -> No
     assert len(broker.get_positions()) == 1                        # never closed
 
 
+def test_disarm_real_run_records_a_disarm_event(tmp_path: Path) -> None:
+    """A REAL disarm persists a DisarmEvent (Auditor input); a dry run records nothing."""
+    from swing_screener.db.models import DisarmEvent
+
+    broker = _disarm_broker()
+    client, engine, _calls = _broker_app(tmp_path, broker)
+    assert client.post("/api/disarm?dry_run=true", headers=_HDR).status_code == 200
+    with Session(engine) as s:
+        assert s.query(DisarmEvent).count() == 0        # dry run records nothing
+    assert client.post("/api/disarm", headers=_HDR).status_code == 200
+    with Session(engine) as s:
+        ev = s.query(DisarmEvent).one()
+        assert ev.orders_cancelled == 1 and ev.reason == "cockpit"
+
+
 def test_disarm_restores_dead_stop_at_the_recorded_level(tmp_path: Path) -> None:
     """A dead stop leg is re-submitted at the ExecutionLog ticket's RECORDED level
     -- COPIED, never computed (North Star #4) -- as a plain GTC stop covering the
