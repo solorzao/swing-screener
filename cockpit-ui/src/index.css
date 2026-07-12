@@ -3338,3 +3338,559 @@ button.pp-dismiss:hover {
   color: var(--txt);
   border-color: var(--line);
 }
+
+/* ---------- StatChip provenance affordance (StatChip.tsx + ProvenancePopover.tsx) ----------
+   The chip's whole face becomes ONE reset button so provenance is a click (or a
+   keyboard press) away everywhere a StatChip renders. The face is visually
+   unchanged; the wrap is the popover's positioning anchor. */
+.statchip-wrap {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+.statchip-btn {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: inherit;
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+/* A faint hint that the number is inspectable — never loud enough to compete
+   with the value it wraps. */
+.statchip-btn:hover {
+  background: color-mix(in srgb, var(--blue) 7%, transparent);
+}
+
+.statchip-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--blue) 60%, transparent);
+  outline-offset: 1px;
+}
+
+/* The anchored provenance panel: read-only, dismiss on Escape / outside click. */
+.prov-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  min-width: 240px;
+  max-width: 300px;
+  background: var(--panel);
+  border: 1px solid var(--line2);
+  border-radius: 6px;
+  padding: 9px 11px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+  text-transform: none;
+  letter-spacing: normal;
+  cursor: default;
+  text-align: left;
+}
+
+.prov-head {
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  color: var(--txt);
+  margin-bottom: 6px;
+}
+
+.prov-head-lab {
+  color: var(--dim);
+  letter-spacing: normal;
+}
+
+.prov-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 12px;
+  margin: 0;
+  font-size: 11px;
+}
+
+.prov-grid dt {
+  color: var(--faint);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  align-self: baseline;
+}
+
+.prov-grid dd {
+  margin: 0;
+  color: var(--txt);
+}
+
+/* An honest-unknown provenance cell (null cost / corpus, non-finite CI edge). */
+.prov-na {
+  color: var(--faint);
+  font-style: italic;
+}
+
+.prov-warn {
+  color: var(--amber);
+}
+
+/* thin_clusters=true — the IID-fallback flag, LOUD (amber, its own line). */
+.prov-flag {
+  margin-top: 7px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--amber);
+  border: 1px solid var(--lamp-amber-border);
+  background: var(--lamp-amber-bg);
+  border-radius: 3px;
+  padding: 5px 7px;
+}
+
+/* ---------- Masthead analyst spend chip (Masthead.tsx) ----------
+   Real $ off the already-polled gate — an action affordance (opens Analyst),
+   dim and never green (money spent is not an edge claim). */
+button.mh-spend {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  padding: 4px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  color: var(--dim);
+  background: var(--panel2);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+button.mh-spend:hover {
+  color: var(--txt);
+  border-color: var(--line);
+}
+
+/* ---------- Needs-hand unread-analysis item (NeedsHandStrip.tsx) ----------
+   A button (navigates to Analyst) styled as a strip item — blue-tinted so the
+   unread nudge reads as an actionable affordance, not a settled lamp. */
+button.needs-hand-analysis {
+  font: inherit;
+  cursor: pointer;
+  color: var(--txt);
+  background: color-mix(in srgb, var(--blue) 14%, var(--panel2));
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+
+button.needs-hand-analysis:hover {
+  border-color: color-mix(in srgb, var(--blue) 65%, var(--line2));
+}
+
+/* ---------- Analyst screen: calibration (screens/AnalystScreen.tsx) ---------- */
+.cal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Spend windows — real $, one strip. The note carries the undercount honesty. */
+.cal-spend {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel2);
+}
+
+.cal-spend-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.cal-spend-lab {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.cal-spend-val {
+  font-size: 13px;
+  color: var(--txt);
+}
+
+.cal-spend-note {
+  margin-left: auto;
+  font-size: 10px;
+}
+
+.cal-blocks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 14px;
+}
+
+.cal-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 10px 12px;
+  background: var(--panel2);
+}
+
+.cal-block-head {
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  color: var(--txt);
+}
+
+.cal-table-wrap {
+  overflow-x: auto;
+}
+
+.cal-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 11.5px;
+}
+
+.cal-table th {
+  text-align: left;
+  font-weight: 400;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+  padding: 4px 10px 4px 0;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.cal-table td {
+  padding: 5px 10px 5px 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: baseline;
+}
+
+.cal-grade {
+  color: var(--txt);
+}
+
+.cal-mean {
+  color: var(--txt);
+}
+
+.cal-n {
+  font-size: 8.5px;
+  color: var(--faint);
+}
+
+/* A grade with no scored history — unproven, never a fabricated zero-edge. */
+.cal-unproven {
+  font-size: 10.5px;
+  color: var(--faint);
+  font-style: italic;
+}
+
+.cal-dim {
+  color: var(--dim);
+}
+
+.cal-nudge {
+  font-size: 11px;
+  color: var(--txt);
+}
+
+.cal-fresh {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.cal-fresh-item b {
+  color: var(--txt);
+  font-weight: 600;
+}
+
+.cal-fresh-exp b {
+  color: var(--amber);
+}
+
+.cal-fresh-frac {
+  margin-left: auto;
+  font-size: 10px;
+}
+
+.cal-prog {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  border-top: 1px solid var(--line);
+  padding-top: 7px;
+}
+
+.cal-prog-verdict {
+  font-size: 11px;
+  color: var(--txt);
+}
+
+/* Never green: even a passing calibration is not the tier-edge claim. */
+.cal-prog-yes {
+  color: var(--txt);
+}
+
+.cal-prog-no {
+  color: var(--dim);
+}
+
+.cal-prog-row {
+  font-size: 10.5px;
+  color: var(--txt);
+}
+
+.cal-na {
+  color: var(--faint);
+  font-style: italic;
+}
+
+/* ---------- Deep-analysis panel (components/AnalysisPanel.tsx) ---------- */
+.an {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.an-form {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel2);
+}
+
+.an-lab {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.an-in {
+  background: var(--bg);
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  color: var(--txt);
+  font-size: 12px;
+  padding: 4px 8px;
+  width: 140px;
+}
+
+.an-in:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--blue) 60%, transparent);
+  outline-offset: 1px;
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+
+.an-in[aria-invalid='true'] {
+  border-color: color-mix(in srgb, var(--red) 55%, var(--line2));
+}
+
+/* The submit — blue-tinted action affordance (a light POST, not a hold). */
+.an-submit {
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  padding: 4px 12px;
+  border-radius: 3px;
+  border: 1px solid color-mix(in srgb, var(--blue) 45%, var(--line2));
+  background: color-mix(in srgb, var(--blue) 16%, var(--panel2));
+  color: var(--txt);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.an-submit:disabled {
+  color: var(--faint);
+  background: var(--panel2);
+  border-color: var(--line2);
+  cursor: not-allowed;
+}
+
+.an-form-note {
+  font-size: 10px;
+  color: var(--faint);
+}
+
+.an-err {
+  flex-basis: 100%;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--red) 75%, var(--txt));
+}
+
+.an-ok {
+  flex-basis: 100%;
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.an-worker {
+  font-size: 10px;
+  color: var(--dim);
+  line-height: 1.4;
+}
+
+.an-list {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-top: 8px;
+}
+
+.an-row {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 8px 10px;
+  background: var(--panel2);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.an-row-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.an-ticker {
+  font-size: 13px;
+  color: var(--txt);
+  letter-spacing: 0.04em;
+}
+
+.an-id {
+  font-size: 9.5px;
+  color: var(--faint);
+}
+
+.an-status {
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.an-status-running {
+  color: var(--blue);
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+
+.an-status-done {
+  color: var(--dim);
+  border-color: var(--line2);
+}
+
+.an-status-failed {
+  color: color-mix(in srgb, var(--red) 75%, var(--txt));
+  border-color: color-mix(in srgb, var(--red) 45%, var(--line2));
+}
+
+/* stalled — amber, honest ("will retry"), never a spinner that never resolves. */
+.an-stalled {
+  color: var(--amber);
+}
+
+.an-times {
+  font-size: 9.5px;
+  color: var(--faint);
+  white-space: nowrap;
+}
+
+.an-error {
+  font-size: 11px;
+  line-height: 1.4;
+  color: color-mix(in srgb, var(--red) 75%, var(--txt));
+  border: 1px solid color-mix(in srgb, var(--red) 40%, var(--line2));
+  background: color-mix(in srgb, var(--red) 8%, var(--panel2));
+  border-radius: 3px;
+  padding: 5px 8px;
+}
+
+.an-pending {
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
+.an-report {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 7px;
+}
+
+.an-summary {
+  font-size: 11.5px;
+}
+
+.an-summary-empty {
+  color: var(--faint);
+  font-style: italic;
+}
+
+.an-charts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.an-chart {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  text-decoration: none;
+}
+
+.an-chart-thumb {
+  max-height: 90px;
+  max-width: 200px;
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+}
+
+.an-chart-cap {
+  font-size: 9.5px;
+  color: var(--blue);
+}
+
+.an-assets {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.an-pdf {
+  font-size: 11px;
+  color: var(--blue);
+  text-decoration: none;
+}
+
+.an-pdf:hover {
+  text-decoration: underline;
+}
+
+.an-nopdf {
+  font-size: 10px;
+  color: var(--faint);
+}

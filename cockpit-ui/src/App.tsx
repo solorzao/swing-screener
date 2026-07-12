@@ -16,6 +16,7 @@ import { Masthead } from './components/Masthead'
 import type { CostLevel } from './components/Masthead'
 import { NeedsHandStrip } from './components/NeedsHandStrip'
 import type { BreakdownTab } from './components/PerformancePanel'
+import { AnalystScreen } from './screens/AnalystScreen'
 import { CandidatesScreen } from './screens/CandidatesScreen'
 import { ForwardScreen } from './screens/ForwardScreen'
 import { MissionControlScreen } from './screens/MissionControlScreen'
@@ -24,6 +25,22 @@ import { PlaybooksScreen } from './screens/PlaybooksScreen'
 import { PositionsScreen } from './screens/PositionsScreen'
 import { SafetyScreen } from './screens/SafetyScreen'
 import { SystemsScreen } from './screens/SystemsScreen'
+
+/** The last analysis id the user has SEEN (localStorage; scope decision 14 —
+ * "unread" is client-side, no migration). Missing / unparseable reads 0, so a
+ * fresh install treats every existing analysis as already-seen only once it
+ * views the screen; a NEW id past this is the unread nudge. */
+const SEEN_ANALYSIS_KEY = 'cockpit.analysis.lastSeenId'
+
+function readSeenAnalysis(): number {
+  try {
+    const raw = window.localStorage.getItem(SEEN_ANALYSIS_KEY)
+    const n = raw === null ? 0 : Number.parseInt(raw, 10)
+    return Number.isFinite(n) ? n : 0
+  } catch {
+    return 0 // storage disabled — the nudge just never fires, never crashes
+  }
+}
 
 /** True when a keydown happened while typing — digit keys must never steal a
  * value being entered into a form (INPUT/TEXTAREA/SELECT/contentEditable). */
@@ -64,6 +81,11 @@ export default function App() {
     setPrefillSignalId(signalId)
     setScreen('candidates')
   }, [])
+  // The unread-analysis nudge (scope decision 14): last-seen id in localStorage,
+  // mirrored to state so the strip re-renders when it changes. Viewing the
+  // Analyst screen marks the latest id seen (below) — reached by digit 6, the
+  // strip item, or the masthead spend chip, all through `screen === 'analyst'`.
+  const [seenAnalysisId, setSeenAnalysisId] = useState<number>(readSeenAnalysis)
 
   // The 1-9 keys, one App-level listener (plan scope decision 9): digits follow
   // the design's fixed numbering (the SCREENS registry); typing contexts and
@@ -111,6 +133,23 @@ export default function App() {
   const mastheadBeats = beats.error === null ? beats.data : null
   const mastheadGate = gate.error === null ? gate.data : null
 
+  // Unread analysis (scope decision 14): the freshest attention id vs the seen
+  // id. Last-good attention is fine for a low-stakes nudge — worse case it lags
+  // a minute. Viewing the Analyst screen marks the latest seen (any entry
+  // route funnels through `screen === 'analyst'`), which clears the nudge.
+  const latestAnalysisId = attention.data?.latest_analysis_id ?? null
+  const analysisUnread = latestAnalysisId !== null && latestAnalysisId > seenAnalysisId
+  useEffect(() => {
+    if (screen !== 'analyst' || latestAnalysisId === null) return
+    if (latestAnalysisId <= seenAnalysisId) return
+    setSeenAnalysisId(latestAnalysisId)
+    try {
+      window.localStorage.setItem(SEEN_ANALYSIS_KEY, String(latestAnalysisId))
+    } catch {
+      /* storage disabled — state still clears the nudge for this session */
+    }
+  }, [screen, latestAnalysisId, seenAnalysisId])
+
   const dbDown = health.data !== null && !health.data.connected
 
   return (
@@ -146,7 +185,11 @@ export default function App() {
               full brightness could be a stale EMPTY state reading as a fresh
               "nothing needs your hand" while a book settled during the outage.
               The strip persists across EVERY screen, above the switch. */}
-          <NeedsHandStrip cards={fb.error === null ? (fb.data?.cards ?? null) : null} />
+          <NeedsHandStrip
+            cards={fb.error === null ? (fb.data?.cards ?? null) : null}
+            analysisUnread={analysisUnread}
+            onNavigate={setScreen}
+          />
 
           {screen === 'mission' ? (
             <MissionControlScreen
@@ -173,6 +216,8 @@ export default function App() {
             <PositionsScreen wake={wake} />
           ) : screen === 'playbooks' ? (
             <PlaybooksScreen wake={wake} />
+          ) : screen === 'analyst' ? (
+            <AnalystScreen wake={wake} />
           ) : screen === 'forward' ? (
             <ForwardScreen fb={fb} facet={facet} />
           ) : screen === 'safety' ? (

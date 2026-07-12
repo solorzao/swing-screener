@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { postAzureLogin } from '../lib/api'
 import type { Facet, Gate, Health, Heartbeat } from '../lib/api'
+import { fmtUsd } from '../lib/fmt'
 import { screenDef, screenNumber } from '../lib/screens'
 import type { ScreenId } from '../lib/screens'
 import { DisarmControl } from './DisarmControl'
@@ -157,6 +158,20 @@ export function Masthead({
         <span className="mode-chip" title="execution mode">
           {gate.execution_mode}
         </span>
+      )}
+
+      {/* Today's analyst SPEND — real $ off the gate poll (no extra fetch; the
+          field was already on the wire, unrendered). Clicking opens the Analyst
+          screen where the spend windows + calibration live. */}
+      {gate !== null && (
+        <button
+          type="button"
+          className="mh-spend"
+          title="today’s analyst token spend (real $) — click for the 7d/30d windows and calibration"
+          onClick={() => onNavigate('analyst')}
+        >
+          analyst {fmtUsd(gate.analyst_spend_today_usd)}
+        </button>
       )}
 
       <Segmented
