@@ -1,0 +1,195 @@
+"""The System Behavior Auditor worker: a weekly conduct sweep + a daily breach scan.
+
+``audit_run weekly`` grades the period (compliance + anomaly), writes ONE idempotent
+``SystemAudit(kind="weekly")`` row, and (when enabled + under budget) drafts the
+independent audit narrative. ``audit_run breach`` scans a day window and writes a
+``SystemAudit(kind="breach")`` row per hard breach (a cap exceeded, a disarm) it hasn't
+already recorded -- the "flags on the next run after the breach" path (design SS Cadence).
+
+Read-only oversight: it writes only its OWN audit rows; it never moves money, changes
+config, or disarms. Same code-owns-the-numbers firewall (findings_json authoritative).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+from dataclasses import asdict
+from datetime import UTC, date, datetime, time, timedelta
+from typing import TYPE_CHECKING
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from swing_screener.db.models import DisarmEvent, SystemAudit
+from swing_screener.db.session import get_engine
+from swing_screener.journal.audit_anomaly import anomaly_findings
+from swing_screener.journal.audit_author import draft_audit, template_audit
+from swing_screener.journal.audit_compliance import compliance_findings
+from swing_screener.pipeline.run import _migrate_with_retry, _resolve_db_url
+from swing_screener.settings import Settings, load_settings
+
+if TYPE_CHECKING:
+    import anthropic
+
+log = logging.getLogger(__name__)
+_MODEL = "claude-opus-4-8"
+
+
+def _collect(session: Session, *, settings: Settings, period_from: date,
+             period_to: date) -> tuple[dict, str]:
+    """Grade the period and return (findings dict, severity)."""
+    comp = compliance_findings(
+        session, period_from=period_from, period_to=period_to,
+        max_daily_notional=settings.max_daily_notional,
+        max_daily_loss=settings.max_daily_loss)
+    anom = anomaly_findings(session, period_from=period_from, period_to=period_to)
+    findings = {"compliance": asdict(comp), "anomaly": asdict(anom)}
+    if comp.cap_breaches:
+        severity = "alert"
+    elif anom.drought_days or anom.orphan_exit_events or comp.n_disarms:
+        severity = "warn"
+    else:
+        severity = "info"
+    return findings, severity
+
+
+def _get_audit(session: Session, *, kind: str, period_from: date, period_to: date,
+               breach_key: str) -> SystemAudit | None:
+    return session.scalars(
+        select(SystemAudit).where(
+            SystemAudit.kind == kind, SystemAudit.period_from == period_from,
+            SystemAudit.period_to == period_to, SystemAudit.breach_key == breach_key)
+    ).first()
+
+
+def run_weekly(
+    session: Session, *, settings: Settings, period_from: date, period_to: date,
+    now: datetime, client: anthropic.Anthropic | None = None,
+) -> SystemAudit:
+    """Grade the week and upsert the single weekly audit row (idempotent on the period)."""
+    findings, severity = _collect(
+        session, settings=settings, period_from=period_from, period_to=period_to)
+
+    audit = _get_audit(session, kind="weekly", period_from=period_from,
+                       period_to=period_to, breach_key="")
+    if audit is None:
+        audit = SystemAudit(kind="weekly", period_from=period_from, period_to=period_to,
+                            breach_key="")
+        session.add(audit)
+    audit.findings_json = json.dumps(findings)
+    audit.severity = severity
+    audit.generated_at = now
+
+    want_llm = settings.audit_enabled and settings.audit_max_usd != 0
+    if want_llm:
+        draft = draft_audit(findings, client=client)
+        audit.narrative = draft.text
+        if draft.usage is not None:
+            audit.model = _MODEL
+            audit.input_tokens = draft.usage.input_tokens
+            audit.output_tokens = draft.usage.output_tokens
+            audit.est_cost_usd = draft.usage.est_cost_usd
+    else:
+        audit.narrative = template_audit(findings)
+
+    session.commit()
+    session.refresh(audit)
+    return audit
+
+
+def run_breach_scan(
+    session: Session, *, settings: Settings, day_from: date, day_to: date, now: datetime,
+) -> list[SystemAudit]:
+    """Write a breach audit row per NEW hard breach in the window (idempotent). Returns
+    the rows written this run."""
+    written: list[SystemAudit] = []
+
+    # cap breaches (per-day, from the compliance grader)
+    comp = compliance_findings(
+        session, period_from=day_from, period_to=day_to,
+        max_daily_notional=settings.max_daily_notional,
+        max_daily_loss=settings.max_daily_loss)
+    for breach in comp.cap_breaches:
+        day = date.fromisoformat(str(breach["date"]))
+        key = f"cap:{day.isoformat()}"
+        if _get_audit(session, kind="breach", period_from=day, period_to=day,
+                      breach_key=key) is not None:
+            continue
+        written.append(_write_breach(session, day=day, breach_key=key, severity="alert",
+                                     findings={"cap_breach": breach}, now=now))
+
+    # disarms (one breach row per disarm day)
+    disarm_days = {
+        d.date() for d in session.scalars(
+            select(DisarmEvent.created_at).where(
+                DisarmEvent.created_at >= datetime.combine(day_from, time.min),
+                DisarmEvent.created_at <= datetime.combine(day_to, time.max)))
+    }
+    for day in sorted(disarm_days):
+        key = f"disarm:{day.isoformat()}"
+        if _get_audit(session, kind="breach", period_from=day, period_to=day,
+                      breach_key=key) is not None:
+            continue
+        written.append(_write_breach(session, day=day, breach_key=key, severity="alert",
+                                     findings={"disarm_day": day.isoformat()}, now=now))
+
+    if written:
+        session.commit()
+    return written
+
+
+def _write_breach(session: Session, *, day: date, breach_key: str, severity: str,
+                  findings: dict, now: datetime) -> SystemAudit:
+    row = SystemAudit(kind="breach", period_from=day, period_to=day, breach_key=breach_key,
+                      findings_json=json.dumps(findings), severity=severity,
+                      narrative=template_audit({"compliance": {}, "anomaly": {}}),
+                      generated_at=now)
+    session.add(row)
+    session.flush()  # assign an id without ending the batch txn
+    return row
+
+
+def _build_client() -> anthropic.Anthropic | None:
+    from swing_screener.config_secrets import get_secret  # noqa: PLC0415
+    try:
+        import anthropic  # noqa: PLC0415
+
+        return anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
+    except Exception:  # noqa: BLE001
+        log.warning("audit client unavailable; narrative will use the deterministic template")
+        return None
+
+
+def main() -> None:
+    """`python -m swing_screener.journal.audit_run {weekly|breach}` -- DB-writing ACA Job."""
+    settings = load_settings()
+    parser = argparse.ArgumentParser(description="System Behavior Auditor sweeps.")
+    parser.add_argument("--db", default=None)
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("weekly", help="grade the trailing week + write the weekly audit")
+    sub.add_parser("breach", help="scan today for hard breaches (caps, disarms)")
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO)
+
+    db_url = _resolve_db_url(args.db)
+    if db_url.startswith("mssql"):
+        _migrate_with_retry(db_url)
+    engine = get_engine(db_url)
+    now = datetime.now(UTC)
+    today = now.date()
+    with Session(engine) as session:
+        if args.cmd == "weekly":
+            client = _build_client() if settings.audit_enabled else None
+            audit = run_weekly(session, settings=settings, period_from=today - timedelta(days=6),
+                               period_to=today, now=now, client=client)
+            log.info("audit weekly: severity=%s", audit.severity)
+        else:
+            rows = run_breach_scan(session, settings=settings, day_from=today, day_to=today,
+                                   now=now)
+            log.info("audit breach: wrote=%d", len(rows))
+
+
+if __name__ == "__main__":
+    main()
