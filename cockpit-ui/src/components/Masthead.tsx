@@ -33,6 +33,7 @@ export function Masthead({
   onFacet,
   cost,
   onCost,
+  onReference,
 }: {
   health: Health | null
   beats: Heartbeat[] | null
@@ -43,6 +44,8 @@ export function Masthead({
   onFacet: (facet: Facet) => void
   cost: CostLevel
   onCost: (cost: CostLevel) => void
+  /** Screen 10 (Reference) has no digit key — this masthead link is its one door. */
+  onReference: () => void
 }) {
   const anyLit =
     beats !== null && beats.some((b) => b.state === 'late' || b.state === 'down')
@@ -156,6 +159,17 @@ export function Masthead({
       />
 
       <FacetToggle facet={facet} onFacet={onFacet} />
+
+      {/* Screen 10 — the one screen without a digit key (design numbering
+          stops at 9); this link is its only entrance. */}
+      <button
+        type="button"
+        className="mh-ref"
+        title="Reference — screen 10 (universe, digest log, exit log)"
+        onClick={onReference}
+      >
+        REFERENCE
+      </button>
 
       <button type="button" className="disarm" disabled title="Phase 3">
         DISARM

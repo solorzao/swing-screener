@@ -253,6 +253,25 @@ button.disarm {
   cursor: not-allowed;
 }
 
+/* The Reference link (screen 10 — no digit key; this is its one door). Quiet,
+   chip-shaped like gate/mode, but live: it navigates. */
+button.mh-ref {
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  padding: 4px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  color: var(--dim);
+  background: var(--panel2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button.mh-ref:hover {
+  color: var(--txt);
+  border-color: var(--line);
+}
+
 /* ---------- Needs-Your-Hand strip (under the masthead) ---------- */
 
 .needs-hand {
@@ -288,6 +307,24 @@ button.disarm {
 .grid {
   display: grid;
   grid-template-columns: 320px 1fr 380px;
+  gap: 14px;
+  padding: 14px;
+  align-items: start;
+}
+
+/* Single-panel screens (Forward Books full-width, the Task 15-20 placeholders). */
+.grid-single {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  padding: 14px;
+  align-items: start;
+}
+
+/* Systems screen: the heartbeat rail beside playbook integrity, full-width. */
+.grid-2 {
+  display: grid;
+  grid-template-columns: 380px 1fr;
   gap: 14px;
   padding: 14px;
   align-items: start;
@@ -462,6 +499,70 @@ button.disarm {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--dim);
+  white-space: nowrap;
+}
+
+/* ---------- Playbook integrity (Systems screen) ---------- */
+
+/* One row per play type: sidecar health, md health, drift, cadence. Theme via
+   these row-scoped classes, not bare element selectors (the .seg rule's
+   convention: ancestor compounds keep specificity honest). */
+.pbint-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--panel2);
+  flex-wrap: wrap;
+}
+
+.pbint-row:last-child {
+  border-bottom: none;
+}
+
+.pbint-name {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--txt);
+  width: 110px;
+  flex: none;
+}
+
+.pbint-cell {
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.pbint-cell.err {
+  color: var(--amber);
+}
+
+.pbint-cell.right {
+  margin-left: auto;
+  font-family: var(--mono);
+  color: var(--faint);
+}
+
+/* UNKNOWN is dashed-dim, never green (drift against an unreadable input). */
+.pbint-unknown {
+  font-size: 10px;
+  color: var(--dim);
+  border: 1px dashed var(--dim);
+  border-radius: 3px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
+/* A pending decision is a lamp — the shared lit-amber treatment. */
+.pbint-due {
+  font-size: 10px;
+  color: var(--amber);
+  border: 1px solid var(--lamp-amber-border);
+  background: var(--lamp-amber-bg);
+  box-shadow: var(--lamp-amber-glow);
+  border-radius: 3px;
+  padding: 1px 7px;
   white-space: nowrap;
 }
 
