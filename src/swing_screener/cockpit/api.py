@@ -26,7 +26,7 @@ import sys
 import threading
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Literal, Protocol, cast
@@ -73,6 +73,7 @@ from swing_screener.cockpit.settlement import (
     facet_filter,
 )
 from swing_screener.cockpit.stats import stat_from_paired_delta, stat_from_summary
+from swing_screener.config import StrategyConfig
 from swing_screener.data import quotes
 from swing_screener.db.models import (
     AnalystCall,
@@ -115,6 +116,12 @@ from swing_screener.pipeline.execution import (
     PAPER_ACCOUNT,
 )
 from swing_screener.pipeline.insight import size_order
+from swing_screener.pipeline.proposed import (
+    ProposedVariant,
+    decide_proposal,
+    load_proposed_for,
+    to_config,
+)
 from swing_screener.pipeline.registry import load_experiments
 from swing_screener.pipeline.variants import DEFAULT_VARIANT
 from swing_screener.settings import (
@@ -291,6 +298,25 @@ class AnalysisCreate(BaseModel):
             raise ValueError("ticker is required")
         if not v.isascii():
             raise ValueError("ticker must be ASCII")
+        return v
+
+
+class ProposalDecision(BaseModel):
+    """POST /api/proposals/{play_type}/{name}/approve|withdraw body: the decision
+    reason -- required (non-blank after strip), <=200 chars. It lands VERBATIM in
+    the store's rationale audit append (`` APPROVED <date>: <reason>``, the 2026-07
+    hand-edit convention), so the bound is a sanity cap on an append-forever field,
+    not a column width. No float fields, so there is no ``allow_inf_nan`` to pin
+    (the template rule)."""
+
+    reason: str = Field(max_length=200)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_required(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("reason is required")
         return v
 
 
@@ -1145,6 +1171,83 @@ def create_app(
             raise HTTPException(status_code=404, detail="chart unavailable")
         return Response(content=data, media_type="image/png")
 
+    @app.get("/api/proposals")
+    def proposals() -> dict[str, object]:
+        """The analyst's proposed screen variants, both play types, decision-ready.
+
+        Continuation rows first, then reversal, FILE order within each (the draft
+        merge appends, so file order is drafting order). Each row is the stored
+        ``ProposedVariant``'s 8 fields verbatim plus three derived decision aids --
+        ``gate_verdict``, ``delta_vs_incumbent``, ``noop`` (semantics + leak posture
+        in ``_proposal_row``) -- computed against the incumbent ``StrategyConfig()``,
+        the same base the optimizer sweeps. A missing proposed.json is a play type
+        with nothing queued: its rows are simply absent, never an error. Filesystem
+        only -- no DB session, so a down database never blanks this screen."""
+        edir = resolve_edge_dir(edge_dir)
+        base = StrategyConfig()
+        return {"proposals": [
+            _proposal_row(pv, base)
+            for pt in ("continuation", "reversal")
+            for pv in load_proposed_for(pt, edir)
+        ]}
+
+    def _decide(
+        play_type: str, name: str, *,
+        decision: Literal["approved", "withdrawn"], reason: str,
+    ) -> ProposedVariant:
+        """Shared decision plumbing: ``decide_proposal`` owns the state machine;
+        this maps its errors onto the wire. KeyError (unknown name) -> 404 with the
+        exception's own message (``args[0]``, never ``str(exc)`` -- str(KeyError)
+        wraps the message in quotes); ValueError (refused transition) -> 409 naming
+        the current status. Both texts are our own store prose -- no paths, no
+        client input. The server stamps ``today``; the client's clock never dates
+        an audit append."""
+        try:
+            return decide_proposal(
+                resolve_edge_dir(edge_dir), play_type, name,
+                decision=decision, reason=reason,
+                today=date.today().isoformat(),
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=exc.args[0]) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/proposals/{play_type}/{name}/approve",
+              dependencies=[Depends(_require_cockpit)])
+    def approve_proposal(
+        play_type: Literal["continuation", "reversal"],
+        name: str,
+        body: ProposalDecision,
+    ) -> dict[str, object]:
+        """Approve one QUEUED proposal -- approve MARKS, never promotes.
+
+        Header-guarded (``_require_cockpit``); the ``reason`` lands verbatim in the
+        rationale audit append. The ONLY write is the store flip ``decide_proposal``
+        makes -- an uncommitted working-tree edit (the response's ``note`` says so);
+        nothing here touches variants.py or experiments.json. Promotion stays the
+        three human edits in the response's ``checklist`` (roster line, registry
+        row, this flip), landed as ONE commit -- North Star #1: evidence gates
+        promotion, and a tool never promotes. 404/409 mapping in ``_decide``."""
+        pv = _decide(play_type, name, decision="approved", reason=body.reason)
+        out = _decision_dict(pv, play_type)
+        out["checklist"] = _promotion_checklist(play_type)
+        return out
+
+    @app.post("/api/proposals/{play_type}/{name}/withdraw",
+              dependencies=[Depends(_require_cockpit)])
+    def withdraw_proposal(
+        play_type: Literal["continuation", "reversal"],
+        name: str,
+        body: ProposalDecision,
+    ) -> dict[str, object]:
+        """Withdraw one proposal -- legal from QUEUED and from APPROVED (an
+        approval can be walked back; a withdrawal is final until a human
+        hand-edits the store). Same guard, audit append, working-tree honesty and
+        404/409 mapping as approve; no checklist -- there is nothing to promote."""
+        pv = _decide(play_type, name, decision="withdrawn", reason=body.reason)
+        return _decision_dict(pv, play_type)
+
     @app.get("/api/events")
     async def events() -> EventSourceResponse:
         """The SSE wake channel: a ``change`` event whenever the change token moves
@@ -1439,6 +1542,78 @@ def _beat_dict(b: Heartbeat) -> dict[str, object]:
         "grace_s": b.grace_s,
         "detail": b.detail,
     }
+
+
+def _proposal_row(pv: ProposedVariant, base: StrategyConfig) -> dict[str, object]:
+    """One proposal's wire form -- hand-rolled like ``_beat_dict``, never ``asdict``.
+
+    ``gate_verdict`` runs the REAL gatekeeper (``proposed.to_config``) inline: 'ok',
+    or the ValueError text VERBATIM -- safe by construction, it is config-knob prose
+    from our own code (no paths, no client input), the same verdict the optimizer
+    logs when it skips the row. ``noop`` mirrors ``optimize.build_config_grid``'s
+    no-op guard EXACTLY -- its ``cfg == base`` check on ``to_config``'s output (a
+    validated delta equal to the incumbent can never beat it) -- so a row that FAILS
+    the gate is invalid, not a no-op: ``noop`` stays False and the verdict says why.
+    ``delta_vs_incumbent`` reads ``current`` off the incumbent config only for REAL
+    dataclass fields; an unknown knob's current is null -- never a blind ``getattr``,
+    which would hand a method repr to a delta key that happened to name one."""
+    verdict = "ok"
+    noop = False
+    try:
+        noop = to_config(pv, base) == base
+    except ValueError as exc:
+        verdict = str(exc)
+    known = {f.name for f in fields(base)}
+    return {
+        "name": pv.name,
+        "play_type": pv.play_type,
+        "delta": dict(pv.delta),
+        "rationale": pv.rationale,
+        "hunch_ref": pv.hunch_ref,
+        "status": pv.status,
+        "drafted_at": pv.drafted_at,
+        "provenance": pv.provenance,
+        "gate_verdict": verdict,
+        "delta_vs_incumbent": [
+            {"knob": k, "current": getattr(base, k) if k in known else None,
+             "proposed": v}
+            for k, v in pv.delta.items()
+        ],
+        "noop": noop,
+    }
+
+
+def _decision_dict(pv: ProposedVariant, play_type: str) -> dict[str, object]:
+    """The shared approve/withdraw wire form: the row's new state plus WHERE the
+    write landed. ``play_type``/``file`` come from the URL path param -- the value
+    that actually keyed ``decide_proposal``'s store write -- NOT the row's stored
+    field, so a hand-mangled row whose ``play_type`` disagrees with the file it
+    lives in can never mislabel the file touched. ``file`` is the store's
+    REPO-RELATIVE label, never the resolved edge dir (same leak posture as
+    ``connection_label``: paths stay off the wire); the ``note`` is the honesty
+    line -- ``decide_proposal`` edits the working tree only, and git capturing the
+    flip is the human's move."""
+    return {
+        "name": pv.name,
+        "play_type": play_type,
+        "status": pv.status,
+        "file": f"edge/{play_type}.proposed.json",
+        "note": "uncommitted working-tree edit — commit with your decision",
+    }
+
+
+def _promotion_checklist(play_type: str) -> list[str]:
+    """The three-artifact promotion checklist, verbatim (Phase 3 plan, Task 8): an
+    approval marks ONE row; promotion is these three coupled edits, all human, one
+    commit -- the registry charter's shape (roster line so the optimizer sweeps it,
+    registry row so settlement can grade it, the store flip this endpoint already
+    made)."""
+    return [
+        "1. pipeline/variants.py — add the roster line (replace(base, **delta))",
+        "2. edge/experiments.json — add the registry row (stopping rule, mde_r, "
+        "target_ci_halfwidth_r, registered sha)",
+        f"3. edge/{play_type}.proposed.json — this flip (done)",
+    ]
 
 
 # Execution mode -> the account its adapter books under (execution.py's constants;

@@ -35,6 +35,7 @@ from swing_screener.cockpit.api import (
     create_app,
 )
 from swing_screener.cockpit.settlement import STATES
+from swing_screener.config import StrategyConfig
 from swing_screener.db.models import (
     AnalysisRequest,
     AnalystCall,
@@ -50,6 +51,11 @@ from swing_screener.storage import blob
 from swing_screener.db.repo import save_reversal_funnel
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.broker import BrokerOrderSpec, FakeBroker
+from swing_screener.pipeline.proposed import (
+    ProposedVariant,
+    load_proposed_for,
+    proposed_to_json,
+)
 from swing_screener.pipeline.registry import Experiment
 
 STAT_KEYS = {"value", "n", "n_clusters", "ci_low", "ci_high", "cost_level",
@@ -2207,3 +2213,244 @@ def test_signal_chart_blob_branch(
     r = client.get(f"/api/signals/{sig_id}/chart")
     assert r.status_code == 200 and r.content == _PNG
     assert seen == ["20260710/AMD_1d_20260710.png"]  # the stored key, verbatim
+
+
+# ---- proposals: GET /api/proposals + the approve/withdraw decisions ----
+
+# The proposal wire form -- a closed set, like STAT_KEYS: the 8 stored
+# ProposedVariant fields plus the three derived decision aids.
+PROPOSAL_KEYS = {"name", "play_type", "delta", "rationale", "hunch_ref", "status",
+                 "drafted_at", "provenance", "gate_verdict", "delta_vs_incumbent",
+                 "noop"}
+
+# Both decision responses carry this honesty line verbatim: decide_proposal edits
+# the WORKING TREE only -- git capturing the flip is the human's move.
+_NOTE = "uncommitted working-tree edit — commit with your decision"
+
+
+def _proposal(name: str, play_type: str,
+              delta: dict[str, float | int | str | bool],
+              *, status: str = "queued") -> ProposedVariant:
+    return ProposedVariant(
+        name=name, play_type=play_type, delta=delta, rationale="hunch text",
+        hunch_ref="reversal:2026-07-01:3", status=status,
+        drafted_at="2026-07-10", provenance="analyst:test",
+    )
+
+
+def _write_proposals(edge_dir: Path, play_type: str,
+                     items: list[ProposedVariant]) -> None:
+    (edge_dir / f"{play_type}.proposed.json").write_text(
+        proposed_to_json(items), encoding="utf-8")
+
+
+def test_proposals_list_both_play_types_in_file_order(tmp_path: Path) -> None:
+    """GET /api/proposals returns continuation then reversal, file order within;
+    every row is the closed 11-key wire set with the 8 stored fields verbatim."""
+    _write_proposals(tmp_path, "continuation",
+                     [_proposal("c1", "continuation", {"max_extension_atr": 1.5})])
+    _write_proposals(tmp_path, "reversal", [
+        _proposal("r2", "reversal", {"reversal_confirm_window": 5}),
+        _proposal("r1", "reversal", {"min_target_r": 2.0}),
+    ])
+    r = _client(tmp_path).get("/api/proposals")
+    assert r.status_code == 200
+    rows = r.json()["proposals"]
+    assert [(row["play_type"], row["name"]) for row in rows] == [
+        ("continuation", "c1"), ("reversal", "r2"), ("reversal", "r1")]
+    assert all(set(row) == PROPOSAL_KEYS for row in rows)
+    c1 = rows[0]
+    assert c1["delta"] == {"max_extension_atr": 1.5}
+    assert c1["rationale"] == "hunch text"
+    assert c1["hunch_ref"] == "reversal:2026-07-01:3"
+    assert c1["status"] == "queued"
+    assert c1["drafted_at"] == "2026-07-10"
+    assert c1["provenance"] == "analyst:test"
+
+
+def test_proposals_gate_verdict_and_noop(tmp_path: Path) -> None:
+    """``gate_verdict`` runs the REAL gatekeeper per row: 'ok' for a legal delta,
+    the ValueError text for an unknown knob or a frozen indicator period. ``noop``
+    mirrors build_config_grid's incumbent-equality skip and never marks an invalid
+    row (a row that fails the gate is invalid, not a no-op)."""
+    _write_proposals(tmp_path, "reversal", [
+        _proposal("legal", "reversal", {"max_extension_atr": 1.5}),
+        _proposal("bogus", "reversal", {"no_such_knob": 1}),
+        _proposal("frozen", "reversal", {"ema_fast": 10}),
+        _proposal("same", "reversal",
+                  {"max_extension_atr": StrategyConfig().max_extension_atr}),
+    ])
+    rows = {row["name"]: row for row in
+            _client(tmp_path).get("/api/proposals").json()["proposals"]}
+    assert rows["legal"]["gate_verdict"] == "ok"
+    assert rows["legal"]["noop"] is False
+    assert "no_such_knob" in rows["bogus"]["gate_verdict"]
+    assert rows["bogus"]["noop"] is False
+    assert "indicator field" in rows["frozen"]["gate_verdict"]
+    assert rows["frozen"]["noop"] is False
+    assert rows["same"]["gate_verdict"] == "ok"
+    assert rows["same"]["noop"] is True
+
+
+def test_proposals_delta_vs_incumbent(tmp_path: Path) -> None:
+    """Each delta knob becomes {knob, current, proposed}: ``current`` is the
+    incumbent StrategyConfig default; an unknown knob's current is null (the
+    gate_verdict already names the error)."""
+    _write_proposals(tmp_path, "continuation", [
+        _proposal("mix", "continuation",
+                  {"max_extension_atr": 1.5, "no_such_knob": 9}),
+    ])
+    row = _client(tmp_path).get("/api/proposals").json()["proposals"][0]
+    assert row["delta_vs_incumbent"] == [
+        {"knob": "max_extension_atr",
+         "current": StrategyConfig().max_extension_atr, "proposed": 1.5},
+        {"knob": "no_such_knob", "current": None, "proposed": 9},
+    ]
+
+
+def test_proposals_missing_files_are_empty_not_errors(tmp_path: Path) -> None:
+    """No proposed.json anywhere -> {"proposals": []}; one play type missing ->
+    only the other's rows (a play type with nothing queued is the common case)."""
+    client = _client(tmp_path)
+    assert client.get("/api/proposals").json() == {"proposals": []}
+    _write_proposals(tmp_path, "reversal",
+                     [_proposal("r1", "reversal", {"max_extension_atr": 1.5})])
+    rows = client.get("/api/proposals").json()["proposals"]
+    assert [row["name"] for row in rows] == ["r1"]
+
+
+def test_approve_proposal_rewrites_the_store_with_the_checklist(
+    tmp_path: Path,
+) -> None:
+    """Approve MARKS the row (status flip + rationale audit append, the store
+    rewritten in place) and returns the verbatim three-artifact promotion
+    checklist -- it never touches variants.py or experiments.json itself.
+    ``file`` is the repo-relative label; the resolved edge dir never leaks."""
+    _write_proposals(tmp_path, "reversal",
+                     [_proposal("r1", "reversal", {"max_extension_atr": 1.5})])
+    client = _client(tmp_path)
+    r = client.post("/api/proposals/reversal/r1/approve",
+                    json={"reason": "worth a slot"}, headers=_HDR)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["name"] == "r1"
+    assert body["play_type"] == "reversal"
+    assert body["status"] == "approved"
+    assert body["file"] == "edge/reversal.proposed.json"
+    assert body["note"] == _NOTE
+    assert body["checklist"] == [
+        "1. pipeline/variants.py — add the roster line (replace(base, **delta))",
+        "2. edge/experiments.json — add the registry row (stopping rule, mde_r, "
+        "target_ci_halfwidth_r, registered sha)",
+        "3. edge/reversal.proposed.json — this flip (done)",
+    ]
+    # Leak posture: the resolved edge_dir (tmp_path) must not appear on the wire.
+    assert tmp_path.name not in r.text
+    (reloaded,) = load_proposed_for("reversal", tmp_path)
+    assert reloaded.status == "approved"
+    assert reloaded.rationale.endswith(
+        f" APPROVED {date.today().isoformat()}: worth a slot")
+
+
+def test_withdraw_proposal_and_withdraw_after_approve(tmp_path: Path) -> None:
+    """Withdraw works from queued AND from approved (an approval can be walked
+    back); the response carries file + note but NO checklist, and the walked-back
+    row keeps both audit appends."""
+    _write_proposals(tmp_path, "continuation", [
+        _proposal("direct", "continuation", {"max_extension_atr": 1.5}),
+        _proposal("walked_back", "continuation", {"max_extension_atr": 1.0}),
+    ])
+    client = _client(tmp_path)
+    r = client.post("/api/proposals/continuation/direct/withdraw",
+                    json={"reason": "superseded"}, headers=_HDR)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "withdrawn"
+    assert body["file"] == "edge/continuation.proposed.json"
+    assert body["note"] == _NOTE
+    assert "checklist" not in body
+    ok = client.post("/api/proposals/continuation/walked_back/approve",
+                     json={"reason": "test it"}, headers=_HDR)
+    assert ok.status_code == 200
+    r2 = client.post("/api/proposals/continuation/walked_back/withdraw",
+                     json={"reason": "changed my mind"}, headers=_HDR)
+    assert r2.status_code == 200
+    assert r2.json()["status"] == "withdrawn"
+    rows = {pv.name: pv for pv in load_proposed_for("continuation", tmp_path)}
+    assert rows["direct"].status == "withdrawn"
+    assert rows["walked_back"].status == "withdrawn"
+    assert " APPROVED " in rows["walked_back"].rationale  # the audit trail survives
+    assert " WITHDRAWN " in rows["walked_back"].rationale
+
+
+def test_proposal_decision_404_on_unknown_name(tmp_path: Path) -> None:
+    """An unknown name is decide_proposal's KeyError, surfaced as a 404 carrying
+    the exception's own message -- unquoted (args[0], never str(KeyError)). A
+    missing store file is the same 404 (load_proposed_for reads it as [])."""
+    _write_proposals(tmp_path, "reversal",
+                     [_proposal("r1", "reversal", {"max_extension_atr": 1.5})])
+    client = _client(tmp_path)
+    r = client.post("/api/proposals/reversal/nope/approve",
+                    json={"reason": "x"}, headers=_HDR)
+    assert r.status_code == 404
+    assert r.json()["detail"] == "no proposal named 'nope' for reversal"
+    r2 = client.post("/api/proposals/continuation/ghost/withdraw",
+                     json={"reason": "x"}, headers=_HDR)
+    assert r2.status_code == 404
+
+
+def test_proposal_decision_409_on_wrong_state(tmp_path: Path) -> None:
+    """A refused transition is decide_proposal's ValueError, surfaced 409: approve
+    is queued-only (re-approve refuses), and a withdrawn row refuses BOTH verbs
+    (a withdrawal is final until a human hand-edits it). Refusals never write."""
+    _write_proposals(tmp_path, "reversal",
+                     [_proposal("r1", "reversal", {"max_extension_atr": 1.5})])
+    client = _client(tmp_path)
+    assert client.post("/api/proposals/reversal/r1/approve",
+                       json={"reason": "first"}, headers=_HDR).status_code == 200
+    again = client.post("/api/proposals/reversal/r1/approve",
+                        json={"reason": "second"}, headers=_HDR)
+    assert again.status_code == 409
+    assert "its status is 'approved'" in again.json()["detail"]
+    assert client.post("/api/proposals/reversal/r1/withdraw",
+                       json={"reason": "walk back"}, headers=_HDR).status_code == 200
+    for action in ("approve", "withdraw"):
+        r = client.post(f"/api/proposals/reversal/r1/{action}",
+                        json={"reason": "again"}, headers=_HDR)
+        assert r.status_code == 409
+        assert "its status is 'withdrawn'" in r.json()["detail"]
+    (row,) = load_proposed_for("reversal", tmp_path)
+    assert row.rationale.count("WITHDRAWN") == 1  # refused transitions never write
+
+
+def test_proposal_decisions_require_the_cockpit_header(tmp_path: Path) -> None:
+    """Headerless approve/withdraw die at the guard (403) before any store read;
+    the row stays queued."""
+    _write_proposals(tmp_path, "reversal",
+                     [_proposal("r1", "reversal", {"max_extension_atr": 1.5})])
+    client = _client(tmp_path)
+    for action in ("approve", "withdraw"):
+        r = client.post(f"/api/proposals/reversal/r1/{action}",
+                        json={"reason": "x"})
+        assert r.status_code == 403
+    (row,) = load_proposed_for("reversal", tmp_path)
+    assert row.status == "queued"
+
+
+@pytest.mark.parametrize("url,body", [
+    ("/api/proposals/reversal/r1/approve", {"reason": ""}),
+    ("/api/proposals/reversal/r1/approve", {"reason": "   "}),
+    ("/api/proposals/reversal/r1/withdraw", {"reason": "x" * 201}),
+    ("/api/proposals/reversal/r1/approve", {}),
+    ("/api/proposals/daytrade/r1/approve", {"reason": "x"}),
+])
+def test_proposal_decision_validation(tmp_path: Path, url: str,
+                                      body: dict[str, object]) -> None:
+    """Blank/missing/overlong reason and an unknown play_type are 422s (the model's
+    strip + bounds; the Literal path param); none of them reach the store."""
+    _write_proposals(tmp_path, "reversal",
+                     [_proposal("r1", "reversal", {"max_extension_atr": 1.5})])
+    client = _client(tmp_path)
+    assert client.post(url, json=body, headers=_HDR).status_code == 422
+    (row,) = load_proposed_for("reversal", tmp_path)
+    assert row.status == "queued"
