@@ -103,6 +103,8 @@ class TradeClose(BaseModel):
 # Prices within this absolute tolerance count as EQUAL for override stamping: the
 # prefill round-trips through JSON floats and a UI number input, so exact equality
 # would stamp phantom "moved 0.0%" overrides on faithful fills.
+# Mirrored client-side by FAITHFUL_TOL + overridePreview in
+# cockpit-ui/src/components/LogTradeForm.tsx (the live preview) -- keep in sync.
 _FAITHFUL_TOL = 0.005
 
 
@@ -129,6 +131,11 @@ def _override_note(body: TradeCreate, sig: Signal) -> str | None:
     ``entry +0.50R above ceiling; stop moved +1.1%; target moved -2.0%``. A
     degenerate zone (ceiling <= stop, no R unit to speak in) skips the entry part
     rather than dividing by zero.
+
+    Mirrored client-side by ``overridePreview`` in
+    ``cockpit-ui/src/components/LogTradeForm.tsx`` (the log-trade form's live
+    preview) -- same format, tolerances, and zone-R unit. Keep the two in sync:
+    the server's stamp here is the record, the client copy only previews it.
     """
     parts: list[str] = []
     risk = sig.entry_ceiling - sig.stop

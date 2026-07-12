@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { ApiError, getTradeDefaults, postLogTrade } from '../lib/api'
 import type { FieldError, LogTradeResult, TradeDefaults } from '../lib/api'
+import { fmtUsd } from '../lib/fmt'
 
 /* LOG TRADE — the first of the six actions (design rule 3: structured forms
    with ENGINE-SUPPLIED defaults). Records a trade Oliver actually took; places
@@ -108,7 +109,10 @@ type Phase =
   | { kind: 'submitting' }
   | { kind: 'logged'; result: LogTradeResult; withSignal: boolean }
 
-const fmtUsd = (v: number): string => `$${v.toFixed(2)}`
+/** The field names the server knows — the aria wiring keys and the "stray
+ * error" complement both derive from HERE, so a renamed field can never drift
+ * out of sync (loc '' is the model-level bucket; handled separately). */
+const KNOWN_FIELDS: readonly string[] = [...Object.keys(EMPTY), 'signal_id']
 
 export function LogTradeForm({ onLogged }: { onLogged: () => void }) {
   const [fields, setFields] = useState<Fields>(EMPTY)
@@ -131,22 +135,20 @@ export function LogTradeForm({ onLogged }: { onLogged: () => void }) {
   /** Field errors whose loc names no rendered input — they surface on their
    * own line so no server message is ever silently dropped. loc '' (the
    * model-level rows, e.g. stop-vs-entry geometry) is excluded: those already
-   * ride `formError`, and doubling them here would render twice. */
+   * ride `formError`, and doubling them here would render twice. The known set
+   * derives from the fields themselves (KNOWN_FIELDS) — never a hand-kept list. */
   const strayErrors = fieldErrors.filter(
-    (fe) =>
-      fe.loc !== '' &&
-      ![
-        'ticker',
-        'timeframe',
-        'horizon',
-        'entry_price',
-        'size',
-        'stop',
-        'target',
-        'notes',
-        'signal_id',
-      ].includes(fe.loc),
+    (fe) => fe.loc !== '' && !KNOWN_FIELDS.includes(fe.loc),
   )
+
+  /** aria wiring for one field's input: mark it invalid and point it at its
+   * error node so a submit-time 422 is announced, not silent (fix pattern for
+   * the three form surfaces that copy this). Accepts signal_id too — it lives
+   * in the prefill row, not `Fields`, but carries its own 422. */
+  const fieldAria = (name: keyof Fields | 'signal_id') =>
+    errFor(name) !== null
+      ? ({ 'aria-invalid': true, 'aria-describedby': `ltferr-${name}` } as const)
+      : {}
 
   const loadDefaults = () => {
     const id = num(signalIdInput)
@@ -250,6 +252,16 @@ export function LogTradeForm({ onLogged }: { onLogged: () => void }) {
       ? overridePreview(defaults, pEntry, pStop, pTarget)
       : null
 
+  // Stale-prefill honesty: the signal-id INPUT can be edited after a load (or
+  // a failed re-load leaves the old defaults up), so the loaded id and the box
+  // can diverge. `defaultsSignalId` is what the submit actually stamps against
+  // (never the box), so the panel names it and flags the divergence — the
+  // prefill/preview are for the LOADED id, and a re-load is one click away.
+  const divergent =
+    defaults !== null &&
+    defaultsSignalId !== null &&
+    num(signalIdInput) !== defaultsSignalId
+
   return (
     <div className="ltf">
       <div className="ltf-prefill">
@@ -261,6 +273,7 @@ export function LogTradeForm({ onLogged }: { onLogged: () => void }) {
           className="ltf-in ltf-in-id mono"
           type="number"
           value={signalIdInput}
+          {...fieldAria('signal_id')}
           onChange={(e) => setSignalIdInput(e.target.value)}
           placeholder="optional"
         />
@@ -277,15 +290,27 @@ export function LogTradeForm({ onLogged }: { onLogged: () => void }) {
             clear prefill
           </button>
         )}
-        {defaultsError !== null && <span className="ltf-err">{defaultsError}</span>}
+        {defaultsError !== null && (
+          <span className="ltf-err" role="alert">
+            {defaultsError}
+          </span>
+        )}
       </div>
 
       {defaults !== null && (
-        <div className="ltf-defaults">
+        <div className={divergent ? 'ltf-defaults ltf-diverged' : 'ltf-defaults'}>
+          {divergent && (
+            <div className="ltf-diverge-flag" role="status">
+              prefill is for signal #{defaultsSignalId}; the box now says{' '}
+              {signalIdInput.trim() === '' ? '(blank)' : `#${signalIdInput.trim()}`} —
+              re-load to prefill (and stamp against) that one, or the submit uses
+              #{defaultsSignalId}
+            </div>
+          )}
           <div className="ltf-def-row mono">
-            {defaults.signal.ticker} · {defaults.signal.play_type} ·{' '}
-            {defaults.signal.timeframe}/{defaults.signal.horizon} · conviction{' '}
-            {defaults.signal.conviction_tier}
+            signal #{defaultsSignalId} · {defaults.signal.ticker} ·{' '}
+            {defaults.signal.play_type} · {defaults.signal.timeframe}/
+            {defaults.signal.horizon} · conviction {defaults.signal.conviction_tier}
           </div>
           <div className="ltf-def-row mono">
             zone {fmtUsd(defaults.signal.entry_floor)}–
@@ -319,67 +344,75 @@ export function LogTradeForm({ onLogged }: { onLogged: () => void }) {
       )}
 
       <div className="ltf-grid">
-        <Field label="ticker" error={errFor('ticker')}>
+        <Field name="ticker" label="ticker" error={errFor('ticker')}>
           <input
             className="ltf-in mono"
             value={fields.ticker}
+            {...fieldAria('ticker')}
             onChange={(e) => set('ticker')(e.target.value)}
           />
         </Field>
-        <Field label="timeframe" error={errFor('timeframe')}>
+        <Field name="timeframe" label="timeframe" error={errFor('timeframe')}>
           <input
             className="ltf-in mono"
             value={fields.timeframe}
+            {...fieldAria('timeframe')}
             onChange={(e) => set('timeframe')(e.target.value)}
           />
         </Field>
-        <Field label="horizon" error={errFor('horizon')}>
+        <Field name="horizon" label="horizon" error={errFor('horizon')}>
           <input
             className="ltf-in mono"
             value={fields.horizon}
+            {...fieldAria('horizon')}
             onChange={(e) => set('horizon')(e.target.value)}
           />
         </Field>
-        <Field label="entry price" error={errFor('entry_price')}>
+        <Field name="entry_price" label="entry price" error={errFor('entry_price')}>
           <input
             className="ltf-in mono"
             type="number"
             step="0.01"
             value={fields.entry_price}
+            {...fieldAria('entry_price')}
             onChange={(e) => set('entry_price')(e.target.value)}
           />
         </Field>
-        <Field label="size (shares)" error={errFor('size')}>
+        <Field name="size" label="size (shares)" error={errFor('size')}>
           <input
             className="ltf-in mono"
             type="number"
             step="1"
             value={fields.size}
+            {...fieldAria('size')}
             onChange={(e) => set('size')(e.target.value)}
           />
         </Field>
-        <Field label="stop" error={errFor('stop')}>
+        <Field name="stop" label="stop" error={errFor('stop')}>
           <input
             className="ltf-in mono"
             type="number"
             step="0.01"
             value={fields.stop}
+            {...fieldAria('stop')}
             onChange={(e) => set('stop')(e.target.value)}
           />
         </Field>
-        <Field label="target" error={errFor('target')}>
+        <Field name="target" label="target" error={errFor('target')}>
           <input
             className="ltf-in mono"
             type="number"
             step="0.01"
             value={fields.target}
+            {...fieldAria('target')}
             onChange={(e) => set('target')(e.target.value)}
           />
         </Field>
-        <Field label="notes" error={errFor('notes')} wide>
+        <Field name="notes" label="notes" error={errFor('notes')} wide>
           <input
             className="ltf-in"
             value={fields.notes}
+            {...fieldAria('notes')}
             onChange={(e) => set('notes')(e.target.value)}
           />
         </Field>
@@ -402,14 +435,20 @@ export function LogTradeForm({ onLogged }: { onLogged: () => void }) {
       )}
 
       {errFor('signal_id') !== null && (
-        <div className="ltf-err">signal_id: {errFor('signal_id')}</div>
+        <div className="ltf-err" id="ltferr-signal_id" role="alert">
+          signal_id: {errFor('signal_id')}
+        </div>
       )}
       {strayErrors.length > 0 && (
-        <div className="ltf-err">
+        <div className="ltf-err" role="alert">
           {strayErrors.map((fe) => `${fe.loc}: ${fe.msg}`).join('; ')}
         </div>
       )}
-      {formError !== null && <div className="ltf-err">{formError}</div>}
+      {formError !== null && (
+        <div className="ltf-err" role="alert">
+          {formError}
+        </div>
+      )}
 
       <div className="ltf-actions">
         <button
@@ -454,11 +493,15 @@ export function LogTradeForm({ onLogged }: { onLogged: () => void }) {
 }
 
 function Field({
+  name,
   label,
   error,
   wide,
   children,
 }: {
+  /** The wire field name — the error node's id (`ltferr-<name>`) matches the
+   * input's aria-describedby, so a 422 on this field is announced. */
+  name: string
   label: string
   error: string | null
   wide?: boolean
@@ -468,7 +511,11 @@ function Field({
     <label className={wide === true ? 'ltf-field ltf-wide' : 'ltf-field'}>
       <span className="ltf-lab">{label}</span>
       {children}
-      {error !== null && <span className="ltf-field-err">{error}</span>}
+      {error !== null && (
+        <span className="ltf-field-err" id={`ltferr-${name}`} role="alert">
+          {error}
+        </span>
+      )}
     </label>
   )
 }

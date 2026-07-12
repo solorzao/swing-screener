@@ -1,11 +1,9 @@
 import type { ReactNode } from 'react'
-import type {
-  Polled,
-  PositionRow,
-  Positions,
-} from '../lib/api'
+import type { Polled, PositionRow, Positions } from '../lib/api'
+import { dashOr, fmtClock, fmtPct, fmtR, fmtUsd } from '../lib/fmt'
 import { BracketLamp } from './BracketLamp'
 import { CapGauge } from './CapGauge'
+import { PositionLamp } from './PositionLamp'
 
 /* Zone B — RISK (the Mission Control top band, design doc Zone B): every open
    position as one strip — badge lamp, planned $ risk, current R multiple,
@@ -22,13 +20,6 @@ import { CapGauge } from './CapGauge'
    never pass for a live flat book. Prices are last COMPLETED daily closes;
    the caption says so. */
 
-const fmtUsd0 = (v: number): string =>
-  `$${v.toLocaleString('en-US', { maximumFractionDigits: 0 })}`
-
-const fmtR = (v: number): string => `${v >= 0 ? '+' : ''}${v.toFixed(2)}R`
-
-const fmtPct = (v: number): string => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%`
-
 /** Distance-to-stop bar scale: 15% of price renders as a full bar. Arbitrary
  * but fixed, so strips are comparable to each other; the label carries the
  * exact number. */
@@ -44,33 +35,29 @@ function riskDollars(row: PositionRow): number | null {
 
 function Strip({ row }: { row: PositionRow }) {
   const risk = riskDollars(row)
+  // A stop at/above entry has no positive risk to size — the degenerate case
+  // the server nulls realized_r for. Show the dash (never "risk −$1,234", a
+  // minus after the $ that reads as a loss, not a missing measurement).
+  const riskDegenerate = risk !== null && risk <= 0
   const r = row.pl?.r_multiple ?? null
   const dist = row.pl?.dist_to_stop_pct ?? null
   return (
     <div className="rs-strip">
-      <span
-        className={`plamp plamp-${row.badge}`}
-        aria-hidden="true"
-        title={
-          row.badge === 'red'
-            ? 'price at/under the stop'
-            : row.badge === 'yellow'
-              ? 'price at/over the target'
-              : row.badge === 'green'
-                ? 'between stop and target'
-                : 'no quote — state unknown'
-        }
-      />
+      <PositionLamp badge={row.badge} />
       <span className="rs-ticker mono">{row.ticker}</span>
       {row.kind === 'live' && <span className="rs-kind">live</span>}
       <span
         className="rs-cell mono"
-        title="planned risk to the stop: (entry − stop) × size — dollars at 1R"
+        title={
+          riskDegenerate
+            ? 'stop at/above entry — no positive risk to size'
+            : 'planned risk to the stop: (entry − stop) × size — dollars at 1R'
+        }
       >
-        {risk === null ? 'risk —' : `risk ${fmtUsd0(risk)}`}
+        {risk === null || riskDegenerate ? 'risk —' : `risk ${fmtUsd(risk, 0)}`}
       </span>
       <span className="rs-cell mono" title="current R multiple at the last close">
-        {r === null ? '—' : fmtR(r)}
+        {dashOr(r, fmtR)}
       </span>
       <div
         className={dist === null ? 'rs-stopbar rs-indet' : 'rs-stopbar'}
@@ -89,7 +76,7 @@ function Strip({ row }: { row: PositionRow }) {
           />
         )}
       </div>
-      <span className="rs-cell mono">{dist === null ? '' : fmtPct(dist)}</span>
+      <span className="rs-cell mono">{dashOr(dist, fmtPct)}</span>
       <BracketLamp state={row.bracket} />
     </div>
   )
@@ -143,7 +130,7 @@ export function RiskStrip({ polled }: { polled: Polled<Positions> }) {
         RISK
         <span className="panel-caption">
           prices as of last close
-          {data !== null && ` · quotes ${fmtAsOf(data.quotes_as_of)}`}
+          {data !== null && ` · quotes ${fmtClock(data.quotes_as_of)}`}
         </span>
       </div>
       {error !== null && data !== null && data.open.length > 0 && (
@@ -152,9 +139,4 @@ export function RiskStrip({ polled }: { polled: Polled<Positions> }) {
       {body}
     </section>
   )
-}
-
-function fmtAsOf(iso: string): string {
-  const d = new Date(iso)
-  return isNaN(d.getTime()) ? iso : d.toLocaleTimeString('en-US', { hour12: false })
 }

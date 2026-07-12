@@ -1,11 +1,14 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import { POLL_MS, getPositions, usePolling } from '../lib/api'
 import type { PositionRow, Positions, RealPositionRow } from '../lib/api'
+import { dashOr, fmtClock, fmtPct, fmtR, fmtSignedUsd, fmtSize, fmtUsd } from '../lib/fmt'
 import { BracketLamp } from '../components/BracketLamp'
 import { CapGauge } from '../components/CapGauge'
 import { CloseTradeForm } from '../components/CloseTradeForm'
 import { LogTradeForm } from '../components/LogTradeForm'
 import { PanelBody } from '../components/PanelBody'
+import { PositionLamp } from '../components/PositionLamp'
 import { Sparkline } from '../components/Sparkline'
 
 /* Screen 3 — Positions & Ledger (plan Task 16): the open table (real + live
@@ -29,72 +32,49 @@ import { Sparkline } from '../components/Sparkline'
    cover every other window. The close form mounts OUTSIDE the open table so
    the closed row vanishing on refetch cannot unmount its result panel. */
 
-const fmtPrice = (v: number | null): string => (v === null ? '—' : `$${v.toFixed(2)}`)
-
-const fmtSize = (v: number | null): string =>
-  v === null ? '—' : v % 1 === 0 ? v.toFixed(0) : v.toFixed(2)
-
-const fmtSignedUsd = (v: number | null): string =>
-  v === null ? '—' : `${v < 0 ? '−' : '+'}$${Math.abs(v).toFixed(2)}`
-
-const fmtPct = (v: number | null): string =>
-  v === null ? '—' : `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%`
-
-const fmtR = (v: number | null): string =>
-  v === null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}R`
-
-const fmtAsOf = (iso: string): string => {
-  const d = new Date(iso)
-  return isNaN(d.getTime()) ? iso : d.toLocaleTimeString('en-US', { hour12: false })
-}
-
-const BADGE_TITLE = {
-  red: 'price at/under the stop',
-  yellow: 'price at/over the target',
-  green: 'between stop and target',
-  unknown: 'no quote — state unknown',
-} as const
+/** Prices/sizes as nullable cells (dash when the wire withholds them). */
+const price = (v: number | null): string => dashOr(v, (n) => fmtUsd(n))
+const size = (v: number | null): string => dashOr(v, fmtSize)
 
 function OpenRow({
   row,
+  disabled,
   onClose,
 }: {
   row: PositionRow
-  onClose: (row: RealPositionRow) => void
+  /** A close POST is in flight somewhere — freeze every CLOSE affordance so a
+   * second trade can't be opened mid-submit (the 409-race guard's companion). */
+  disabled: boolean
+  onClose: (row: RealPositionRow, btn: HTMLButtonElement) => void
 }) {
   const pl = row.pl
   const plTitle = pl === null ? 'P/L not computable for this row' : undefined
   return (
     <tr>
       <td>
-        <span
-          className={`plamp plamp-${row.badge}`}
-          title={BADGE_TITLE[row.badge]}
-          aria-hidden="true"
-        />
-        <span className="vh">{BADGE_TITLE[row.badge]}</span>
+        <PositionLamp badge={row.badge} />
       </td>
       <td className="pos-name mono">
         {row.ticker}
         <span className="pos-tf"> {row.timeframe}</span>
       </td>
       <td>{row.kind === 'live' ? <span className="pos-tag">live</span> : 'real'}</td>
-      <td className="pos-num">{fmtPrice(row.entry_price)}</td>
-      <td className="pos-num">{fmtSize(row.size)}</td>
-      <td className="pos-num">{fmtPrice(row.stop)}</td>
-      <td className="pos-num">{fmtPrice(row.target)}</td>
-      <td className="pos-num">{fmtPrice(row.last_close)}</td>
+      <td className="pos-num">{price(row.entry_price)}</td>
+      <td className="pos-num">{size(row.size)}</td>
+      <td className="pos-num">{price(row.stop)}</td>
+      <td className="pos-num">{price(row.target)}</td>
+      <td className="pos-num">{price(row.last_close)}</td>
       <td className="pos-num" title={plTitle}>
-        {fmtSignedUsd(pl?.unrealized_pl ?? null)}
+        {dashOr(pl?.unrealized_pl ?? null, fmtSignedUsd)}
       </td>
       <td className="pos-num" title={plTitle}>
-        {fmtPct(pl?.unrealized_pct ?? null)}
+        {dashOr(pl?.unrealized_pct ?? null, fmtPct)}
       </td>
       <td className="pos-num" title={plTitle}>
-        {fmtR(pl?.r_multiple ?? null)}
+        {dashOr(pl?.r_multiple ?? null, fmtR)}
       </td>
       <td className="pos-num" title={plTitle}>
-        {fmtPct(pl?.dist_to_stop_pct ?? null)}
+        {dashOr(pl?.dist_to_stop_pct ?? null, fmtPct)}
       </td>
       <td>
         <BracketLamp state={row.bracket} />
@@ -126,7 +106,12 @@ function OpenRow({
       </td>
       <td>
         {row.kind === 'real' ? (
-          <button type="button" className="pos-close" onClick={() => onClose(row)}>
+          <button
+            type="button"
+            className="pos-close"
+            disabled={disabled}
+            onClick={(e) => onClose(row, e.currentTarget)}
+          >
             CLOSE
           </button>
         ) : (
@@ -145,12 +130,70 @@ export function PositionsScreen({ wake }: { wake: number }) {
   const [localBump, setLocalBump] = useState(0)
   const positions = usePolling(getPositions, POLL_MS, wake + localBump)
   const [closing, setClosing] = useState<RealPositionRow | null>(null)
+  const [busy, setBusy] = useState(false) // a close POST is in flight
   const [notice, setNotice] = useState<string | null>(null)
+  // The CLOSE button that opened the current form — focus returns to it on
+  // dismiss/cancel (mirrors DisarmControl's focus-handoff precedent); the main
+  // element is the fallback when the row is gone (a successful close).
+  const closeBtnRef = useRef<HTMLButtonElement | null>(null)
+  const mainRef = useRef<HTMLElement>(null)
+  const prevClosing = useRef<RealPositionRow | null>(null)
 
   const bump = () => setLocalBump((b) => b + 1)
 
+  // Return focus when the close form leaves: to the row's CLOSE button if it
+  // still exists (cancel), else to the table region (a landed close removed the
+  // row). Post-commit, so React has already re-enabled/removed the target.
+  useEffect(() => {
+    if (prevClosing.current !== null && closing === null) {
+      const btn = closeBtnRef.current
+      if (btn !== null && document.contains(btn)) btn.focus()
+      else mainRef.current?.focus()
+    }
+    prevClosing.current = closing
+  }, [closing])
+
+  const openClose = (row: RealPositionRow, btn: HTMLButtonElement) => {
+    closeBtnRef.current = btn
+    setClosing(row)
+  }
+
+  // The close panel, built with `closing` captured in a local so the callbacks
+  // compare against the trade THIS form owns — an in-flight close for trade A
+  // that 409s must not tear down a form the user has since opened for trade B.
+  let closePanel: ReactNode = null
+  if (closing !== null) {
+    const owned = closing // captured; stable for this render's callbacks
+    closePanel = (
+      <section className="panel">
+        <div className="panel-head">
+          CLOSE TRADE
+          <span className="panel-caption">
+            writes the close + a quiet ExitEvent — the exit job never emails
+            about a close you performed here
+          </span>
+        </div>
+        <CloseTradeForm
+          key={owned.trade_id}
+          row={owned}
+          onBusyChange={setBusy}
+          onClosed={bump}
+          onConflict={(detail) => {
+            // Identity-guard: only clear the form if it is still THIS trade's.
+            setClosing((cur) => (cur !== null && cur.trade_id === owned.trade_id ? null : cur))
+            setNotice(`trade #${owned.trade_id} (${owned.ticker}): ${detail} — list refreshed`)
+            bump()
+          }}
+          onDismiss={() =>
+            setClosing((cur) => (cur !== null && cur.trade_id === owned.trade_id ? null : cur))
+          }
+        />
+      </section>
+    )
+  }
+
   return (
-    <main className="grid-single">
+    <main className="grid-single" ref={mainRef} tabIndex={-1}>
       {notice !== null && (
         <div className="pos-notice" role="status">
           <span>{notice}</span>
@@ -166,10 +209,10 @@ export function PositionsScreen({ wake }: { wake: number }) {
           <span className="panel-caption">
             real (manual) + live broker rows · prices as of last close
             {positions.data !== null &&
-              ` · quotes ${fmtAsOf(positions.data.quotes_as_of)} · ${
+              ` · quotes ${fmtClock(positions.data.quotes_as_of)} · ${
                 positions.data.broker_as_of === null
                   ? 'no broker snapshot'
-                  : `broker ${fmtAsOf(positions.data.broker_as_of)}`
+                  : `broker ${fmtClock(positions.data.broker_as_of)}`
               }`}
           </span>
         </div>
@@ -203,7 +246,8 @@ export function PositionsScreen({ wake }: { wake: number }) {
                     <OpenRow
                       key={row.kind === 'real' ? `r${row.trade_id}` : `l${row.paper_id}`}
                       row={row}
-                      onClose={setClosing}
+                      disabled={busy}
+                      onClose={openClose}
                     />
                   ))}
                 </tbody>
@@ -213,28 +257,7 @@ export function PositionsScreen({ wake }: { wake: number }) {
         </PanelBody>
       </section>
 
-      {closing !== null && (
-        <section className="panel">
-          <div className="panel-head">
-            CLOSE TRADE
-            <span className="panel-caption">
-              writes the close + a quiet ExitEvent — the exit job never emails
-              about a close you performed here
-            </span>
-          </div>
-          <CloseTradeForm
-            key={closing.trade_id}
-            row={closing}
-            onClosed={bump}
-            onConflict={(detail) => {
-              setClosing(null)
-              setNotice(`trade #${closing.trade_id} (${closing.ticker}): ${detail} — list refreshed`)
-              bump()
-            }}
-            onDismiss={() => setClosing(null)}
-          />
-        </section>
-      )}
+      {closePanel}
 
       <div className="pos-cols">
         <section className="panel">
@@ -311,9 +334,9 @@ export function PositionsScreen({ wake }: { wake: number }) {
                         <td className="pos-name mono">{t.ticker}</td>
                         <td className="pos-num">{t.entry_date}</td>
                         <td className="pos-num">{t.exit_date ?? '—'}</td>
-                        <td className="pos-num">{fmtPrice(t.entry_price)}</td>
-                        <td className="pos-num">{fmtPrice(t.exit_price)}</td>
-                        <td className="pos-num">{fmtSize(t.size)}</td>
+                        <td className="pos-num">{price(t.entry_price)}</td>
+                        <td className="pos-num">{price(t.exit_price)}</td>
+                        <td className="pos-num">{size(t.size)}</td>
                         <td className="pos-num">{fmtSignedUsd(t.realized_usd)}</td>
                         <td className="pos-name">{t.exit_reason ?? '—'}</td>
                       </tr>

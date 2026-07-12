@@ -2025,6 +2025,22 @@ button.pos-close:hover {
   border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
 }
 
+/* Keyboard focus gets a real ring (the bare border is too weak to track by
+   eye); pointer focus keeps the quiet border. Shared with .ctf-in below. */
+.ltf-in:focus-visible,
+.ctf-in:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--blue) 60%, transparent);
+  outline-offset: 1px;
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+
+/* An input the server flagged (aria-invalid) reads red, paired with the
+   role=alert message so it is never hue-only. */
+.ltf-in[aria-invalid='true'],
+.ctf-in[aria-invalid='true'] {
+  border-color: color-mix(in srgb, var(--red) 55%, var(--line2));
+}
+
 .ltf-in-id {
   width: 90px;
 }
@@ -2068,6 +2084,23 @@ button.pos-close:hover {
   gap: 4px;
   font-size: 11px;
   color: var(--dim);
+}
+
+/* Stale prefill: the loaded id no longer matches the box — dim the panel so it
+   reads as "not for what's typed", and carry the amber warning line. */
+.ltf-defaults.ltf-diverged {
+  opacity: 0.6;
+  border-color: var(--lamp-amber-border);
+}
+
+.ltf-diverge-flag {
+  font-size: 10.5px;
+  color: var(--amber);
+  border: 1px solid var(--lamp-amber-border);
+  background: var(--lamp-amber-bg);
+  border-radius: 3px;
+  padding: 3px 7px;
+  opacity: 1; /* stays legible even while the panel it sits in is dimmed */
 }
 
 .ltf-def-row {
