@@ -94,7 +94,7 @@ export function Masthead({
   return (
     <header className="masthead">
       <span className="mh-wordmark">
-        <b>SWING SCREENER</b> · COCKPIT
+        <b>MERIDIAN</b> · COCKPIT
       </span>
 
       {/* Where you are, registry-rendered ("3 · POSITIONS & LEDGER") — and the
