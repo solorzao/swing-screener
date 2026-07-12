@@ -33,6 +33,13 @@ runs `npm run lint && npm run build` and commits the regenerated `static/` in th
 commit — no exceptions (the CI drift check fails otherwise); commit trailer
 `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
 
+**Amendment (2026-07-11, post-Task 9):** `cockpit/api.py` was split mechanically into
+`cockpit/routers/` — `books` / `safety` / `trades` / `analysis` / `proposals` /
+`events`, one `build_<name>_router(seams) -> APIRouter` each, shared helpers in
+`cockpit/common.py`; `create_app` builds the seams and includes the routers. Where
+Tasks 10–12 say "Modify: `cockpit/api.py`", read the corresponding router module
+(Task 12's SSE/change-token work lives in `routers/events.py`).
+
 ---
 
 ## Scope decisions (read before executing — the judgment calls)
