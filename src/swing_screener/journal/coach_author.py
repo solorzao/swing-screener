@@ -53,9 +53,9 @@ def _fence_facts(facts: TradeReviewFacts) -> str:
     return f"<<<GROUND_TRUTH\n{body}\nGROUND_TRUTH"
 
 
-def _template(facts: TradeReviewFacts) -> str:
+def template_review(facts: TradeReviewFacts) -> str:
     """Deterministic fallback prose -- complete and honest, no LLM. Used when the LLM
-    is disabled or fails, so the review always ships."""
+    is disabled, over budget, or fails, so the review always ships."""
     unit = facts.unit
     res = "still open" if facts.result is None else f"{facts.result:g}{unit}"
     bits = [f"{facts.symbol}: closed {facts.outcome} for {res}"]
@@ -108,4 +108,4 @@ def draft_review(
         return DraftResult(text=text.strip(), usage=_capture_usage(resp, model))
     except Exception:  # noqa: BLE001 -- any failure degrades; the review never blocks on the LLM
         log.warning("coach review authoring failed; using deterministic template", exc_info=True)
-        return DraftResult(text=_template(facts), usage=None)
+        return DraftResult(text=template_review(facts), usage=None)
