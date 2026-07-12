@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Literal, Protocol, cast
 
 import anyio.to_thread
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -89,11 +89,14 @@ from swing_screener.db.repo import (
     add_trade,
     close_trade_with_event,
     count_open_positions,
+    create_analysis_request,
     execution_logs_for_day,
+    get_analysis_request,
     get_closed_trades,
     get_open_trades,
     latest_reversal_funnel,
     latest_run_date,
+    list_analysis_requests,
     load_closed_paper_trades,
     load_open_live_trades,
     load_research_paper_trades,
@@ -121,6 +124,7 @@ from swing_screener.settings import (
     resolve_risk_unit,
 )
 from swing_screener.signals.actionability import classify
+from swing_screener.storage.blob import resolve_chart_bytes, resolve_pdf_bytes
 
 
 def connection_label(db_url: str) -> str:
@@ -267,6 +271,24 @@ class TradeClose(BaseModel):
     @classmethod
     def _reason_or_manual(cls, v: str) -> str:
         return v.strip() or "manual"
+
+
+class AnalysisCreate(BaseModel):
+    """POST /api/analysis body: one ticker, required, stripped + uppercased --
+    the worker fetches by ticker and the queue list renders it verbatim, so a
+    lowercase dupe must collapse into the same spelling. ``max_length`` mirrors
+    ``AnalysisRequest.ticker``'s String(16) (the template rule); no float fields,
+    so there is no ``allow_inf_nan`` to pin here."""
+
+    ticker: str = Field(max_length=16)
+
+    @field_validator("ticker")
+    @classmethod
+    def _ticker_required_upper(cls, v: str) -> str:
+        v = v.strip().upper()
+        if not v:
+            raise ValueError("ticker is required")
+        return v
 
 
 # Prices within this absolute tolerance count as EQUAL for override stamping: the
@@ -815,14 +837,16 @@ def create_app(
         * PER-ROW degradation: ONE malformed trade or missing quote must never
           503 the zone. Every open row is KEPT; a row whose ``position_pl``
           raises (non-positive risk, or a degenerate zero price) degrades to
-          ``pl: null`` + ``badge: "unknown"``; a missing quote (absent from the
-          cache's dict) additionally nulls ``last_close``. ``last_close`` is the
-          close form's prefill source, so it stays populated whenever the quote
-          exists -- even on a row whose P/L math is broken.
+          ``pl: null`` with the badge STILL computed from price/stop/target (a
+          breached stop must read red even on a malformed row); a missing quote
+          (absent from the cache's dict) nulls ``last_close`` and the badge is
+          ``unknown``. ``last_close`` is the close form's prefill source, so it
+          stays populated whenever the quote exists -- even on a row whose P/L
+          math is broken.
         * ``pl.unrealized_pct`` is a FRACTION on the wire (0.04, not 4.0) --
           the frontend formats percents, mirroring ``analytics.pl``.
         * ``badge``: ``red`` price <= stop, ``yellow`` price >= target,
-          ``green`` between, ``unknown`` without a price (or unusable geometry).
+          ``green`` between, ``unknown`` without a price.
         * LIVE rows (open ``account="live"`` PaperTrades) have NO size column:
           ``size``/dollar P/L come from the spec'd ExecutionLog join -- the
           NEWEST row for the ticker with status ``submitted_live``/``filled_live``
@@ -860,6 +884,10 @@ def create_app(
           makes a cold fetch at most once per window); ``quotes_as_of``
           timestamps the window's latest contribution, not each price.
           ``broker_as_of`` is null without a snapshot.
+
+        Budget: cheap per request; the outlier is the cold quote fetch --
+        multi-second yfinance under the single-flight lock, at most once per
+        600s window.
         """
         open_real = get_open_trades(session)
         open_live = load_open_live_trades(session)
@@ -987,6 +1015,129 @@ def create_app(
             "sizing": {"shares": shares, "risk_dollars": risk_dollars,
                        "unconfigured": shares == 0},
         }
+
+    @app.post("/api/analysis", dependencies=[Depends(_require_cockpit)])
+    def request_analysis(
+        body: AnalysisCreate, session: Session = Depends(_session)
+    ) -> dict[str, object]:
+        """Queue an on-demand deep-analysis run for one ticker.
+
+        Header-guarded (``_require_cockpit``); ``AnalysisCreate`` strips +
+        uppercases (422 on empty/overlong). The SERVER stamps ``requested_at =
+        datetime.now(UTC)`` -- the worker (``notify.ondemand``) claims and
+        requeues by UTC comparison, so the client clock never ages a request.
+        Queue-view reorder, disclosed: the retired Streamlit form stamped naive
+        LOCAL time, and the list orders by the stored value, so old naive rows
+        can sort out of true order against UTC stamps by up to the zone offset
+        until they age out -- a one-time cosmetic reorder, not a processing
+        change. The response echoes the aware stamp; the DB round-trips it
+        tz-naive (UTC clock fields, see ``_stalled``)."""
+        stamp = datetime.now(UTC)
+        req = create_analysis_request(session, ticker=body.ticker, requested_at=stamp)
+        return {"id": req.id, "ticker": req.ticker, "status": req.status,
+                "requested_at": stamp.isoformat()}
+
+    @app.get("/api/analysis")
+    def analysis_list(
+        limit: int = Query(default=50, ge=1, le=200),
+        session: Session = Depends(_session),
+    ) -> dict[str, object]:
+        """The deep-analysis queue, newest requested first, plus who drains it.
+
+        ``stalled`` mirrors the worker's requeue window EXACTLY (running longer
+        than ``_STALE_AFTER``): the next worker pass will requeue exactly those
+        rows, so the UI can say 'stalled -- will retry' instead of spinning.
+        ``worker`` derives from the DB URL (``_worker_label``): 'cloud (*/15min)'
+        for Azure, else 'manual' -- the UI copy for manual says requests wait for
+        ``python -m swing_screener.notify.ondemand``. Timestamps are served as
+        stored (tz-naive; UTC from the worker/cockpit, naive-local on legacy
+        Streamlit rows -- see the POST docstring). ``has_pdf``/``chart_count``
+        let the UI draw asset affordances without touching a resolver. Budget:
+        one LIMITed SELECT, no resolver or network calls."""
+        now = datetime.now(UTC)
+        rows = list_analysis_requests(session, limit=limit)
+        return {
+            "requests": [{
+                "id": r.id,
+                "ticker": r.ticker,
+                "status": r.status,
+                "stalled": _stalled(r.status, r.started_at, now=now),
+                "requested_at": r.requested_at.isoformat(),
+                "started_at": (r.started_at.isoformat()
+                               if r.started_at is not None else None),
+                "finished_at": (r.finished_at.isoformat()
+                                if r.finished_at is not None else None),
+                "summary": r.summary,
+                "error": r.error,
+                "has_pdf": bool(r.pdf_blob_key),
+                "chart_count": len(_chart_keys(r.chart_blob_keys)),
+            } for r in rows],
+            "worker": _worker_label(db_url),
+        }
+
+    @app.get("/api/analysis/{request_id}/chart/{index}")
+    def analysis_chart(
+        request_id: int, index: int, session: Session = Depends(_session)
+    ) -> Response:
+        """One of a request's chart PNGs, resolved SERVER-SIDE from the stored key.
+
+        SECURITY: both path params are ints; the resolver receives ONLY the
+        ``chart_blob_keys`` entry stored on the DB row -- no client-supplied key
+        or path ever reaches a resolver (the arbitrary-read hole this closes).
+        404 on an unknown id, an out-of-range index (negative included -- never
+        end-relative), or an unresolvable key (aged-out blob / missing local
+        file). Assets age out of the store, so a 404 here is a normal state."""
+        req = get_analysis_request(session, request_id)
+        if req is None:
+            raise HTTPException(status_code=404, detail="unknown analysis request")
+        keys = _chart_keys(req.chart_blob_keys)
+        if not 0 <= index < len(keys):
+            raise HTTPException(status_code=404, detail="no such chart")
+        data = resolve_chart_bytes(keys[index])
+        if data is None:
+            raise HTTPException(status_code=404, detail="chart unavailable")
+        return Response(content=data, media_type="image/png")
+
+    @app.get("/api/analysis/{request_id}/pdf")
+    def analysis_pdf(
+        request_id: int, session: Session = Depends(_session)
+    ) -> Response:
+        """A request's report PDF, resolved SERVER-SIDE from the stored blob key.
+
+        SECURITY: same posture as the chart proxy -- the resolver receives ONLY
+        the row's ``pdf_blob_key``, never anything client-supplied. Served as an
+        attachment named ``{ticker}_report.pdf`` (header-sanitized, see
+        ``_pdf_filename``). 404 on an unknown id, a row with no PDF (queued /
+        failed), or an unresolvable key -- aged-out assets are normal, not
+        errors."""
+        req = get_analysis_request(session, request_id)
+        if req is None:
+            raise HTTPException(status_code=404, detail="unknown analysis request")
+        data = resolve_pdf_bytes(req.pdf_blob_key)
+        if data is None:
+            raise HTTPException(status_code=404, detail="pdf unavailable")
+        disposition = f'attachment; filename="{_pdf_filename(req.ticker)}"'
+        return Response(content=data, media_type="application/pdf",
+                        headers={"Content-Disposition": disposition})
+
+    @app.get("/api/signals/{signal_id}/chart")
+    def signal_chart(
+        signal_id: int, session: Session = Depends(_session)
+    ) -> Response:
+        """A signal's chart PNG, resolved SERVER-SIDE from ``Signal.chart_path``.
+
+        SECURITY: the id is an int; the resolver receives ONLY the stored
+        ``chart_path`` (blob key or local path) -- never a client value. 404 on
+        an unknown id, a chartless signal (MOST signals -- the pipeline charts
+        only surfaced picks, so 404 is the NORMAL case), or an unresolvable
+        path."""
+        sig = session.get(Signal, signal_id)
+        if sig is None or sig.chart_path is None:
+            raise HTTPException(status_code=404, detail="no chart for this signal")
+        data = resolve_chart_bytes(sig.chart_path)
+        if data is None:
+            raise HTTPException(status_code=404, detail="chart unavailable")
+        return Response(content=data, media_type="image/png")
 
     @app.get("/api/events")
     async def events() -> EventSourceResponse:
@@ -1348,20 +1499,22 @@ def _real_position_row(t: Trade, price: float | None, *,
                        armed: frozenset[str]) -> dict[str, object]:
     """One REAL (manual) open-trade row. The per-row guard: ``position_pl`` raises
     ``ValueError`` on non-positive risk and a zero price would ZeroDivision the
-    distance math -- either degrades THIS row to ``pl: null`` + ``badge:
-    "unknown"`` and the row is KEPT (one malformed trade never 503s the zone).
-    ``last_close`` stays whatever the quote said: the close form prefills from it
-    even when the P/L math is broken."""
+    distance math -- either degrades THIS row to ``pl: null`` and the row is KEPT
+    (one malformed trade never 503s the zone). The badge is computed BEFORE that
+    try: it reads only price/stop/target, so a legacy malformed-entry row whose
+    price breached the stop still shows RED, never 'unknown' -- that lamp's job is
+    'get out'. ``last_close`` likewise stays whatever the quote said: the close
+    form prefills from it even when the P/L math is broken."""
     pl: dict[str, object] | None = None
     badge = "unknown"
     if price is not None:
+        badge = _badge(price, stop=t.stop, target=t.target)
         try:
             pl = _pl_dict(position_pl(entry=t.entry_price, stop=t.stop,
                                       target=t.target, size=t.size,
                                       current_price=price))
-            badge = _badge(price, stop=t.stop, target=t.target)
         except (ValueError, ZeroDivisionError):
-            pl = None  # badge stays "unknown": the row's geometry is untrustable
+            pl = None  # the P/L math is untrustable; the badge above still stands
     return {
         "kind": "real",
         "trade_id": t.id,
@@ -1382,15 +1535,18 @@ def _real_position_row(t: Trade, price: float | None, *,
 
 
 def _live_shares(session: Session, ticker: str) -> int | None:
-    """The NEWEST live ticket's share count for ``ticker``, or None -- the spec'd
+    """The NEWEST live BUY ticket's share count for ``ticker``, or None -- the spec'd
     join for a live row's missing size column. Only ``submitted_live`` /
     ``filled_live`` rows count (the statuses that created venue exposure --
-    canceled/rejected tickets never did); newest-by-id mirrors
-    ``repo.latest_recorded_stop``'s ordering convention."""
+    canceled/rejected tickets never did), and only ``side == "buy"`` (a sell-side
+    live ticket is an EXIT; its shares must never masquerade as position size);
+    newest-by-id mirrors ``repo.latest_recorded_stop``'s ordering AND filters.
+    One query per open live row; batch (windowed IN) if the live book grows."""
     stmt = (
         select(ExecutionLog.shares)
         .where(
             ExecutionLog.ticker == ticker,
+            ExecutionLog.side == "buy",
             ExecutionLog.status.in_(("submitted_live", "filled_live")),
         )
         .order_by(ExecutionLog.id.desc())
@@ -1409,9 +1565,10 @@ def _live_position_row(p: PaperTrade, price: float | None, shares: int | None, *
     (``entry_price`` null) carries ``pl: null``; the badge still reads off the
     quote (stop/target are always recorded). Each denominator is guarded per
     FIELD (risk/entry/price non-positive -> that field null) -- same never-503
-    posture as the real rows. Live rows have no ``override`` column: null, with
-    ``unlinked`` still keyed off ``signal_id`` (a reconciler-materialized fill
-    carries none)."""
+    posture as the real rows. Keep the field math in lockstep with
+    ``analytics.pl.PositionPL`` (the real rows' source, via ``_pl_dict``). Live
+    rows have no ``override`` column: null, with ``unlinked`` still keyed off
+    ``signal_id`` (a reconciler-materialized fill carries none)."""
     pl: dict[str, object] | None = None
     badge = "unknown"
     if price is not None:
@@ -1451,3 +1608,47 @@ def _realized_usd(t: Trade) -> float:
     exit-less close falls back to the entry price (realized 0.0), never a guess."""
     exit_price = t.exit_price if t.exit_price is not None else t.entry_price
     return (exit_price - t.entry_price) * t.size
+
+
+# The on-demand worker's requeue window, RESTATED from ``notify.ondemand._STALE_AFTER``
+# rather than imported: ondemand's module scope drags the pipeline + notify graph
+# (pipeline.run, notify.analysis/pdf/transport) into the cockpit's import graph. A
+# lockstep test (tests/cockpit/test_api.py) imports the real constant and pins equality.
+_STALE_AFTER = timedelta(minutes=30)
+
+
+def _stalled(status: str, started_at: datetime | None, *, now: datetime) -> bool:
+    """True when a 'running' row has exceeded the worker's requeue window: the next
+    worker pass will flip exactly these rows back to 'queued'
+    (``repo.requeue_stale_running`` at ``now - _STALE_AFTER``), so the UI says
+    'stalled -- will retry' instead of spinning forever. Stored datetimes come back
+    NAIVE (sqlite/mssql DATETIME drop tzinfo); the worker stamps UTC, so naive is
+    read as UTC."""
+    if status != "running" or started_at is None:
+        return False
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=UTC)
+    return (now - started_at) > _STALE_AFTER
+
+
+def _worker_label(db_url: str) -> str:
+    """Who drains the queue, derived from the DB URL (the ``_is_azure`` predicate --
+    URL-shaped, never connectivity-shaped): the Azure DB is drained by the cloud
+    job every 15 minutes; a local DB has NO scheduled drain, so requests wait for a
+    manual ``python -m swing_screener.notify.ondemand`` run (the UI copy says so)."""
+    return "cloud (*/15min)" if _is_azure(db_url) else "manual"
+
+
+def _chart_keys(raw: str) -> list[str]:
+    """``AnalysisRequest.chart_blob_keys`` is COMMA-JOINED (String(2048)): split,
+    strip, drop empties -- a trailing comma or blank segment is not a chart."""
+    return [k.strip() for k in raw.split(",") if k.strip()]
+
+
+def _pdf_filename(ticker: str) -> str:
+    """``{ticker}_report.pdf`` with the ticker reduced to header-safe characters:
+    the value is DB-sourced (model-validated on the way in today, but legacy rows
+    predate the model) and a quote or CR/LF inside Content-Disposition corrupts the
+    header. Alphanumerics plus ``._-`` survive; an emptied ticker reads 'analysis'."""
+    safe = "".join(c for c in ticker if c.isalnum() or c in "._-")
+    return f"{safe or 'analysis'}_report.pdf"
