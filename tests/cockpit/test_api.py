@@ -1522,6 +1522,23 @@ def test_log_trade_persists_with_engine_defaults(tmp_path: Path) -> None:
         assert t.signal_id is None and t.override is None
 
 
+def test_log_trade_captures_emotional_state(tmp_path: Path) -> None:
+    # Journal v2: the discretionary entry emotion rides on the manual trade (Coach data).
+    client, engine = _client_and_engine(tmp_path)
+    r = client.post("/api/trades", json=_trade_body(emotional_state="fomo"), headers=_HDR)
+    assert r.status_code == 200
+    with Session(engine) as s:
+        t = s.get(Trade, r.json()["trade_id"])
+        assert t is not None and t.emotional_state == "fomo"
+
+
+def test_log_trade_emotional_state_defaults_none(tmp_path: Path) -> None:
+    client, engine = _client_and_engine(tmp_path)
+    r = client.post("/api/trades", json=_trade_body(), headers=_HDR)
+    with Session(engine) as s:
+        assert s.get(Trade, r.json()["trade_id"]).emotional_state is None
+
+
 def test_log_trade_stamps_override_on_deviation(tmp_path: Path) -> None:
     # Entry above the ceiling in zone-R (risk = ceiling 101 - stop 95 = 6), stop and
     # target moved in % -- the documented format, rendered verbatim by the UI.

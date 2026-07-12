@@ -66,6 +66,8 @@ class TradeCreate(BaseModel):
     target: float = Field(allow_inf_nan=False)
     notes: str = Field(default="", max_length=256)
     signal_id: int | None = None
+    # Journal v2: the discretionary entry emotion (FOMO, calm...). Manual actions only.
+    emotional_state: str | None = Field(default=None, max_length=32)
 
     @field_validator("ticker")
     @classmethod
@@ -197,6 +199,7 @@ def build_trades_router(
             entry_date=date.today(), entry_price=body.entry_price, size=body.size,
             stop=body.stop, target=body.target, notes=body.notes,
             signal_id=body.signal_id, override=override,
+            emotional_state=body.emotional_state,
         ))
         action_nonce.bump()  # post-action wake: add_trade has committed
         return {"trade_id": trade.id, "override": trade.override,
