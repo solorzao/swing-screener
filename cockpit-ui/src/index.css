@@ -2978,14 +2978,31 @@ button.pk-log-close:hover {
   padding: 0 4px;
 }
 
-/* Falsified / retired section: struck — the idea is dead but kept for the record. */
+.md-pre {
+  margin: 8px 0;
+  padding: 8px 10px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  overflow-x: auto;
+}
+
+.md-pre code {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--txt);
+  white-space: pre;
+}
+
+/* Falsified / retired section: struck — retired, but real evidence kept for the
+   record, so --dim (~3:1) not --faint; the line-through carries the "retired". */
 .md-struck {
-  color: var(--faint);
+  color: var(--dim);
   text-decoration: line-through;
 }
 
 .md-struck .md-code {
-  color: var(--faint);
+  color: var(--dim);
   text-decoration: line-through;
 }
 

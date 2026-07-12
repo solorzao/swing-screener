@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import type { Ref } from 'react'
 import {
   ApiError,
   POLL_MS,
@@ -297,9 +298,13 @@ type DecidePhase =
 function DecisionResult({
   phase,
   onDismiss,
+  dismissRef,
 }: {
   phase: Extract<DecidePhase, { kind: 'approved' | 'withdrawn' | 'error' }>
   onDismiss: () => void
+  /** Focus lands here when the panel mounts — the hold button the keyboard user
+   * pressed was destroyed by the phase switch (mirrors CloseTradeForm's doneRef). */
+  dismissRef: Ref<HTMLButtonElement>
 }) {
   if (phase.kind === 'error') {
     const s = phase.status
@@ -324,7 +329,7 @@ function DecisionResult({
         <div className="pp-result-head">{head}</div>
         <div className="pp-result-detail">{phase.detail}</div>
         {sub !== null && <div className="pp-result-note">{sub}</div>}
-        <button type="button" className="pp-dismiss" onClick={onDismiss}>
+        <button type="button" className="pp-dismiss" ref={dismissRef} onClick={onDismiss}>
           dismiss
         </button>
       </div>
@@ -347,7 +352,7 @@ function DecisionResult({
         <div className="pp-result-file mono">
           {r.note} · {r.file}
         </div>
-        <button type="button" className="pp-dismiss" onClick={onDismiss}>
+        <button type="button" className="pp-dismiss" ref={dismissRef} onClick={onDismiss}>
           dismiss
         </button>
       </div>
@@ -383,11 +388,41 @@ function ProposalDecider({
   const [reason, setReason] = useState('')
   const [phase, setPhase] = useState<DecidePhase>({ kind: 'idle' })
 
+  // Focus handoff (mirrors CloseTradeForm / DisarmControl): a fire destroys the
+  // hold button, so land focus on the result's dismiss control; on dismiss,
+  // return focus to a still-live hold trigger (approve if present, else
+  // withdraw — a success may have removed the one that fired).
+  const dismissRef = useRef<HTMLButtonElement>(null)
+  const approveRef = useRef<HTMLButtonElement>(null)
+  const withdrawRef = useRef<HTMLButtonElement>(null)
+  const reasonRef = useRef<HTMLInputElement>(null)
+  const focusBackRef = useRef(false)
+
   const pt = p.play_type as ConcretePlayType
   const canApprove = p.status === 'queued'
   const canWithdraw = p.status === 'queued' || p.status === 'approved'
   const reasonEmpty = reason.trim() === ''
   const busy = phase.kind === 'firing'
+  const terminal =
+    phase.kind === 'approved' || phase.kind === 'withdrawn' || phase.kind === 'error'
+
+  useEffect(() => {
+    if (terminal) {
+      dismissRef.current?.focus()
+    } else if (focusBackRef.current) {
+      focusBackRef.current = false
+      // Prefer an ENABLED hold trigger; after a success the reason is cleared
+      // (disabling the triggers), so fall back to the reason input — the next
+      // actionable control — and to nothing when the row is fully decided.
+      const live = (b: HTMLButtonElement | null) => (b !== null && !b.disabled ? b : null)
+      ;(live(approveRef.current) ?? live(withdrawRef.current) ?? reasonRef.current)?.focus()
+    }
+  }, [terminal, phase.kind])
+
+  const dismiss = () => {
+    focusBackRef.current = true
+    setPhase({ kind: 'idle' })
+  }
 
   const fire = (action: 'approve' | 'withdraw') => {
     setPhase({ kind: 'firing', action })
@@ -402,6 +437,9 @@ function ProposalDecider({
         } else {
           setPhase({ kind: 'withdrawn', result: result as ProposalDecided })
         }
+        // Clear the reason on SUCCESS only — a following decision (approve then
+        // withdraw) must not silently reuse it; an ERROR keeps it for a retry.
+        setReason('')
         onDecided() // local key-bump refetch; the server nonce wakes other windows
       },
       (err: unknown) => {
@@ -419,8 +457,7 @@ function ProposalDecider({
   }
 
   if (phase.kind === 'approved' || phase.kind === 'withdrawn' || phase.kind === 'error') {
-    // On error, keep the typed reason so a retry needs no re-typing.
-    return <DecisionResult phase={phase} onDismiss={() => setPhase({ kind: 'idle' })} />
+    return <DecisionResult phase={phase} onDismiss={dismiss} dismissRef={dismissRef} />
   }
 
   if (!canApprove && !canWithdraw) {
@@ -439,6 +476,7 @@ function ProposalDecider({
       </label>
       <input
         id={reasonId}
+        ref={reasonRef}
         className="pp-reason"
         value={reason}
         maxLength={200}
@@ -451,6 +489,7 @@ function ProposalDecider({
             holdMs={400}
             className="pp-approve"
             disabled={reasonEmpty || busy}
+            buttonRef={approveRef}
             title={
               reasonEmpty
                 ? 'enter a reason first'
@@ -465,6 +504,7 @@ function ProposalDecider({
             holdMs={400}
             className="pp-withdraw"
             disabled={reasonEmpty || busy}
+            buttonRef={withdrawRef}
             title={
               reasonEmpty
                 ? 'enter a reason first'
