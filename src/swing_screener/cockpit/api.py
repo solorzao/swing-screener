@@ -18,6 +18,7 @@ Three constraints, stated as contract:
 """
 
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -32,6 +33,8 @@ from typing import Literal, Protocol
 
 import anyio.to_thread
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -82,11 +85,10 @@ from swing_screener.db.models import (
 from swing_screener.db.repo import (
     AlreadyClosedError,
     add_trade,
-    close_trade,
+    close_trade_with_event,
     latest_reversal_funnel,
     load_closed_paper_trades,
     load_research_paper_trades,
-    record_exit_event,
 )
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.arms import BASELINE
@@ -177,20 +179,34 @@ class _LoginFlight:
         )
 
 
+def _require_cockpit(request: Request) -> None:
+    """The one mutation guard, as a dependency: the custom header can't ride a
+    cross-origin simple request, so any webpage's form/fetch dies in the CORS
+    preflight; a request without it is a 403 before ANY other dependency runs
+    (attached via the decorator's ``dependencies=[...]``, which FastAPI solves
+    ahead of parameter dependencies -- so no engine touch, no body parse). Every
+    new action endpoint takes the guard by copying one decorator argument."""
+    if request.headers.get("x-cockpit") != "1":
+        raise HTTPException(status_code=403, detail="missing X-Cockpit header")
+
+
 class TradeCreate(BaseModel):
     """POST /api/trades body. The validation LIVES HERE -- ``repo.add_trade`` is a
     pure persist that checks nothing -- so every rule the retired Streamlit entry
     form enforced is a model rule: ticker required (stripped + uppercased), entry
     and size positive, stop below entry, target above entry (long-only book).
-    ``max_length`` bounds mirror the Trade columns so Azure SQL never truncates."""
+    ``max_length`` bounds mirror the Trade columns so Azure SQL never truncates.
+    Template rule for every action model: floats pin ``allow_inf_nan=False`` --
+    hand-crafted JSON ``Infinity``/``NaN`` sails through ``gt`` and comparison
+    validators (NaN compares False against everything) and would poison R math."""
 
     ticker: str = Field(max_length=16)
     timeframe: str = Field(default="1d", max_length=32)
     horizon: str = Field(default="medium", max_length=32)
-    entry_price: float = Field(gt=0)
-    size: float = Field(gt=0)
-    stop: float
-    target: float
+    entry_price: float = Field(gt=0, allow_inf_nan=False)
+    size: float = Field(gt=0, allow_inf_nan=False)
+    stop: float = Field(allow_inf_nan=False)
+    target: float = Field(allow_inf_nan=False)
     notes: str = Field(default="", max_length=256)
     signal_id: int | None = None
 
@@ -213,10 +229,11 @@ class TradeCreate(BaseModel):
 
 class TradeClose(BaseModel):
     """POST /api/trades/{id}/close body. ``exit_date`` defaults to today at the
-    endpoint (a request body should not bake in the server's clock); a blank
-    reason falls back to ``manual`` -- the Streamlit close form's behavior."""
+    endpoint (a request body should not bake in the server's clock) and is
+    range-checked there too -- the bounds need the trade row. A blank reason
+    falls back to ``manual`` -- the Streamlit close form's behavior."""
 
-    exit_price: float = Field(gt=0)
+    exit_price: float = Field(gt=0, allow_inf_nan=False)
     exit_date: date | None = None
     exit_reason: str = Field(default="manual", max_length=32)
 
@@ -232,12 +249,26 @@ class TradeClose(BaseModel):
 _FAITHFUL_TOL = 0.005
 
 
+def _pct_part(label: str, actual: float, planned: float) -> str | None:
+    """One ``'{label} moved {+x.x%}'`` part, or None when the move isn't real:
+    within the absolute tolerance, an unusable denominator, or -- the high-price
+    trap -- a move whose FORMATTED percent rounds to ±0.0% (a one-cent nudge of a
+    $500 stop clears the absolute tolerance but stamps a zero-looking override)."""
+    if planned <= 0 or abs(actual - planned) <= _FAITHFUL_TOL:
+        return None
+    text = f"{(actual - planned) / planned:+.1%}"
+    if text in ("+0.0%", "-0.0%"):
+        return None
+    return f"{label} moved {text}"
+
+
 def _override_note(body: TradeCreate, sig: Signal) -> str | None:
     """The honest-flagging stamp: how ``body`` deviates from ``sig``'s plan, or None.
 
     Entry deviation is expressed in zone-R (risk = entry_ceiling - stop, the unit the
-    signal's own R math uses); stop/target moves in percent of the signal's level.
-    Format (rendered VERBATIM by the UI -- see the endpoint docstring):
+    signal's own R math uses); stop/target moves in percent of the signal's level,
+    with zero-LOOKING moves suppressed (see ``_pct_part``). Format (rendered
+    VERBATIM by the UI -- see the endpoint docstring):
     ``entry +0.50R above ceiling; stop moved +1.1%; target moved -2.0%``. A
     degenerate zone (ceiling <= stop, no R unit to speak in) skips the entry part
     rather than dividing by zero.
@@ -251,10 +282,10 @@ def _override_note(body: TradeCreate, sig: Signal) -> str | None:
         elif body.entry_price < sig.entry_floor - _FAITHFUL_TOL:
             under = (sig.entry_floor - body.entry_price) / risk
             parts.append(f"entry -{under:.2f}R below floor")
-    if abs(body.stop - sig.stop) > _FAITHFUL_TOL and sig.stop > 0:
-        parts.append(f"stop moved {(body.stop - sig.stop) / sig.stop:+.1%}")
-    if abs(body.target - sig.target) > _FAITHFUL_TOL and sig.target > 0:
-        parts.append(f"target moved {(body.target - sig.target) / sig.target:+.1%}")
+    for part in (_pct_part("stop", body.stop, sig.stop),
+                 _pct_part("target", body.target, sig.target)):
+        if part is not None:
+            parts.append(part)
     return "; ".join(parts)[:256] if parts else None  # cap: the column is String(256)
 
 
@@ -321,6 +352,19 @@ def create_app(
         return JSONResponse(
             status_code=503,
             content={"detail": f"database error ({type(exc).__name__})"},
+        )
+
+    @app.exception_handler(RequestValidationError)
+    def _validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+        """FastAPI's stock 422, with non-finite input echoes made serializable: the
+        default handler echoes each error's ``input`` verbatim, and a hand-crafted
+        JSON ``Infinity``/``NaN`` body (which ``json.loads`` accepts) makes that
+        echo itself unserializable -- Starlette's JSONResponse pins
+        ``allow_nan=False`` -- so the 422 would collapse into a 500. A validation
+        REJECTION must never read as a server error (see ``_json_safe_floats``)."""
+        return JSONResponse(
+            status_code=422,
+            content={"detail": _json_safe_floats(jsonable_encoder(exc.errors()))},
         )
 
     engine_cache: list[Engine] = []
@@ -627,17 +671,14 @@ def create_app(
     login_lock = threading.Lock()
     login_flight = _LoginFlight()
 
-    @app.post("/api/azure-login")
-    def azure_login(request: Request) -> dict[str, object]:
+    @app.post("/api/azure-login", dependencies=[Depends(_require_cockpit)])
+    def azure_login() -> dict[str, object]:
         """Spawn ``az login`` to refresh the AAD credential (design doc 2026-07-06).
 
-        Contract: header-guarded (the custom header turns cross-origin calls into
-        failed CORS preflights), Azure-mode only (a login cannot fix a sqlite file),
-        single-flight, and NO success signal -- ``/api/health`` is the sole recovery
-        oracle; the per-connection token fetch picks up the new credential on the
-        next poll. Never touches the engine."""
-        if request.headers.get("x-cockpit") != "1":
-            raise HTTPException(status_code=403, detail="missing X-Cockpit header")
+        Contract: header-guarded (``_require_cockpit``), Azure-mode only (a login
+        cannot fix a sqlite file), single-flight, and NO success signal --
+        ``/api/health`` is the sole recovery oracle; the per-connection token fetch
+        picks up the new credential on the next poll. Never touches the engine."""
         if not _is_azure(db_url):
             raise HTTPException(status_code=409, detail="not an Azure database")
         with login_lock:
@@ -650,32 +691,33 @@ def create_app(
             login_flight.started = time.monotonic()
         return {"started": True}
 
-    @app.post("/api/trades")
+    @app.post("/api/trades", dependencies=[Depends(_require_cockpit)])
     def log_trade(
-        body: TradeCreate, request: Request, session: Session = Depends(_session)
+        body: TradeCreate, session: Session = Depends(_session)
     ) -> dict[str, object]:
         """Log a REAL trade Oliver actually took -- records it, places no order.
 
-        Contract: header-guarded like every cockpit mutation; ``TradeCreate`` is the
+        Contract: header-guarded (``_require_cockpit``); ``TradeCreate`` is the
         only validation gate (422 with field detail -- the repo persists blindly);
         the server stamps ``entry_date`` = today, never the client. When the body
-        carries a ``signal_id`` whose Signal row exists, the fill is verified against
-        the engine's plan and any deviation is stamped into ``override`` in the
-        format the UI renders verbatim: ``entry +0.50R above ceiling`` /
-        ``entry -0.25R below floor`` (zone-R: risk = entry_ceiling - stop),
-        ``stop moved +1.1%``, ``target moved -2.0%``, parts joined by ``'; '``,
-        capped at 256 chars. ``override`` is null when the fill is faithful OR
-        unprefilled -- the UI's unlinked tag (``signal_id`` null) tells those apart.
-        A dangling ``signal_id`` (no such Signal row) is kept as given -- the link
-        claim is the client's -- but can verify nothing, so ``override`` stays null.
+        carries a ``signal_id``, the Signal row MUST exist -- 422 ``unknown
+        signal_id`` otherwise, on every backend identically: the FK is real, so
+        sqlite (no FK pragma) would store a dangling id silently while Azure SQL
+        would reject the insert with an IntegrityError-shaped 503. With the row,
+        the fill is verified against the engine's plan and any deviation is
+        stamped into ``override`` in the format the UI renders verbatim:
+        ``entry +0.50R above ceiling`` / ``entry -0.25R below floor`` (zone-R:
+        risk = entry_ceiling - stop), ``stop moved +1.1%``, ``target moved -2.0%``,
+        parts joined by ``'; '``, capped at 256 chars, zero-looking percents
+        suppressed. ``override`` is null when the fill is faithful OR unprefilled
+        -- the UI's unlinked tag (``signal_id`` null) tells those apart.
         """
-        if request.headers.get("x-cockpit") != "1":
-            raise HTTPException(status_code=403, detail="missing X-Cockpit header")
         override: str | None = None
         if body.signal_id is not None:
             sig = session.get(Signal, body.signal_id)
-            if sig is not None:
-                override = _override_note(body, sig)
+            if sig is None:
+                raise HTTPException(status_code=422, detail="unknown signal_id")
+            override = _override_note(body, sig)
         trade = add_trade(session, Trade(
             ticker=body.ticker, timeframe=body.timeframe, horizon=body.horizon,
             entry_date=date.today(), entry_price=body.entry_price, size=body.size,
@@ -685,38 +727,48 @@ def create_app(
         return {"trade_id": trade.id, "override": trade.override,
                 "entry_date": trade.entry_date.isoformat()}
 
-    @app.post("/api/trades/{trade_id}/close")
+    @app.post("/api/trades/{trade_id}/close", dependencies=[Depends(_require_cockpit)])
     def close_trade_action(
-        trade_id: int, body: TradeClose, request: Request,
-        session: Session = Depends(_session),
+        trade_id: int, body: TradeClose, session: Session = Depends(_session)
     ) -> dict[str, object]:
         """Close a real trade at the price Oliver reports.
 
-        Header-guarded; 404 on an unknown id, 409 when already closed (the repo's
-        ``AlreadyClosedError`` -- re-closing would overwrite the recorded exit).
-        Writes the paired ``ExitEvent(reason='manual_close')`` for the audit trail
-        and the change token; that reason is EXCLUDED from ``pending_exit_alerts``,
-        so the hourly exit job never emails an urgent alert about a close performed
-        seconds ago in the cockpit. ``realized_r`` is ``(exit - entry) / (entry -
-        stop)`` and null when the recorded risk is degenerate (stop raised to/above
-        entry, e.g. breakeven management) -- the close itself still happens;
-        ``realized_usd`` is ``(exit - entry) * size`` and always computes.
+        Header-guarded (``_require_cockpit``); 404 on an unknown id, 409 when
+        already closed (the repo's ``AlreadyClosedError`` -- re-closing would
+        overwrite the recorded exit), 422 when ``exit_date`` predates the trade's
+        entry or postdates today (input validation, checked post-fetch because it
+        needs the trade row). The close and its ``ExitEvent(reason='manual_close')``
+        -- audit trail + change token -- land in ONE transaction
+        (``close_trade_with_event``): both rows or neither, so a mid-close failure
+        leaves the trade open and a retry succeeds instead of 409ing against a
+        half-recorded close. The manual_close reason is EXCLUDED from
+        ``pending_exit_alerts``, so the hourly exit job never emails an urgent
+        alert about a close performed seconds ago in the cockpit. ``realized_r``
+        is ``(exit - entry) / (entry - stop)`` and null when the recorded risk is
+        degenerate (stop raised to/above entry, e.g. breakeven management) -- the
+        close itself still happens; ``realized_usd`` is ``(exit - entry) * size``
+        and always computes.
         """
-        if request.headers.get("x-cockpit") != "1":
-            raise HTTPException(status_code=403, detail="missing X-Cockpit header")
+        pre = session.get(Trade, trade_id)  # for exit_date bounds + the event message
+        if pre is None:
+            raise HTTPException(status_code=404, detail=f"no trade with id {trade_id}")
         exit_date = body.exit_date if body.exit_date is not None else date.today()
+        if exit_date < pre.entry_date:
+            raise HTTPException(
+                status_code=422, detail="exit_date is before the trade's entry_date")
+        if exit_date > date.today():
+            raise HTTPException(status_code=422, detail="exit_date is in the future")
         try:
-            trade = close_trade(session, trade_id, exit_date=exit_date,
-                                exit_price=body.exit_price, exit_reason=body.exit_reason)
+            trade, _event = close_trade_with_event(
+                session, trade_id, exit_date=exit_date, exit_price=body.exit_price,
+                exit_reason=body.exit_reason, event_reason="manual_close",
+                event_message=f"{pre.ticker} closed manually @ {body.exit_price:g}",
+                created_date=date.today(),
+            )
         except AlreadyClosedError as exc:  # BEFORE ValueError: it subclasses it
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except ValueError as exc:
+        except ValueError as exc:  # unknown id -- unreachable after the fetch, kept
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        record_exit_event(
-            session, is_paper=False, trade_id=trade.id, tier="", reason="manual_close",
-            message=f"{trade.ticker} closed manually @ {body.exit_price:g}",
-            created_date=date.today(), account="research",
-        )
         risk = trade.entry_price - trade.stop
         realized_r = (body.exit_price - trade.entry_price) / risk if risk > 0 else None
         return {
@@ -773,6 +825,20 @@ def create_app(
             }
 
     return app
+
+
+def _json_safe_floats(obj: object) -> object:
+    """Replace non-finite floats with their string form (``'inf'``/``'-inf'``/
+    ``'nan'``), recursively -- everything else passes through untouched. Applied to
+    the 422 error payload AFTER ``jsonable_encoder`` (which has already reduced it
+    to dicts/lists/primitives), so only the offending input echoes change shape."""
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return str(obj)
+    if isinstance(obj, dict):
+        return {k: _json_safe_floats(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_safe_floats(v) for v in obj]
+    return obj
 
 
 def _down_summary(exc: Exception) -> str:

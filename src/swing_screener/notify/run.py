@@ -417,6 +417,9 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # (tests / backfill) overrides.
         if run_date is None:
             run_date = repo.latest_run_date(session) or date.today()
+        # manual_close events are excluded by pending_exit_alerts BY DESIGN: this is
+        # the ALERTS feed (urgent, actionable), not a daily closes ledger -- a future
+        # "today's closes" section must add its own query, never widen this one.
         alerts = sel.pending_exit_alerts(session, run_date)
         _emit_pending_exit_alert(session, run_date, recipient, send)
 

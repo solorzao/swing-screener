@@ -447,23 +447,63 @@ class AlreadyClosedError(ValueError):
     """
 
 
-def close_trade(session: Session, trade_id: int, *, exit_date: date, exit_price: float,
-                exit_reason: str) -> Trade:
+def _open_trade_or_raise(session: Session, trade_id: int) -> Trade:
+    """Fetch a trade for closing: plain ``ValueError`` on an unknown id,
+    ``AlreadyClosedError`` on a closed one. Refused HERE, once, rather than in
+    every caller (the Streamlit form only OFFERED open trades; an HTTP endpoint
+    can be raced or replayed) -- re-closing would silently overwrite the exit."""
     trade = session.get(Trade, trade_id)
     if trade is None:
         raise ValueError(f"no trade with id {trade_id}")
     if trade.status == "closed":
-        # re-closing would silently overwrite the recorded exit -- refuse here, once,
-        # rather than in every caller (the Streamlit form only OFFERED open trades;
-        # an HTTP endpoint can be raced or replayed).
         raise AlreadyClosedError(f"trade {trade_id} is already closed")
+    return trade
+
+
+def _apply_close(trade: Trade, *, exit_date: date, exit_price: float,
+                 exit_reason: str) -> None:
     trade.status = "closed"
     trade.exit_date = exit_date
     trade.exit_price = exit_price
     trade.exit_reason = exit_reason
+
+
+def close_trade(session: Session, trade_id: int, *, exit_date: date, exit_price: float,
+                exit_reason: str) -> Trade:
+    trade = _open_trade_or_raise(session, trade_id)
+    _apply_close(trade, exit_date=exit_date, exit_price=exit_price,
+                 exit_reason=exit_reason)
     session.commit()
     session.refresh(trade)
     return trade
+
+
+def close_trade_with_event(
+    session: Session, trade_id: int, *, exit_date: date, exit_price: float,
+    exit_reason: str, event_reason: str, event_message: str, created_date: date,
+    tier: str = "", account: str = "research",
+) -> tuple[Trade, ExitEvent]:
+    """Close a trade AND record its ExitEvent in ONE transaction.
+
+    The cockpit's manual close needs both rows or neither: with separate commits
+    (``close_trade`` then ``record_exit_event``) a failure between them leaves the
+    trade durably closed while the client sees a 503 -- the retry then 409s
+    confusingly, and the audit ExitEvent is PERMANENTLY missing (the exit
+    change-token watermark never moves for that close). One commit carries both
+    rows, so the failure mode is all-or-nothing: either both land or the trade is
+    still open and a retry succeeds cleanly. Raises exactly like ``close_trade``.
+    """
+    trade = _open_trade_or_raise(session, trade_id)
+    _apply_close(trade, exit_date=exit_date, exit_price=exit_price,
+                 exit_reason=exit_reason)
+    event = ExitEvent(created_date=created_date, is_paper=False, trade_id=trade_id,
+                      tier=tier, reason=event_reason, message=event_message,
+                      account=account)
+    session.add(event)
+    session.commit()
+    session.refresh(trade)
+    session.refresh(event)
+    return trade, event
 
 
 def update_trade(session: Session, trade_id: int, **fields: object) -> Trade:

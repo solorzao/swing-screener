@@ -55,6 +55,28 @@ def test_close_trade_already_closed_raises_distinct_error():
         assert not isinstance(err.value, repo.AlreadyClosedError)
 
 
+def test_close_trade_with_event_carries_both_rows():
+    # the cockpit's manual close: the trade UPDATE and its ExitEvent ride ONE
+    # commit (all-or-nothing -- see the function docstring), and the guard raises
+    # exactly like close_trade.
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        t = repo.add_trade(s, _trade())
+        closed, event = repo.close_trade_with_event(
+            s, t.id, exit_date=date(2024, 1, 9), exit_price=108.0,
+            exit_reason="target", event_reason="manual_close",
+            event_message="AAPL closed manually @ 108", created_date=date(2024, 1, 9))
+        assert closed.status == "closed" and closed.exit_price == 108.0
+        assert event.id is not None and event.trade_id == t.id
+        assert event.reason == "manual_close" and event.is_paper is False
+        assert event.tier == "" and event.account == "research"
+        with pytest.raises(repo.AlreadyClosedError):
+            repo.close_trade_with_event(
+                s, t.id, exit_date=date(2024, 1, 10), exit_price=1.0,
+                exit_reason="x", event_reason="manual_close", event_message="",
+                created_date=date(2024, 1, 10))
+
+
 def test_update_trade_patches_fields():
     engine = get_engine("sqlite:///:memory:")
     with Session(engine) as s:

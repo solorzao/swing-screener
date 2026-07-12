@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from swing_screener.analytics.calibration import _CLUSTER_FLOOR, MIN_LEADERBOARD_N
@@ -22,7 +23,9 @@ from swing_screener.cockpit.api import (
     _change_token,
     _down_summary,
     _LoginFlight,
+    _override_note,
     _safe_change_token,
+    TradeCreate,
     connection_label,
     create_app,
 )
@@ -1195,17 +1198,18 @@ def test_log_trade_override_none_when_faithful(tmp_path: Path) -> None:
         assert t is not None and t.signal_id == sig_id and t.override is None
 
 
-def test_log_trade_dangling_signal_id_keeps_id_without_override(tmp_path: Path) -> None:
-    # A signal_id with no Signal row can't verify anything: keep the id as given
-    # (the link claim is the client's), stamp nothing.
+def test_log_trade_unknown_signal_id_is_422(tmp_path: Path) -> None:
+    # trades.signal_id is a REAL foreign key: sqlite (no FK pragma) would store a
+    # dangling id silently while Azure SQL would reject the INSERT as a 503-shaped
+    # IntegrityError -- so the endpoint rejects it identically on BOTH backends,
+    # before the insert, as input validation.
     client, engine = _client_and_engine(tmp_path)
     r = client.post("/api/trades", json=_trade_body(
         entry_price=104.0, signal_id=999), headers=_HDR)
-    assert r.status_code == 200
-    assert r.json()["override"] is None
+    assert r.status_code == 422
+    assert r.json()["detail"] == "unknown signal_id"
     with Session(engine) as s:
-        t = s.get(Trade, r.json()["trade_id"])
-        assert t is not None and t.signal_id == 999 and t.override is None
+        assert s.query(Trade).count() == 0  # nothing persisted
 
 
 def _seed_open_trade(engine: Engine, **over: object) -> int:
@@ -1317,3 +1321,107 @@ def test_close_trade_honors_explicit_exit_date(tmp_path: Path) -> None:
     with Session(engine) as s:
         t = s.get(Trade, tid)
         assert t is not None and t.exit_date == date(2026, 7, 9)
+
+
+def test_close_trade_rejects_out_of_range_exit_date(tmp_path: Path) -> None:
+    # exit_date is input validation (422), checked post-fetch because the lower
+    # bound needs the trade row: never before the entry, never in the future.
+    client, engine = _client_and_engine(tmp_path)
+    tid = _seed_open_trade(engine)  # entry_date = 2026-07-01
+    before = client.post(f"/api/trades/{tid}/close",
+                         json={"exit_price": 108.0, "exit_date": "2026-06-30"},
+                         headers=_HDR)
+    assert before.status_code == 422
+    future = (date.today() + timedelta(days=1)).isoformat()
+    after = client.post(f"/api/trades/{tid}/close",
+                        json={"exit_price": 108.0, "exit_date": future}, headers=_HDR)
+    assert after.status_code == 422
+    with Session(engine) as s:
+        t = s.get(Trade, tid)
+        assert t is not None and t.status == "open"  # both rejections left it open
+    # the entry day itself is a legal close day (a same-day scratch)
+    ok = client.post(f"/api/trades/{tid}/close",
+                     json={"exit_price": 108.0, "exit_date": "2026-07-01"}, headers=_HDR)
+    assert ok.status_code == 200
+
+
+def test_close_trade_is_atomic_with_its_exit_event(tmp_path: Path) -> None:
+    # ONE transaction carries the trade UPDATE and the ExitEvent INSERT: when the
+    # commit fails, NEITHER lands -- no closed-but-eventless audit hole (the exit
+    # change-token watermark would never move), and the retry finds the trade
+    # still open instead of a confusing 409.
+    client, engine = _client_and_engine(tmp_path)
+    tid = _seed_open_trade(engine)
+
+    def exploding_commit(self: Session) -> None:
+        raise OperationalError("COMMIT", {}, Exception("connection lost"))
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(Session, "commit", exploding_commit)
+        r = client.post(f"/api/trades/{tid}/close",
+                        json={"exit_price": 108.0}, headers=_HDR)
+    assert r.status_code == 503  # the app's SQLAlchemyError posture
+    with Session(engine) as s:
+        t = s.get(Trade, tid)
+        assert t is not None and t.status == "open"  # close rolled back...
+        assert t.exit_price is None
+        assert s.query(ExitEvent).count() == 0       # ...and no orphan event
+    # the failed attempt left no half-state: the retry SUCCEEDS
+    retry = client.post(f"/api/trades/{tid}/close",
+                        json={"exit_price": 108.0}, headers=_HDR)
+    assert retry.status_code == 200
+    with Session(engine) as s:
+        assert s.query(ExitEvent).count() == 1
+
+
+# ---- _override_note branch pins (unit level: TradeCreate + an unpersisted Signal) --
+
+
+def _create_body(**over: object) -> TradeCreate:
+    base: dict[str, object] = {"ticker": "AMD", "entry_price": 100.0, "size": 10.0,
+                               "stop": 95.0, "target": 110.0}
+    base.update(over)
+    return TradeCreate(**base)  # type: ignore[arg-type]
+
+
+def test_override_note_stop_only_is_a_single_part() -> None:
+    # entry inside the zone, target faithful: exactly one part, no separators.
+    note = _override_note(_create_body(stop=96.0), _signal_row())
+    assert note == "stop moved +1.1%"
+
+
+def test_override_note_degenerate_zone_skips_the_entry_part() -> None:
+    # ceiling <= stop leaves no zone-R unit: the entry deviation is unspeakable and
+    # skipped (never a divide-by-zero); the % parts still stamp.
+    sig = _signal_row(entry_floor=90.0, entry_ceiling=95.0, stop=95.0)
+    note = _override_note(_create_body(entry_price=100.0, stop=94.0), sig)
+    assert note == "stop moved -1.1%"  # entry is 5.0 above the ceiling, yet no entry part
+
+
+def test_override_note_suppresses_zero_looking_percent() -> None:
+    # a one-cent nudge of a $490 stop clears the ABSOLUTE tolerance but formats as
+    # '+0.0%' -- a zero-looking stamp is noise, so the part is suppressed entirely.
+    sig = _signal_row(trigger_close=500.0, entry_floor=496.0, entry_ceiling=501.0,
+                      stop=490.0, target=550.0)
+    body = _create_body(entry_price=500.0, stop=490.01, target=550.0)
+    assert _override_note(body, sig) is None
+
+
+def test_hand_crafted_json_infinity_and_nan_are_422(tmp_path: Path) -> None:
+    # httpx's json= refuses non-finite floats, but a hand-crafted body can carry the
+    # (non-standard, json.loads-accepted) Infinity/NaN tokens: Infinity passes gt=0
+    # and target>entry, NaN compares False against every geometry check -- only the
+    # models' allow_inf_nan=False stands between them and the R math.
+    client, engine = _client_and_engine(tmp_path)
+    hdrs = {**_HDR, "Content-Type": "application/json"}
+    raw = ('{"ticker": "AMD", "entry_price": 100.0, "size": 10.0, '
+           '"stop": NaN, "target": Infinity}')
+    assert client.post("/api/trades", content=raw, headers=hdrs).status_code == 422
+    tid = _seed_open_trade(engine)
+    r = client.post(f"/api/trades/{tid}/close",
+                    content='{"exit_price": Infinity}', headers=hdrs)
+    assert r.status_code == 422
+    with Session(engine) as s:
+        assert s.query(Trade).count() == 1  # only the seeded trade, still open
+        t = s.get(Trade, tid)
+        assert t is not None and t.status == "open"
