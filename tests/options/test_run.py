@@ -1,0 +1,69 @@
+from datetime import date, datetime
+from pathlib import Path
+
+import pandas as pd
+from sqlalchemy.orm import Session
+
+from swing_screener.db.models import GexSnapshot, OptionPaperTrade
+from swing_screener.db.session import get_engine
+from swing_screener.options.chain import ChainSnapshot
+from swing_screener.options.config import GexConfig
+from swing_screener.options.run import run_analyze, run_import, run_plan
+
+_FIXTURE = Path(__file__).parent / "fixtures" / "robinhood_sample.csv"
+
+
+def _fake_snapshotter(ticker: str, cfg: GexConfig) -> ChainSnapshot:
+    frame = pd.DataFrame([
+        {"expiry": date(2026, 7, 17), "strike": 105.0, "right": "C",
+         "open_interest": 50_000, "iv": 0.2},
+        {"expiry": date(2026, 7, 17), "strike": 95.0, "right": "P",
+         "open_interest": 40_000, "iv": 0.25},
+    ])
+    return ChainSnapshot(underlying=ticker, spot=100.0,
+                         asof=datetime(2026, 7, 13, 9, 10), frame=frame)
+
+
+def _fake_daily(ticker: str) -> pd.DataFrame:
+    return pd.DataFrame({
+        "open": range(100, 220), "high": range(101, 221), "low": range(99, 219),
+        "close": range(100, 220), "volume": [1_000_000] * 120,
+    }, index=pd.date_range("2026-01-01", periods=120))
+
+
+def test_run_plan_persists_snapshots_and_returns_plans() -> None:
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        plans = run_plan(s, cfg=GexConfig(watchlist=("SPY",)),
+                         snapshotter=_fake_snapshotter, daily_bars=_fake_daily)
+        assert len(plans) == 1
+        assert plans[0].underlying == "SPY"
+        rows = s.query(GexSnapshot).all()
+        assert len(rows) == 1 and rows[0].underlying == "SPY"
+
+
+def test_run_analyze_no_save_writes_nothing() -> None:
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        levels, liq = run_analyze("NVDA", cfg=GexConfig(),
+                                  snapshotter=_fake_snapshotter, session=s)
+        assert levels.call_wall == 105.0
+        assert liq.thin is True  # 2-strike fixture trips the liquidity guard
+        assert s.query(GexSnapshot).count() == 0
+
+
+def test_run_import_tag_all_commits_closed_episodes() -> None:
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        out = run_import(s, _FIXTURE, tag_all="other")
+        assert "committed" in out.lower()
+        rows = s.query(OptionPaperTrade).all()
+        assert rows and all(r.account == "robinhood" and r.strategy == "other" for r in rows)
+
+
+def test_run_import_without_tag_all_commits_nothing() -> None:
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        out = run_import(s, _FIXTURE, tag_all=None)
+        assert s.query(OptionPaperTrade).count() == 0
+        assert "review" in out.lower()
