@@ -52,3 +52,7 @@ The `be_1r` breakeven arm books from the next screen run and is judged by
 `paired_arm_delta` (the first honest same-sample arm judge); `low_water` MAE accrues on
 every advanced trade, making stop-width / breakeven-timing / target-reachability
 questions answerable offline from here on.
+
+**Update 2026-07-12:** the experiment settle bar was tightened 0.15R → 0.10R (reviewed
+seed value) — see [2026-07-12-settle-bar-recalibration.md](2026-07-12-settle-bar-recalibration.md),
+which also carries the forward-accrual watch item (checkpoint ≈ 2026-09, escape hatch 0.125R).
