@@ -400,7 +400,7 @@ export interface AnalysisRequestRow {
   /** Running longer than the worker's requeue window — the next worker pass
    * will requeue it, so say "stalled — will retry", never spin. */
   stalled: boolean
-  requested_at: string | null
+  requested_at: string
   started_at: string | null
   finished_at: string | null
   summary: string
@@ -618,7 +618,7 @@ export interface Universe {
 
 export interface EmailRow {
   id: number
-  sent_at: string | null
+  sent_at: string
   kind: string
   subject: string
   run_date: string | null
@@ -893,7 +893,7 @@ export const getGate = (): Promise<Gate> => fetchJson<Gate>('/api/gate')
  * header is a 403 by construction. `signal` lets a caller cancel a request it
  * no longer wants (an aborted fetch rejects with an AbortError DOMException —
  * a caller that passes one owns that rejection). */
-export const postAction = <T>(
+const postAction = <T>(
   url: string,
   body?: object,
   signal?: AbortSignal,
