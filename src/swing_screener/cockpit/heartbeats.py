@@ -252,8 +252,10 @@ def _latest_email(session: Session, kind: str) -> datetime | None:
 def newest_verdicts_mtime(edge_dir: Path) -> datetime | None:
     """Newest ``*.verdicts.json`` mtime under ``edge_dir`` as a UTC datetime, or None
     when no verdicts file exists (a missing/empty dir is a normal setup state).
-    Public: the reflection-verdicts heartbeat AND the wake channel's change token
-    (cockpit/api.py) both read this -- the one shared "did reflection run?" clock."""
+    The reflection-verdicts heartbeat's "did reflection run?" clock -- heartbeat
+    only. (The wake channel's change token stats each sidecar itself via
+    ``_file_watermark`` in ``routers/events.py``: per-file ns-mtimes, because this
+    newest-float summary can miss an in-place rewrite within the same second.)"""
     mtimes = [p.stat().st_mtime for p in edge_dir.glob("*.verdicts.json")]
     return None if not mtimes else datetime.fromtimestamp(max(mtimes), tz=UTC)
 

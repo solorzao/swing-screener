@@ -147,8 +147,8 @@ body {
   border: 1.5px dashed var(--dim);
 }
 
-/* Amber = attention-you-can-act-on; an ENABLED masthead button is new (disarm is
-   dead until Phase 3) so it must read as live, unlike the dashed Phase-2 stubs. */
+/* Amber = attention-you-can-act-on; an ENABLED masthead button must read as
+   live, unlike the dashed Phase-2 stubs. */
 button.db-login {
   font-size: 10.5px;
   padding: 3px 9px;
@@ -173,7 +173,7 @@ button.db-login:disabled {
   white-space: nowrap;
 }
 
-.mh-spacer {
+.spacer {
   flex: 1;
 }
 
@@ -198,14 +198,17 @@ button.db-login:disabled {
   white-space: nowrap;
 }
 
-/* Segmented controls (masthead + panel heads): buttons in a bordered span.
-   Enabled segments are live; disabled ones stay the Phase-2 "visible commitments,
-   dead controls beat absent ones" treatment. */
-.mh-seg {
+/* Segmented controls (components/Segmented.tsx — masthead + panel heads):
+   buttons in a bordered span. Enabled segments are live; disabled ones stay the
+   Phase-2 "visible commitments, dead controls beat absent ones" treatment.
+   Theme via ancestor compounds (.perf-head .seg button), not bare className
+   selectors — a bare .x-tabs button ties .seg button at (0,1,1) and wins only
+   by source order. */
+.seg {
   display: flex;
 }
 
-.mh-seg button {
+.seg button {
   font-family: var(--mono);
   font-size: 10.5px;
   padding: 4px 9px;
@@ -215,39 +218,87 @@ button.db-login:disabled {
   cursor: pointer;
 }
 
-.mh-seg button:disabled {
+.seg button:disabled {
   color: var(--faint);
   cursor: not-allowed;
 }
 
 /* Selected segment: blue-tinted, never green (blue is the neutral-info accent). */
-.mh-seg button.seg-on {
+.seg button.seg-on {
   color: var(--txt);
   background: color-mix(in srgb, var(--blue) 14%, var(--panel2));
   border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
 }
 
-.mh-seg button + button {
+.seg button + button {
   border-left: none;
 }
 
-.mh-seg button:first-child {
+.seg button:first-child {
   border-radius: 3px 0 0 3px;
 }
 
-.mh-seg button:last-child {
+.seg button:last-child {
   border-radius: 0 3px 3px 0;
 }
 
+/* DISARM (live since Task 15): red-outlined and quiet at rest — red here is
+   the DESTRUCTIVE-ACTION color, paired with the hold gesture, never a breach
+   claim. Disabled keeps the dimmer Phase-2 look (no broker configured). The
+   armed/held states build on this anchor via the .htc classes below. */
 button.disarm {
   font-size: 10.5px;
   letter-spacing: 0.12em;
-  padding: 4px 12px;
+  padding: 3px 12px;
   border-radius: 3px;
   background: transparent;
   border: 1px solid color-mix(in srgb, var(--red) 45%, var(--line2));
-  color: color-mix(in srgb, var(--red) 55%, var(--dim));
+  color: color-mix(in srgb, var(--red) 75%, var(--txt));
+  cursor: pointer;
+}
+
+button.disarm:disabled {
+  color: color-mix(in srgb, var(--red) 35%, var(--dim));
+  border-color: color-mix(in srgb, var(--red) 25%, var(--line2));
   cursor: not-allowed;
+}
+
+/* The Reference link (screen 10 — no digit key; this is its one door). Quiet,
+   chip-shaped like gate/mode, but live: it navigates. */
+button.mh-ref {
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  padding: 4px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  color: var(--dim);
+  background: var(--panel2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button.mh-ref:hover {
+  color: var(--txt);
+  border-color: var(--line);
+}
+
+/* The current-screen indicator (registry-rendered, e.g. "3 · POSITIONS &
+   LEDGER") — doubles as the mouse road home: click = Mission Control (key 1). */
+button.mh-screen {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  padding: 4px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  color: var(--txt);
+  background: var(--panel2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button.mh-screen:hover {
+  border-color: var(--line);
 }
 
 /* ---------- Needs-Your-Hand strip (under the masthead) ---------- */
@@ -285,6 +336,24 @@ button.disarm {
 .grid {
   display: grid;
   grid-template-columns: 320px 1fr 380px;
+  gap: 14px;
+  padding: 14px;
+  align-items: start;
+}
+
+/* Single-panel screens (Forward Books full-width, the Task 15-20 placeholders). */
+.grid-single {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  padding: 14px;
+  align-items: start;
+}
+
+/* Systems screen: the heartbeat rail beside playbook integrity, full-width. */
+.grid-2 {
+  display: grid;
+  grid-template-columns: 380px 1fr;
   gap: 14px;
   padding: 14px;
   align-items: start;
@@ -459,6 +528,72 @@ button.disarm {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--dim);
+  white-space: nowrap;
+}
+
+/* ---------- Playbook integrity (Systems screen) ---------- */
+
+/* One row per play type: sidecar health, md health, drift, cadence. Theming
+   discipline here is FLAT NAMESPACED classes (pbint-*) — the OTHER sanctioned
+   pattern beside .seg's ancestor compounds: a unique prefix can't collide with
+   anyone else's selector, so it needs no ancestor to win. Pick one per block —
+   a prefix or a compound — never a bare .row/.cell that ties at (0,1,0). */
+.pbint-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--panel2);
+  flex-wrap: wrap;
+}
+
+.pbint-row:last-child {
+  border-bottom: none;
+}
+
+.pbint-name {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--txt);
+  width: 110px;
+  flex: none;
+}
+
+.pbint-cell {
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.pbint-cell.err {
+  color: var(--amber);
+}
+
+.pbint-cell.right {
+  margin-left: auto;
+  font-family: var(--mono);
+  color: var(--faint);
+}
+
+/* UNKNOWN is dashed-dim, never green (drift against an unreadable input). */
+.pbint-unknown {
+  font-size: 10px;
+  color: var(--dim);
+  border: 1px dashed var(--dim);
+  border-radius: 3px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
+/* A pending decision is a lamp — the shared lit-amber treatment. */
+.pbint-due {
+  font-size: 10px;
+  color: var(--amber);
+  border: 1px solid var(--lamp-amber-border);
+  background: var(--lamp-amber-bg);
+  box-shadow: var(--lamp-amber-glow);
+  border-radius: 3px;
+  padding: 1px 7px;
   white-space: nowrap;
 }
 
@@ -880,11 +1015,11 @@ button.disarm {
   gap: 12px;
 }
 
-.perf-head .mh-seg + .mh-seg {
+.perf-head .seg + .seg {
   margin-left: 8px;
 }
 
-.perf-head .mh-seg button {
+.perf-head .seg button {
   font-size: 9.5px;
   padding: 3px 6px;
 }
@@ -1037,7 +1172,3144 @@ button.disarm {
   justify-content: center;
 }
 
+/* Responsive: the SVG carries only a viewBox (Sparkline.tsx), so CSS owns the
+   rendered size — fill the row, keep the viewBox aspect ratio for the height. */
 .sparkline {
   display: block;
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  height: auto;
+}
+
+/* Visually hidden but screen-reader live: the standard clip-rect recipe.
+   display:none/visibility:hidden would mute the live region — this must not. */
+.vh {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* ---------- HoldToConfirm (components/HoldToConfirm.tsx) ---------- */
+
+/* The hold gesture's chrome: a fill sweeping left-to-right for exactly the
+   hold duration (the transition-duration is set inline from holdMs), snapping
+   back fast on abort. `htc-waiting` is the completed-hold-awaiting-its-gate
+   state (DISARM's preview): full fill, pulsing — keep holding. Flat htc-
+   namespace (the sanctioned no-collision pattern). */
+.htc {
+  position: relative;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+}
+
+.htc .htc-fill {
+  position: absolute;
+  inset: 0;
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 120ms linear;
+  background: color-mix(in srgb, var(--red) 30%, transparent);
+  pointer-events: none;
+}
+
+.htc.htc-holding .htc-fill {
+  transform: scaleX(1);
+}
+
+.htc.htc-waiting .htc-fill {
+  transform: scaleX(1);
+  animation: htc-pulse 900ms ease-in-out infinite;
+}
+
+@keyframes htc-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.htc .htc-body {
+  position: relative;
+}
+
+/* ---------- DISARM control + popover (Masthead.tsx DisarmControl) ---------- */
+
+.dz-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+/* The two-line button face: DISARM + its exact-effect caption (design rule 3:
+   destructive actions are captioned with what they actually do). */
+.dz-btn-label {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.25;
+}
+
+.dz-btn-label b {
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+
+.dz-btn-label small {
+  font-size: 8.5px; /* the app's floor — never below the thin-chip size */
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: color-mix(in srgb, var(--red) 40%, var(--dim));
+  white-space: nowrap;
+}
+
+/* The anchored panel under the masthead button: preview while holding, result
+   after a real fire (persistent until dismissed), the 409/failure states. */
+.dz-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 380px;
+  z-index: 30;
+  background: var(--panel);
+  border: 1px solid var(--line2);
+  border-radius: 6px;
+  padding: 10px 12px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.dz-head {
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  color: var(--txt);
+}
+
+.dz-head-alarm {
+  color: var(--red);
+}
+
+.dz-row {
+  font-size: 11.5px;
+  color: var(--txt);
+  line-height: 1.45;
+}
+
+.dz-row.dz-dim {
+  color: var(--dim);
+}
+
+.dz-verb {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* The unprotected alarm: red + border + role=alert — LOUD, and the panel that
+   carries it stays up until explicitly dismissed. */
+.dz-alarm {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--red);
+  border: 1px solid color-mix(in srgb, var(--red) 55%, var(--line2));
+  background: color-mix(in srgb, var(--red) 12%, var(--panel2));
+  box-shadow: 0 0 10px 1px color-mix(in srgb, var(--red) 30%, transparent);
+  border-radius: 3px;
+  padding: 7px 9px;
+}
+
+.dz-foot {
+  font-size: 10px;
+  color: var(--faint);
+  line-height: 1.4;
+}
+
+button.dz-dismiss {
+  align-self: flex-end;
+  font-size: 10.5px;
+  padding: 3px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+  color: var(--dim);
+  cursor: pointer;
+}
+
+button.dz-dismiss:hover {
+  color: var(--txt);
+  border-color: var(--line);
+}
+
+/* ---------- BracketLamp (components/BracketLamp.tsx) ---------- */
+
+/* Shape redundancy mirrors the heartbeat lamps: armed filled circle, db-only
+   amber triangle, unprotected red square, unknown dashed hollow circle.
+   UNKNOWN is never green — and never calm either: dashes mean "no claim". */
+.bl {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.bl .bl-lamp {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
   flex: none;
+}
+
+.bl-armed {
+  color: var(--dim);
+}
+
+.bl-armed .bl-lamp {
+  background: color-mix(in srgb, var(--green) 55%, var(--panel));
+}
+
+.bl-db-only {
+  color: var(--amber);
+}
+
+.bl-db-only .bl-lamp {
+  background: var(--amber);
+  border-radius: 0;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+  filter: var(--lamp-amber-drop);
+}
+
+.bl-unprotected {
+  color: var(--red);
+}
+
+.bl-unprotected .bl-lamp {
+  background: var(--red);
+  border-radius: 0;
+}
+
+.bl-unknown {
+  color: var(--dim);
+}
+
+.bl-unknown .bl-lamp {
+  background: transparent;
+  border: 1.5px dashed var(--dim);
+}
+
+/* ---------- CapGauge (components/CapGauge.tsx) ---------- */
+
+.cg {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cg-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.cg-label {
+  font-size: 11px;
+  color: var(--txt);
+  white-space: nowrap;
+}
+
+.cg-nums {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.cg-breach-tag {
+  color: var(--red);
+  letter-spacing: 0.08em;
+}
+
+/* "no cap set" is a posture problem, not zero room — dashed-amber, never 0/0. */
+.cg-nocap {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--amber);
+  border: 1px dashed color-mix(in srgb, var(--amber) 55%, var(--line2));
+  border-radius: 3px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
+.cg-track {
+  position: relative;
+  height: 8px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.cg-track.cg-indet {
+  border-style: dashed;
+  border-color: var(--faint);
+  background: transparent;
+}
+
+.cg-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: color-mix(in srgb, var(--blue) 35%, var(--panel2));
+}
+
+.cg-fill.cg-warn {
+  background: color-mix(in srgb, var(--amber) 45%, var(--panel2));
+}
+
+.cg-fill.cg-breach {
+  background: color-mix(in srgb, var(--red) 55%, var(--panel2));
+}
+
+/* ---------- Execution Safety screen (screens/SafetyScreen.tsx) ---------- */
+
+/* Inverted color doctrine (this screen fronts real money): locks OFF = the
+   calm SAFE state, locks ON = lit amber attention; GO is loud, NO-GO quiet;
+   UNKNOWN always dashed, never green, never calm-safe. */
+
+.sfy-banner {
+  margin: 14px 14px 0;
+  padding: 9px 12px;
+  font-size: 11.5px;
+  color: var(--amber);
+  border: 1px dashed color-mix(in srgb, var(--amber) 55%, var(--line2));
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--amber) 8%, var(--panel));
+}
+
+.sfy-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--panel2);
+}
+
+.sfy-row:last-child {
+  border-bottom: none;
+}
+
+.sfy-name {
+  width: 170px;
+  flex: none;
+  font-size: 11.5px;
+  color: var(--txt);
+}
+
+.sfy-val {
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.sfy-note {
+  font-size: 10px;
+  color: var(--faint);
+}
+
+.sfy-note.pad {
+  padding: 6px 12px;
+}
+
+/* A lock that is ON = the system is armed(able): the shared lit-amber lamp. */
+.sfy-armed {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--amber);
+  border: 1px solid var(--lamp-amber-border);
+  background: var(--lamp-amber-bg);
+  box-shadow: var(--lamp-amber-glow);
+  border-radius: 3px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+
+/* A lock that is OFF = safe: calm, dim, nothing glows. */
+.sfy-safe {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.sfy-warn {
+  font-size: 11px;
+  color: var(--amber);
+}
+
+.sfy-unknown {
+  font-size: 10.5px;
+  color: var(--dim);
+  border: 1px dashed var(--dim);
+  border-radius: 3px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
+.sfy-unknown-block {
+  padding: 10px 12px;
+  font-size: 11.5px;
+  color: var(--dim);
+  border: 1px dashed var(--dim);
+  border-radius: 3px;
+  margin: 10px 12px;
+}
+
+/* GO is the DANGEROUS verdict (real money may be armed) — it glows; NO-GO is
+   the quiet everyday state. */
+.sfy-go {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--amber);
+  border: 1px solid var(--lamp-amber-border);
+  background: var(--lamp-amber-bg);
+  box-shadow: var(--lamp-amber-glow);
+  border-radius: 3px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+
+.sfy-nogo {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+
+.sfy-check {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--panel2);
+  font-size: 11.5px;
+}
+
+.sfy-check:last-child {
+  border-bottom: none;
+}
+
+.sfy-mark {
+  font-family: var(--mono);
+  color: var(--dim);
+  flex: none;
+  width: 12px;
+}
+
+.sfy-mark.ok {
+  color: var(--txt);
+}
+
+.sfy-cname {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--txt);
+  flex: none;
+  width: 130px;
+}
+
+.sfy-advisory {
+  font-style: normal;
+  font-size: 9px;
+  color: var(--faint);
+  letter-spacing: 0.06em;
+}
+
+.sfy-detail {
+  color: var(--dim);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sfy-caps {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+.sfy-shield {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.sfy-shield th {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+  text-align: left;
+  font-weight: 400;
+  padding: 6px 12px 2px;
+}
+
+.sfy-shield td {
+  padding: 5px 12px;
+  border-top: 1px solid var(--panel2);
+  font-size: 11.5px;
+  color: var(--txt);
+}
+
+/* No snapshot = no claim: the dashed UNKNOWN treatment, writ large. */
+.sfy-shield-unknown {
+  margin: 10px 12px;
+  padding: 12px;
+  border: 1.5px dashed var(--dim);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--dim);
+  line-height: 1.5;
+}
+
+.sfy-shield-unknown-head {
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  color: var(--txt);
+  margin-bottom: 4px;
+}
+
+/* ---------- Position badge lamp (RiskStrip + PositionsScreen) ---------- */
+
+/* The get-out lamp, one definition for the strip and the table. Shape
+   redundancy mirrors the heartbeat lamps: green filled circle, yellow amber
+   triangle (take-profit attention), red square (stop breached), unknown
+   dashed hollow circle — never hue alone. */
+.plamp {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.plamp-green {
+  background: color-mix(in srgb, var(--green) 55%, var(--panel));
+}
+
+.plamp-yellow {
+  background: var(--amber);
+  border-radius: 0;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+  filter: var(--lamp-amber-drop);
+}
+
+.plamp-red {
+  background: var(--red);
+  border-radius: 0;
+}
+
+.plamp-unknown {
+  background: transparent;
+  border: 1.5px dashed var(--dim);
+}
+
+/* ---------- Zone B: RiskStrip (components/RiskStrip.tsx) ---------- */
+
+/* The Mission Control top band sits above the grid; the grid's own top
+   padding provides the gap below. */
+.zone-b {
+  padding: 14px 14px 0;
+}
+
+.rs-body {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rs-strips {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rs-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 9px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.rs-ticker {
+  font-size: 12px;
+  color: var(--txt);
+  width: 56px;
+  flex: none;
+}
+
+.rs-kind {
+  font-size: 9.5px;
+  color: var(--dim);
+  border: 1px solid var(--line2);
+  border-radius: 2px;
+  padding: 0 5px;
+  white-space: nowrap;
+}
+
+.rs-cell {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* Distance-to-stop: fill = room left before the stop (15% of price = full).
+   Indeterminate (no usable quote) = the dashed no-claim track. */
+.rs-stopbar {
+  position: relative;
+  flex: none;
+  width: 90px;
+  height: 7px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.rs-stopbar.rs-indet {
+  border-style: dashed;
+  border-color: var(--faint);
+  background: transparent;
+}
+
+.rs-stopfill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: color-mix(in srgb, var(--blue) 35%, var(--panel2));
+}
+
+.rs-caps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+
+/* FLAT is a fresh-fetch-only claim (RiskStrip.tsx) — calm and dim. */
+.rs-flat {
+  padding: 12px;
+  font-size: 11.5px;
+  letter-spacing: 0.1em;
+  color: var(--faint);
+}
+
+/* The no-claim state: fetch failing, nothing asserted — dashed, never calm. */
+.rs-noclaim {
+  margin: 10px 12px;
+  padding: 10px 12px;
+  border: 1.5px dashed var(--dim);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--dim);
+  line-height: 1.5;
+}
+
+/* ---------- Positions & Ledger screen (screens/PositionsScreen.tsx) ---------- */
+
+.pos-cols {
+  display: grid;
+  grid-template-columns: 1fr 380px;
+  gap: 14px;
+  align-items: start;
+}
+
+.pos-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.pos-table th {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+  text-align: right;
+  font-weight: 400;
+  padding: 6px 6px 2px;
+  white-space: nowrap;
+}
+
+.pos-table th.left {
+  text-align: left;
+}
+
+.pos-table td {
+  padding: 5px 6px;
+  border-top: 1px solid var(--panel2);
+  font-size: 11.5px;
+  color: var(--txt);
+  vertical-align: middle;
+}
+
+.pos-table td:first-child,
+.pos-table th:first-child {
+  padding-left: 12px;
+}
+
+.pos-table td:last-child,
+.pos-table th:last-child {
+  padding-right: 12px;
+}
+
+.pos-name {
+  font-size: 11.5px;
+  color: var(--txt);
+  white-space: nowrap;
+}
+
+.pos-tf {
+  font-size: 9.5px;
+  color: var(--faint);
+}
+
+.pos-num {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.pos-tag {
+  font-size: 9.5px;
+  color: var(--dim);
+  border: 1px solid var(--line2);
+  border-radius: 2px;
+  padding: 0 5px;
+  white-space: nowrap;
+}
+
+/* The stamped deviation, verbatim — amber: flagged, not forbidden. */
+.pos-override {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--amber);
+  overflow-wrap: anywhere;
+}
+
+.pos-flags {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  flex-wrap: wrap;
+  max-width: 260px;
+}
+
+.pos-noaction {
+  color: var(--faint);
+}
+
+button.pos-close {
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+  color: var(--dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button.pos-close:hover {
+  color: var(--txt);
+  border-color: var(--line);
+}
+
+/* The 409-resolved line: a state that was handled, not an error — lit amber
+   like every needs-a-glance lamp, dismissible. */
+.pos-notice {
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--amber);
+  border: 1px solid var(--lamp-amber-border);
+  background: var(--lamp-amber-bg);
+  border-radius: 4px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pos-caps {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+.pos-equity {
+  padding: 10px 12px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-bottom: 1px solid var(--panel2);
+}
+
+.pos-equity-cap {
+  font-size: 10px;
+  color: var(--faint);
+}
+
+/* ---------- Log-trade form (components/LogTradeForm.tsx) ---------- */
+
+.ltf {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ltf-prefill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ltf-lab {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.ltf-in {
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  color: var(--txt);
+  font-size: 12px;
+  padding: 4px 7px;
+  width: 100%;
+  min-width: 0;
+}
+
+.ltf-in:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+
+/* Keyboard focus gets a real ring (the bare border is too weak to track by
+   eye); pointer focus keeps the quiet border. Shared with .ctf-in below. */
+.ltf-in:focus-visible,
+.ctf-in:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--blue) 60%, transparent);
+  outline-offset: 1px;
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+
+/* An input the server flagged (aria-invalid) reads red, paired with the
+   role=alert message so it is never hue-only. */
+.ltf-in[aria-invalid='true'],
+.ctf-in[aria-invalid='true'] {
+  border-color: color-mix(in srgb, var(--red) 55%, var(--line2));
+}
+
+.ltf-in-id {
+  width: 90px;
+}
+
+.ltf-btn {
+  font-size: 10.5px;
+  padding: 4px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+  color: var(--dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ltf-btn:hover {
+  color: var(--txt);
+  border-color: var(--line);
+}
+
+.ltf-btn:disabled {
+  color: var(--faint);
+  cursor: wait;
+}
+
+/* The submit: blue-tinted (neutral-info accent) — an action, never a claim. */
+.ltf-btn.ltf-submit {
+  letter-spacing: 0.1em;
+  color: var(--txt);
+  background: color-mix(in srgb, var(--blue) 16%, var(--panel2));
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+
+.ltf-defaults {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel2);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--dim);
+}
+
+/* Stale prefill: the loaded id no longer matches the box — dim the panel so it
+   reads as "not for what's typed", and carry the amber warning line. */
+.ltf-defaults.ltf-diverged {
+  opacity: 0.6;
+  border-color: var(--lamp-amber-border);
+}
+
+.ltf-diverge-flag {
+  font-size: 10.5px;
+  color: var(--amber);
+  border: 1px solid var(--lamp-amber-border);
+  background: var(--lamp-amber-bg);
+  border-radius: 3px;
+  padding: 3px 7px;
+  opacity: 1; /* stays legible even while the panel it sits in is dimmed */
+}
+
+.ltf-def-row {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+/* Actionability chip — status colors pair with the label text itself. */
+.ltf-act {
+  font-size: 10px;
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
+.ltf-act-actionable {
+  color: color-mix(in srgb, var(--green) 60%, var(--txt));
+  border-color: color-mix(in srgb, var(--green) 35%, var(--line2));
+}
+
+.ltf-act-extended {
+  color: var(--amber);
+  border-color: var(--lamp-amber-border);
+}
+
+.ltf-act-broken {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 45%, var(--line2));
+}
+
+.ltf-act-unknown {
+  color: var(--dim);
+  border-style: dashed;
+}
+
+/* "sizing unconfigured" is a posture problem, same cue as cg-nocap. */
+.ltf-unconf {
+  font-size: 10.5px;
+  color: var(--amber);
+  border: 1px dashed color-mix(in srgb, var(--amber) 55%, var(--line2));
+  border-radius: 3px;
+  padding: 1px 7px;
+}
+
+.ltf-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px 10px;
+}
+
+.ltf-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.ltf-wide {
+  grid-column: 1 / -1;
+}
+
+.ltf-field-err {
+  font-size: 10px;
+  color: var(--red);
+}
+
+.ltf-err {
+  font-size: 11px;
+  color: var(--red);
+}
+
+.ltf-preview {
+  font-size: 11px;
+}
+
+.ltf-override {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--amber);
+  overflow-wrap: anywhere;
+}
+
+.ltf-faithful {
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.ltf-preview-note,
+.ltf-note {
+  font-size: 10px;
+  color: var(--faint);
+}
+
+.ltf-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ltf-done {
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+  border-radius: 4px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  align-items: flex-start;
+}
+
+.ltf-done-head {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--txt);
+}
+
+/* ---------- Close-trade form (components/CloseTradeForm.tsx) ---------- */
+
+.ctf {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  align-items: flex-start;
+}
+
+.ctf-head,
+.ctf-done-head {
+  font-size: 11.5px;
+  color: var(--txt);
+}
+
+.ctf-fields {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ctf-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ctf-lab {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.ctf-noquote {
+  font-style: normal;
+  letter-spacing: normal;
+  color: var(--faint);
+}
+
+.ctf-in {
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  color: var(--txt);
+  font-size: 12px;
+  padding: 4px 7px;
+  width: 160px;
+}
+
+.ctf-in:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+
+.ctf-preview {
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.ctf-preview-note {
+  font-size: 10px;
+  color: var(--faint);
+}
+
+/* "not computable" is a stated absence, not a zero — dashed-amber underline. */
+.ctf-nocompute {
+  color: var(--amber);
+  border-bottom: 1px dashed var(--amber);
+}
+
+.ctf-err {
+  font-size: 11px;
+  color: var(--red);
+}
+
+.ctf-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.ctf-btn {
+  font-size: 10.5px;
+  padding: 4px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+  color: var(--dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ctf-btn:hover {
+  color: var(--txt);
+  border-color: var(--line);
+}
+
+.ctf-btn:disabled {
+  color: var(--faint);
+  cursor: wait;
+}
+
+.ctf-btn.ctf-submit {
+  letter-spacing: 0.1em;
+  color: var(--txt);
+  background: color-mix(in srgb, var(--blue) 16%, var(--panel2));
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+
+.ctf-done-nums {
+  font-size: 12.5px;
+  color: var(--txt);
+}
+
+/* ---------- Candidates / Zone D: PickCard, LevelRail, ConvictionChip ----------
+
+   All prefixes are flat + namespaced (pk- / lr- / cvc-) per index.css's
+   convention. The actionability lamp REUSES the .plamp-* swatch vocabulary
+   (see PickCard.tsx), and the status TEXT color reuses .ltf-act-<status> — one
+   spelling of the four-state actionability palette, never a second definition. */
+
+/* The card: dense, quiet, one per surfaced pick. */
+.pk {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px 11px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+
+/* A liveness-dropped extra: dashed + dimmed, visibly not one of the five. */
+.pk-extra {
+  border-style: dashed;
+  border-color: var(--line2);
+  opacity: 0.82;
+}
+
+.pk-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pk-act {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pk-act-txt {
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+
+.pk-act-dist {
+  color: var(--dim);
+}
+
+.pk-ticker {
+  font-size: 13px;
+  color: var(--txt);
+}
+
+.pk-meta {
+  font-size: 9.5px;
+  color: var(--faint);
+}
+
+.pk-spacer {
+  flex: 1;
+}
+
+/* The extra flag — amber tag: flagged, not forbidden (same hue as pos-override). */
+.pk-flag {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--amber);
+  border: 1px dashed var(--lamp-amber-border);
+  border-radius: 2px;
+  padding: 0 5px;
+  white-space: nowrap;
+}
+
+.pk-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.pk-tag {
+  font-size: 9.5px;
+  color: var(--dim);
+  border: 1px solid var(--line2);
+  border-radius: 2px;
+  padding: 0 5px;
+  white-space: nowrap;
+}
+
+.pk-repeat {
+  color: var(--faint);
+  border-style: dashed;
+}
+
+/* ConvictionChip — the analyst grade + that grade's scored record. Blue is the
+   neutral-info accent (never green: a mean R here is not a saturated edge). */
+.cvc {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  font-size: 10px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--blue) 32%, var(--line2));
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+/* Unproven grade: dashed amber — a posture cue, same family as ltf-unconf. */
+.cvc-unproven {
+  border-color: color-mix(in srgb, var(--amber) 45%, var(--line2));
+  border-style: dashed;
+}
+
+.cvc-grade {
+  color: var(--txt);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cvc-track {
+  font-family: var(--mono);
+  color: var(--dim);
+}
+
+.cvc-n {
+  color: var(--faint);
+}
+
+.cvc-unproven-txt {
+  color: var(--amber);
+}
+
+/* LevelRail — the entry geometry as one bar; every price is copied to labels. */
+.lr {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.lr-track {
+  position: relative;
+  height: 8px;
+  background: var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+/* Degenerate zone (collapsed levels): a dim dashed strip, no plotted geometry. */
+.lr-degenerate {
+  background: repeating-linear-gradient(
+    90deg,
+    var(--line) 0 4px,
+    transparent 4px 8px
+  );
+}
+
+/* The entry window [floor, ceiling] — blue-tinted band (neutral info). */
+.lr-zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: color-mix(in srgb, var(--blue) 26%, transparent);
+  border-left: 1px solid color-mix(in srgb, var(--blue) 45%, var(--line2));
+  border-right: 1px solid color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+
+.lr-tick {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  width: 2px;
+  transform: translateX(-1px);
+}
+
+.lr-stop {
+  background: var(--red);
+}
+
+/* Target is an engine level, not a proven edge — dim, never green. */
+.lr-target {
+  background: var(--dim);
+}
+
+/* The live position: a bright vertical mark (var(--txt)) at last_close. */
+.lr-mark {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  transform: translateX(-1px);
+  background: var(--txt);
+  box-shadow: 0 0 3px color-mix(in srgb, var(--txt) 60%, transparent);
+}
+
+.lr-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 10px;
+  font-size: 9.5px;
+}
+
+.lr-lab {
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.lr-lab-stop {
+  color: color-mix(in srgb, var(--red) 55%, var(--dim));
+}
+
+.lr-lab-target,
+.lr-lab-last {
+  color: var(--txt);
+}
+
+.pk-cohort {
+  min-height: 1px;
+}
+
+.pk-nocohort {
+  font-size: 9.5px;
+  color: var(--faint);
+  font-style: italic;
+}
+
+.pk-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pk-chart {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-decoration: none;
+}
+
+.pk-chart-thumb {
+  max-height: 40px;
+  max-width: 120px;
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+}
+
+.pk-chart-cap {
+  font-size: 9.5px;
+  color: var(--blue);
+}
+
+.pk-nochart {
+  font-size: 9.5px;
+  color: var(--faint);
+}
+
+/* The one row action — blue-tinted, the affordance vocabulary of ctf-submit. */
+button.pk-log {
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  padding: 3px 12px;
+  border-radius: 3px;
+  color: var(--txt);
+  background: color-mix(in srgb, var(--blue) 16%, var(--panel2));
+  border: 1px solid color-mix(in srgb, var(--blue) 45%, var(--line2));
+  cursor: pointer;
+}
+
+button.pk-log:hover {
+  background: color-mix(in srgb, var(--blue) 24%, var(--panel2));
+}
+
+/* Zone D list (Mission Control right column): one card per row. */
+.pk-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.pk-extra-head {
+  margin-top: 4px;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+  border-top: 1px dashed var(--line2);
+  padding-top: 8px;
+}
+
+/* Candidates screen: sectioned card grid + the view toggle's extras hint. */
+.pk-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 12px;
+}
+
+.pk-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pk-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--dim);
+}
+
+.pk-section-cap {
+  letter-spacing: 0;
+  text-transform: none;
+  font-size: 10px;
+  color: var(--faint);
+}
+
+.pk-section-empty {
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.pk-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 10px;
+}
+
+.pk-extra-hint {
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
+button.pk-log-close {
+  font-size: 9.5px;
+  padding: 2px 9px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+  color: var(--dim);
+  cursor: pointer;
+}
+
+button.pk-log-close:hover {
+  color: var(--txt);
+  border-color: var(--line);
+}
+
+/* ========== Playbooks screen (Task 18) ========== */
+
+/* The hunch tier's lamp: a SOLID hollow ring (inert — an idea, not an edge),
+   distinct from green's filled disc and from unknown's DASHED ring, so the
+   "never hue alone" shape redundancy holds across all five lamp states. */
+.plamp-gray {
+  background: transparent;
+  border: 1.5px solid var(--faint);
+}
+
+/* ---------- TierChip ---------- */
+.tchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.tchip-label {
+  letter-spacing: 0.04em;
+}
+
+/* forward_confirmed is the app's FIRST saturated green (none exist yet); the
+   lesser tiers are honestly lesser. */
+.tchip-forward_confirmed .tchip-label {
+  color: var(--green);
+}
+
+.tchip-replay_screened .tchip-label {
+  color: var(--amber);
+}
+
+.tchip-hunch .tchip-label,
+.tchip-unknown .tchip-label {
+  color: var(--dim);
+}
+
+/* ---------- Playbooks layout ---------- */
+.pb-books {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 12px;
+}
+
+.pb-duesum {
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--faint);
+  white-space: nowrap;
+}
+
+/* Loud degradation: a corrupt sidecar (store_errors) or proposal store. */
+.pb-banner {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--red);
+  border: 1px solid color-mix(in srgb, var(--red) 55%, var(--line2));
+  background: color-mix(in srgb, var(--red) 12%, var(--panel2));
+  border-radius: 3px;
+  padding: 7px 9px;
+}
+
+.pb-book {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.pb-fm {
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
+/* The per-book reflection-due tag — amber attention, same family as the strip. */
+.pb-due {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: var(--amber);
+  border: 1px solid var(--lamp-amber-border);
+  background: var(--lamp-amber-bg);
+  border-radius: 2px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+/* ---------- Verdict table ---------- */
+.pb-table-wrap {
+  overflow-x: auto;
+}
+
+.pb-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 11px;
+}
+
+.pb-table th {
+  text-align: left;
+  font-weight: 400;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+  padding: 4px 10px 4px 0;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.pb-table td {
+  padding: 6px 10px 6px 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: baseline;
+}
+
+.pb-bucket {
+  color: var(--txt);
+  white-space: nowrap;
+}
+
+.pb-exp {
+  color: var(--txt);
+}
+
+/* n=0: a graded-but-empty bucket, honestly stated — never a fabricated zero. */
+.pb-empty {
+  font-size: 10px;
+  color: var(--faint);
+  font-style: italic;
+}
+
+.pb-n {
+  font-size: 8.5px;
+  color: var(--faint);
+}
+
+.pb-dash {
+  color: var(--faint);
+}
+
+.pb-source {
+  font-size: 10px;
+  color: var(--dim);
+}
+
+.pb-prov {
+  font-size: 9.5px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+/* An unstamped provenance cell — the honest unknown, never a default. */
+.pb-unstamped {
+  color: var(--faint);
+  font-style: italic;
+}
+
+.pb-cinote {
+  font-size: 9.5px;
+  color: var(--faint);
+  line-height: 1.4;
+}
+
+.pb-verr {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--amber);
+  border: 1px solid var(--lamp-amber-border);
+  background: var(--lamp-amber-bg);
+  border-radius: 3px;
+  padding: 6px 9px;
+}
+
+/* ---------- Drift badge (advisory) ---------- */
+.pb-drift {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  white-space: nowrap;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.pb-drift-dot {
+  width: 9px;
+  height: 9px;
+  flex: none;
+}
+
+/* ok = calm neutral (NOT green — green stays the tier edge claim). */
+.pb-drift-ok {
+  color: var(--dim);
+}
+
+.pb-drift-ok .pb-drift-dot {
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--dim) 70%, var(--panel));
+}
+
+/* missing = amber advisory (hand-edits are legitimate — never a hard fail). */
+.pb-drift-warn {
+  color: var(--amber);
+}
+
+.pb-drift-warn .pb-drift-dot {
+  background: var(--amber);
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+  filter: var(--lamp-amber-drop);
+}
+
+/* null = UNKNOWN, dashed hollow — never green, never ok. */
+.pb-drift-unknown {
+  color: var(--dim);
+}
+
+.pb-drift-unknown .pb-drift-dot {
+  border-radius: 50%;
+  background: transparent;
+  border: 1.5px dashed var(--dim);
+}
+
+/* ---------- Markdown prose ---------- */
+.pb-md-wrap {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.pb-md-error {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--amber);
+  border: 1px solid var(--lamp-amber-border);
+  background: var(--lamp-amber-bg);
+  border-radius: 3px;
+  padding: 7px 9px;
+}
+
+.md {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--txt);
+}
+
+.md-h {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin: 12px 0 6px;
+}
+
+.md-p {
+  margin: 6px 0;
+  color: color-mix(in srgb, var(--txt) 88%, var(--dim));
+}
+
+.md-quote {
+  margin: 6px 0;
+  padding: 6px 10px;
+  border-left: 2px solid var(--line2);
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.md-ul {
+  margin: 6px 0;
+  padding-left: 18px;
+  color: color-mix(in srgb, var(--txt) 88%, var(--dim));
+}
+
+.md-ul li {
+  margin: 3px 0;
+}
+
+.md-hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 10px 0;
+}
+
+.md-code {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--txt);
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 0 4px;
+}
+
+.md-pre {
+  margin: 8px 0;
+  padding: 8px 10px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  overflow-x: auto;
+}
+
+.md-pre code {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--txt);
+  white-space: pre;
+}
+
+/* Falsified / retired section: struck — retired, but real evidence kept for the
+   record, so --dim (~3:1) not --faint; the line-through carries the "retired". */
+.md-struck {
+  color: var(--dim);
+  text-decoration: line-through;
+}
+
+.md-struck .md-code {
+  color: var(--dim);
+  text-decoration: line-through;
+}
+
+/* ---------- DeltaDiff ---------- */
+.dd {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.dd-empty {
+  font-size: 10.5px;
+  color: var(--faint);
+  font-style: italic;
+}
+
+.dd-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 11px;
+}
+
+.dd-knob {
+  color: var(--dim);
+  min-width: 160px;
+}
+
+.dd-vals {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.dd-cur {
+  color: var(--faint);
+}
+
+.dd-arrow {
+  color: var(--dim);
+}
+
+.dd-prop {
+  color: var(--txt);
+}
+
+/* A delta key that names no config field — it cannot change the book. */
+.dd-unmapped {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--amber);
+  border: 1px dashed var(--lamp-amber-border);
+  border-radius: 2px;
+  padding: 0 5px;
+  white-space: nowrap;
+}
+
+/* ---------- Proposals ---------- */
+.pp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+.pp {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+
+.pp-headrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pp-name {
+  font-size: 11.5px;
+  color: var(--txt);
+}
+
+.pp-pt {
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.pp-status {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-radius: 2px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.pp-status-queued {
+  color: var(--amber);
+  border: 1px solid var(--lamp-amber-border);
+  background: var(--lamp-amber-bg);
+}
+
+.pp-status-approved {
+  color: var(--blue);
+  border: 1px solid color-mix(in srgb, var(--blue) 40%, var(--line2));
+  background: color-mix(in srgb, var(--blue) 12%, var(--panel2));
+}
+
+.pp-status-withdrawn {
+  color: var(--faint);
+  border: 1px solid var(--line2);
+  text-decoration: line-through;
+}
+
+.pp-status-other {
+  color: var(--dim);
+  border: 1px solid var(--line2);
+}
+
+.pp-noop {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dim);
+  border: 1px solid var(--line2);
+  border-radius: 2px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.pp-meta {
+  font-size: 9.5px;
+  color: var(--faint);
+}
+
+.pp-gate {
+  font-size: 10.5px;
+  font-family: var(--mono);
+}
+
+.pp-gate-ok {
+  color: var(--dim);
+}
+
+/* A refused delta — the human must see WHY before marking it. */
+.pp-gate-warn {
+  color: var(--amber);
+  line-height: 1.4;
+}
+
+.pp-rationale {
+  font-size: 11px;
+  line-height: 1.5;
+  color: color-mix(in srgb, var(--txt) 85%, var(--dim));
+}
+
+/* ---------- The decision controls ---------- */
+.pp-decide {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.pp-reason-lab {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--dim);
+}
+
+.pp-req {
+  color: var(--amber);
+  text-transform: uppercase;
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+}
+
+.pp-reason {
+  font-family: var(--ui);
+  font-size: 12px;
+  color: var(--txt);
+  background: var(--panel);
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  padding: 5px 8px;
+  width: 100%;
+}
+
+.pp-reason:focus {
+  outline: none;
+  border-color: var(--line2);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--blue) 40%, transparent);
+}
+
+.pp-holds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Approve/withdraw share the HoldToConfirm chrome; the fill (hold progress)
+   tints amber for a MARK, red for a withdraw (the destructive-gesture cue). */
+button.pp-approve,
+button.pp-withdraw {
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  padding: 5px 12px;
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+}
+
+button.pp-approve {
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--line2));
+  color: color-mix(in srgb, var(--amber) 80%, var(--txt));
+}
+
+button.pp-withdraw {
+  border: 1px solid color-mix(in srgb, var(--red) 40%, var(--line2));
+  color: color-mix(in srgb, var(--red) 70%, var(--txt));
+}
+
+button.pp-approve:disabled,
+button.pp-withdraw:disabled {
+  color: var(--faint);
+  border-color: var(--line2);
+  cursor: not-allowed;
+}
+
+.pp-approve .htc-fill {
+  background: color-mix(in srgb, var(--amber) 26%, transparent);
+}
+
+.pp-withdraw .htc-fill {
+  background: color-mix(in srgb, var(--red) 26%, transparent);
+}
+
+.pp-decide-note {
+  font-size: 9.5px;
+  line-height: 1.4;
+  color: var(--faint);
+}
+
+.pp-decided {
+  font-size: 10.5px;
+  color: var(--dim);
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+/* ---------- Decision result panels ---------- */
+.pp-result {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-radius: 4px;
+  padding: 9px 11px;
+  border-top: 1px solid var(--line);
+}
+
+.pp-result-approved {
+  border: 1px solid color-mix(in srgb, var(--blue) 40%, var(--line2));
+  background: color-mix(in srgb, var(--blue) 8%, var(--panel));
+}
+
+.pp-result-withdrawn {
+  border: 1px solid var(--line2);
+  background: var(--panel);
+}
+
+.pp-result-error {
+  border: 1px solid color-mix(in srgb, var(--red) 55%, var(--line2));
+  background: color-mix(in srgb, var(--red) 10%, var(--panel));
+}
+
+.pp-result-head {
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  color: var(--txt);
+}
+
+.pp-result-note {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--dim);
+}
+
+.pp-result-detail {
+  font-size: 11.5px;
+  color: var(--txt);
+  line-height: 1.45;
+}
+
+/* The verbatim three-artifact promotion checklist — approve MARKS, never promotes. */
+.pp-checklist {
+  margin: 2px 0;
+  padding-left: 20px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--txt);
+}
+
+.pp-checklist li {
+  margin: 3px 0;
+}
+
+.pp-result-file {
+  font-size: 10px;
+  color: var(--dim);
+  line-height: 1.4;
+}
+
+button.pp-dismiss {
+  align-self: flex-end;
+  font-size: 10.5px;
+  padding: 3px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+  color: var(--dim);
+  cursor: pointer;
+}
+
+button.pp-dismiss:hover {
+  color: var(--txt);
+  border-color: var(--line);
+}
+
+/* ---------- StatChip provenance affordance (StatChip.tsx + ProvenancePopover.tsx) ----------
+   The chip's whole face becomes ONE reset button so provenance is a click (or a
+   keyboard press) away everywhere a StatChip renders. The face is visually
+   unchanged; the wrap is the outside-click "inside" region (the popover itself
+   is PORTALED to <body> and position:fixed, so no ancestor overflow can clip
+   it — see ProvenancePopover). */
+.statchip-wrap {
+  display: block;
+  width: 100%;
+}
+
+.statchip-btn {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: inherit;
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+/* A faint hint that the number is inspectable — never loud enough to compete
+   with the value it wraps. */
+.statchip-btn:hover {
+  background: color-mix(in srgb, var(--blue) 7%, transparent);
+}
+
+.statchip-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--blue) 60%, transparent);
+  outline-offset: 1px;
+}
+
+/* The provenance panel: read-only, dismiss on Escape / outside click. Portaled
+   to <body> and position:FIXED — top/left are set inline from the trigger's
+   viewport rect (ProvenancePopover), which is what lets it escape every
+   overflow:hidden .panel. High z-index so it floats over the masthead too. */
+.prov-pop {
+  position: fixed;
+  z-index: 60;
+  min-width: 240px;
+  max-width: 300px;
+  background: var(--panel);
+  border: 1px solid var(--line2);
+  border-radius: 6px;
+  padding: 9px 11px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+  text-transform: none;
+  letter-spacing: normal;
+  cursor: default;
+  text-align: left;
+}
+
+.prov-head {
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  color: var(--txt);
+  margin-bottom: 6px;
+}
+
+.prov-head-lab {
+  color: var(--dim);
+  letter-spacing: normal;
+}
+
+.prov-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 12px;
+  margin: 0;
+  font-size: 11px;
+}
+
+.prov-grid dt {
+  color: var(--faint);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  align-self: baseline;
+}
+
+.prov-grid dd {
+  margin: 0;
+  color: var(--txt);
+}
+
+/* An honest-unknown provenance cell (null cost / corpus, non-finite CI edge). */
+.prov-na {
+  color: var(--faint);
+  font-style: italic;
+}
+
+.prov-warn {
+  color: var(--amber);
+}
+
+/* thin_clusters=true — the IID-fallback flag, LOUD (amber, its own line). */
+.prov-flag {
+  margin-top: 7px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--amber);
+  border: 1px solid var(--lamp-amber-border);
+  background: var(--lamp-amber-bg);
+  border-radius: 3px;
+  padding: 5px 7px;
+}
+
+/* ---------- Masthead analyst spend chip (Masthead.tsx) ----------
+   Real $ off the already-polled gate — an action affordance (opens Analyst),
+   dim and never green (money spent is not an edge claim). */
+button.mh-spend {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  padding: 4px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  color: var(--dim);
+  background: var(--panel2);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+button.mh-spend:hover {
+  color: var(--txt);
+  border-color: var(--line);
+}
+
+/* ---------- Needs-hand unread-analysis item (NeedsHandStrip.tsx) ----------
+   A button (navigates to Analyst) styled as a strip item — blue-tinted so the
+   unread nudge reads as an actionable affordance, not a settled lamp. */
+button.needs-hand-analysis {
+  font: inherit;
+  cursor: pointer;
+  color: var(--txt);
+  background: color-mix(in srgb, var(--blue) 14%, var(--panel2));
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+
+button.needs-hand-analysis:hover {
+  border-color: color-mix(in srgb, var(--blue) 65%, var(--line2));
+}
+
+/* ---------- Analyst screen: calibration (screens/AnalystScreen.tsx) ---------- */
+.cal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Spend windows — real $, one strip. The note carries the undercount honesty. */
+.cal-spend {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel2);
+}
+
+.cal-spend-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.cal-spend-lab {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.cal-spend-val {
+  font-size: 13px;
+  color: var(--txt);
+}
+
+.cal-spend-note {
+  margin-left: auto;
+  font-size: 10px;
+}
+
+.cal-blocks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 14px;
+}
+
+.cal-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 10px 12px;
+  background: var(--panel2);
+}
+
+.cal-block-head {
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  color: var(--txt);
+}
+
+.cal-table-wrap {
+  overflow-x: auto;
+}
+
+.cal-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 11.5px;
+}
+
+.cal-table th {
+  text-align: left;
+  font-weight: 400;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+  padding: 4px 10px 4px 0;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.cal-table td {
+  padding: 5px 10px 5px 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: baseline;
+}
+
+.cal-grade {
+  color: var(--txt);
+}
+
+.cal-mean {
+  color: var(--txt);
+}
+
+.cal-n {
+  font-size: 8.5px;
+  color: var(--faint);
+}
+
+/* A grade with no scored history — unproven, never a fabricated zero-edge. */
+.cal-unproven {
+  font-size: 10.5px;
+  color: var(--faint);
+  font-style: italic;
+}
+
+.cal-dim {
+  color: var(--dim);
+}
+
+.cal-nudge {
+  font-size: 11px;
+  color: var(--txt);
+}
+
+.cal-fresh {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.cal-fresh-item b {
+  color: var(--txt);
+  font-weight: 600;
+}
+
+.cal-fresh-exp b {
+  color: var(--amber);
+}
+
+.cal-fresh-frac {
+  margin-left: auto;
+  font-size: 10px;
+}
+
+.cal-prog {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  border-top: 1px solid var(--line);
+  padding-top: 7px;
+}
+
+.cal-prog-verdict {
+  font-size: 11px;
+  color: var(--txt);
+}
+
+/* Never green: even a passing calibration is not the tier-edge claim. */
+.cal-prog-yes {
+  color: var(--txt);
+}
+
+.cal-prog-no {
+  color: var(--dim);
+}
+
+.cal-prog-row {
+  font-size: 10.5px;
+  color: var(--txt);
+}
+
+.cal-na {
+  color: var(--faint);
+  font-style: italic;
+}
+
+/* ---------- Deep-analysis panel (components/AnalysisPanel.tsx) ---------- */
+.an {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.an-form {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel2);
+}
+
+.an-lab {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.an-in {
+  background: var(--bg);
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  color: var(--txt);
+  font-size: 12px;
+  padding: 4px 8px;
+  width: 140px;
+}
+
+.an-in:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--blue) 60%, transparent);
+  outline-offset: 1px;
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+
+.an-in[aria-invalid='true'] {
+  border-color: color-mix(in srgb, var(--red) 55%, var(--line2));
+}
+
+/* The submit — blue-tinted action affordance (a light POST, not a hold). */
+.an-submit {
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  padding: 4px 12px;
+  border-radius: 3px;
+  border: 1px solid color-mix(in srgb, var(--blue) 45%, var(--line2));
+  background: color-mix(in srgb, var(--blue) 16%, var(--panel2));
+  color: var(--txt);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.an-submit:disabled {
+  color: var(--faint);
+  background: var(--panel2);
+  border-color: var(--line2);
+  cursor: not-allowed;
+}
+
+.an-form-note {
+  font-size: 10px;
+  color: var(--faint);
+}
+
+.an-err {
+  flex-basis: 100%;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--red) 75%, var(--txt));
+}
+
+.an-ok {
+  flex-basis: 100%;
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.an-worker {
+  font-size: 10px;
+  color: var(--dim);
+  line-height: 1.4;
+}
+
+.an-list {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-top: 8px;
+}
+
+.an-row {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 8px 10px;
+  background: var(--panel2);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.an-row-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.an-ticker {
+  font-size: 13px;
+  color: var(--txt);
+  letter-spacing: 0.04em;
+}
+
+.an-id {
+  font-size: 9.5px;
+  color: var(--faint);
+}
+
+.an-status {
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.an-status-running {
+  color: var(--blue);
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+
+.an-status-done {
+  color: var(--dim);
+  border-color: var(--line2);
+}
+
+.an-status-failed {
+  color: color-mix(in srgb, var(--red) 75%, var(--txt));
+  border-color: color-mix(in srgb, var(--red) 45%, var(--line2));
+}
+
+/* stalled — amber, honest ("will retry"), never a spinner that never resolves. */
+.an-stalled {
+  color: var(--amber);
+}
+
+.an-times {
+  font-size: 9.5px;
+  color: var(--faint);
+  white-space: nowrap;
+}
+
+.an-error {
+  font-size: 11px;
+  line-height: 1.4;
+  color: color-mix(in srgb, var(--red) 75%, var(--txt));
+  border: 1px solid color-mix(in srgb, var(--red) 40%, var(--line2));
+  background: color-mix(in srgb, var(--red) 8%, var(--panel2));
+  border-radius: 3px;
+  padding: 5px 8px;
+}
+
+.an-pending {
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
+.an-report {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 7px;
+}
+
+.an-summary {
+  font-size: 11.5px;
+}
+
+.an-summary-empty {
+  color: var(--faint);
+  font-style: italic;
+}
+
+.an-charts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.an-chart {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  text-decoration: none;
+}
+
+.an-chart-thumb {
+  max-height: 90px;
+  max-width: 200px;
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+}
+
+.an-chart-cap {
+  font-size: 9.5px;
+  color: var(--blue);
+}
+
+.an-assets {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.an-pdf {
+  font-size: 11px;
+  color: var(--blue);
+  text-decoration: none;
+}
+
+.an-pdf:hover {
+  text-decoration: underline;
+}
+
+.an-nopdf {
+  font-size: 10px;
+  color: var(--faint);
+}
+
+/* ---------- Needs-hand attention buttons (NeedsHandStrip.tsx) ----------
+   The Task-20 attention items (queued proposals · approved-pending · reflection
+   due) are the amber lamp treatment, but clickable — a button that navigates to
+   Playbooks. Same lit-amber face as .needs-hand-item; adds cursor + inherited
+   font so it reads as an actionable lamp, not a static one. */
+button.needs-hand-btn {
+  font: inherit;
+  cursor: pointer;
+}
+
+button.needs-hand-btn:hover {
+  border-color: var(--amber);
+}
+
+/* ---------- Zone E — event ticker (components/EventTicker.tsx) ----------
+   The always-visible bottom strip: a left label + a single horizontally-
+   scrollable row of source-tagged pills, sticky to the viewport bottom (the
+   masthead's counterpart at top). No animation — the row scrolls by hand/wheel. */
+.et {
+  position: sticky;
+  bottom: 0;
+  z-index: 9;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 34px;
+  padding: 0 14px;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+}
+
+.et-label {
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: var(--faint);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.et-scroll {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+  /* a thin, quiet scrollbar — the strip is dense, the track shouldn't shout */
+  scrollbar-width: thin;
+}
+
+/* The region is focusable (tabIndex=0) so a keyboard-only user can Tab to it and
+   arrow-scroll to older events — a visible focus ring makes that reachable, not a
+   dead outline suppression. Only on keyboard focus (:focus-visible), not mouse. */
+.et-scroll:focus-visible {
+  outline: 1px solid var(--blue);
+  outline-offset: -1px;
+  border-radius: 3px;
+}
+
+.et-empty {
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.et-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  max-width: 320px;
+  padding: 2px 8px;
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  background: var(--panel2);
+  font-size: 11px;
+}
+
+.et-tag {
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  border: 1px solid var(--line2);
+  border-radius: 2px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+/* Per-source hue on the tag only — quiet accents on the notable trading-activity
+   sources: exit=amber, execution+analysis=blue (order/analysis flow), analyst=green.
+   email is DELIBERATELY left at the neutral --dim default (the .et-tag base above):
+   a routine digest notification is the lowest-signal event on the strip, so it is
+   de-emphasized rather than given a fifth hue in a four-color palette. */
+.et-src-exit .et-tag {
+  color: var(--amber);
+  border-color: color-mix(in srgb, var(--amber) 45%, var(--line2));
+}
+.et-src-execution .et-tag {
+  color: var(--blue);
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+.et-src-analyst .et-tag {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 45%, var(--line2));
+}
+.et-src-analysis .et-tag {
+  color: var(--blue);
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+
+.et-ticker {
+  color: var(--txt);
+  font-size: 11px;
+}
+
+.et-headline {
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- Market Weather screen (screens/WeatherScreen.tsx) ---------- */
+.wx {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+.wx-meta {
+  font-size: 10.5px;
+  color: var(--faint);
+}
+
+.wx-core {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wx-core-chips {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.wx-align {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  color: var(--dim);
+  white-space: nowrap;
+}
+.wx-align-aligned_bull {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 45%, var(--line2));
+  background: color-mix(in srgb, var(--green) 8%, var(--panel2));
+}
+.wx-align-aligned_bear {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 45%, var(--line2));
+  background: color-mix(in srgb, var(--red) 8%, var(--panel2));
+}
+.wx-align-mixed {
+  color: var(--amber);
+  border-color: color-mix(in srgb, var(--amber) 45%, var(--line2));
+}
+
+.wx-flip {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--line2));
+  color: var(--amber);
+  white-space: nowrap;
+}
+
+.wx-deep {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  white-space: nowrap;
+}
+/* is_deep=true: the analyst read, calm-neutral (never green — green is the tier
+   edge claim). is_deep=false: the deterministic fallback, hatched + dim so a
+   canned read is visibly not the analyst's. */
+.wx-deep-yes {
+  color: var(--txt);
+}
+.wx-deep-no {
+  color: var(--faint);
+  border-style: dashed;
+  background: var(--hatch);
+}
+
+.wx-core-text {
+  font-size: 13px;
+  color: var(--txt);
+  line-height: 1.45;
+}
+
+.wx-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px 14px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: 10px 0;
+}
+
+.wx-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.wx-cell-lab {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.wx-cell-val {
+  font-size: 12.5px;
+  color: var(--txt);
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.wx-flag {
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: var(--amber);
+  border: 1px solid color-mix(in srgb, var(--amber) 40%, var(--line2));
+  border-radius: 2px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+.wx-report {
+  font-size: 12px;
+}
+
+.wx-hist-wrap {
+  overflow-x: auto;
+  padding: 4px 12px 12px;
+}
+
+.wx-hist {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 11.5px;
+}
+.wx-hist th {
+  text-align: left;
+  font-weight: 400;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+  padding: 4px 12px 4px 0;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.wx-hist td {
+  padding: 5px 12px 5px 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: baseline;
+}
+.wx-hist-core {
+  color: var(--dim);
+}
+
+/* ---------- Reference screen (screens/ReferenceScreen.tsx) ---------- */
+.ref-search {
+  background: var(--bg);
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  color: var(--txt);
+  font-size: 12px;
+  padding: 3px 8px;
+  width: 130px;
+}
+
+.ref-count {
+  font-size: 10px;
+  color: var(--faint);
+  padding: 6px 12px 0;
+}
+
+.ref-filters {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.ref-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ref-filter-lab {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.ref-filter-in {
+  background: var(--bg);
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  color: var(--txt);
+  font-size: 12px;
+  padding: 3px 8px;
+  width: 160px;
+}
+
+.ref-table-wrap {
+  overflow-x: auto;
+  padding: 4px 12px 12px;
+}
+
+.ref-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 11.5px;
+}
+.ref-table th {
+  text-align: left;
+  font-weight: 400;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+  padding: 4px 12px 4px 0;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.ref-table td {
+  padding: 5px 12px 5px 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: baseline;
+}
+.ref-table th.ref-num,
+.ref-table td.ref-num {
+  text-align: right;
+}
+
+.ref-tkr {
+  color: var(--txt);
+}
+.ref-name {
+  color: var(--dim);
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ref-exch {
+  color: var(--faint);
+  font-size: 10.5px;
+}
+
+/* Manual closes are SHOWN but flagged: a subtle left rule + the "no alert" tag
+   makes the "why no email" legible without hiding the row. */
+.ref-exit-manual td {
+  background: color-mix(in srgb, var(--blue) 5%, transparent);
+}
+.ref-reason {
+  color: var(--txt);
+}
+.ref-manual-tag {
+  margin-left: 6px;
+  font-size: 8.5px;
+  letter-spacing: 0.04em;
+  color: var(--dim);
+  border: 1px dashed var(--line2);
+  border-radius: 2px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+.ref-book {
+  color: var(--dim);
+}
+.ref-exit-msg {
+  color: var(--dim);
+  max-width: 380px;
+}
+.ref-sent {
+  color: var(--dim);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+.ref-kind {
+  color: var(--dim);
+}
+.ref-subject {
+  color: var(--txt);
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

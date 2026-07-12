@@ -22,7 +22,7 @@ from swing_screener.analytics.performance import breakdown
 from swing_screener.config import StrategyConfig
 from swing_screener.db.models import PaperTrade
 from swing_screener.pipeline.replay import (
-    _load_cached_daily,
+    load_cached_daily,
     format_leaderboard,
     replay_book,
 )
@@ -69,7 +69,7 @@ def main() -> None:
 
     frames: dict[str, pd.DataFrame] = {}
     for t in tickers:
-        df = _load_cached_daily(t, args.cache_dir)
+        df = load_cached_daily(t, args.cache_dir)
         if df is not None and len(df) > 60:
             frames[t] = df
     log.info("replaying %d tickers x 4 variants over daily history ...", len(frames))

@@ -27,7 +27,7 @@ from swing_screener.analytics.performance import (
     summarize,
 )
 from swing_screener.config import StrategyConfig
-from swing_screener.pipeline.replay import _load_cached_daily
+from swing_screener.pipeline.replay import load_cached_daily
 from swing_screener.signals.detect import detect_last_bar
 from swing_screener.signals.frame import build_frame
 
@@ -46,7 +46,7 @@ def load_book(slip: str) -> pd.DataFrame:
 def compute_features(signals: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for ticker, grp in signals.groupby("ticker"):
-        raw = _load_cached_daily(ticker, CACHE, AS_OF)
+        raw = load_cached_daily(ticker, CACHE, AS_OF)
         if raw is None:
             continue
         f = build_frame(raw, CFG)

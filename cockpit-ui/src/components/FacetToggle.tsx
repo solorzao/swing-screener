@@ -1,4 +1,5 @@
 import type { Facet } from '../lib/api'
+import { Segmented } from './Segmented'
 
 /* The GOLD/RESEARCH facet toggle (masthead) and its per-panel caption tag.
    Research is the default facet — the wide research grid (every screened
@@ -16,26 +17,22 @@ export function FacetToggle({
   onFacet: (facet: Facet) => void
 }) {
   return (
-    <span className="mh-seg">
-      <button
-        type="button"
-        className={facet === 'gold' ? 'seg-on' : undefined}
-        aria-pressed={facet === 'gold'}
-        title="what production actually surfaced (would_surface)"
-        onClick={() => onFacet('gold')}
-      >
-        GOLD
-      </button>
-      <button
-        type="button"
-        className={facet === 'research' ? 'seg-on' : undefined}
-        aria-pressed={facet === 'research'}
-        title="the wide research grid, replay-graded"
-        onClick={() => onFacet('research')}
-      >
-        RESEARCH
-      </button>
-    </span>
+    <Segmented
+      options={[
+        {
+          value: 'gold',
+          label: 'GOLD',
+          title: 'what production actually surfaced (would_surface)',
+        },
+        {
+          value: 'research',
+          label: 'RESEARCH',
+          title: 'the wide research grid, replay-graded',
+        },
+      ]}
+      value={facet}
+      onChange={onFacet}
+    />
   )
 }
 

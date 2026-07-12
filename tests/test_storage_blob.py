@@ -7,7 +7,9 @@ and the upload/download seams are monkeypatched so no network call is made.
 
 import base64
 from datetime import date
+from pathlib import Path
 
+import pytest
 from sqlalchemy.orm import Session
 
 from swing_screener.config import StrategyConfig
@@ -217,39 +219,72 @@ def test_pdf_local_branch_unchanged_when_blob_disabled(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# dashboard helper
+# byte resolvers (shared by the dashboard and the cockpit API)
 # ---------------------------------------------------------------------------
-def test_dashboard_resolve_blob_enabled_downloads(monkeypatch):
-    from swing_screener.dashboard import app as dash
-
+def test_resolve_chart_bytes_blob_enabled_downloads(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SWING_BLOB_ACCOUNT_URL", "https://acct.blob.core.windows.net")
     seen: list[str] = []
-    monkeypatch.setattr(dash, "download_bytes", lambda key: seen.append(key) or _PNG)
+    monkeypatch.setattr(blob, "download_bytes", lambda key: seen.append(key) or _PNG)
 
     key = "20240401/AMD_1d_20240401.png"
-    data = dash._resolve_chart_image(key)
-    assert data == _PNG
+    assert blob.resolve_chart_bytes(key) == _PNG
     assert seen == [key]
 
 
-def test_dashboard_resolve_blob_disabled_uses_local_exists(tmp_path, monkeypatch):
-    from swing_screener.dashboard import app as dash
-
+def test_resolve_chart_bytes_blob_disabled_reads_local_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("SWING_BLOB_ACCOUNT_URL", raising=False)
-    # Existing local file -> returned; missing local file -> None (skip image).
+    # Existing local file -> its BYTES (FastAPI serves bytes, unlike st.image which
+    # also took a path); missing local file -> None (skip image).
     chart = tmp_path / "AMD.png"
     chart.write_bytes(_PNG)
-    assert dash._resolve_chart_image(str(chart)) == str(chart)
-    assert dash._resolve_chart_image(str(tmp_path / "missing.png")) is None
-    assert dash._resolve_chart_image(None) is None
+    assert blob.resolve_chart_bytes(str(chart)) == _PNG
+    assert blob.resolve_chart_bytes(str(tmp_path / "missing.png")) is None
+    assert blob.resolve_chart_bytes(None) is None
+    assert blob.resolve_chart_bytes("") is None
 
 
-def test_dashboard_resolve_blob_enabled_degrades_on_error(monkeypatch):
-    from swing_screener.dashboard import app as dash
-
+def test_resolve_chart_bytes_blob_enabled_degrades_on_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("SWING_BLOB_ACCOUNT_URL", "https://acct.blob.core.windows.net")
 
-    def boom(key):
+    def boom(key: str) -> bytes:
         raise RuntimeError("blob 404")
-    monkeypatch.setattr(dash, "download_bytes", boom)
-    assert dash._resolve_chart_image("20240401/AMD_1d_20240401.png") is None
+
+    monkeypatch.setattr(blob, "download_bytes", boom)
+    assert blob.resolve_chart_bytes("20240401/AMD_1d_20240401.png") is None
+
+
+def test_resolve_pdf_bytes_blob_enabled_downloads(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SWING_BLOB_ACCOUNT_URL", "https://acct.blob.core.windows.net")
+    seen: list[str] = []
+    monkeypatch.setattr(blob, "download_bytes", lambda key: seen.append(key) or b"%PDF-fake")
+
+    key = "reports/AMD_20240401.pdf"
+    assert blob.resolve_pdf_bytes(key) == b"%PDF-fake"
+    assert seen == [key]
+
+
+def test_resolve_pdf_bytes_blob_disabled_reads_local_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SWING_BLOB_ACCOUNT_URL", raising=False)
+    pdf = tmp_path / "AMD.pdf"
+    pdf.write_bytes(b"%PDF-fake")
+    assert blob.resolve_pdf_bytes(str(pdf)) == b"%PDF-fake"
+    assert blob.resolve_pdf_bytes(str(tmp_path / "missing.pdf")) is None
+    assert blob.resolve_pdf_bytes(None) is None
+
+
+def test_resolve_pdf_bytes_blob_enabled_degrades_on_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SWING_BLOB_ACCOUNT_URL", "https://acct.blob.core.windows.net")
+
+    def boom(key: str) -> bytes:
+        raise RuntimeError("blob 404")
+
+    monkeypatch.setattr(blob, "download_bytes", boom)
+    assert blob.resolve_pdf_bytes("reports/AMD_20240401.pdf") is None

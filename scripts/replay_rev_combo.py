@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from swing_screener.db.models import PaperTrade
 from swing_screener.config import StrategyConfig
 from swing_screener.pipeline.replay import (
-    _load_cached_daily,
+    load_cached_daily,
     corpus_stamp,
     format_leaderboard,
     replay_book,
@@ -120,11 +120,11 @@ def main() -> None:
 
     frames: dict[str, pd.DataFrame] = {}
     for t in tickers:
-        df = _load_cached_daily(t, args.cache_dir, args.as_of)
+        df = load_cached_daily(t, args.cache_dir, args.as_of)
         if df is not None and len(df) > 60:
             frames[t] = df
-    spy = _load_cached_daily("SPY", args.cache_dir, args.as_of)
-    vix = _load_cached_daily("^VIX", args.cache_dir, args.as_of)
+    spy = load_cached_daily("SPY", args.cache_dir, args.as_of)
+    vix = load_cached_daily("^VIX", args.cache_dir, args.as_of)
     if args.as_of and (shard_i in (0, None)):
         log.info("%s", corpus_stamp(args.cache_dir, tickers, args.as_of))
     log.info("rev combo: %d tickers, slip=%.2f%s ...", len(frames), args.slippage,

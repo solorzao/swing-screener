@@ -16,8 +16,8 @@ ALTER ROLE db_datawriter ADD MEMBER [<uami-name>];
 ALTER ROLE db_ddladmin  ADD MEMBER [<uami-name>];   -- Alembic issues CREATE/ALTER TABLE
 GO
 
--- 2) Your own Entra user, so the LOCAL dashboard (ActiveDirectoryDefault) can
---    READ candidates. Read-only is enough; the dashboard never writes.
+-- 2) Your own Entra user, so the LOCAL cockpit (ActiveDirectoryDefault) can
+--    READ candidates. Read-only is enough; the cockpit never writes.
 CREATE USER [<your-entra-upn>] FROM EXTERNAL PROVIDER;
 ALTER ROLE db_datareader ADD MEMBER [<your-entra-upn>];
 GO

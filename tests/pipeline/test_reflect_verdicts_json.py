@@ -6,17 +6,23 @@ LLM-authored ``edge/<pt>.md`` prose (which the model rewrites). So the reflectio
 emits ``edge/<pt>.verdicts.json`` -- a code-owned, lossless serialization of exactly the
 ``Verdict`` rows ``grade()`` produced.
 
-Two pieces:
+Three pieces:
   * ``verdicts_to_json`` / ``load_verdicts`` round-trip EVERY field of EVERY ``Verdict``
-    losslessly (``load_verdicts(verdicts_to_json(vs)) == vs``).
+    losslessly (``load_verdicts(verdicts_to_json(vs)) == vs``), and a PRE-provenance
+    sidecar (no ``cost_level``/``corpus_id`` keys) still parses with those fields None.
+  * ``_stamp_provenance`` (Phase 3) stamps each verdict's cost level + replay corpus id
+    post-``grade`` by source: replay rows carry the fixed haircut + the corpus id, forward
+    rows carry what the gold cohort provably realized (``cost_level_for``) and NO corpus,
+    and ``source='none'`` rows carry neither (an empty cell measured nothing).
   * ``run_reflection`` writes the sidecar next to the markdown for each reflected play
-    type, and it deserializes back to exactly what ``grade()`` produced -- deterministic,
-    independent of whether the LLM authoring succeeded.
+    type, and it deserializes back to exactly the STAMPED ``grade()`` output --
+    deterministic, independent of whether the LLM authoring succeeded.
 
 Reuses the in-memory-DB / temp-edge-dir / synthetic-replay / fake-LLM setup pattern from
 ``test_reflect_run.py`` so the sidecar test exercises the real ``run_reflection`` path.
 """
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -24,6 +30,7 @@ import numpy as np
 import pandas as pd
 from sqlalchemy.orm import Session
 
+from swing_screener.analytics.performance import COST_STAMPED_FROM
 from swing_screener.config import StrategyConfig
 from swing_screener.db.models import Base, PaperTrade
 from swing_screener.db.session import get_engine
@@ -32,6 +39,7 @@ from swing_screener.pipeline.reflect import (
     _REFLECT_TRIGGER_N,
     _REPLAY_HAIRCUT_ATR,
     Verdict,
+    _stamp_provenance,
     grade,
     load_verdicts,
     run_reflection,
@@ -132,7 +140,13 @@ def test_verdicts_json_round_trip_preserves_all_fields():
         Verdict(
             play_type="continuation", dimension="market_trend", bucket="bull",
             tier="forward_confirmed", n=37, expectancy_r=0.42, ci_low=0.11,
-            n_clusters=6, source="forward",
+            n_clusters=6, source="forward", cost_level="0.05", corpus_id=None,
+        ),
+        Verdict(
+            play_type="continuation", dimension="volatility_tier", bucket="high",
+            tier="replay_screened", n=120, expectancy_r=0.10, ci_low=0.02,
+            n_clusters=11, source="replay", cost_level="0.05",
+            corpus_id="corpus: 12/12 tickers · vintage(s) 20260703:12",
         ),
         Verdict(
             play_type="reversal", dimension="score", bucket="0.70-0.80",
@@ -147,6 +161,108 @@ def test_verdicts_json_empty_round_trips():
     assert load_verdicts(verdicts_to_json([])) == []
 
 
+def test_load_verdicts_tolerates_pre_provenance_sidecar() -> None:
+    """A committed sidecar written BEFORE the Phase-3 provenance stamps has no
+    ``cost_level``/``corpus_id`` keys. ``load_verdicts`` is a strict ``Verdict(**d)``,
+    so the new fields MUST default -- an old sidecar parses with them None."""
+    old = json.dumps([{
+        "play_type": "continuation", "dimension": "market_trend", "bucket": "bull",
+        "tier": "hunch", "n": 2442, "expectancy_r": -0.13, "ci_low": -0.19,
+        "n_clusters": 100, "source": "none",
+    }])
+    (v,) = load_verdicts(old)
+    assert v.cost_level is None
+    assert v.corpus_id is None
+    assert v.bucket == "bull"  # the pre-existing fields still parse
+
+
+# =====================================================================================
+# _stamp_provenance -- per-source stamping rules (post-grade; grade() stays pure)
+# =====================================================================================
+def _verdict(source: str, tier: str) -> Verdict:
+    return Verdict(
+        play_type="continuation", dimension="market_trend", bucket="bull",
+        tier=tier, n=25, expectancy_r=0.3, ci_low=0.1, n_clusters=25, source=source,
+    )
+
+
+def _cost_proven_trade(ticker: str) -> PaperTrade:
+    """A closed-filled forward trade that PROVES the 0.05 cost epoch (exited on/after
+    ``COST_STAMPED_FROM``, never partialed)."""
+    t = _closed_trade(ticker, 1.0, "continuation")
+    t.opened_date = COST_STAMPED_FROM
+    t.exit_date = COST_STAMPED_FROM
+    t.partial_done = False
+    return t
+
+
+def test_stamp_provenance_per_source_rules() -> None:
+    corpus = "corpus: 12/12 tickers · vintage(s) 20260703:12 · pinned as-of 20260703"
+    vs = [
+        _verdict("forward", "forward_confirmed"),
+        _verdict("replay", "replay_screened"),
+        _verdict("none", "hunch"),
+    ]
+    fwd_book = [_cost_proven_trade("A"), _cost_proven_trade("B")]
+    forward, rpl, none = _stamp_provenance(vs, fwd_book, corpus_id=corpus)
+
+    # replay rows: the fixed a-priori haircut (frontend-glyph format) + the corpus stamp.
+    assert rpl.cost_level == str(_REPLAY_HAIRCUT_ATR) == "0.05"
+    assert rpl.corpus_id == corpus
+    # forward rows: what the gold cohort provably realized; a forward corpus is a
+    # category error, so corpus_id stays None even when a replay corpus id is known.
+    assert forward.cost_level == "0.05"
+    assert forward.corpus_id is None
+    # source='none': an empty cell measured nothing -- no provenance claim at all.
+    assert none.cost_level is None
+    assert none.corpus_id is None
+    # everything else is untouched (dataclasses.replace, not a rebuild).
+    assert rpl.tier == "replay_screened" and rpl.n == 25 and rpl.expectancy_r == 0.3
+
+
+def test_stamp_provenance_forward_follows_cost_level_for_not_the_constant() -> None:
+    """A forward cohort with a pre-cutoff (unprovable) exit is a mixed gross/net book:
+    ``cost_level_for`` says None, and the forward stamp must follow it -- proving the
+    forward rule reads the BOOK, not the replay haircut constant."""
+    unproven = _closed_trade("A", 1.0, "continuation")
+    unproven.exit_date = None  # cannot prove its cost epoch
+    (forward,) = _stamp_provenance(
+        [_verdict("forward", "forward_confirmed")], [unproven], corpus_id="corpus: x",
+    )
+    assert forward.cost_level is None
+    assert forward.corpus_id is None
+
+
+def test_stamp_provenance_replay_corpus_id_none_when_unknown() -> None:
+    (rpl,) = _stamp_provenance(
+        [_verdict("replay", "replay_screened")], [], corpus_id=None,
+    )
+    assert rpl.cost_level == "0.05"
+    assert rpl.corpus_id is None
+
+
+def test_stamp_provenance_none_rows_unstamped_even_with_displayed_numbers() -> None:
+    """A hunch cell DISPLAYS whichever book had data (n>0) but confirmed nothing --
+    stamping it would claim provenance for a non-measurement, so both stay None even
+    when a corpus id and a cost-proven forward book are available."""
+    hunch = _verdict("none", "hunch")  # carries n=25 display numbers
+    (out,) = _stamp_provenance([hunch], [_cost_proven_trade("A")], corpus_id="corpus: x")
+    assert out.cost_level is None
+    assert out.corpus_id is None
+    assert out.n == 25  # the displayed numbers survive untouched
+
+
+def test_grade_emits_unstamped_verdicts() -> None:
+    """``grade`` stays PURE: every verdict it builds carries the default (None) stamps;
+    provenance is stamped post-grade by ``_stamp_provenance`` only."""
+    fwd = [_cost_proven_trade(f"T{i}") for i in range(25)]
+    for t in fwd:
+        t.market_trend = "bull"
+    verdicts = grade("continuation", fwd, [])
+    assert verdicts  # the family is non-empty
+    assert all(v.cost_level is None and v.corpus_id is None for v in verdicts)
+
+
 # =====================================================================================
 # run_reflection -- writes the sidecar next to the markdown, lossless vs grade()
 # =====================================================================================
@@ -156,17 +272,19 @@ def test_run_reflection_writes_verdicts_json_sidecar(tmp_path):
     forward = [_closed_trade(f"T{i}", 1.0, "continuation") for i in range(n)]
     for t in forward:
         t.would_surface = True  # the gold facet: reflection grades only surfaced rows
+    corpus = "corpus: 1/1 tickers · vintage(s) 20260703:1"
     replay_frames = {"S": _synth()}
     with _mem_session() as session:
         _seed(session, forward)
         client = _FakeClient("## Thesis\n\nAuthored prose.\n")
         reflected = run_reflection(
             session, replay_frames=replay_frames, spy_daily=None,
-            edge_dir=edge_dir, client=client, today="2026-06-20",
+            edge_dir=edge_dir, client=client, today="2026-06-20", corpus_id=corpus,
         )
         # The grader is deterministic, so re-running grade() on the SAME inputs
         # run_reflection used (forward book + the 1d replay slice for this play type)
-        # reproduces exactly the verdicts that should have been serialized.
+        # -- with the same post-grade provenance stamping -- reproduces exactly the
+        # verdicts that should have been serialized.
         loaded_forward = [
             t for t in session.query(PaperTrade).all()
             if t.play_type == "continuation" and t.would_surface  # the graded gold facet
@@ -175,10 +293,13 @@ def test_run_reflection_writes_verdicts_json_sidecar(tmp_path):
             replay_frames, timeframe="1d", base_cfg=_haircut_cfg(),
             variants={DEFAULT_VARIANT: _haircut_cfg()}, spy_daily=None,
         )
-    expected = grade(
-        "continuation", loaded_forward,
-        [t for t in replay_all if t.play_type == "continuation"],
-    )
+        expected = _stamp_provenance(
+            grade(
+                "continuation", loaded_forward,
+                [t for t in replay_all if t.play_type == "continuation"],
+            ),
+            loaded_forward, corpus_id=corpus,
+        )
     assert reflected == ["continuation"]
     # The non-due play type gets no sidecar (it was never reflected).
     assert not (edge_dir / "reversal.verdicts.json").exists()
