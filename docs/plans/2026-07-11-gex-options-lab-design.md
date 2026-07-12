@@ -18,7 +18,39 @@ The GEX module lives in this repo as a sibling vertical — **not** a third play
 ## Phasing
 
 - **Phase 1 (this design): prep + journal + grader.** Morning day-plan, manual paper trading graded against the A+ checklist in the cockpit, nightly settlement from completed 5-minute bars. Entirely local — no Azure changes, no live feed, no always-on process.
+- **Phase 1.5: close the learning loop.** Scope gathered below; implementation plan written after Phase 1 merges.
 - **Phase 2 (deferred, designed-for): live engine.** Session-resident process watching 5m bars + GEX levels, auto-detecting setups, alerting in the cockpit. The Phase-1 data model is datetime-keyed and carries nullable contract/premium columns so Phase 2 adds a runtime, not a schema rewrite.
+
+### Phase 1.5 scope (gathered from Phase 1's deferred list — the authoritative set)
+
+Everything Phase 1 deliberately left out that turns the lab from a journal into a *learning
+loop*. Two halves with different gates:
+
+**Half A — buildable as soon as Phase 1 merges (no data dependency):**
+
+1. **Setup↔imported-trade linking** — suggestions by underlying + same session date
+   (date-only precision), confirm/reject in the Journal/review grid; linked pairs unlock the
+   **planned-R vs realized-premium-P&L** comparison (slippage, early exits, theta per trade).
+2. **Journal completion** — manual close with notes, tag re-editing on committed episodes,
+   and the imported-episode `needs review` queue (STO/BTC and unpaired fills).
+3. **Lab Stats breadth** — by-regime and per-checklist-item expectancy breakdowns
+   (session-clustered Stat dicts, same machinery as by-grade).
+4. **Experiments registry entries** — `scope='gex'` rows in `edge/experiments.json` for the
+   first pre-registered questions (e.g. regime-match on/off), settled by the existing state
+   machine.
+
+**Half B — gated on data accrual (~20 closed lab trades), not on engineering:**
+
+5. **Reflection family registration** — pre-registered, Bonferroni-corrected, kept small:
+   composite grade bucket, gamma regime, and 3–4 highest-hypothesis checklist items
+   (regime-match, volume confirmation, location-at-pivot). Expanding the family later resets
+   K visibly, same as equity.
+6. **Deterministic verdicts** — `edge/gex.verdicts.json` + the code-owned grader stamping
+   confirmed/screened/hunch tiers on the session-clustered stats; `edge/gex.md` graduates
+   from stub to evidence-bearing playbook (Opus-authored prose, human-gated).
+
+Half A is pure engineering and can interleave with Journal-layer v1 work; Half B's calendar
+is set by how often A+ setups actually occur — the roadmap sequences accordingly.
 
 ## Key design choices (validated)
 

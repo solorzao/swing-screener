@@ -2,7 +2,7 @@
 
 **Status:** adopted 2026-07-11. This document declares the direction; the filesystem follows
 incrementally (see "Extraction policy"). The repo/package keeps the `swing_screener` name
-until a rename earns its cost.
+until a rename earns its cost. Phase sequencing and triggers: [ROADMAP.md](ROADMAP.md).
 
 ## What this system is
 
