@@ -24,7 +24,10 @@ from swing_screener.db.models import (
     EmailLog,
     ExecutionLog,
     ExitEvent,
+    GexSnapshot,
     MarketReport,
+    OptionPaperTrade,
+    OptionSetup,
     PaperTrade,
     Signal,
     Trade,
@@ -186,6 +189,15 @@ def _change_token(engine: Engine, edge_dir: Path) -> dict[str, str]:
                     select(func.count(AnalystCall.id))
                     .where(AnalystCall.scored_at.is_not(None))
                 )),
+            )),
+            # GEX options lab (module 2). max(id) catches new snapshots, setups, and
+            # opened trades; max(closed_at) is the settle clock -- a nightly settle
+            # CLOSES a lab trade in place (UPDATE, no new id), like the exit clock.
+            "gex": "|".join((
+                _watermark(session.scalar(select(func.max(GexSnapshot.id)))),
+                _watermark(session.scalar(select(func.max(OptionSetup.id)))),
+                _watermark(session.scalar(select(func.max(OptionPaperTrade.id)))),
+                _watermark(session.scalar(select(func.max(OptionPaperTrade.closed_at)))),
             )),
         }
     token["verdicts"] = "|".join(

@@ -50,6 +50,7 @@ from swing_screener.cockpit.routers.analysis import (
 from swing_screener.cockpit.routers.analyst import build_analyst_router
 from swing_screener.cockpit.routers.books import build_books_router
 from swing_screener.cockpit.routers.events import build_events_router
+from swing_screener.cockpit.routers.gex import build_gex_router
 from swing_screener.cockpit.routers.picks import build_picks_router
 from swing_screener.cockpit.routers.playbooks import build_playbooks_router
 from swing_screener.cockpit.routers.proposals import build_proposals_router
@@ -58,6 +59,7 @@ from swing_screener.cockpit.routers.safety import build_safety_router
 from swing_screener.cockpit.routers.trades import build_trades_router
 from swing_screener.cockpit.routers.weather import build_weather_router
 from swing_screener.data import quotes
+from swing_screener.options.run import Snapshotter
 from swing_screener.pipeline.broker import BrokerClient
 from swing_screener.pipeline.broker_alpaca import build_broker
 from swing_screener.settings import load_settings
@@ -71,6 +73,8 @@ def create_app(
     login_spawner: Callable[[], _LoginProc | None] | None = None,
     latest_closes_fn: Callable[[list[str]], dict[str, float]] | None = None,
     broker_factory: Callable[[], BrokerClient | None] | None = None,
+    gex_snapshotter: Snapshotter | None = None,
+    gex_daily_bars: Callable[[str], object] | None = None,
 ) -> FastAPI:
     """Build the cockpit API around one database URL.
 
@@ -190,6 +194,10 @@ def create_app(
     app.include_router(build_playbooks_router(_session=_session, edge_dir=edge_dir))
     app.include_router(build_weather_router(_session=_session))
     app.include_router(build_analyst_router(_session=_session))
+    app.include_router(build_gex_router(
+        _session=_session, action_nonce=action_nonce,
+        snapshotter=gex_snapshotter, daily_bars=gex_daily_bars,
+    ))
     app.include_router(build_events_router(
         _engine=_engine, edge_dir=edge_dir, action_nonce=action_nonce,
     ))

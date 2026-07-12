@@ -1,4 +1,43 @@
-# Swing Screener
+# Meridian
+
+A personal **trading suite**: interchangeable strategy **modules** on permanent shared
+infrastructure — data seams, one database, honest statistics and learning loops, a
+journal/observability layer, a desktop cockpit, and a locked-down execution arc.
+
+**▶ [North Star](docs/NORTH_STAR.md) — the suite's constitution; every decision in every
+module is checked against it.** In one line: *remove emotional risk by building a systemic,
+evidence-based edge — found the way a disciplined trader finds one (observe → hypothesize →
+test → adjust → re-evaluate) — that ultimately executes autonomously, but only edges it has
+proven, sized by a rule, under hard limits a human can always override.*
+**▶ [Architecture & module contract](docs/ARCHITECTURE.md)** — what the platform provides and
+what every module must bring.
+
+| Module | Charter | Status |
+|---|---|---|
+| **Swing screener** (documented below) | [docs/modules/swing-screener.md](docs/modules/swing-screener.md) | live in production |
+| **GEX options lab** | [docs/modules/gex-lab.md](docs/modules/gex-lab.md) | Phase 1 in build |
+
+*(The repo/package keeps the `swing-screener` name until a rename earns its cost — see
+ARCHITECTURE's naming policy. The rest of this README documents module 1 and the shared
+platform it runs on.)*
+
+### Module 2: the GEX options lab (Phase 1)
+
+A local, **paper-only** lab for learning the GEX day-trading method (9/21/50 EMA stacks +
+dealer-gamma levels + a 12-point A+ checklist). Phase 1 is a prep/journal/grader — no live
+feed, no Azure job, no execution path exists. CLI (`python -m swing_screener.options.run`):
+
+| Command | What it does |
+|---|---|
+| `plan` | pre-market: compute the SPY/QQQ GEX map (in-house, chain OI × Black-Scholes gamma) + daily EMA bias → a breakout / range / stand-down day plan |
+| `analyze <ticker> [--save]` | ad-hoc GEX map for any optionable ticker, with a thin-chain warning |
+| `settle` | post-close: replay the session's completed 5-minute bars to resolve open lab trades to R-multiples |
+| `import-robinhood <csv> [--tag-all=gex\|other]` | import a Robinhood activity export into a separate premium book, review-and-tag which trades were GEX |
+
+Charter: [docs/modules/gex-lab.md](docs/modules/gex-lab.md) · playbook: [edge/gex.md](edge/gex.md).
+The cockpit GEX Lab tab lands after the cockpit Phase-3 restructure.
+
+## Module 1: the swing screener
 
 A self-improving **swing-trading system**. It screens a universe of stocks for **Heiken Ashi**
 setups, forward-tests every signal in a self-grading **shadow book**, *learns* which setups
@@ -9,14 +48,8 @@ pluggable **execution adapter** — a human-placeable ticket, an Alpaca paper po
 trend-**continuation** pullbacks and oversold-bounce **reversals** — and runs locally or as
 scheduled Azure Container Apps Jobs.
 
-**▶ [North Star](docs/NORTH_STAR.md) — the project's purpose and destination. Every design and
-implementation decision is checked against it.** In one line: *remove emotional risk by building
-a systemic, evidence-based edge — found the way a disciplined trader finds one (observe →
-hypothesize → test → adjust → re-evaluate) — that ultimately executes autonomously, but only
-edges it has proven, sized by a rule, under hard limits a human can always override.*
-
 > **Status:** the full arc is built and deployed. The original **screener foundation** (engine →
-> pipeline + shadow book → cockpit → digests → Azure) runs as six scheduled jobs; the
+> pipeline + shadow book → cockpit → digests → Azure) runs as seven scheduled jobs; the
 > **learning loop** (honest stats → edge-file playbooks → the insight engine) and the
 > **execution arc** (adapters → Alpaca paper → armable-when-ready real money) are live.
 > **Default posture is `off`** — it moves no money until a human deliberately arms it. See
@@ -54,7 +87,7 @@ level or grades what ships; nothing arms real money without a human acting on pu
 
 ## What runs automatically (the daily / weekly cadence)
 
-Deployed, the system runs **six scheduled Azure Container Apps Jobs** (one image, one managed
+Deployed, the system runs **seven scheduled Azure Container Apps Jobs** (one image, one managed
 identity) behind an **Eastern-time gate** — the UTC crons fire on both EST and EDT, and the gate
 (`ops/eastern_gate.py`) lets each job proceed only at the right ET hour (and, for the monthly
 digest, only on the last business day). Unattended, day to day:
@@ -64,9 +97,10 @@ digest, only on the last business day). Unattended, day to day:
 | `evening-screen` | every weekday, ~4pm (after close) | the full screen → persist + charts → advance the shadow book → (deep on) the insight engine + order intents → execution-adapter dispatch (`off` by default) |
 | `daily-digest` | every weekday, ~8am | emails the daily digest (summary + PDF) + the reversal Top-5 + (deep on) the order intents + the autonomy-gate countdown |
 | `intraday-exit` | weekdays, hourly 9am–4pm | checks open trades for exit triggers → emails exit alerts (deduped per event) |
-| `on-demand-analysis` | every 15 min | drains the cockpit's deep-analysis request queue |
+| `on-demand-analysis` | hourly | drains the cockpit's deep-analysis request queue |
 | `weekly-digest` | Fridays, ~4pm | the weekly digest |
 | `monthly-digest` | last business day of the month, ~4pm | the monthly digest |
+| `market-weather` | Sundays, ~9am | the weekly macro **Market Weather** report (MTF SPY regime + VIX/yields → analyst email) |
 
 Plus two **weekly, human-gated** GitHub Actions that open a PR for you to review — **nothing
 auto-merges**:

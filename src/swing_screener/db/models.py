@@ -394,3 +394,118 @@ class ReversalFunnel(Base):
     # actionable == fresh on an outage day.
     already_ran_checked: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime | None] = mapped_column(default=None)
+
+
+class GexSnapshot(Base):
+    """One computed GEX map per (underlying, snapshot time). Options-lab table:
+    lifecycle columns are DateTime, not Date -- the lab trades inside the session
+    (see docs/modules/gex-lab.md; equity tables stay day-keyed)."""
+
+    __tablename__ = "gex_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    underlying: Mapped[str] = mapped_column(String(16), index=True)
+    ts: Mapped[datetime] = mapped_column(index=True)
+    spot: Mapped[float]
+    call_wall: Mapped[float | None] = mapped_column(default=None)
+    put_wall: Mapped[float | None] = mapped_column(default=None)
+    gamma_flip: Mapped[float | None] = mapped_column(default=None)
+    net_gex: Mapped[float | None] = mapped_column(default=None)
+    regime: Mapped[str] = mapped_column(String(16), default="unknown")
+    # Per-strike profile as JSON. Text, not a bounded string: a dense SPY chain
+    # exceeds any indexable bound, and this column is display-only (never filtered).
+    profile_json: Mapped[str] = mapped_column(Text, default="[]")
+    thin_chain: Mapped[bool] = mapped_column(default=False)
+    source: Mapped[str] = mapped_column(String(16), default="computed")
+
+
+class OptionSetup(Base):
+    """One journaled setup, graded against the 12-point A+ checklist at decision time."""
+
+    __tablename__ = "option_setups"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ts: Mapped[datetime] = mapped_column(index=True)
+    underlying: Mapped[str] = mapped_column(String(16), index=True)
+    direction: Mapped[str] = mapped_column(String(8))  # long | short (calls vs puts)
+    gex_snapshot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("gex_snapshots.id"), default=None
+    )
+    regime: Mapped[str] = mapped_column(String(16), default="unknown")
+    pivot_level: Mapped[float | None] = mapped_column(default=None)
+    pattern: Mapped[str] = mapped_column(String(256), default="")
+    entry: Mapped[float | None] = mapped_column(default=None)
+    stop: Mapped[float | None] = mapped_column(default=None)
+    target: Mapped[float | None] = mapped_column(default=None)
+    chk_daily_bias_clear: Mapped[bool] = mapped_column(default=False)
+    chk_daily_stack_ordered: Mapped[bool] = mapped_column(default=False)
+    chk_m5_agrees: Mapped[bool] = mapped_column(default=False)
+    chk_gex_levels_marked: Mapped[bool] = mapped_column(default=False)
+    chk_price_at_pivot: Mapped[bool] = mapped_column(default=False)
+    chk_regime_match: Mapped[bool] = mapped_column(default=False)
+    chk_pattern_clean: Mapped[bool] = mapped_column(default=False)
+    chk_volume_confirming: Mapped[bool] = mapped_column(default=False)
+    chk_risk_sized: Mapped[bool] = mapped_column(default=False)
+    chk_stop_structural: Mapped[bool] = mapped_column(default=False)
+    chk_rr_at_least_2: Mapped[bool] = mapped_column(default=False)
+    chk_confirmation_candle: Mapped[bool] = mapped_column(default=False)
+    grade: Mapped[str] = mapped_column(String(8), default="no_trade")
+    status: Mapped[str] = mapped_column(String(16), default="idea", index=True)
+    notes: Mapped[str] = mapped_column(String(2048), default="")
+
+
+class OptionPaperTrade(Base):
+    """One options-lab trade: a paper trade opened from a setup, or one imported
+    Robinhood flat-to-flat episode. Never mixed with the equity paper_trades table."""
+
+    __tablename__ = "option_paper_trades"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    setup_id: Mapped[int | None] = mapped_column(ForeignKey("option_setups.id"), default=None)
+    account: Mapped[str] = mapped_column(String(16), default="options-lab", index=True)
+    strategy: Mapped[str] = mapped_column(String(16), default="gex", index=True)
+    underlying: Mapped[str] = mapped_column(String(16), index=True)
+    direction: Mapped[str] = mapped_column(String(8), default="long")
+    opened_at: Mapped[datetime | None] = mapped_column(default=None)
+    closed_at: Mapped[datetime | None] = mapped_column(default=None)
+    entry: Mapped[float | None] = mapped_column(default=None)
+    stop: Mapped[float | None] = mapped_column(default=None)
+    target: Mapped[float | None] = mapped_column(default=None)
+    status: Mapped[str] = mapped_column(String(16), default="open", index=True)
+    exit_price: Mapped[float | None] = mapped_column(default=None)
+    exit_reason: Mapped[str | None] = mapped_column(String(16), default=None)
+    realized_r: Mapped[float | None] = mapped_column(default=None)
+    hold_minutes: Mapped[int | None] = mapped_column(default=None)
+    # Imported-episode fields (nullable for paper trades). OCC symbols are 21 chars.
+    occ_symbol: Mapped[str | None] = mapped_column(String(24), default=None, index=True)
+    strike: Mapped[float | None] = mapped_column(default=None)
+    expiry: Mapped[date | None] = mapped_column(default=None)
+    right: Mapped[str | None] = mapped_column(String(4), default=None)
+    contracts: Mapped[int | None] = mapped_column(default=None)
+    entry_premium: Mapped[float | None] = mapped_column(default=None)
+    exit_premium: Mapped[float | None] = mapped_column(default=None)
+    premium_pnl: Mapped[float | None] = mapped_column(default=None)
+    # Idempotency for import commits: hash of the episode's first fill. Unique so
+    # re-committing the same review is a no-op, nullable so paper trades skip it.
+    import_key: Mapped[str | None] = mapped_column(String(64), default=None, unique=True)
+    needs_review: Mapped[bool] = mapped_column(default=False)
+
+
+class BrokerFill(Base):
+    """One immutable imported broker transaction (Robinhood activity CSV line).
+    Fills persist even when their episode is skipped at review -- dedup and
+    re-review both need them; episode pairing is re-runnable from fills."""
+
+    __tablename__ = "broker_fills"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    import_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    activity_date: Mapped[date] = mapped_column(index=True)
+    underlying: Mapped[str] = mapped_column(String(16), index=True)
+    occ_symbol: Mapped[str] = mapped_column(String(24), index=True)
+    trans_code: Mapped[str] = mapped_column(String(8))
+    quantity: Mapped[int]
+    price: Mapped[float | None] = mapped_column(default=None)
+    amount: Mapped[float | None] = mapped_column(default=None)
+    raw: Mapped[str] = mapped_column(String(1024), default="")
+    source: Mapped[str] = mapped_column(String(16), default="robinhood")
