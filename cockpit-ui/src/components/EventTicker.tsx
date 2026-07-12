@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import type { KeyboardEvent } from 'react'
 import type { Polled, TickerEvent, TickerFeed, TickerSource } from '../lib/api'
 
@@ -15,9 +16,10 @@ import type { Polled, TickerEvent, TickerFeed, TickerSource } from '../lib/api'
    in the same column (top vs bottom), so reading down-then-right no longer tracks
    time. A single row keeps reverse-chron unambiguous: newest on the LEFT (the wire
    is already newest-first — the merge sorts (ts, source, id) descending — so this
-   maps events in order and NEVER re-sorts), older to the right. No animation; the
-   row scrolls by wheel, drag, or keyboard (the region is focusable + arrow-key
-   scrollable). The two-row layout is a straightforward follow-up if wanted.
+   maps events in order and NEVER re-sorts), older to the right. The row
+   auto-scrolls left on its own (pausing on hover/focus, honouring reduced-motion —
+   see the effect in the component) and still scrolls by wheel, drag, or keyboard.
+   The two-row layout is a straightforward follow-up if wanted.
 
    Every field renders WIRE-VERBATIM: source / ticker / headline in the pill,
    detail + the exit facets (account · book · reason · tier) in the hover title.
@@ -78,6 +80,51 @@ export function EventTicker({ feed }: { feed: Polled<TickerFeed> }) {
   // of a list (a strict-a11y flag). The region is focusable (tabIndex) so a
   // keyboard-only user can Tab to it and arrow-scroll to older events.
   const populated = events !== null && events.length > 0
+
+  // Auto-scroll ("rotate the feed"): the strip drifts left on its own so you never
+  // have to grab it, looping back to the newest event (leftmost) at the end.
+  // Pauses on hover/focus so you can read or interact; honours prefers-reduced-
+  // motion (then it's just the manual wheel/drag/arrow strip below). ~36 px/s,
+  // sub-pixel accumulated in rAF so it stays smooth and frame-rate independent.
+  const scrollRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = scrollRef.current
+    if (el === null || !populated) return
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    let paused = false
+    let acc = 0
+    let last = performance.now()
+    let raf = 0
+    const pause = () => { paused = true }
+    const resume = () => { paused = false }
+    el.addEventListener('pointerenter', pause)
+    el.addEventListener('pointerleave', resume)
+    el.addEventListener('focusin', pause)
+    el.addEventListener('focusout', resume)
+    const tick = (now: number) => {
+      const dt = now - last
+      last = now
+      if (!paused && el.scrollWidth > el.clientWidth + 1) {
+        acc += (dt / 1000) * 36
+        const step = Math.floor(acc)
+        if (step > 0) {
+          acc -= step
+          el.scrollLeft =
+            el.scrollLeft + el.clientWidth >= el.scrollWidth - 1 ? 0 : el.scrollLeft + step
+        }
+      }
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => {
+      cancelAnimationFrame(raf)
+      el.removeEventListener('pointerenter', pause)
+      el.removeEventListener('pointerleave', resume)
+      el.removeEventListener('focusin', pause)
+      el.removeEventListener('focusout', resume)
+    }
+  }, [populated, events])
+
   // EXPLICIT keyboard scroll: a focused tabIndex=0 overflow div does NOT reliably
   // arrow-scroll on its own in Chromium (verified: focused, 12×ArrowRight, no
   // movement) — so the region owns the gesture rather than trusting a flaky
@@ -97,6 +144,7 @@ export function EventTicker({ feed }: { feed: Polled<TickerFeed> }) {
     <div className="et">
       <span className="et-label">FEED</span>
       <div
+        ref={scrollRef}
         className="et-scroll"
         tabIndex={0}
         role={populated ? 'list' : undefined}
