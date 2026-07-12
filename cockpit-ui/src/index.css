@@ -4314,6 +4314,396 @@ button.needs-hand-btn:hover {
   white-space: nowrap;
 }
 
+/* ---------- Journal (screen 11) ---------- */
+
+/* Shared R-sign tones — realized P&L is a settled fact (not an edge claim), so
+   green/red are honest here, same as PositionLamp. */
+.jr-up {
+  color: var(--green);
+}
+.jr-down {
+  color: var(--red);
+}
+.jr-flat {
+  color: var(--dim);
+}
+
+/* Screen toolbar: the BOOK selector that drives every book-scoped panel. */
+.jr-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 2px 2px 0;
+}
+.jr-toolbar-lab {
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  color: var(--dim);
+}
+.jr-toolbar-note {
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--faint);
+}
+
+/* Two equal panels side by side (excursions + discipline). */
+.jr-two {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  align-items: start;
+}
+
+/* --- 1 · P&L calendar --- */
+.jr-cal-wrap {
+  padding: 10px 12px 12px;
+}
+.jr-cal-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.jr-cal-nav-mid {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.jr-cal-month {
+  font-size: 13px;
+  color: var(--txt);
+  letter-spacing: 0.04em;
+}
+.jr-cal-roll {
+  font-size: 11.5px;
+}
+.jr-nav-btn {
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  border-radius: 4px;
+  color: var(--txt);
+  font-size: 15px;
+  line-height: 1;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+.jr-nav-btn:hover:not(:disabled) {
+  border-color: var(--blue);
+}
+.jr-nav-btn:disabled {
+  color: var(--faint);
+  cursor: default;
+}
+
+.jr-cal-head,
+.jr-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+.jr-cal-head {
+  margin-bottom: 4px;
+}
+.jr-cal-dow {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+  text-align: center;
+}
+.jr-cal-cell {
+  min-height: 52px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel2);
+  padding: 4px 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.jr-cal-empty {
+  background: transparent;
+  border-color: transparent;
+}
+.jr-cal-day {
+  font-size: 9.5px;
+  color: var(--faint);
+}
+.jr-cal-r {
+  font-size: 12px;
+  font-weight: 600;
+}
+.jr-cal-n {
+  font-size: 9px;
+  color: var(--dim);
+}
+/* Colored day cells: a subtle sign tint over the panel, tokens only. */
+.jr-cal-live.jr-up {
+  background: color-mix(in srgb, var(--green) 16%, var(--panel2));
+  border-color: color-mix(in srgb, var(--green) 40%, var(--line2));
+}
+.jr-cal-live.jr-down {
+  background: color-mix(in srgb, var(--red) 15%, var(--panel2));
+  border-color: color-mix(in srgb, var(--red) 40%, var(--line2));
+}
+.jr-cal-live.jr-flat {
+  border-color: var(--line2);
+}
+.jr-cal-live .jr-cal-day {
+  color: var(--dim);
+}
+
+/* --- 2 · Equity curve + drawdown --- */
+.jr-curve {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 12px;
+}
+.jr-curve-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.jr-curve-cap {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--panel2);
+  padding-bottom: 4px;
+}
+.jr-curve-title {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.jr-curve-val {
+  font-size: 13px;
+  font-weight: 600;
+}
+.jr-curve-sub {
+  font-size: 9.5px;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  color: var(--faint);
+}
+
+/* --- 3 · Breakdowns --- */
+.jr-buckets {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 12px 12px;
+}
+.jr-bucket-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 0;
+  border-top: 1px solid var(--panel2);
+}
+.jr-bucket-row:first-child {
+  border-top: none;
+}
+.jr-bucket-lab {
+  font-size: 11.5px;
+  color: var(--txt);
+  min-width: 130px;
+}
+
+/* --- 4 · Excursions + discipline --- */
+.jr-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px 16px;
+  padding: 12px;
+}
+.jr-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.jr-metric-lab {
+  font-size: 9px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.jr-metric-val {
+  font-size: 13.5px;
+  color: var(--txt);
+}
+
+/* --- 5 · Mistakes --- */
+.jr-mistakes {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 12px 12px;
+}
+.jr-mistake-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 0;
+  border-top: 1px solid var(--panel2);
+}
+.jr-mistake-row:first-child {
+  border-top: none;
+}
+.jr-mistake-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.jr-mistake-name {
+  font-size: 12px;
+  color: var(--txt);
+}
+.jr-mistake-cost {
+  font-size: 11px;
+  color: var(--dim);
+}
+
+/* --- 6 · Notebook --- */
+.jr-day {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.jr-day-lab {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--faint);
+  text-transform: uppercase;
+}
+.jr-day-in {
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  border-radius: 4px;
+  color: var(--txt);
+  font-size: 11px;
+  padding: 2px 6px;
+  color-scheme: dark;
+}
+.jr-note-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.jr-note-module {
+  align-self: flex-start;
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  border-radius: 4px;
+  color: var(--txt);
+  font-size: 11px;
+  padding: 4px 8px;
+  width: 220px;
+  max-width: 100%;
+}
+.jr-note-body {
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  border-radius: 4px;
+  color: var(--txt);
+  font-family: var(--ui);
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 8px;
+  resize: vertical;
+}
+.jr-note-body:focus,
+.jr-note-module:focus,
+.jr-day-in:focus {
+  outline: none;
+  border-color: var(--blue);
+}
+.jr-note-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.jr-note-hint {
+  font-size: 10px;
+  color: var(--faint);
+}
+.jr-notes {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 12px 12px;
+}
+.jr-note {
+  padding: 8px 0;
+  border-top: 1px solid var(--panel2);
+}
+.jr-note:first-child {
+  border-top: none;
+}
+.jr-note-meta {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+.jr-note-kind {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border: 1px solid var(--line2);
+  border-radius: 2px;
+  padding: 0 5px;
+  color: var(--dim);
+}
+.jr-note-premarket {
+  color: var(--blue);
+  border-color: color-mix(in srgb, var(--blue) 40%, var(--line2));
+}
+.jr-note-postmarket {
+  color: var(--amber);
+  border-color: color-mix(in srgb, var(--amber) 40%, var(--line2));
+}
+.jr-note-tag {
+  font-size: 9.5px;
+  color: var(--dim);
+  border: 1px dashed var(--line2);
+  border-radius: 2px;
+  padding: 0 4px;
+}
+.jr-note-src {
+  font-size: 9.5px;
+  color: var(--faint);
+}
+.jr-note-when {
+  font-size: 9.5px;
+  color: var(--faint);
+  margin-left: auto;
+}
+.jr-note-text {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--txt);
+  white-space: pre-wrap;
+}
+
+/* --- 7 · Records --- */
+.jr-records td {
+  vertical-align: top;
+}
+.jr-rec-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.jr-rec-chip {
+  font-size: 9px;
+  letter-spacing: 0.02em;
 /* ============================================================================
    GEX LAB (digitless masthead screen) — the options lab. Reuses the shared
    .panel / .panel-head / StatChip / Segmented / PanelBody chrome; everything

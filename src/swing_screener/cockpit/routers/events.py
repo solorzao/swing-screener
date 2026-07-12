@@ -24,6 +24,9 @@ from swing_screener.db.models import (
     EmailLog,
     ExecutionLog,
     ExitEvent,
+    JournalNote,
+    JournalThesis,
+    JournalTradeTag,
     GexSnapshot,
     MarketReport,
     OptionPaperTrade,
@@ -190,6 +193,19 @@ def _change_token(engine: Engine, edge_dir: Path) -> dict[str, str]:
                     .where(AnalystCall.scored_at.is_not(None))
                 )),
             )),
+            # Journal annotations are append-only (tags via get-or-create insert,
+            # notes/theses accrued), so max(id) is a sufficient wake clock for each --
+            # a new note/tag/thesis from any process moves the token. The cockpit's own
+            # note/tag POSTs ALSO ride the action nonce; these cover external writers.
+            "journal_notes": _watermark(
+                session.scalar(select(func.max(JournalNote.id)))
+            ),
+            "journal_tags": _watermark(
+                session.scalar(select(func.max(JournalTradeTag.id)))
+            ),
+            "journal_theses": _watermark(
+                session.scalar(select(func.max(JournalThesis.id)))
+            ),
             # GEX options lab (module 2). max(id) catches new snapshots, setups, and
             # opened trades; max(closed_at) is the settle clock -- a nightly settle
             # CLOSES a lab trade in place (UPDATE, no new id), like the exit clock.

@@ -50,6 +50,7 @@ from swing_screener.cockpit.routers.analysis import (
 from swing_screener.cockpit.routers.analyst import build_analyst_router
 from swing_screener.cockpit.routers.books import build_books_router
 from swing_screener.cockpit.routers.events import build_events_router
+from swing_screener.cockpit.routers.journal import build_journal_router
 from swing_screener.cockpit.routers.gex import build_gex_router
 from swing_screener.cockpit.routers.picks import build_picks_router
 from swing_screener.cockpit.routers.playbooks import build_playbooks_router
@@ -194,6 +195,9 @@ def create_app(
     app.include_router(build_playbooks_router(_session=_session, edge_dir=edge_dir))
     app.include_router(build_weather_router(_session=_session))
     app.include_router(build_analyst_router(_session=_session))
+    app.include_router(build_journal_router(
+        _session=_session, action_nonce=action_nonce,
+    ))
     app.include_router(build_gex_router(
         _session=_session, action_nonce=action_nonce,
         snapshotter=gex_snapshotter, daily_bars=gex_daily_bars,

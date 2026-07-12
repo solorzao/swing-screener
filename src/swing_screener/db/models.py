@@ -396,6 +396,87 @@ class ReversalFunnel(Base):
     created_at: Mapped[datetime | None] = mapped_column(default=None)
 
 
+# --- Journal layer v1 ----------------------------------------------------------
+# Three annotation tables (tags, notes, theses) over the existing paper-trade book,
+# each carrying a bounded ``source`` provenance column so every human/analyst/screener
+# mark knows who made it (the shadow-contamination lesson). Events, not mutations:
+# theses hang off a trade's open/close, notes are day-keyed, tags are applied per
+# (trade, source). No FK crosses the read-model boundary INTO paper_trades -- the join
+# keys (``trade_id`` + ``book``) are plain indexed integers/strings so the journal
+# layer stays a decoupled overlay that a future GEX OptionPaperTrade source can share.
+
+
+class JournalTag(Base):
+    """One tag DEFINITION in the shared vocabulary: a setup name, a mistake, or a
+    context label. Provenance-agnostic (the tag itself belongs to no one) -- the
+    provenance lives on each APPLICATION of the tag (``JournalTradeTag.source``)."""
+
+    __tablename__ = "journal_tags"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # setup | mistake | context -- the vocabulary partition. Bounded so Azure SQL indexes it.
+    kind: Mapped[str] = mapped_column(String(16))
+    name: Mapped[str] = mapped_column(String(64))
+    description: Mapped[str] = mapped_column(String(256), default="")
+
+
+class JournalTradeTag(Base):
+    """One tag APPLIED to one trade, with provenance. The join is a plain (trade_id,
+    book) pair -- NOT an FK into paper_trades -- so the journal overlay never couples
+    to the read-model's table; ``book`` (the account) disambiguates the id across books.
+    ``source`` is REQUIRED (no default): a tag whose origin is unknown is inadmissible."""
+
+    __tablename__ = "journal_trade_tags"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # the PaperTrade id -- deliberately not an FK (read-model boundary); indexed for lookup.
+    trade_id: Mapped[int] = mapped_column(index=True)
+    # the account the trade lives in (research | paper | live), so the id is unambiguous.
+    book: Mapped[str] = mapped_column(String(16))
+    tag_id: Mapped[int] = mapped_column(ForeignKey("journal_tags.id"))
+    # screener | analyst | human -- who applied the tag. Required: NULL provenance is a bug.
+    source: Mapped[str] = mapped_column(String(16))
+    created_at: Mapped[datetime | None] = mapped_column(default=None)
+
+
+class JournalNote(Base):
+    """One day-keyed notebook entry (premarket plan / postmarket review / adhoc),
+    optionally scoped to a module. ``body`` is Text (unbounded prose); ``source`` is
+    required so a note always records who wrote it."""
+
+    __tablename__ = "journal_notes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    day: Mapped[date] = mapped_column(index=True)
+    # premarket | postmarket | adhoc -- the note's slot in the trading day.
+    kind: Mapped[str] = mapped_column(String(16))
+    # which module the note is about (e.g. "swing"), or None for a whole-day note.
+    module: Mapped[str | None] = mapped_column(String(16), default=None)
+    body: Mapped[str] = mapped_column(Text, default="")
+    # screener | analyst | human -- required, no default.
+    source: Mapped[str] = mapped_column(String(16))
+    created_at: Mapped[datetime | None] = mapped_column(default=None)
+
+
+class JournalThesis(Base):
+    """One entry/exit thesis for a trade: the WHY captured at the event. The entry
+    thesis is written at open (with a machine snapshot of the setup), the exit thesis
+    at settlement. Join keys (``trade_id`` + ``book``) mirror ``JournalTradeTag`` -- a
+    plain overlay, no FK into paper_trades. ``body`` is Text; ``snapshot_json`` holds
+    the machine context as a JSON string (default ``"{}"``); ``source`` is required."""
+
+    __tablename__ = "journal_theses"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    trade_id: Mapped[int] = mapped_column(index=True)
+    book: Mapped[str] = mapped_column(String(16))
+    # entry | exit -- which event this thesis hangs off.
+    event_kind: Mapped[str] = mapped_column(String(8))
+    # screener | analyst | human -- required, no default.
+    source: Mapped[str] = mapped_column(String(16))
+    body: Mapped[str] = mapped_column(Text, default="")
+    snapshot_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime | None] = mapped_column(default=None)
 class GexSnapshot(Base):
     """One computed GEX map per (underlying, snapshot time). Options-lab table:
     lifecycle columns are DateTime, not Date -- the lab trades inside the session

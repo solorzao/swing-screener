@@ -21,6 +21,7 @@ import type { BreakdownTab } from './components/PerformancePanel'
 import { AnalystScreen } from './screens/AnalystScreen'
 import { CandidatesScreen } from './screens/CandidatesScreen'
 import { ForwardScreen } from './screens/ForwardScreen'
+import { JournalScreen } from './screens/JournalScreen'
 import { GexLabScreen } from './screens/GexLabScreen'
 import { MissionControlScreen } from './screens/MissionControlScreen'
 import { PlaceholderScreen } from './screens/PlaceholderScreen'
@@ -241,6 +242,8 @@ export default function App() {
             <GexLabScreen wake={wake} />
           ) : screen === 'reference' ? (
             <ReferenceScreen wake={wake} />
+          ) : screen === 'journal' ? (
+            <JournalScreen wake={wake} />
           ) : (
             // Unreachable: every ScreenId has an explicit branch above (Task 20
             // built the last two). The placeholder survives as the defensive

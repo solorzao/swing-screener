@@ -20,6 +20,7 @@ export type ScreenId =
   | 'weather'
   | 'systems'
   | 'reference'
+  | 'journal'
   | 'gexlab'
 
 export interface ScreenDef {
@@ -43,6 +44,7 @@ export const SCREENS: ScreenDef[] = [
   { id: 'weather', digit: '8', title: 'MARKET WEATHER' },
   { id: 'systems', digit: '9', title: 'SYSTEMS' },
   { id: 'reference', digit: null, title: 'REFERENCE' },
+  { id: 'journal', digit: null, title: 'JOURNAL' },
   { id: 'gexlab', digit: null, title: 'GEX LAB' },
 ]
 
