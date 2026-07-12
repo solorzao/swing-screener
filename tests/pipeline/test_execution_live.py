@@ -64,6 +64,8 @@ def _live_settings(*, mode: str = "live", allow: bool = True) -> Settings:
         deep_analysis_enabled=False, analysis_model="m", analysis_reasoning="high",
         deep_analysis_top_n=5, deep_analysis_kinds=frozenset(), analysis_max_searches=4,
         deep_analysis_max_usd=None,
+        coach_enabled=False, coach_max_usd=None,
+        audit_enabled=False, audit_max_usd=None,
         account_equity=None, risk_per_trade_dollars=None, risk_pct=0.01, max_shares=None,
         execution_mode=mode, max_daily_notional=None, max_daily_loss=None,
         max_concurrent=None, broker="alpaca", allow_real_money=allow,

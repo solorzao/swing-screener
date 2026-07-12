@@ -61,6 +61,8 @@ def _settings(
         analysis_reasoning="high", deep_analysis_top_n=5,
         deep_analysis_kinds=frozenset({"daily"}), analysis_max_searches=4,
         deep_analysis_max_usd=None,
+        coach_enabled=False, coach_max_usd=None,
+        audit_enabled=False, audit_max_usd=None,
         account_equity=None, risk_per_trade_dollars=None, risk_pct=0.01, max_shares=None,
         execution_mode=execution_mode, max_daily_notional=max_daily_notional,
         max_daily_loss=max_daily_loss, max_concurrent=max_concurrent,
