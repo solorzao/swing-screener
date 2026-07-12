@@ -120,6 +120,7 @@ from swing_screener.pipeline.proposed import (
     ProposedVariant,
     decide_proposal,
     load_proposed_for,
+    store_filename,
     to_config,
 )
 from swing_screener.pipeline.registry import load_experiments
@@ -1181,33 +1182,54 @@ def create_app(
         ``gate_verdict``, ``delta_vs_incumbent``, ``noop`` (semantics + leak posture
         in ``_proposal_row``) -- computed against the incumbent ``StrategyConfig()``,
         the same base the optimizer sweeps. A missing proposed.json is a play type
-        with nothing queued: its rows are simply absent, never an error. Filesystem
-        only -- no DB session, so a down database never blanks this screen."""
+        with nothing queued: its rows are simply absent, never an error. A CORRUPT
+        store (malformed JSON, or a row ``load_proposed`` can't rebuild) degrades
+        per play type: its rows are absent and ``store_errors`` names it, while the
+        healthy play type still renders -- one broken file never blanks the screen.
+        ``store_errors`` carries play-type names ONLY, never the parser message or
+        a path (leak posture). Filesystem only -- no DB session, so a down database
+        never blanks this screen either."""
         edir = resolve_edge_dir(edge_dir)
         base = StrategyConfig()
-        return {"proposals": [
-            _proposal_row(pv, base)
-            for pt in ("continuation", "reversal")
-            for pv in load_proposed_for(pt, edir)
-        ]}
+        rows: list[dict[str, object]] = []
+        store_errors: list[str] = []
+        for pt in ("continuation", "reversal"):
+            try:
+                items = load_proposed_for(pt, edir)
+            except (ValueError, TypeError):  # JSONDecodeError IS a ValueError
+                store_errors.append(pt)
+                continue
+            rows.extend(_proposal_row(pv, base) for pv in items)
+        return {"proposals": rows, "store_errors": store_errors}
 
     def _decide(
         play_type: str, name: str, *,
         decision: Literal["approved", "withdrawn"], reason: str,
     ) -> ProposedVariant:
         """Shared decision plumbing: ``decide_proposal`` owns the state machine;
-        this maps its errors onto the wire. KeyError (unknown name) -> 404 with the
-        exception's own message (``args[0]``, never ``str(exc)`` -- str(KeyError)
-        wraps the message in quotes); ValueError (refused transition) -> 409 naming
-        the current status. Both texts are our own store prose -- no paths, no
-        client input. The server stamps ``today``; the client's clock never dates
-        an audit append."""
+        this maps its errors onto the wire. A CORRUPT store is a 503 with a FIXED
+        detail (trivially leak-clean; the parser message adds nothing a hand-fix
+        needs) -- and that handler's ORDER is load-bearing: ``json.JSONDecodeError``
+        IS a ValueError, so listed after the 409 arm a typo'd store would read as
+        'already decided'; the TypeError flavor is a row ``load_proposed`` can't
+        rebuild (``ProposedVariant(**d)``). Then KeyError (unknown name) -> 404
+        with the exception's own message (``args[0]``, never ``str(exc)`` --
+        str(KeyError) wraps the message in quotes); ValueError (refused
+        transition) -> 409 naming the current status. Every text is our own
+        fixed/store prose -- no paths, no client input. The server stamps
+        ``today``; the client's clock never dates an audit append."""
         try:
             return decide_proposal(
                 resolve_edge_dir(edge_dir), play_type, name,
                 decision=decision, reason=reason,
                 today=date.today().isoformat(),
             )
+        except (json.JSONDecodeError, TypeError) as exc:  # BEFORE ValueError
+            raise HTTPException(
+                status_code=503,
+                detail=("proposal store unreadable -- fix "
+                        f"edge/{store_filename(play_type)} by hand"),
+            ) from exc
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=exc.args[0]) from exc
         except ValueError as exc:
@@ -1597,7 +1619,7 @@ def _decision_dict(pv: ProposedVariant, play_type: str) -> dict[str, object]:
         "name": pv.name,
         "play_type": play_type,
         "status": pv.status,
-        "file": f"edge/{play_type}.proposed.json",
+        "file": f"edge/{store_filename(play_type)}",
         "note": "uncommitted working-tree edit — commit with your decision",
     }
 
@@ -1612,7 +1634,7 @@ def _promotion_checklist(play_type: str) -> list[str]:
         "1. pipeline/variants.py — add the roster line (replace(base, **delta))",
         "2. edge/experiments.json — add the registry row (stopping rule, mde_r, "
         "target_ci_halfwidth_r, registered sha)",
-        f"3. edge/{play_type}.proposed.json — this flip (done)",
+        f"3. edge/{store_filename(play_type)} — this flip (done)",
     ]
 
 

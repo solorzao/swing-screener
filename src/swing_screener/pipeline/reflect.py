@@ -50,6 +50,7 @@ from swing_screener.pipeline.proposed import (
     ProposedVariant,
     _write_proposed,
     load_proposed_for,
+    store_filename,
     to_config,
 )
 from swing_screener.pipeline.replay import corpus_stamp, load_cached_daily, replay_book
@@ -979,7 +980,7 @@ def draft_variants(
             )
             continue
         fresh.append(pv)
-    _write_proposed(edge_dir / f"{play_type}.proposed.json", preserved + fresh)
+    _write_proposed(edge_dir / store_filename(play_type), preserved + fresh)
     log.info(
         "drafted %d queued variant(s) for %s (%d non-queued row(s) preserved)",
         len(fresh), play_type, len(preserved),

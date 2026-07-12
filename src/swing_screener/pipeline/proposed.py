@@ -110,12 +110,20 @@ def load_proposed(text: str) -> list[ProposedVariant]:
     return [ProposedVariant(**d) for d in json.loads(text)]
 
 
+def store_filename(play_type: str) -> str:
+    """The ONE owner of the proposal store's filename shape: one play type's store
+    lives at ``<edge_dir>/<this>``. Every reader/writer (here; ``reflect``'s draft
+    merge) and every wire label naming the file (the cockpit's decision responses)
+    derives from this function, so the pattern cannot drift apart across sites."""
+    return f"{play_type}.proposed.json"
+
+
 def load_proposed_for(play_type: str, edge_dir: Path) -> list[ProposedVariant]:
     """Read one play type's queued variants from ``edge/<play_type>.proposed.json``.
 
     A missing file returns ``[]`` (a play type with nothing queued is the common case).
     """
-    path = edge_dir / f"{play_type}.proposed.json"
+    path = edge_dir / store_filename(play_type)
     if not path.exists():
         return []
     return load_proposed(path.read_text(encoding="utf-8"))
@@ -186,5 +194,5 @@ def decide_proposal(
         rationale=current.rationale + f" {decision.upper()} {today}: {reason}",
     )
     items[index] = updated
-    _write_proposed(edge_dir / f"{play_type}.proposed.json", items)
+    _write_proposed(edge_dir / store_filename(play_type), items)
     return updated

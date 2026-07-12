@@ -3,6 +3,7 @@ and a dead database is a friendly 503 -- never a traceback, never the URL."""
 
 import base64
 from collections.abc import Callable, MutableMapping
+from dataclasses import fields
 from datetime import UTC, date, datetime, timedelta
 import itertools
 from pathlib import Path
@@ -55,6 +56,7 @@ from swing_screener.pipeline.proposed import (
     ProposedVariant,
     load_proposed_for,
     proposed_to_json,
+    store_filename,
 )
 from swing_screener.pipeline.registry import Experiment
 
@@ -2240,7 +2242,7 @@ def _proposal(name: str, play_type: str,
 
 def _write_proposals(edge_dir: Path, play_type: str,
                      items: list[ProposedVariant]) -> None:
-    (edge_dir / f"{play_type}.proposed.json").write_text(
+    (edge_dir / store_filename(play_type)).write_text(
         proposed_to_json(items), encoding="utf-8")
 
 
@@ -2255,6 +2257,7 @@ def test_proposals_list_both_play_types_in_file_order(tmp_path: Path) -> None:
     ])
     r = _client(tmp_path).get("/api/proposals")
     assert r.status_code == 200
+    assert r.json()["store_errors"] == []  # both stores healthy
     rows = r.json()["proposals"]
     assert [(row["play_type"], row["name"]) for row in rows] == [
         ("continuation", "c1"), ("reversal", "r2"), ("reversal", "r1")]
@@ -2309,14 +2312,74 @@ def test_proposals_delta_vs_incumbent(tmp_path: Path) -> None:
 
 
 def test_proposals_missing_files_are_empty_not_errors(tmp_path: Path) -> None:
-    """No proposed.json anywhere -> {"proposals": []}; one play type missing ->
-    only the other's rows (a play type with nothing queued is the common case)."""
+    """No proposed.json anywhere -> empty rows AND empty store_errors (missing is
+    'nothing queued', never corruption); one play type missing -> only the
+    other's rows (a play type with nothing queued is the common case)."""
     client = _client(tmp_path)
-    assert client.get("/api/proposals").json() == {"proposals": []}
+    assert client.get("/api/proposals").json() == {
+        "proposals": [], "store_errors": []}
     _write_proposals(tmp_path, "reversal",
                      [_proposal("r1", "reversal", {"max_extension_atr": 1.5})])
-    rows = client.get("/api/proposals").json()["proposals"]
-    assert [row["name"] for row in rows] == ["r1"]
+    body = client.get("/api/proposals").json()
+    assert [row["name"] for row in body["proposals"]] == ["r1"]
+    assert body["store_errors"] == []
+
+
+# Both corruption flavors of a proposal store, keyed by which exception the load
+# raises: malformed JSON (json.JSONDecodeError -- a ValueError SUBCLASS, the 409
+# shadowing trap) and syntactically-valid JSON whose row ProposedVariant(**d)
+# can't rebuild (TypeError).
+_CORRUPT_STORES = [
+    pytest.param("{not json", id="malformed-json"),
+    pytest.param('[{"name": "x", "bogus_field": 1}]', id="mangled-row"),
+]
+
+
+@pytest.mark.parametrize("corrupt", _CORRUPT_STORES)
+def test_proposals_get_corrupt_store_degrades_per_play_type(
+    tmp_path: Path, corrupt: str,
+) -> None:
+    """One corrupt store never blanks the screen: the healthy play type still
+    renders and ``store_errors`` names the broken one -- play-type name ONLY,
+    never the parser message or a path."""
+    _write_proposals(tmp_path, "reversal",
+                     [_proposal("r1", "reversal", {"max_extension_atr": 1.5})])
+    (tmp_path / store_filename("continuation")).write_text(
+        corrupt, encoding="utf-8")
+    r = _client(tmp_path).get("/api/proposals")
+    assert r.status_code == 200
+    body = r.json()
+    assert [row["name"] for row in body["proposals"]] == ["r1"]
+    assert body["store_errors"] == ["continuation"]
+    assert tmp_path.name not in r.text  # leak posture holds on the degrade path
+
+
+@pytest.mark.parametrize("corrupt", _CORRUPT_STORES)
+def test_proposal_decision_corrupt_store_is_503_never_409(
+    tmp_path: Path, corrupt: str,
+) -> None:
+    """Both corruption flavors on POST are the FIXED 503 detail -- never a 409
+    (json.JSONDecodeError IS a ValueError: mapped after the state-conflict arm, a
+    typo'd store would read as 'already decided') and never a 500. The store's
+    bytes are untouched: fixing the file by hand is the whole recovery path."""
+    (tmp_path / store_filename("reversal")).write_text(corrupt, encoding="utf-8")
+    client = _client(tmp_path)
+    for action in ("approve", "withdraw"):
+        r = client.post(f"/api/proposals/reversal/r1/{action}",
+                        json={"reason": "x"}, headers=_HDR)
+        assert r.status_code == 503
+        assert r.json()["detail"] == (
+            "proposal store unreadable -- fix edge/reversal.proposed.json by hand")
+    stored = (tmp_path / store_filename("reversal")).read_text(encoding="utf-8")
+    assert stored == corrupt
+
+
+def test_promotion_checklist_names_real_registry_fields() -> None:
+    """Drift guard: the checklist's registry-row line names Experiment fields
+    (stopping rule, mde_r, target_ci_halfwidth_r, registered sha) as prose -- a
+    registry field rename must break HERE, not silently rot the checklist text."""
+    assert {"stopping_rule", "mde_r", "target_ci_halfwidth_r", "registered_sha"} <= {
+        f.name for f in fields(Experiment)}
 
 
 def test_approve_proposal_rewrites_the_store_with_the_checklist(
