@@ -1172,6 +1172,32 @@ def test_close_trade_moves_the_token_via_the_exit_event(tmp_path: Path) -> None:
     assert after["trade_real"] == before["trade_real"]  # the UPDATE alone is invisible
 
 
+def test_manual_close_writes_review_facts_and_enqueues_draft(tmp_path: Path) -> None:
+    """On close: the deterministic Coach review facts row is written synchronously and
+    an async draft is enqueued -- no LLM on the HTTP path (the worker drains it)."""
+    import json as _json
+
+    from swing_screener.db.models import CoachDraftRequest, JournalReview
+
+    client, engine = _client_and_engine(tmp_path)
+    r = client.post("/api/trades", json=_trade_body(entry_price=100.0, stop=95.0,
+                                                     target=110.0), headers=_HDR)
+    tid = r.json()["trade_id"]
+    rc = client.post(f"/api/trades/{tid}/close",
+                     json={"exit_price": 110.0, "exit_reason": "target"}, headers=_HDR)
+    assert rc.status_code == 200
+    with Session(engine) as s:
+        review = s.query(JournalReview).filter_by(trade_id=tid, kind="trade_close").one()
+        assert review.book == "manual_equity"
+        assert review.source == "analyst"
+        assert review.narrative is None                 # drafted later, async
+        facts = _json.loads(review.facts_json)
+        assert facts["result"] == 2.0 and facts["outcome"] == "target"  # (110-100)/(100-95)
+        assert "tag_proposals" in facts                 # parked, not applied
+        draft = s.query(CoachDraftRequest).filter_by(review_id=review.id).one()
+        assert draft.status == "queued"
+
+
 def test_change_token_covers_the_whole_analysis_lifecycle(tmp_path: Path) -> None:
     """Every AnalysisRequest transition moves the token, including the two that are
     pure UPDATEs: claim (queued->running stamps started_at -- always the newest
@@ -1792,7 +1818,10 @@ def test_close_trade_is_atomic_with_its_exit_event(tmp_path: Path) -> None:
         second = client.post(f"/api/trades/{tid2}/close",
                              json={"exit_price": 108.0}, headers=_HDR)
     assert second.status_code == 200
-    assert len(commits) == 1  # the close is ONE commit, not close-then-event
+    # commit 1 = the atomic close+ExitEvent (proven below by count==2, not orphaned);
+    # commit 2 = the Coach close-review follow-on, which fails here and is caught
+    # (best-effort, never 503s the close). The close+event are still ONE transaction.
+    assert len(commits) == 2
     with Session(engine) as s:
         t2 = s.get(Trade, tid2)
         assert t2 is not None and t2.status == "closed"
