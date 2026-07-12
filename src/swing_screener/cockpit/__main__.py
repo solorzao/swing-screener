@@ -77,7 +77,7 @@ def _uvicorn_server(app: "FastAPI", port: int) -> "uvicorn.Server":
 
 
 DEFAULT_DB_URL = "sqlite:///local.db"
-WINDOW_TITLE = "Swing Screener"
+WINDOW_TITLE = "Meridian"
 WINDOW_SIZE = (1480, 960)
 
 
