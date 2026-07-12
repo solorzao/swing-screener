@@ -61,11 +61,15 @@ body {
 /* ---------- Masthead (44px, on every screen) ---------- */
 
 .masthead {
-  height: 44px;
+  /* min-height + wrap: the right-side controls (toggles, screen links, DISARM)
+     wrap onto a second row instead of being clipped off the right edge when the
+     window isn't maximized. Stays a single 44px row at full width. */
+  min-height: 44px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  padding: 0 14px;
+  gap: 6px 12px;
+  padding: 5px 14px;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
   position: sticky;
