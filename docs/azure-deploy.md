@@ -245,12 +245,15 @@ the `analysis_requests` table is created by `alembic upgrade head` on the job's 
   logs secret **names only, never values**.
 - **Local `local.db` migration trap (cockpit operators):** a fresh Azure SQL database is
   built by Alembic from empty and `alembic upgrade head` is correct there (the pipeline
-  runs it on startup). A **local** `local.db` born from `create_all`, however, has no
-  `alembic_version` stamp, so a bare `alembic upgrade head` replays the initial migration
-  and dies with `table email_log already exists`. If you run the local cockpit over an old
-  `local.db` and a panel shows `OperationalError`, stamp the pre-Phase-3 head first:
-  `alembic stamp d7e4b2f9a1c6` then `alembic upgrade head` (or the one-liner
-  `ALTER TABLE trades ADD COLUMN override VARCHAR(256)`). Full recovery in
+  runs it on startup, gated on the `mssql` URL). A **local** `local.db`, by contrast, is
+  `create_all`-born and does **not** auto-migrate — it has no `alembic_version` stamp, so a
+  bare `alembic upgrade head` replays the initial migration and dies with
+  `table email_log already exists`. If you run the local cockpit over an old `local.db` and
+  a panel shows `OperationalError`, either delete the (scratch, gitignored) file and relaunch
+  so `create_all` rebuilds it at head, or preserve it by stamping the head its schema matches
+  first — for a db lacking only `trades.override` that is `alembic stamp d7e4b2f9a1c6` then
+  `alembic upgrade head` (or the one-liner `ALTER TABLE trades ADD COLUMN override VARCHAR(256)`).
+  Full recovery in
   [the cockpit runbook](cockpit.md#troubleshooting-stale-localdb-and-the-phase-3-migration-trap).
 
 ## Cost

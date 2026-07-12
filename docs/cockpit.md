@@ -159,42 +159,67 @@ next health poll.
 
 ## Troubleshooting: stale `local.db` (and the Phase-3 migration trap)
 
+**Local sqlite does not auto-migrate.** `get_engine` builds a local `local.db` with
+SQLAlchemy `create_all` (the current models, and *no* `alembic_version` stamp); only
+the **Azure SQL** path runs `alembic upgrade head` — the pipeline gates that upgrade on
+an `mssql` URL, because Alembic owns the schema there. So after a schema change an
+existing local `local.db` can fall behind while Azure stays current.
+
 If a data panel shows **`database error (OperationalError)`** while the DB chip is
-green, your `local.db` predates a schema change (the connectivity probe passes, the
-query then hits a missing column — after Phase 3 the usual culprit is the new
+green, your `local.db` predates a schema change — the connectivity probe passes, the
+query then hits a missing column (after Phase 3 the usual culprit is the new
 `trades.override` column).
 
-The obvious fix — `alembic upgrade head` — **fails on a `local.db` that was born from
-`create_all`** (the default local path). Such a file has all the tables but **no
-`alembic_version` stamp**, so Alembic assumes an empty database and replays the
-*initial* migration, which then dies with `table email_log already exists`. The
-working recovery is to stamp the DB at the pre-Phase-3 head first, then upgrade:
+Do **not** just run `alembic upgrade head`: a `create_all`-born `local.db` has all its
+tables but **no `alembic_version` row**, so Alembic assumes an empty database, replays
+the *initial* migration, and dies with `table email_log already exists`. Two correct
+recoveries:
+
+**Simplest — rebuild the file** (local `local.db` is scratch, and gitignored). If you
+don't need the accumulated local forward-test rows, delete it and relaunch; the next
+`get_engine` call recreates it fresh at the current schema via `create_all`:
+
+```powershell
+Remove-Item local.db
+.\.venv\Scripts\python -m swing_screener.cockpit --browser   # create_all rebuilds at head schema
+```
+
+**Preserve the data — stamp, then upgrade.** Tell Alembic which head the schema already
+matches (this writes the missing `alembic_version` row *without running any migration*),
+then upgrade forward:
 
 ```powershell
 # alembic ships in the [azure] extra — install it first if the import fails
 .\.venv\Scripts\python -m pip install -e ".[azure]"
 
-# tell Alembic the schema is already at the pre-Phase-3 head (reversal_funnels),
-# then apply only the Phase-3 migration (trades.override) forward
+# If the file already matches the CURRENT models (create_all-born on this checkout),
+# stamp head — there is nothing to upgrade:
+.\.venv\Scripts\python -m alembic stamp head
+
+# If the file PREDATES Phase 3 (the OperationalError case — it lacks trades.override),
+# stamp the head its schema DOES match, then apply the Phase-3 migration forward:
 .\.venv\Scripts\python -m alembic stamp d7e4b2f9a1c6
 .\.venv\Scripts\python -m alembic upgrade head
 ```
 
-`d7e4b2f9a1c6` is the migration immediately before Phase 3 (`create reversal_funnels`);
-the Phase-3 migration `e4b8a2d6f1c9` (`add override stamp to trades`) is the only one
-`upgrade head` then applies. Alembic reads `SWING_DB_URL` (default
-`sqlite:///local.db`) for the target database.
+Choose the stamp target by the columns the file actually has: a db missing only
+`trades.override` matches `d7e4b2f9a1c6` (`create reversal_funnels`, the head just
+before Phase 3), and the single Phase-3 migration `e4b8a2d6f1c9` (`add override stamp
+to trades`) is then the only thing `upgrade head` applies. If you're unsure which head
+a file matches, compare its tables/columns against the chain
+(`.\.venv\Scripts\python -m alembic history`) — or just take the rebuild path above.
+Alembic reads `SWING_DB_URL` (default `sqlite:///local.db`) for the target database.
 
-If you only need the one column and would rather not touch Alembic at all, the
-equivalent one-liner is safe on local sqlite:
+For the Phase-3 column alone, the equivalent one-liner is safe on local sqlite and
+skips Alembic entirely:
 
 ```sql
 ALTER TABLE trades ADD COLUMN override VARCHAR(256);
 ```
 
-(A **fresh** Azure SQL database never hits this — Alembic builds it from empty with a
-proper `alembic_version` stamp, so `alembic upgrade head` there is correct and is what
-the pipeline runs on startup.)
+(A **fresh Azure SQL** database never hits any of this — Alembic builds it from empty
+with a proper `alembic_version` stamp, and the pipeline runs `alembic upgrade head` on
+startup against it, never against local sqlite.)
 
 ## Dev loop (frontend work)
 
