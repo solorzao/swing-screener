@@ -5107,6 +5107,141 @@ button.needs-hand-btn:hover {
   }
 }
 
+/* ========== Metrics scoreboard — BookMetricCard tile (Task 7) ========== */
+
+/* One book's tile: a quiet panel with a title+unit header, one big value (an R
+   expectancy StatChip, a $ figure, or the honest-empty em dash), then the win/
+   W–L/PF sub line and — for R books that carry dollars — a realized-$ line. */
+.bmc {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+
+.bmc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bmc-title {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Lamp + unit tag sit at the right edge; the wrapper centers the swatch against
+   the tag text. */
+.bmc-lamp {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+}
+
+.bmc-unit {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--faint);
+  border: 1px solid var(--line2);
+  border-radius: 2px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+/* The big-value row. min-height keeps every tile's header/sub aligned whether the
+   face is a StatChip (two-line) or a single $/— glyph. */
+.bmc-value {
+  display: flex;
+  align-items: center;
+  min-height: 30px;
+}
+
+.bmc-empty {
+  font-family: var(--mono);
+  font-size: 18px;
+  color: var(--faint);
+}
+
+.bmc-usd {
+  font-family: var(--mono);
+  font-size: 17px;
+  color: var(--txt);
+}
+
+/* Negatives dim rather than shout — the quiet-cockpit convention StatChip uses;
+   the status lamp already carries the win/loss color cue. */
+.bmc-usd.neg {
+  color: var(--dim);
+}
+
+.bmc-sub {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.bmc-realized {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--faint);
+}
+
+.bmc-caption {
+  font-size: 10px;
+  color: var(--faint);
+  line-height: 1.35;
+}
+
+/* Metrics scoreboard (Task 8) — the ONE cross-book surface. This layer only LAYS
+   OUT the tiles; each card carries its own .bmc-* styling. Padding/gap mirror the
+   Weather body (.wx) for cross-screen consistency. */
+.metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+/* The combined-pool hero: a quiet emphasis (recessed panel2 fill, firmer border)
+   so the sanctioned aggregate reads as the headline without shouting. */
+.metrics-hero .bmc {
+  background: var(--panel2);
+  border-color: var(--line2);
+}
+
+/* The four book tiles — responsive columns that collapse to one on a narrow pane. */
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+/* Footer cumulative-R curve (omitted by the screen when the pool has no closes). */
+.metrics-curve {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.metrics-curve-label {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--dim);
+}
+
+/* The window Segmented rides the right edge of the panel head, as .perf-tabs does. */
+.metrics-win {
+  margin-left: auto;
 /* ============================================================================
    GLOSSARY (GlossaryPanel.tsx, screen 10) + inline HelpTerm
    The reading surface for re-learning the cockpit's vocabulary. Quiet and dense

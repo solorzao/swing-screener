@@ -10,6 +10,7 @@ from swing_screener.analytics.performance import (
     rank_bucket,
     score_bucket,
     summarize,
+    summary_from_realized,
 )
 from swing_screener.db.models import PaperTrade
 
@@ -81,6 +82,62 @@ def test_summarize():
     assert abs(s.expectancy_r - (2.0 - 1.0 + 1.0) / 3) < 1e-9
     assert s.profit_factor == 3.0                 # (2+1) / abs(-1)
     assert s.avg_hold_bars == (5 + 3 + 4) / 3
+
+
+def test_summarize_reports_win_and_loss_counts():
+    # four closed trades: two winners, one loser, one scratch (R==0). A scratch is
+    # NEITHER a win nor a loss (both use strict >/<), so n_wins + n_losses need not
+    # equal n_closed.
+    trades = [
+        _pt(realized_r=1.0, exit_date=date(2024, 1, 1)),
+        _pt(realized_r=0.5, exit_date=date(2024, 1, 2)),
+        _pt(realized_r=-1.0, exit_date=date(2024, 1, 3)),
+        _pt(realized_r=0.0, exit_date=date(2024, 1, 4)),
+    ]
+    s = summarize(trades)
+    assert s.n_wins == 2
+    assert s.n_losses == 1
+    assert s.n_closed == 4  # the scratch is closed but is neither a win nor a loss
+
+
+def test_summary_from_realized_matches_summarize():
+    # the extracted core must reproduce summarize bit-for-bit when handed the same
+    # realized R keyed by ticker. Trades are built so their by_ticker matches the literal.
+    aaa1 = _pt(realized_r=1.0)
+    aaa1.ticker = "AAA"
+    aaa2 = _pt(realized_r=-0.5)
+    aaa2.ticker = "AAA"
+    bbb = _pt(realized_r=2.0)
+    bbb.ticker = "BBB"
+    trades = [aaa1, aaa2, bbb]
+    from_trades = summarize(trades)
+    by_ticker = {"AAA": [1.0, -0.5], "BBB": [2.0]}
+    from_realized = summary_from_realized(by_ticker, n_total=3, n_filled=3)
+    assert from_realized.expectancy_r == from_trades.expectancy_r
+    assert from_realized.win_rate == from_trades.win_rate
+    assert from_realized.expectancy_ci_low == from_trades.expectancy_ci_low
+    assert from_realized.n_wins == from_trades.n_wins
+
+
+def test_summary_from_realized_matches_summarize_interleaved_tickers():
+    # summarize now flattens realized R grouped BY TICKER, whereas trades arrive
+    # interleaved. This exercises that changed path: trades in order AAA, BBB, AAA must
+    # still produce the same stats as the ticker-grouped by_ticker literal. Grouping
+    # reorders the float sum, so last-ULP differences are expected -> pytest.approx, not ==.
+    aaa1 = _pt(realized_r=1.0)
+    aaa1.ticker = "AAA"
+    bbb = _pt(realized_r=2.0)
+    bbb.ticker = "BBB"
+    aaa2 = _pt(realized_r=-0.5)
+    aaa2.ticker = "AAA"
+    trades = [aaa1, bbb, aaa2]  # interleaved: AAA, BBB, AAA
+    from_trades = summarize(trades)
+    by_ticker = {"AAA": [1.0, -0.5], "BBB": [2.0]}
+    from_realized = summary_from_realized(by_ticker, n_total=3, n_filled=3)
+    assert from_realized.expectancy_r == pytest.approx(from_trades.expectancy_r)
+    assert from_realized.expectancy_ci_high == pytest.approx(from_trades.expectancy_ci_high)
+    assert from_realized.expectancy_ci_low == pytest.approx(from_trades.expectancy_ci_low)
+    assert from_realized.n_wins == from_trades.n_wins
 
 
 def test_summarize_empty():

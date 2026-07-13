@@ -59,6 +59,7 @@ from swing_screener.cockpit.routers.playbooks import build_playbooks_router
 from swing_screener.cockpit.routers.proposals import build_proposals_router
 from swing_screener.cockpit.routers.reference import build_reference_router
 from swing_screener.cockpit.routers.safety import build_safety_router
+from swing_screener.cockpit.routers.scoreboard import build_scoreboard_router
 from swing_screener.cockpit.routers.trades import build_trades_router
 from swing_screener.cockpit.routers.weather import build_weather_router
 from swing_screener.data import quotes
@@ -190,6 +191,7 @@ def create_app(
         _session=_session, db_url=db_url, action_nonce=action_nonce,
     ))
     app.include_router(build_picks_router(_session=_session, quote_cache=quote_cache))
+    app.include_router(build_scoreboard_router(_session=_session))
     app.include_router(build_reference_router(_session=_session))
     app.include_router(build_proposals_router(
         edge_dir=edge_dir, action_nonce=action_nonce,

@@ -243,6 +243,18 @@ export function Masthead({
         SYSTEM AUDIT
       </button>
 
+      {/* METRICS — the cross-book scoreboard (wins & P&L per book, plus the one
+          sanctioned real-money aggregate). Digitless, so this masthead link is
+          its only entrance — the Masthead lists each digitless screen by hand. */}
+      <button
+        type="button"
+        className="mh-ref"
+        title="Metrics — the cross-book scoreboard (wins & P&L across your trading books)"
+        onClick={() => onNavigate('metrics')}
+      >
+        METRICS
+      </button>
+
       {/* DISARM enablement keys on the PERMANENT gate poll's broker_configured
           (settings truthiness, never connectivity); App force-nulls the gate on
           a fetch error, so a stale broker_configured can never arm the button. */}
