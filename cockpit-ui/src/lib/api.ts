@@ -185,6 +185,56 @@ export interface Performance {
   equity_curve: [string, number][]
 }
 
+/* ---------- Metrics scoreboard wire shapes (cockpit/scoreboard.py) ---------- */
+
+/** A book's accounting unit: 'R' (risk multiples) or '$' (robinhood premium — no
+ * stop means no R). */
+export type ScoreboardUnit = 'R' | '$'
+
+/** The R-stats shared by every scoreboard tile AND the combined pool — the wire form
+ * of scoreboard.py `_r_body()`. One base so a card and the pool share a compiler tie
+ * (Tasks 7-8 render both). `expectancy` is a full Stat only for an R book WITH closes;
+ * a $-only or empty book sends null (an honest-empty face, never a zeroed Stat).
+ * `profit_factor` is null for a $-only book or an all-winner book (JSON has no
+ * Infinity). `equity_r` is null where the book has no closes. */
+export interface ScoreboardStats {
+  expectancy: Stat | null
+  win_rate: number
+  n_wins: number
+  n_losses: number
+  n_closed: number
+  profit_factor: number | null
+  /** Cumulative realized R by ascending close date, as (ISO date, cum R) pairs. */
+  equity_r: [string, number][] | null
+}
+
+/** One book's scoreboard tile — the wire form of scoreboard.py `BookCard.as_dict()`.
+ * `realized_usd` is null where the book has no dollars (an R-only or empty book). */
+export interface ScoreboardCard extends ScoreboardStats {
+  book: 'manual_equity' | 'robinhood' | 'live' | 'paper'
+  unit: ScoreboardUnit
+  realized_usd: number | null
+}
+
+/** The ONE sanctioned cross-book aggregate — the real-money combined pool (always unit
+ * 'R'). Unlike a card's, `realized_usd` is ALWAYS a number here (manual $ plus live $,
+ * live defaulting to 0) — never null. `books` is left as `string[]`: the wire lists the
+ * pooled book names, not a closed union. */
+export interface ScoreboardCombined extends ScoreboardStats {
+  books: string[]
+  unit: 'R'
+  realized_usd: number
+}
+
+/** The Metrics scoreboard: one card per book plus the ONE sanctioned cross-book
+ * aggregate. `combined` = manual_equity + live (both real money, both R — North Star
+ * #2); firewalled journal books are never pooled, and robinhood ($-only) enters no R
+ * pool. */
+export interface Scoreboard {
+  cards: ScoreboardCard[]
+  combined: ScoreboardCombined
+}
+
 /** The advisory autonomy gate + today's analyst spend, as one status object. */
 export interface Gate {
   ready: boolean
@@ -885,6 +935,12 @@ export const getPerformance = (
   fetchJson<Performance>(
     `/api/stats/performance?play_type=${playType}&window=${win}&facet=${facet}`,
   )
+
+/** The cross-book Metrics scoreboard, windowed by CLOSE date. Reuses the `Window`
+ * union — the Python endpoint's Literal["all","90","180","365"] matches it 1:1 — and
+ * names the param `win`, never `window` (the global-shadow rule; see `Window`). */
+export const getScoreboard = (win: Window): Promise<Scoreboard> =>
+  fetchJson<Scoreboard>(`/api/stats/scoreboard?window=${win}`)
 
 export const getGate = (): Promise<Gate> => fetchJson<Gate>('/api/gate')
 
