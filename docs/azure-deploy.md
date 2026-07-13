@@ -11,8 +11,9 @@ the managed identity, runs the first screen as a go/no-go gate, and wires CD.
 
 ## Architecture in one paragraph
 
-One container image (`Dockerfile`) is run as seven scheduled **Azure Container Apps
-Jobs**. The image ENTRYPOINT is a US-Eastern gate (`swing_screener.ops.eastern_gate`)
+One container image (`Dockerfile`) is run as ten scheduled **Azure Container Apps
+Jobs** (seven core + three Journal v2 coach/audit jobs). The image ENTRYPOINT is a
+US-Eastern gate (`swing_screener.ops.eastern_gate`)
 that a UTC cron triggers; the gate decides at Eastern wall-time whether to `exec` the
 real CLI. Signals/trades live in **Azure SQL** (Alembic owns the schema); chart PNGs
 live in a **private Blob container**; secrets live in **Key Vault**. Everything authes
@@ -34,7 +35,7 @@ repoints the jobs on merge to `main` via GitHub→Azure **OIDC**.
 
 The IaC is under [`infra/`](../infra/): `main.bicep` (subscription-scoped, creates the
 resource group) wires modules for the registry, the UAMI, the Container Apps environment
-(+ a cost-capped Log Analytics workspace), storage, Key Vault, Azure SQL, and the five
+(+ a cost-capped Log Analytics workspace), storage, Key Vault, Azure SQL, and the ten
 jobs. Validate then deploy:
 
 ```bash
@@ -215,6 +216,9 @@ both EST and EDT) and the Python gate picks the right Eastern hour. "Last busine
 | monthly-digest | `30 20,21 * * 1-5` | `notify.run --kind monthly` (last session) | `RUN_IF_ET_HOUR=16` + `RUN_IF_LAST_BUSINESS_DAY=1` |
 | on-demand-analysis | `*/15 * * * *` | `notify.ondemand` (drains the request queue) | none — runs every firing |
 | market-weather | `0 13,14 * * 0` | `notify.market_run` (Sun ~09:00 ET) | `RUN_IF_ET_HOUR=9` |
+| journal-coach | `0 * * * *` | `journal.coach_run` (drains on-close review drafts + weekly rollup) | none — runs every firing |
+| journal-audit-weekly | `30 20,21 * * 6` | `journal.audit_run weekly` (Sat after close) | `RUN_IF_ET_HOUR=16` |
+| journal-audit-breach | `30 20,21 * * 1-5` | `journal.audit_run breach` (weekday after close) | `RUN_IF_ET_HOUR=16` |
 
 On a DST-transition day a UTC cron pair can fire **twice** (or zero times) for the intended
 ET hour. This is safe because the workloads are **idempotent**: the screen delete+reinserts
@@ -226,6 +230,25 @@ it dedupes emails via `EmailLog` (`kind="ondemand"`), claims rows atomically, an
 stale `running` rows so a crashed retry recovers. Like the others, the **new job is created by
 re-running the provisioning** (`az deployment sub create`, Step 1) — CD only updates images;
 the `analysis_requests` table is created by `alembic upgrade head` on the job's first run.
+
+> **Journal v2 (the three journal jobs) — added after the initial cutover.** Merging
+> the feature does **not** create them: CD (`cd.yml`) only *updates existing* jobs and
+> silently **skips** ones that don't exist yet, so they must be **provisioned by re-running
+> Step 1** (`az deployment sub create`). Two gotchas:
+> - **Pass a current `imageTag`** (`latest` or the CD-built `<git-sha>`), never the Bicep
+>   default `bootstrap` — that pre-Journal-v2 image lacks the `journal.coach_run` /
+>   `journal.audit_run` modules (the new jobs would crash) **and** re-pinning it would
+>   regress the seven live jobs back to `:bootstrap`.
+> - **Add the three job names to CD's repoint loop** (`cd.yml`, the `for job in …` list)
+>   or, once provisioned, they freeze on the provision-time image and never receive later
+>   code — silent drift, no error.
+>
+> The two v2 migrations (`b5f8d2a1c3e7` → `c6e2f4a8b1d3`, incl. `trades.emotional_state`)
+> self-apply on the next run of any repointed job (`on-demand-analysis` is soonest). The
+> Coach/Auditor LLM ship **default-off** (`SWING_COACH_ENABLED` / `SWING_AUDIT_ENABLED`
+> unset); disabled, the jobs still run and write deterministic template narratives at zero
+> Anthropic spend. Keep `SWING_COACH_MAX_USD` / `SWING_AUDIT_MAX_USD` at their defaults —
+> **never blank** them (blank → unbounded).
 
 ## Operational notes
 
