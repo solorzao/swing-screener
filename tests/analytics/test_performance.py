@@ -83,6 +83,22 @@ def test_summarize():
     assert s.avg_hold_bars == (5 + 3 + 4) / 3
 
 
+def test_summarize_reports_win_and_loss_counts():
+    # four closed trades: two winners, one loser, one scratch (R==0). A scratch is
+    # NEITHER a win nor a loss (both use strict >/<), so n_wins + n_losses need not
+    # equal n_closed.
+    trades = [
+        _pt(realized_r=1.0, exit_date=date(2024, 1, 1)),
+        _pt(realized_r=0.5, exit_date=date(2024, 1, 2)),
+        _pt(realized_r=-1.0, exit_date=date(2024, 1, 3)),
+        _pt(realized_r=0.0, exit_date=date(2024, 1, 4)),
+    ]
+    s = summarize(trades)
+    assert s.n_wins == 2
+    assert s.n_losses == 1
+    assert s.n_closed == 4  # the scratch is closed but is neither a win nor a loss
+
+
 def test_summarize_empty():
     s = summarize([])
     assert s.n_total == 0 and s.fill_rate == 0.0 and s.win_rate == 0.0

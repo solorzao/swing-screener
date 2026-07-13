@@ -156,6 +156,8 @@ class PerformanceSummary:
     n_filled: int
     fill_rate: float
     n_closed: int
+    n_wins: int
+    n_losses: int
     win_rate: float
     expectancy_r: float
     profit_factor: float
@@ -316,6 +318,8 @@ def summarize(trades: Iterable[PaperTrade]) -> PerformanceSummary:
         n_filled=n_filled,
         fill_rate=fill_rate,
         n_closed=n_closed,
+        n_wins=len(wins),
+        n_losses=len(losses),
         win_rate=win_rate,
         expectancy_r=expectancy_r,
         profit_factor=profit_factor,
