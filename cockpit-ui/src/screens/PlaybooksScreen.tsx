@@ -9,6 +9,7 @@ import {
   postWithdrawProposal,
   usePolling,
 } from '../lib/api'
+import { HelpTerm } from '../components/HelpTerm'
 import type {
   ConcretePlayType,
   DriftReport,
@@ -109,12 +110,12 @@ function VerdictTable({ verdicts }: { verdicts: VerdictRow[] }) {
       <table className="pb-table">
         <thead>
           <tr>
-            <th>tier</th>
+            <th><HelpTerm term="Verdict / tier">tier</HelpTerm></th>
             <th>bucket</th>
-            <th>expectancy</th>
-            <th>bound</th>
-            <th>book</th>
-            <th>provenance</th>
+            <th><HelpTerm term="expectancy">expectancy</HelpTerm></th>
+            <th><HelpTerm term="bound">bound</HelpTerm></th>
+            <th><HelpTerm term="book">book</HelpTerm></th>
+            <th><HelpTerm term="Provenance">provenance</HelpTerm></th>
           </tr>
         </thead>
         <tbody>
@@ -578,8 +579,8 @@ export function PlaybooksScreen({ wake }: { wake: number }) {
         <div className="panel-head">
           PLAYBOOKS
           <span className="panel-caption">
-            numbers come from the code-owned sidecar · the prose is verbatim · the
-            first saturated green is a forward-confirmed verdict (none exist yet)
+            numbers come from the code-owned <HelpTerm term="sidecar">sidecar</HelpTerm> · the prose is verbatim · the
+            first saturated green is a <HelpTerm term="forward-confirmed">forward-confirmed</HelpTerm> verdict (none exist yet)
           </span>
           <span className="spacer" />
           {playbooks.data !== null && (

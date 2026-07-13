@@ -1,4 +1,5 @@
 import { POLL_MS, getWeather, usePolling } from '../lib/api'
+import { HelpTerm } from '../components/HelpTerm'
 import type { Weather, WeatherResponse } from '../lib/api'
 import { Markdown } from '../components/Markdown'
 import { PanelBody } from '../components/PanelBody'
@@ -141,8 +142,8 @@ function HistoryTable({ history }: { history: WeatherResponse['history'] }) {
       <table className="wx-hist">
         <thead>
           <tr>
-            <th>run date</th>
-            <th>HA alignment</th>
+            <th><HelpTerm term="run date">run date</HelpTerm></th>
+            <th><HelpTerm term="HA alignment">HA alignment</HelpTerm></th>
             <th>flip</th>
             <th>core read</th>
           </tr>
@@ -173,7 +174,7 @@ export function WeatherScreen({ wake }: { wake: number }) {
     <main className="grid-single">
       <section className="panel">
         <div className="panel-head">
-          MARKET WEATHER
+          <HelpTerm term="Market Weather">MARKET WEATHER</HelpTerm>
           <span className="panel-caption">
             a market-weather read, not a stock pick · weekly cadence (runs Sundays
             ~09:00 ET) · prices as of the run date
@@ -213,7 +214,7 @@ export function WeatherScreen({ wake }: { wake: number }) {
 
       <section className="panel">
         <div className="panel-head">
-          FLIP LOG
+          <HelpTerm term="flip log">FLIP LOG</HelpTerm>
           <span className="panel-caption">every run, newest first</span>
         </div>
         <PanelBody polled={weather} noun="weather history">

@@ -1,4 +1,5 @@
 import type { Facet } from '../lib/api'
+import { HelpTerm } from './HelpTerm'
 import { Segmented } from './Segmented'
 
 /* The GOLD/RESEARCH facet toggle (masthead) and its per-panel caption tag.
@@ -39,13 +40,12 @@ export function FacetToggle({
 /** The tag every faceted panel shows next to its caption. */
 export function FacetCaption({ facet }: { facet: Facet }) {
   return facet === 'research' ? (
-    <span
-      className="facet-tag hatched"
-      title="research facet — the wide research grid, replay-graded"
-    >
-      research
+    <span className="facet-tag hatched">
+      <HelpTerm term="facet">research</HelpTerm>
     </span>
   ) : (
-    <span className="facet-tag">GOLD · thin until stamped history accrues</span>
+    <span className="facet-tag">
+      <HelpTerm term="facet">GOLD</HelpTerm> · thin until stamped history accrues
+    </span>
   )
 }

@@ -1,8 +1,8 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import type { Stat } from '../lib/api'
 import { costGlyph, fmtStatValue } from '../lib/fmt'
+import { useAnchoredPopover } from '../lib/useAnchoredPopover'
 
 /* ProvenancePopover — the reusable "where did this number come from" panel
    (plan Task 19). It renders the FULL provenance of a Stat: the point value,
@@ -26,9 +26,6 @@ import { costGlyph, fmtStatValue } from '../lib/fmt'
    non-finite CI edge renders "not measured", and thin_clusters=true is a LOUD
    flag (the interval fell back to an IID bound — treat it as soft). It never
    invents a number to fill a gap. */
-
-const MARGIN = 8 // keep this far from every viewport edge
-const GAP = 6 // between the trigger and the panel
 
 /** A CI edge off the wire: real numbers format with the unit, ±inf / NaN read as
  * an honest "not measured" (JSON can carry a huge sentinel; a lamp must not
@@ -58,55 +55,10 @@ export function ProvenancePopover({
   triggerRef: RefObject<HTMLElement | null>
   onClose: () => void
 }) {
-  const ref = useRef<HTMLDivElement>(null)
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
-
-  // Measure AFTER the panel renders (its size drives the up/down choice and the
-  // clamp) but BEFORE paint, so the pre-positioned frame at 0,0 never shows.
-  useLayoutEffect(() => {
-    const trigger = triggerRef.current
-    const pop = ref.current
-    if (trigger === null || pop === null) return
-    const t = trigger.getBoundingClientRect()
-    const w = pop.offsetWidth
-    const h = pop.offsetHeight
-    const vw = window.innerWidth
-    const vh = window.innerHeight
-    const openUp = t.top + t.height / 2 > vh / 2
-    let top = openUp ? t.top - h - GAP : t.bottom + GAP
-    top = Math.max(MARGIN, Math.min(top, vh - h - MARGIN))
-    const left = Math.max(MARGIN, Math.min(t.left, vw - w - MARGIN))
-    setPos({ top, left })
-  }, [triggerRef])
-
-  // Dismiss on Escape, on a click/tap OUTSIDE the panel and its trigger, or on a
-  // scroll/resize (which detaches a fixed panel from its trigger). NOTE: the
-  // mousedown-outside dismissal is introduced HERE — the DISARM popover
-  // dismisses only via Escape + explicit buttons, never an outside click. The
-  // trigger-inside check (via triggerRef) is what lets the chip's own button
-  // toggle the popover closed instead of the outside handler racing its click.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    const onDown = (e: MouseEvent) => {
-      const target = e.target as Node
-      if (ref.current?.contains(target)) return
-      if (triggerRef.current?.contains(target)) return
-      onClose()
-    }
-    const onShift = () => onClose()
-    window.addEventListener('keydown', onKey)
-    document.addEventListener('mousedown', onDown)
-    window.addEventListener('resize', onShift)
-    window.addEventListener('scroll', onShift, true) // capture: any scroll container
-    return () => {
-      window.removeEventListener('keydown', onKey)
-      document.removeEventListener('mousedown', onDown)
-      window.removeEventListener('resize', onShift)
-      window.removeEventListener('scroll', onShift, true)
-    }
-  }, [onClose, triggerRef])
+  // Positioning + dismissal live in useAnchoredPopover — extracted verbatim from
+  // this component, which stays its regression oracle. Same behavior: portal +
+  // fixed, measure/flip/clamp, dismiss on Escape / outside-click / scroll / resize.
+  const { ref, pos } = useAnchoredPopover(triggerRef, onClose)
 
   const boundType = stat.thin_clusters
     ? 'IID fallback — thin clusters, treat as soft'
