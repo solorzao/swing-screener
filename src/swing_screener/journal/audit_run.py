@@ -55,6 +55,26 @@ def _collect(session: Session, *, settings: Settings, period_from: date,
     return findings, severity
 
 
+def _worth_narrating(findings: dict) -> bool:
+    """True when the week has something an operator should actually read. The gate that
+    keeps an ENABLED auditor from spending an LLM call to narrate a dead week: a clean
+    week still WRITES the weekly row (deterministic template narrative), just at $0."""
+    comp = findings.get("compliance", {})
+    anom = findings.get("anomaly", {})
+    if (
+        comp.get("cap_breaches")
+        or comp.get("n_disarms")
+        or comp.get("n_rejected")
+        or anom.get("drought_days")
+        or anom.get("would_surface_leaks")
+        or anom.get("orphan_exit_events")
+    ):
+        return True
+    # the analyst's nudges measurably hurting (>=3 scored, mean R < 0) is worth a look.
+    nudge = (anom.get("calibration") or {}).get("nudge_vs_baseline_r")
+    return bool(nudge and len(nudge) == 2 and nudge[0] >= 3 and nudge[1] < 0)
+
+
 def _get_audit(session: Session, *, kind: str, period_from: date, period_to: date,
                breach_key: str) -> SystemAudit | None:
     return session.scalars(
@@ -82,7 +102,13 @@ def run_weekly(
     audit.severity = severity
     audit.generated_at = now
 
-    want_llm = settings.audit_enabled and settings.audit_max_usd != 0
+    # Even when enabled, don't pay to narrate a dead week -- a clean period gets the
+    # deterministic template at $0; the LLM only runs when there's something to report.
+    want_llm = (
+        settings.audit_enabled
+        and settings.audit_max_usd != 0
+        and _worth_narrating(findings)
+    )
     if want_llm:
         draft = draft_audit(findings, client=client)
         audit.narrative = draft.text
