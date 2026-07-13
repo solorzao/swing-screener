@@ -5198,3 +5198,47 @@ button.needs-hand-btn:hover {
   color: var(--faint);
   line-height: 1.35;
 }
+
+/* Metrics scoreboard (Task 8) — the ONE cross-book surface. This layer only LAYS
+   OUT the tiles; each card carries its own .bmc-* styling. Padding/gap mirror the
+   Weather body (.wx) for cross-screen consistency. */
+.metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+/* The combined-pool hero: a quiet emphasis (recessed panel2 fill, firmer border)
+   so the sanctioned aggregate reads as the headline without shouting. */
+.metrics-hero .bmc {
+  background: var(--panel2);
+  border-color: var(--line2);
+}
+
+/* The four book tiles — responsive columns that collapse to one on a narrow pane. */
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+/* Footer cumulative-R curve (omitted by the screen when the pool has no closes). */
+.metrics-curve {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.metrics-curve-label {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--dim);
+}
+
+/* The window Segmented rides the right edge of the panel head, as .perf-tabs does. */
+.metrics-win {
+  margin-left: auto;
+}

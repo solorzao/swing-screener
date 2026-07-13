@@ -23,6 +23,7 @@ import { CandidatesScreen } from './screens/CandidatesScreen'
 import { ForwardScreen } from './screens/ForwardScreen'
 import { JournalScreen } from './screens/JournalScreen'
 import { GexLabScreen } from './screens/GexLabScreen'
+import { MetricsScreen } from './screens/MetricsScreen'
 import { MissionControlScreen } from './screens/MissionControlScreen'
 import { PlaceholderScreen } from './screens/PlaceholderScreen'
 import { PlaybooksScreen } from './screens/PlaybooksScreen'
@@ -247,10 +248,12 @@ export default function App() {
             <JournalScreen wake={wake} />
           ) : screen === 'systemaudit' ? (
             <SystemAuditScreen wake={wake} />
+          ) : screen === 'metrics' ? (
+            <MetricsScreen wake={wake} />
           ) : (
-            // Unreachable: every ScreenId has an explicit branch above (Task 20
-            // built the last two). The placeholder survives as the defensive
-            // default so a future ScreenId can never render blank.
+            // Unreachable: every ScreenId has an explicit branch above. The
+            // placeholder survives as the defensive default so a future ScreenId
+            // can never render blank.
             <PlaceholderScreen id={screen} />
           )}
         </>
