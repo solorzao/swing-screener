@@ -105,18 +105,20 @@ param analysisMaxSearches string = '4'
 @description('Per-run deep-analysis spend ceiling in USD (SWING_DEEP_ANALYSIS_MAX_USD).')
 param deepAnalysisMaxUsd string = '2.50'
 
-// Journal v2 coaches (Personal Trade Coach + System Behavior Auditor). Both default
-// OFF; the enable flags default to '' (empty = off, per the settings _TRUE parse).
-// The per-surface USD ceilings ship a REAL numeric default, never empty -- an empty
-// ceiling would mean unbounded, unacceptable even for a default-off surface.
+// Journal v2 coaches (Personal Trade Coach + System Behavior Auditor). Enabled by
+// default (turned on 2026-07-13), like deepAnalysisEnabled -- so a re-provision keeps
+// them on rather than silently resetting to off. Safe because: the Coach only spends
+// when Oliver closes a manual trade, the Auditor skips the LLM on a dead week ($0-gate),
+// and each has a REAL USD ceiling below (never empty -> empty would mean unbounded).
+// Set '' to disable. The code default (settings.py) stays off when the env is unset.
 @description('Enable the Coach LLM (SWING_COACH_ENABLED; empty = off).')
-param coachEnabled string = ''
+param coachEnabled string = '1'
 
 @description('Per-run Coach spend ceiling in USD (SWING_COACH_MAX_USD).')
 param coachMaxUsd string = '1.00'
 
 @description('Enable the Auditor LLM (SWING_AUDIT_ENABLED; empty = off).')
-param auditEnabled string = ''
+param auditEnabled string = '1'
 
 @description('Per-run Auditor spend ceiling in USD (SWING_AUDIT_MAX_USD).')
 param auditMaxUsd string = '1.00'
