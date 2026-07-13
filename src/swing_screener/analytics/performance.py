@@ -261,20 +261,28 @@ def clustered_two_sample_delta_low(
     return float(np.percentile(deltas, lower_pct))
 
 
-def summarize(trades: Iterable[PaperTrade]) -> PerformanceSummary:
-    """Compute aggregate stats over ``trades``. Empty input yields all zeros."""
-    trades = list(trades)
-    n_total = len(trades)
-    n_filled = sum(1 for t in trades if _is_filled(t))
+def summary_from_realized(
+    by_ticker: dict[str, list[float]],
+    *,
+    n_total: int,
+    n_filled: int,
+    avg_hold_bars: float = 0.0,
+) -> PerformanceSummary:
+    """Aggregate stats from ticker-keyed realized R. The shared core of ``summarize``:
+    any source (PaperTrade rows, the manual Trade table, a cross-book pool) that can
+    produce realized R per ticker gets the identical expectancy / clustered-CI / PF /
+    win math. ``avg_hold_bars`` is passed by the PaperTrade caller; sources without a
+    bar count leave it 0.0 (it is descriptive, not used in any gate).
+
+    Caller coherence contract: pass ``n_total >= n_filled >= n_closed``, where
+    ``n_closed`` is derived here from ``by_ticker`` (the count of realized R). Incoherent
+    totals are not validated and yield a meaningless ``fill_rate``."""
+    realized = [r for rs in by_ticker.values() for r in rs]
+    n_closed = len(realized)
     fill_rate = n_filled / n_total if n_total else 0.0
 
-    closed = [t for t in trades if _is_closed_filled(t)]
-    n_closed = len(closed)
-
-    realized = [t.realized_r for t in closed if t.realized_r is not None]
     wins = [r for r in realized if r > 0]
     losses = [r for r in realized if r < 0]
-
     win_rate = len(wins) / n_closed if n_closed else 0.0
     expectancy_r = sum(realized) / n_closed if n_closed else 0.0
 
@@ -291,10 +299,6 @@ def summarize(trades: Iterable[PaperTrade]) -> PerformanceSummary:
     # trade is independent; in reality trades cluster on a few tickers, so resampling whole
     # tickers reads honestly and never more optimistically than IID. Below the distinct-ticker
     # floor (or with < 2 closed trades) the bootstrap can't run and it falls back to IID, thin.
-    by_ticker: dict[str, list[float]] = defaultdict(list)
-    for t in closed:
-        if t.realized_r is not None:
-            by_ticker[t.ticker].append(t.realized_r)
     iid_low = expectancy_r - _Z95 * expectancy_stderr
     if n_closed >= 2:
         expectancy_ci_low, n_clusters, thin_clusters = _clustered_ci_low(by_ticker, iid_low)
@@ -309,9 +313,6 @@ def summarize(trades: Iterable[PaperTrade]) -> PerformanceSummary:
         profit_factor = float("inf")
     else:
         profit_factor = 0.0
-
-    holds = [t.hold_bars for t in closed if t.hold_bars is not None]
-    avg_hold_bars = sum(holds) / len(holds) if holds else 0.0
 
     return PerformanceSummary(
         n_total=n_total,
@@ -329,6 +330,23 @@ def summarize(trades: Iterable[PaperTrade]) -> PerformanceSummary:
         expectancy_ci_high=expectancy_ci_high,
         n_clusters=n_clusters,
         thin_clusters=thin_clusters,
+    )
+
+
+def summarize(trades: Iterable[PaperTrade]) -> PerformanceSummary:
+    """Compute aggregate stats over ``trades``. Empty input yields all zeros."""
+    trades = list(trades)
+    n_total = len(trades)
+    n_filled = sum(1 for t in trades if _is_filled(t))
+    closed = [t for t in trades if _is_closed_filled(t)]
+    by_ticker: dict[str, list[float]] = defaultdict(list)
+    for t in closed:
+        if t.realized_r is not None:
+            by_ticker[t.ticker].append(t.realized_r)
+    holds = [t.hold_bars for t in closed if t.hold_bars is not None]
+    avg_hold_bars = sum(holds) / len(holds) if holds else 0.0
+    return summary_from_realized(
+        dict(by_ticker), n_total=n_total, n_filled=n_filled, avg_hold_bars=avg_hold_bars
     )
 
 
