@@ -4708,6 +4708,7 @@ button.needs-hand-btn:hover {
 .jr-rec-chip {
   font-size: 9px;
   letter-spacing: 0.02em;
+}
 /* ============================================================================
    GEX LAB (digitless masthead screen) — the options lab. Reuses the shared
    .panel / .panel-head / StatChip / Segmented / PanelBody chrome; everything
@@ -5104,4 +5105,227 @@ button.needs-hand-btn:hover {
   .gex-blocks {
     grid-template-columns: repeat(2, 1fr);
   }
+}
+
+/* ============================================================================
+   GLOSSARY (GlossaryPanel.tsx, screen 10) + inline HelpTerm
+   The reading surface for re-learning the cockpit's vocabulary. Quiet and dense
+   like everything else; the help affordance is the neutral BLUE accent, never
+   green/amber (those carry system-state meaning). Behavioral terms show a SOURCE
+   citation (maintained truth) rather than a mechanism paraphrase.
+   ============================================================================ */
+
+.gl-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.gl-search {
+  flex: 1 1 220px;
+  min-width: 160px;
+  font-size: 12px;
+  color: var(--txt);
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  border-radius: 4px;
+  padding: 7px 10px;
+}
+
+.gl-search::placeholder {
+  color: var(--faint);
+}
+
+.gl-search:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--blue) 50%, var(--line2));
+}
+
+/* The category Segmented wraps to a second row on narrow windows rather than
+   clipping (8 tabs + counts is wide). */
+.seg.gl-cats {
+  flex-wrap: wrap;
+}
+
+.gl-count {
+  padding: 7px 12px 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--faint);
+}
+
+.gl-list {
+  max-height: 62vh;
+  overflow-y: auto;
+}
+
+.gl-row {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.gl-row:last-child {
+  border-bottom: none;
+}
+
+.gl-row-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.gl-term {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--txt);
+}
+
+.gl-cat {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: var(--faint);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.gl-means {
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--txt);
+}
+
+.gl-why {
+  margin-top: 1px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--dim);
+}
+
+/* SOURCE citation — the anti-staleness link. Blue (neutral info), monospace,
+   never paraphrased mechanism. */
+.gl-src {
+  margin-top: 5px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--blue);
+}
+
+.gl-src::before {
+  content: '▸ SOURCE  ';
+  color: color-mix(in srgb, var(--blue) 65%, var(--dim));
+}
+
+.gl-appears {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.gl-achip {
+  font-size: 9px;
+  letter-spacing: 0.02em;
+  color: var(--faint);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 1px 5px;
+}
+
+/* ---------- Inline HelpTerm (HelpTerm.tsx) ----------
+   A dotted-underlined label; blue dotted affordance brightening to --txt on
+   hover. Never green/amber. */
+.help-term {
+  font: inherit;
+  color: var(--dim);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: help;
+  text-decoration: underline dotted;
+  text-decoration-color: color-mix(in srgb, var(--blue) 60%, transparent);
+  text-underline-offset: 3px;
+  transition: color 0.12s;
+}
+
+.help-term:hover,
+.help-term:focus-visible {
+  color: var(--txt);
+  text-decoration-color: var(--blue);
+  outline: none;
+}
+
+/* HelpTerm's popover — same portal/fixed treatment as prov-pop (useAnchoredPopover
+   sets top/left inline). z-index above the masthead. */
+.help-pop {
+  position: fixed;
+  z-index: 60;
+  width: 300px;
+  max-width: calc(100vw - 16px);
+  background: var(--panel);
+  border: 1px solid var(--line2);
+  border-radius: 6px;
+  padding: 11px 12px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+  text-transform: none;
+  letter-spacing: normal;
+  text-align: left;
+  cursor: default;
+}
+
+.help-pop-term {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--txt);
+}
+
+.help-pop-cat {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: var(--faint);
+  text-transform: uppercase;
+}
+
+.help-pop-row {
+  margin-top: 7px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--txt);
+}
+
+.help-pop-why {
+  color: var(--dim);
+}
+
+.help-pop-k {
+  display: block;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--faint);
+  margin-bottom: 1px;
+}
+
+.help-pop-src {
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--blue);
+}
+
+.help-pop-src::before {
+  content: '▸ SOURCE  ';
+  color: color-mix(in srgb, var(--blue) 65%, var(--dim));
 }

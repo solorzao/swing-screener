@@ -1,0 +1,1276 @@
+[
+ {
+  "term": "R / R-multiple",
+  "cat": "risk-metric",
+  "short": "Your profit or loss measured in multiples of what you risked, not in dollars. Risking $100 and making $200 is +2R; losing the full risk is −1R.",
+  "why": "Lets you compare trades of any dollar size on one scale; the entire system grades edge in R, so every result you see is spoken in this unit.",
+  "appears": [
+   "Positions & Ledger",
+   "Candidates (PickCard)",
+   "Journal",
+   "Mission Control cohorts"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Expectancy",
+  "cat": "risk-metric",
+  "short": "The average R a setup has returned across all its past trades — its typical result per trade.",
+  "why": "A positive expectancy is the headline 'does this actually make money' number; the whole learning loop chases a positive, trustworthy expectancy.",
+  "appears": [
+   "Mission Control PERFORMANCE",
+   "Cohorts",
+   "Forward Books",
+   "Playbooks"
+  ],
+  "risk": "medium",
+  "source": "North Star #1 (evidence gates promotion)"
+ },
+ {
+  "term": "MAE (avg / median MAE)",
+  "cat": "risk-metric",
+  "short": "Maximum Adverse Excursion — how far a trade moved against you, in R, at its worst point before it closed.",
+  "why": "Big MAE on eventual winners means your entries sit through a lot of pain; it reveals whether you enter too early or set stops too wide.",
+  "appears": [
+   "Journal EXCURSIONS",
+   "Journal DISCIPLINE (MAE before win)"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "MFE",
+  "cat": "risk-metric",
+  "short": "Maximum Favorable Excursion — the best unrealized profit, in R, a trade reached before you exited.",
+  "why": "Large MFE alongside a small realized result means you gave gains back; it flags exiting too late or too early.",
+  "appears": [
+   "Journal EXCURSIONS"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "ATR",
+  "cat": "risk-metric",
+  "short": "Average True Range — how much a stock typically moves in a day. It is used as a ruler so distances adapt to each stock's own volatility.",
+  "why": "Stops, the slippage haircut, and how 'extended' a price is are all measured in ATR, so they scale to volatile vs quiet stocks instead of fixed percentages.",
+  "appears": [
+   "Masthead cost toggle (net @0.05 ATR)",
+   "freshness gate (max_extension_atr)"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Giveback (R left)",
+  "cat": "risk-metric",
+  "short": "How much profit, in R, you let slip between a trade's best point and where you actually exited.",
+  "why": "A large giveback is a discipline leak — your exits are too loose or too slow.",
+  "appears": [
+   "Journal DISCIPLINE"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Stop-honored rate",
+  "cat": "risk-metric",
+  "short": "The share of trades where you exited at your planned stop instead of moving or ignoring it.",
+  "why": "A low rate means you override your own stops — the classic way a small planned loss becomes a large one.",
+  "appears": [
+   "Journal DISCIPLINE"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Drawdown / Max drawdown / Underwater",
+  "cat": "risk-metric",
+  "short": "How far your cumulative results have fallen from their best point, in R. 'Underwater' is the same idea drawn as a dip below the high-water mark.",
+  "why": "Shows the worst losing stretch you would have had to sit through — the pain tolerance a strategy actually demands.",
+  "appears": [
+   "Journal EQUITY CURVE + DRAWDOWN"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Profit factor (PF)",
+  "cat": "risk-metric",
+  "short": "Total profit divided by total loss across all trades; above 1 means wins outweigh losses. Infinity (∞) means there are no losing trades yet.",
+  "why": "A quick health ratio for a book — higher is better, though a small sample can flatter it.",
+  "appears": [
+   "Mission Control PERFORMANCE KPIs"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Win rate / Fill rate",
+  "cat": "risk-metric",
+  "short": "Win rate is the percent of trades that made money. Fill rate is the percent of signals that actually got into a position because price reached the entry.",
+  "why": "Win rate alone misleads (you can win often and still lose overall); fill rate shows how many surfaced setups were even tradeable.",
+  "appears": [
+   "Mission Control PERFORMANCE",
+   "GEX Lab Robinhood book"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Stat / StatChip",
+  "cat": "risk-metric",
+  "short": "The app's standard way of showing a statistic: the value always travels with its sample size, error bar, and where it came from. Clicking one opens its full provenance.",
+  "why": "You never see a naked number you can't audit; a chip with tiny sample or wide error bars is warning you not to lean on it.",
+  "appears": [
+   "every numeric panel across the app"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "n / sample size",
+  "cat": "risk-metric",
+  "short": "How many trades a statistic is based on. Below 5 the app shows 'no read'; 5–11 is flagged 'THIN'.",
+  "why": "Small samples are mostly noise; n tells you whether a promising number is real evidence or luck.",
+  "appears": [
+   "every StatChip",
+   "Analyst calibration",
+   "Playbooks verdicts"
+  ],
+  "risk": "low"
+ },
+ {
+  "term": "THIN / n<5 no read",
+  "cat": "status-lamp",
+  "short": "Warnings that a statistic rests on too few trades — 'no read' means fewer than 5, 'THIN' means 5–11 and is shown dimmed.",
+  "why": "Stops you acting on a number that hasn't earned trust yet.",
+  "appears": [
+   "StatChip",
+   "Mission Control cohorts",
+   "Journal breakdowns"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Cluster / n_clusters / cluster key",
+  "cat": "risk-metric",
+  "short": "The system groups trades by an independence unit — ticker for swing, trading day for the options lab — and counts how many distinct groups a stat spans.",
+  "why": "Ten trades on one stock are not ten independent facts; clustering keeps statistics honest about how much real evidence exists, and needs at least 8 distinct tickers for swing.",
+  "appears": [
+   "StatChip (·Nc)",
+   "Playbooks",
+   "Analyst calibration",
+   "GEX Lab STATS"
+  ],
+  "risk": "high",
+  "source": "North Star #2 (inference per independence unit) · cockpit/settlement.py"
+ },
+ {
+  "term": "CI / 95% CI / lower bound",
+  "cat": "risk-metric",
+  "short": "The confidence interval — the range the true average is likely in. The 'lower bound' is the pessimistic edge of that range.",
+  "why": "A positive average whose lower bound dips below zero could still be nothing; an edge only counts once even that pessimistic bound clears the bar.",
+  "appears": [
+   "StatChip bands",
+   "ProvenancePopover",
+   "Playbooks bound",
+   "Analyst calibration progress"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "IID fallback / thin clusters / iid upper",
+  "cat": "risk-metric",
+  "short": "When there are too few independent groups, the app falls back to a simpler error bar that assumes every trade is independent. It can look tighter and more confident than the evidence justifies.",
+  "why": "An IID / thin-cluster flag is a 'treat this as soft' warning — the confidence shown is optimistic, not earned.",
+  "appears": [
+   "StatChip (dotted track)",
+   "ProvenancePopover",
+   "SettlementCard (iid upper)",
+   "PERFORMANCE flag badge"
+  ],
+  "risk": "high",
+  "source": "North Star #2 · cockpit/settlement.py (clustered vs IID bound)"
+ },
+ {
+  "term": "Net of costs / net @0.05 / haircut",
+  "cat": "risk-metric",
+  "short": "Every result already has a realistic slippage penalty subtracted, so it reflects imperfect fills. '@0.05' means each level exit was docked 0.05 ATR.",
+  "why": "Gross numbers lie; net-of-cost is the only honest measure of whether a setup actually pays after friction.",
+  "appears": [
+   "Masthead cost toggle",
+   "Journal captions",
+   "cost level stamps"
+  ],
+  "risk": "high",
+  "source": "North Star #2 (every claim net of costs)"
+ },
+ {
+  "term": "Cost level / cost glyph (@05)",
+  "cat": "provenance",
+  "short": "A stamp recording which slippage assumption a number was measured under. 'Unstamped' or 'not measured' means the source never recorded one.",
+  "why": "Comparing numbers measured under different cost assumptions is apples-to-oranges; the stamp keeps comparisons fair.",
+  "appears": [
+   "StatChip subscript",
+   "Playbooks provenance",
+   "ProvenancePopover",
+   "Journal"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Corpus / corpus_id / corpus-pinned",
+  "cat": "provenance",
+  "short": "The exact frozen dataset of historical trades a statistic was computed on. 'Pinned' means it is locked so results don't quietly drift as new data arrives.",
+  "why": "Two numbers are only comparable on the same corpus; pinning prevents a moving target that fakes progress.",
+  "appears": [
+   "ProvenancePopover",
+   "Playbooks provenance"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Provenance",
+  "cat": "provenance",
+  "short": "The full origin story of a number or note — its sample, error bar, cost stamp, dataset, and who or what produced it (screener, analyst, or you).",
+  "why": "The system's core rule is no black-box numbers; provenance is how you audit any claim before trusting it.",
+  "appears": [
+   "ProvenancePopover (any StatChip)",
+   "Journal tags & theses"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Heiken Ashi (HA) / HA alignment",
+  "cat": "strategy",
+  "short": "A smoothed style of price candle that filters noise to show trend direction more clearly. 'HA alignment' is whether the market's timeframes agree on direction.",
+  "why": "The whole screener reads trend off HA candles; alignment is the weekly read on whether conditions favor the strategy.",
+  "appears": [
+   "Market Weather",
+   "charter docs"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Continuation",
+  "cat": "strategy",
+  "short": "A play type: buying an uptrending stock on a pullback, betting the trend resumes.",
+  "why": "One of the two swing strategies; it has its own edge file and statistics kept separate from reversals.",
+  "appears": [
+   "Candidates (DAILY)",
+   "PERFORMANCE",
+   "Playbooks"
+  ],
+  "risk": "low"
+ },
+ {
+  "term": "Reversal",
+  "cat": "strategy",
+  "short": "A play type: buying an oversold stock that looks ready to bounce, betting the drop is exhausted.",
+  "why": "The other main swing strategy and the system's confirmed edge; its funnel and verdicts are tracked on their own.",
+  "appears": [
+   "Candidates (REVERSAL)",
+   "Reversal Funnel",
+   "PERFORMANCE",
+   "Playbooks"
+  ],
+  "risk": "low"
+ },
+ {
+  "term": "Timeframe",
+  "cat": "config",
+  "short": "Which bar length a signal was found on — daily, weekly, monthly, or 4-hour.",
+  "why": "The same stock can look different per timeframe; it is part of a signal's identity and a performance breakdown axis.",
+  "appears": [
+   "PickCard",
+   "Positions",
+   "LogTradeForm",
+   "PERFORMANCE breakdown"
+  ],
+  "risk": "low"
+ },
+ {
+  "term": "Horizon",
+  "cat": "config",
+  "short": "The intended holding length of a trade (short / medium / long), which the engine uses to size the position.",
+  "why": "It drives how big a position the engine suggests and frames how long you plan to hold.",
+  "appears": [
+   "LogTradeForm",
+   "trade defaults"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Signal / signal id",
+  "cat": "provenance",
+  "short": "One detected setup on one stock, with a unique id. The id links a logged trade back to the exact engine plan it came from.",
+  "why": "Logging with the signal id lets the system check your fill against the plan and score the analyst's call on that pick.",
+  "appears": [
+   "PickCard",
+   "LogTradeForm",
+   "signal chart"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Rank / #",
+  "cat": "config",
+  "short": "The engine's ordering of the day's candidates; #1 is the top-ranked pick.",
+  "why": "Higher-ranked picks are the engine's stronger reads; rank is also a breakdown axis for measuring whether that ordering holds up.",
+  "appears": [
+   "PickCard",
+   "PERFORMANCE breakdown (by rank)"
+  ],
+  "risk": "low"
+ },
+ {
+  "term": "Conviction / conviction tier",
+  "cat": "strategy",
+  "short": "The engine's strength grade for a setup, which scales how big the suggested position is.",
+  "why": "Higher conviction means a larger suggested size — the system's built-in 'bet more when the setup is better' rule that removes in-the-moment guessing.",
+  "appears": [
+   "PickCard tag",
+   "LogTradeForm",
+   "ConvictionChip"
+  ],
+  "risk": "medium",
+  "source": "North Star #6 (conviction-scaled sizing) · analytics/calibration.py"
+ },
+ {
+  "term": "Actionability: actionable / extended / broken",
+  "cat": "status-lamp",
+  "short": "Whether a pick can still be entered at the last price. Actionable = still in the buy zone; extended = price ran above the zone (a chase); broken = price fell to the stop, the setup already failed.",
+  "why": "Tells you at a glance whether it is too late, or too broken, to take a pick.",
+  "appears": [
+   "PickCard lamp",
+   "LogTradeForm"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Entry zone (floor / ceiling)",
+  "cat": "strategy",
+  "short": "The price band the engine wants you to buy within — the floor is the low edge, the ceiling the high edge. Buying above the ceiling means overpaying.",
+  "why": "Defines the disciplined buy area; buying outside it changes your risk and gets stamped as an override.",
+  "appears": [
+   "LevelRail",
+   "PickCard",
+   "LogTradeForm"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Stop / target",
+  "cat": "strategy",
+  "short": "The engine's planned exit prices — the stop caps your loss, the target is where you take profit.",
+  "why": "These are deterministic ground truth set by the rules engine (never by the AI); the distance from entry to stop is your 1R of risk.",
+  "appears": [
+   "LevelRail",
+   "Positions",
+   "LogTradeForm",
+   "CloseTradeForm"
+  ],
+  "risk": "low"
+ },
+ {
+  "term": "Extended / the chase / freshness gate",
+  "cat": "config",
+  "short": "When a stock has already run too far past the buy zone to enter safely. A 'freshness gate' filters these out so you don't chase.",
+  "why": "Chasing extended setups is a known way to lose; the gate is the discipline that blocks them (on continuations — for reversals, extended is the normal resting-limit state).",
+  "appears": [
+   "PickCard",
+   "Reversal Funnel",
+   "charter (max_extension_atr)"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "is_repeat / repeat",
+  "cat": "status-lamp",
+  "short": "This setup's streak began on an earlier run — it is a continuation of a prior signal, not a brand-new trigger.",
+  "why": "A repeat is not a fresh opportunity; it flags that you have likely already seen or passed on it.",
+  "appears": [
+   "PickCard tag"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Cohort",
+  "cat": "risk-metric",
+  "short": "A group of past trades that share a setup's key trait (play type and strength), used to show that trait's measured track record next to a live pick.",
+  "why": "Lets you see 'setups like this one have historically returned X' before you act, instead of judging a pick in a vacuum.",
+  "appears": [
+   "PickCard",
+   "Mission Control COHORTS",
+   "Candidates"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Reversal funnel (detected / confirmed / fresh / actionable / surfaced)",
+  "cat": "screen",
+  "short": "A five-stage tally of how the day's reversal candidates narrowed from everything detected down to the few actually shown. The hatched part is what dropped at each gate.",
+  "why": "Shows why so few picks surface and what filtered the rest — useful when the system feels too quiet.",
+  "appears": [
+   "Mission Control REVERSAL FUNNEL",
+   "Candidates"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Fresh (strength bar + cooldown + pool cap)",
+  "cat": "status-lamp",
+  "short": "A funnel stage: candidates that passed the minimum-strength bar, aren't inside a recent-repeat cooldown, and fit within the day's capacity cap.",
+  "why": "Explains one of the biggest drop-offs in the funnel — a setup can be real yet fail 'fresh' just on timing or capacity.",
+  "appears": [
+   "Reversal Funnel"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Surfaced / the surfaced five",
+  "cat": "status-lamp",
+  "short": "The handful of picks the system actually put in front of you, matching the email digest exactly.",
+  "why": "These are the real recommendations; everything else on the screen is context, not a call to act.",
+  "appears": [
+   "Candidates",
+   "Mission Control TODAY",
+   "Reversal Funnel"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Extras / flagged / liveness-dropped",
+  "cat": "status-lamp",
+  "short": "Picks that were in the running but dropped at the last moment because price ran away. They are shown for transparency but never counted among the surfaced five.",
+  "why": "Lets you see what nearly made it without mistaking a stale pick for a live recommendation.",
+  "appears": [
+   "Candidates FLAGGED EXTRAS",
+   "Mission Control TODAY"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Overflow / top-5-sector race",
+  "cat": "status-lamp",
+  "short": "Good candidates bumped only because the day already hit its per-day or per-sector limit, not because they were weak.",
+  "why": "Shows quality that got crowded out by capacity rules rather than by failing a quality test.",
+  "appears": [
+   "Reversal Funnel"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Digest",
+  "cat": "provenance",
+  "short": "The daily email of surfaced picks. The cockpit's 'digest order' mirrors exactly what the email sent.",
+  "why": "The digest is the canonical daily record of what was recommended, so cockpit and email never disagree.",
+  "appears": [
+   "Candidates",
+   "Mission Control",
+   "Reference DIGEST LOG"
+  ],
+  "risk": "low"
+ },
+ {
+  "term": "Book",
+  "cat": "config",
+  "short": "A separate ledger of trades kept apart from the others — research, paper, live, manual (and the options lab's own). Numbers are never mixed across books.",
+  "why": "Keeps simulated, real, and experimental results from contaminating each other; you always know which book a number describes.",
+  "appears": [
+   "Positions",
+   "Journal book selector",
+   "Reference exit log",
+   "Forward Books"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Research book / shadow book",
+  "cat": "provenance",
+  "short": "A simulated ledger that records every setup the screener ever detected, filled pessimistically, to measure edge without risking money.",
+  "why": "It is the wide evidence base the whole learning loop reasons from, and where the analyst's calibration is scored.",
+  "appears": [
+   "Analyst calibration",
+   "facet toggle (research)",
+   "Journal",
+   "charter docs"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Paper book",
+  "cat": "provenance",
+  "short": "The curated ledger of simulated fills for the picks actually surfaced — a dry run of trading the real recommendations.",
+  "why": "Proves the end-to-end order flow works before a single real dollar is risked.",
+  "appears": [
+   "Journal book selector",
+   "Positions (live rows)",
+   "charter docs"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Live book / manual book",
+  "cat": "provenance",
+  "short": "'Live' is the real-money broker account; 'manual' records trades you placed by hand.",
+  "why": "These are your actual money and hand-tracked trades, deliberately kept separate from all simulations.",
+  "appears": [
+   "Positions",
+   "Journal book selector",
+   "Reference"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Account vs Book (is_paper)",
+  "cat": "config",
+  "short": "Two different labels on a trade: 'book' is whether it is paper or real; 'account' is which named ledger (research, live, etc.). They are separate axes that combine, not duplicates.",
+  "why": "Filtering the ledger correctly depends on knowing they are independent — a trade can be paper AND research at once.",
+  "appears": [
+   "Reference exit log filters",
+   "Event ticker exit rows"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Forward book / forward-confirmed",
+  "cat": "provenance",
+  "short": "The live, going-forward record of an experiment's trades, as opposed to backtested history. An edge that proves out here is 'forward-confirmed' — the strongest tier.",
+  "why": "Forward evidence is the real test; only forward-confirmed earns the app's single green light, and none exist yet.",
+  "appears": [
+   "Forward Books",
+   "Playbooks tier",
+   "Systems"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Override / engine-faithful",
+  "cat": "provenance",
+  "short": "A stamp noting how the fill you logged differed from the engine's plan (e.g. 'entry +0.3R above ceiling'). No stamp means you followed the plan exactly ('engine-faithful').",
+  "why": "Records your discipline — did you take the trade as designed or deviate — so reviews can measure it.",
+  "appears": [
+   "Positions flags",
+   "LogTradeForm preview & result"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Unlinked (manual)",
+  "cat": "status-lamp",
+  "short": "A logged trade that was not tied to any engine signal — you entered it entirely by hand.",
+  "why": "Marks trades the system can't compare to a plan, so they are read differently in reviews.",
+  "appears": [
+   "Positions flags",
+   "LogTradeForm"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Pending entry (resting limit)",
+  "cat": "status-lamp",
+  "short": "A buy order sitting unfilled at the broker, waiting for price to reach it.",
+  "why": "You have an order working but no position yet — distinct from being flat or already in the trade.",
+  "appears": [
+   "Positions flags"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Hard caps (daily notional / daily loss R / concurrent)",
+  "cat": "config",
+  "short": "Fixed safety limits on real trading: max dollars deployed per day, max R lost per day (a circuit breaker), and max positions open at once.",
+  "why": "These guardrails stop a bad day or a bug from running away; the loss cap auto-halts trading when hit.",
+  "appears": [
+   "Positions HARD CAPS",
+   "Execution Safety",
+   "RiskStrip"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "BREACH",
+  "cat": "status-lamp",
+  "short": "A cap has been reached or exceeded — the gauge turns red and reads BREACH.",
+  "why": "A breach means a hard limit was crossed; it is a stop-everything signal, and the System Auditor logs it.",
+  "appears": [
+   "CapGauge (Positions / Safety / RiskStrip)"
+  ],
+  "risk": "medium",
+  "source": "cockpit/routers/audit.py"
+ },
+ {
+  "term": "FLAT",
+  "cat": "status-lamp",
+  "short": "No open positions — zero market exposure. It is only claimed from a fresh, successful data read.",
+  "why": "Confirms you hold no risk right now; the app refuses to fake 'flat' from stale data during an outage.",
+  "appears": [
+   "RiskStrip (Mission Control Zone B)"
+  ],
+  "risk": "low"
+ },
+ {
+  "term": "Bracket / bracket order (armed / db-only / unprotected / unknown)",
+  "cat": "status-lamp",
+  "short": "A protective stop order resting at the broker beside a position. The lamp shows: armed (live stop present), db-only (recorded but not at the broker), unprotected (no stop anywhere), unknown (no broker snapshot).",
+  "why": "'Unprotected' means a position has no safety net at the broker and needs your hand immediately; unknown is never assumed safe.",
+  "appears": [
+   "Positions",
+   "Execution Safety BRACKET SHIELD",
+   "BracketLamp"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "DISARM",
+  "cat": "system-action",
+  "short": "A one-button 'sweep the broker' action: it cancels pending entry orders but keeps and restores protective stops, and never closes positions.",
+  "why": "The fast way to stand down working entry orders without touching your protective stops or open trades; it needs a deliberate press-and-hold.",
+  "appears": [
+   "Masthead",
+   "Execution Safety"
+  ],
+  "risk": "high",
+  "source": "North Star #3 (kill switch) · pipeline/disarm.py: ensure_stop_protection"
+ },
+ {
+  "term": "Arm / armed / arming locks",
+  "cat": "status-lamp",
+  "short": "'Armed' means the system is set up to place real-money orders. Several independent locks (live mode, allow-real-money, gate-ready) must all be on first.",
+  "why": "Real money can only move when deliberately armed; the layered locks are why the default resting state is safely off.",
+  "appears": [
+   "Execution Safety ARMING LOCKS",
+   "Masthead"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Autonomy gate / READY / NOT READY",
+  "cat": "status-lamp",
+  "short": "A readiness check for letting the system trade on its own. 'READY' means operational prerequisites are met — it is not a claim that an edge exists.",
+  "why": "Gates whether autonomy is even possible; it is deliberately never green so readiness is never mistaken for a proven edge.",
+  "appears": [
+   "Masthead gate chip",
+   "Execution Safety",
+   "Analyst calibration progress"
+  ],
+  "risk": "high",
+  "source": "North Star #3 (human gate) · pipeline/autonomy.py"
+ },
+ {
+  "term": "Preflight / GO / NO-GO",
+  "cat": "status-lamp",
+  "short": "A checklist run before arming real money; GO means a human is allowed to arm, NO-GO means something blocks it. It arms nothing itself.",
+  "why": "The final pre-arm review of every safety condition, each shown pass or fail, so nothing is armed on a hidden failure.",
+  "appears": [
+   "Execution Safety PREFLIGHT"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Venue / venue truth",
+  "cat": "provenance",
+  "short": "'Venue' means the broker itself. 'Venue truth' is information read straight from the broker rather than from the local database.",
+  "why": "For safety questions like 'am I actually protected,' only the broker's own answer is trusted — the database can disagree.",
+  "appears": [
+   "Execution Safety BRACKET SHIELD",
+   "DISARM outcome"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Execution mode",
+  "cat": "config",
+  "short": "Which order path is active — off, paper (simulated), or live (real money).",
+  "why": "Tells you whether orders would be pretend or real; it is set per-process, not flipped from inside the cockpit.",
+  "appears": [
+   "Masthead mode chip",
+   "Execution Safety"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Playbook / edge file",
+  "cat": "screen",
+  "short": "A living, hand-editable document per strategy recording its thesis, confirmed edges, hunches, and discarded ideas.",
+  "why": "The strategy's memory and journal — where proven and disproven ideas are written down and versioned over time.",
+  "appears": [
+   "Playbooks",
+   "Systems PLAYBOOK INTEGRITY",
+   "charter docs"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Verdict / tier (forward_confirmed / replay_screened / hunch)",
+  "cat": "status-lamp",
+  "short": "A graded ruling on whether a setup trait has an edge: forward-confirmed (proven live, green), replay-screened (only passed backtest, amber), hunch (unproven idea, gray).",
+  "why": "Tells you how much trust an edge claim has earned; only green is a real, live-confirmed edge.",
+  "appears": [
+   "Playbooks verdict table",
+   "TierChip",
+   "Systems"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Sidecar / drift",
+  "cat": "system-action",
+  "short": "The 'sidecar' is a machine-owned data file holding a playbook's graded numbers, separate from its written prose. 'Drift' flags when the prose and the numbers may have fallen out of sync.",
+  "why": "Trustworthy numbers come from the sidecar, not hand-written prose; a drift warning means the write-up may be stale.",
+  "appears": [
+   "Playbooks",
+   "Systems PLAYBOOK INTEGRITY"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Reflection / reflection due",
+  "cat": "system-action",
+  "short": "The periodic re-grading of a strategy's playbook from newly settled trades. 'Reflection due' means enough new evidence accrued that a re-grade is pending.",
+  "why": "It is how the playbooks learn; 'due' tells you fresh evidence is waiting to update the verdicts.",
+  "appears": [
+   "Playbooks",
+   "Systems",
+   "Needs-Your-Hand strip"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Proposal / variant / delta / knob",
+  "cat": "system-action",
+  "short": "A suggested config change drafted from a hunch. A 'knob' is one setting, the 'delta' is the before-to-after change, and a 'variant' is a config version being tested.",
+  "why": "This is how the screener proposes tuning itself — you review each change before it can ever take effect.",
+  "appears": [
+   "Playbooks PROPOSED VARIANTS",
+   "DeltaDiff"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Approve (MARK for promotion) / withdraw",
+  "cat": "system-action",
+  "short": "Approving a proposal only marks it — the actual promotion still requires a manual code commit by a human. Withdraw closes the idea.",
+  "why": "A deliberate speed bump: nothing auto-changes the live config, so an approval is a note of intent, not the act itself.",
+  "appears": [
+   "Playbooks proposal decider"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "No-op / gate verdict / unmapped knob",
+  "cat": "status-lamp",
+  "short": "'No-op' means a proposed change would do nothing. 'Gate' is whether the change is even valid. 'Unmapped knob' names no real setting, so it is a dead change.",
+  "why": "Flags proposals that can't actually move the results, so you don't waste a decision on a change with no effect.",
+  "appears": [
+   "Playbooks proposal card",
+   "DeltaDiff"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Incumbent / proposed",
+  "cat": "config",
+  "short": "'Incumbent' is the current live setting; 'proposed' is what a change would make it.",
+  "why": "Shows exactly what a config change would alter, side by side, before you decide on it.",
+  "appears": [
+   "DeltaDiff (Playbooks)"
+  ],
+  "risk": "low"
+ },
+ {
+  "term": "Forward Books wall / SettlementCard",
+  "cat": "screen",
+  "short": "Cards tracking each running experiment — how much data it has gathered versus how much it needs to reach a verdict.",
+  "why": "Shows which experiments are close to settling and which still need time before they can be judged.",
+  "appears": [
+   "Forward Books",
+   "Mission Control center zone"
+  ],
+  "risk": "medium",
+  "source": "cockpit/settlement.py: target_ci_halfwidth_r"
+ },
+ {
+  "term": "Settlement (accruing / settled / futile / retired) / settle bar",
+  "cat": "status-lamp",
+  "short": "An experiment's lifecycle: accruing (still gathering trades), settled (reached a verdict), futile (can't reach one), retired (closed out). The bar shows progress toward the sample it needs.",
+  "why": "Tells you whether an experiment is still cooking or needs a decision from you.",
+  "appears": [
+   "SettlementCard",
+   "Needs-Your-Hand strip"
+  ],
+  "risk": "high",
+  "source": "cockpit/settlement.py: target_ci_halfwidth_r"
+ },
+ {
+  "term": "Stopping rule / pre-registration",
+  "cat": "system-action",
+  "short": "The success or failure criteria written down before an experiment starts, shown word-for-word on its card with a registration date.",
+  "why": "Committing to the rule up front prevents cherry-picking results afterward — it keeps the experiment honest.",
+  "appears": [
+   "SettlementCard"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Δ vs control / book / control",
+  "cat": "risk-metric",
+  "short": "An experiment compares a test group ('book') against a baseline ('control'); the delta (Δ) is the difference between them.",
+  "why": "The delta is the actual experimental result — does the change help, and by how much.",
+  "appears": [
+   "SettlementCard chips",
+   "PERFORMANCE exit arms"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Variant leaderboard / exit arm / baseline",
+  "cat": "screen",
+  "short": "A ranking of config variants by expectancy, plus 'exit arms' that compare different exit rules against a baseline.",
+  "why": "Shows which configuration or exit rule performed best on the evidence gathered.",
+  "appears": [
+   "Mission Control PERFORMANCE"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Analyst (LLM analyst) / deep analysis",
+  "cat": "system-action",
+  "short": "An AI analyst that writes single-ticker research reports and grades picks. It can advise take/skip/size but can never move a price level or real money.",
+  "why": "It is a learning participant whose calls are scored over time — decision support that earns more influence only as it proves out.",
+  "appears": [
+   "Analyst",
+   "Market Weather",
+   "Event ticker",
+   "Needs-Your-Hand"
+  ],
+  "risk": "medium",
+  "source": "North Star #9 (learning participant) · cockpit/routers/analyst.py"
+ },
+ {
+  "term": "Calibration / grade (high/medium/low/avoid) / nudge",
+  "cat": "risk-metric",
+  "short": "A report card on the analyst: for each conviction grade it assigns, what those calls actually returned. 'Nudge' measures whether the analyst's own adjustments to a pick added value.",
+  "why": "Shows whether the analyst's confidence is trustworthy — do its 'high' calls really beat its 'low' ones — which gates giving it more say.",
+  "appears": [
+   "Analyst ANALYST CALIBRATION"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Freshness (scored / pending in window / expired unfilled)",
+  "cat": "status-lamp",
+  "short": "The fate of the analyst's calls: scored (the pick filled and got a result), pending (still in its window), or expired unfilled (the pick never triggered, so it can never be judged).",
+  "why": "A high unfilled rate means many judgments can't be tested; it keeps the calibration honest about its own blind spots.",
+  "appears": [
+   "Analyst calibration"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Analyst spend / run-cost cap",
+  "cat": "config",
+  "short": "The real dollar cost of the AI analyst's usage (today / 7d / 30d), and the per-run cap that bounds how much any one report can spend.",
+  "why": "Keeps AI costs visible and capped; the masthead chip is a live spend meter you can click into.",
+  "appears": [
+   "Masthead spend chip",
+   "Analyst SPEND"
+  ],
+  "risk": "low",
+  "source": "cockpit/spend.py (run-cost cap)"
+ },
+ {
+  "term": "Market Weather",
+  "cat": "screen",
+  "short": "A weekly big-picture read on market conditions — explicitly not a stock pick. It combines trend agreement across timeframes with macro indicators into one posture.",
+  "why": "Sets the backdrop for whether the strategy's conditions are favorable; it is context, never something to trade directly.",
+  "appears": [
+   "Market Weather",
+   "Systems"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "VIX / VIX rank / term ratio / backwardation / spike",
+  "cat": "risk-metric",
+  "short": "The VIX is the market's expected-volatility ('fear') gauge; 'rank' is where it sits versus its own history, and 'backwardation' is a stress pattern in how volatility is priced across time.",
+  "why": "High or spiking volatility changes how setups behave; it is a core part of the weekly regime read.",
+  "appears": [
+   "Market Weather indicators"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Regime / vol bucket",
+  "cat": "status-lamp",
+  "short": "A label for the current market environment — trend direction and volatility level (for example calm vs stressed).",
+  "why": "The same setup performs differently across regimes; breaking results down by regime reveals where an edge actually lives.",
+  "appears": [
+   "Market Weather",
+   "PERFORMANCE breakdown (regime)",
+   "GEX Lab"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Flip / flipped / flip log",
+  "cat": "status-lamp",
+  "short": "When at least one market timeframe changed trend direction on a run. The flip log is the history of those changes.",
+  "why": "A flip is an early sign the market backdrop is shifting.",
+  "appears": [
+   "Market Weather",
+   "FLIP LOG"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Deep analyst vs deterministic fallback",
+  "cat": "provenance",
+  "short": "Whether the weekly report was written by the AI analyst ('deep analyst') or is a canned, rules-only summary that ran because the AI didn't ('deterministic fallback').",
+  "why": "Tells you how much interpretation to expect — a canned read is not the analyst's judgment.",
+  "appears": [
+   "Market Weather CoreLine"
+  ],
+  "risk": "medium",
+  "source": "North Star #9 (learning participant) · cockpit/routers/analyst.py"
+ },
+ {
+  "term": "Macro indicators (SPY vs 200dma, yield curve 10y/3m, credit, cyc/def, breadth, recession prob)",
+  "cat": "risk-metric",
+  "short": "The dashboard of big-picture gauges: is SPY above its long trend line, is the yield curve inverted (a recession warning sign), and are credit spreads, cyclicals-vs-defensives, and market breadth improving or deteriorating.",
+  "why": "Together they describe whether the macro backdrop supports taking risk or warns caution.",
+  "appears": [
+   "Market Weather indicator grid"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "GEX (Gamma Exposure)",
+  "cat": "strategy",
+  "short": "A measure of options-dealer positioning that produces price levels where the market tends to stall or accelerate. The GEX Lab is a separate day-trading practice module.",
+  "why": "The whole options lab is built on reading these dealer-gamma levels; it is deliberately firewalled from the swing strategy and its statistics.",
+  "appears": [
+   "GEX Lab",
+   "Masthead link"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Call wall / put wall / gamma flip / spot",
+  "cat": "strategy",
+  "short": "Key GEX price levels: the call wall (resistance above), the put wall (support below), the gamma flip (where dealer behavior switches), and spot (the current price).",
+  "why": "These are the structural levels a GEX day-trade is planned around — support, resistance, and the regime boundary.",
+  "appears": [
+   "GEX Lab DAY PLAN",
+   "GEX Lab analyze/journal"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "A+ checklist / grade (A+ / B / no_trade)",
+  "cat": "status-lamp",
+  "short": "A 12-point discipline checklist scored before a trade: all boxes checked = A+, only the confirmation candle missing = B, anything else = no-trade.",
+  "why": "Forces a setup to earn its grade before you risk anything; your A+-rate becomes a first-class discipline metric.",
+  "appears": [
+   "GEX Lab CHECKLIST GRADER",
+   "GEX Lab journal"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Setup status: idea / taken / skipped",
+  "cat": "status-lamp",
+  "short": "A journaled GEX setup's state — an idea logged, then either taken (a paper trade opened) or skipped.",
+  "why": "Recording skips ('sat on my hands') as well as takes measures discipline, not just the trades you took.",
+  "appears": [
+   "GEX Lab JOURNAL"
+  ],
+  "risk": "low"
+ },
+ {
+  "term": "Thin chain",
+  "cat": "status-lamp",
+  "short": "A warning that an option has too little trading interest for its GEX levels to be reliable.",
+  "why": "On a thin chain the dealer-gamma reasoning breaks down — the levels are a guess, and the lab says so instead of hiding it.",
+  "appears": [
+   "GEX Lab DAY PLAN / analyze"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Robinhood book / premium / OCC symbol / episode / needs review",
+  "cat": "provenance",
+  "short": "Imported real options trades measured in dollars of premium (not R). An 'episode' is one round-trip (open to close) keyed by its OCC option symbol; multi-leg trades are flagged 'needs review'.",
+  "why": "Lets you fold real broker trades into the lab, tagged gex vs other, without pooling them with the paper-trade statistics.",
+  "appears": [
+   "GEX Lab IMPORT",
+   "GEX Lab LAB STATS"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Journal / Coach (Personal Trade Coach)",
+  "cat": "screen",
+  "short": "Your personal trading journal, including an AI 'coach' that reviews your real trades and points out patterns. It reads your own trades only, never the machine's.",
+  "why": "The place to review your discipline and learn from your own P&L, entries, emotions, and mistakes.",
+  "appears": [
+   "Journal",
+   "Masthead link"
+  ],
+  "risk": "medium",
+  "source": "North Star #5 (journal layer) · cockpit/routers/coach.py"
+ },
+ {
+  "term": "Coach review / narrative / human edit / tag proposals",
+  "cat": "system-action",
+  "short": "A per-trade write-up from the coach: hard facts owned by code, plus advisory prose you can edit, and suggested tags you confirm with a click.",
+  "why": "Turns each closed trade into a lesson while keeping you in control — you confirm or edit what the coach suggests.",
+  "appears": [
+   "Journal COACH REVIEWS"
+  ],
+  "risk": "medium",
+  "source": "North Star #5 (journal layer) · cockpit/routers/coach.py"
+ },
+ {
+  "term": "Weaknesses profile / thin data",
+  "cat": "system-action",
+  "short": "A running distillation of recurring mistakes across your reviews. 'Thin data' warns it rests on too few reviews to trust yet.",
+  "why": "Surfaces your standing patterns to work on — read as a hint until enough trades accumulate.",
+  "appears": [
+   "Journal WEAKNESSES"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "emotional_state",
+  "cat": "config",
+  "short": "An optional note on how you felt entering a trade — calm, fomo, revenge, hesitant, greedy.",
+  "why": "Links emotions to outcomes so the coach can flag which feelings tend to cost you money.",
+  "appears": [
+   "LogTradeForm (emotion field)",
+   "Journal COACH REVIEWS"
+  ],
+  "risk": "low"
+ },
+ {
+  "term": "Notebook (premarket / postmarket / adhoc)",
+  "cat": "screen",
+  "short": "A day-keyed free-text journal for notes before the open, after the close, or any time.",
+  "why": "Captures your thinking in the moment, which the review process reads back later.",
+  "appears": [
+   "Journal NOTEBOOK"
+  ],
+  "risk": "low"
+ },
+ {
+  "term": "Mistakes / tags / theses",
+  "cat": "system-action",
+  "short": "Labels attached to trades — 'mistakes' tally what each error cost you, 'tags' categorize trades, and 'theses' are the reasons captured at entry and exit. Each carries who added it (screener, analyst, or you).",
+  "why": "Makes patterns queryable — which mistakes cost the most, and whether your entry theses held up.",
+  "appears": [
+   "Journal MISTAKES",
+   "Journal RECORDS"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "System Audit / Auditor (System Behavior Auditor)",
+  "cat": "screen",
+  "short": "An independent, read-only watchdog over the machine's own conduct — did the automated system follow its own rules. It never looks at your personal trades.",
+  "why": "Separate from the Coach: the Coach reviews you, the Auditor reviews the machine. You acknowledge its findings; it changes nothing itself.",
+  "appears": [
+   "System Audit",
+   "Masthead link"
+  ],
+  "risk": "high",
+  "source": "cockpit/routers/audit.py"
+ },
+ {
+  "term": "Breach / weekly conduct / acknowledge",
+  "cat": "system-action",
+  "short": "The auditor flags rule violations — immediate 'breaches' (a cap hit, a disarm) and a broader weekly conduct sweep. You 'acknowledge' each finding.",
+  "why": "Your oversight trail for the automation; acknowledging records that a human saw and accepted the finding.",
+  "appears": [
+   "System Audit BREACHES",
+   "System Audit WEEKLY CONDUCT"
+  ],
+  "risk": "medium",
+  "source": "cockpit/routers/audit.py"
+ },
+ {
+  "term": "Anomaly: drought / orphan exit / reject rate",
+  "cat": "status-lamp",
+  "short": "Health-check flags in audit reports: a 'drought' is an unusually long stretch with no picks, an 'orphan exit' is an exit with no matching trade, and 'reject rate' is how often orders were refused.",
+  "why": "Early warnings that something in the pipeline may be misbehaving.",
+  "appears": [
+   "System Audit findings preview"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Heartbeat / SYSTEMS rail (ok / late / down / unknown)",
+  "cat": "status-lamp",
+  "short": "A liveness monitor for each scheduled job, showing when it last ran and whether it is on time, late, down, or unknown.",
+  "why": "Confirms the automated jobs are actually running; a late or down job means the data you're looking at may be stale.",
+  "appears": [
+   "Masthead caution lamp",
+   "Mission Control SYSTEMS",
+   "Systems"
+  ],
+  "risk": "medium",
+  "source": "cockpit/heartbeats.py"
+ },
+ {
+  "term": "MASTER CAUTION",
+  "cat": "status-lamp",
+  "short": "A single dark-cockpit warning lamp that stays dark when all is well and lights up when any system needs attention.",
+  "why": "Your one at-a-glance 'is anything wrong' indicator across the whole app.",
+  "appears": [
+   "Masthead"
+  ],
+  "risk": "low"
+ },
+ {
+  "term": "Facet: gold / research / would_surface",
+  "cat": "config",
+  "short": "A lens on the statistics: 'research' is the wide grid of every candidate ever screened; 'gold' (would_surface) is only what production actually would have shown you.",
+  "why": "Research has more data; gold is more realistic. Toggling shows whether an edge survives on just the picks you'd really have seen.",
+  "appears": [
+   "Masthead FacetToggle",
+   "Mission Control",
+   "Forward Books",
+   "Analyst"
+  ],
+  "risk": "high",
+  "source": "North Star #7 · cockpit/settlement.py: facet_filter"
+ },
+ {
+  "term": "Event ticker / FEED",
+  "cat": "screen",
+  "short": "The always-on bottom strip streaming recent activity — exits, order executions, emails, analyst calls, deep-analysis requests — newest on the left.",
+  "why": "A live pulse of what the system just did, visible on every screen.",
+  "appears": [
+   "bottom strip on every screen (EventTicker)"
+  ],
+  "risk": "low"
+ },
+ {
+  "term": "Needs-Your-Hand strip",
+  "cat": "screen",
+  "short": "A strip listing things waiting on a human decision — proposals to review, experiments to decide, unread analysis. '…' means the status is still loading, not 'nothing'.",
+  "why": "Your live to-do list from the system; 'nothing needs your hand' means you're caught up.",
+  "appears": [
+   "strip below the masthead on every screen"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "As of / quotes as of / last close / stale",
+  "cat": "status-lamp",
+  "short": "Timestamps on the data. Prices are the last completed daily close, not live intraday; 'stale' content is last-good data shown dimmed after a failed refresh.",
+  "why": "Reminds you the numbers can be up to a day old and warns you when the latest refresh failed.",
+  "appears": [
+   "Masthead clock",
+   "RiskStrip",
+   "Positions",
+   "Mission Control TODAY"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "ExecutionLog / ExitEvent",
+  "cat": "provenance",
+  "short": "Internal records: the ExecutionLog stores a position's recorded stop level (what DISARM restores from); an ExitEvent records a close and its reason.",
+  "why": "They are the source of truth for your recorded protection and exit history; a manual close writes a quiet ExitEvent so the exit job never emails you about your own close.",
+  "appears": [
+   "Positions",
+   "CloseTradeForm",
+   "DISARM outcome",
+   "charter docs"
+  ],
+  "risk": "high"
+ },
+ {
+  "term": "Exit reason (stop / target / momentum_flip / time_stop / manual_close)",
+  "cat": "config",
+  "short": "Why a trade closed — hit its stop, hit its target, the trend flipped (momentum_flip), a time limit expired (time_stop), or you closed it by hand (manual_close).",
+  "why": "The exit reason drives how a trade is scored and whether it triggered an alert.",
+  "appears": [
+   "CloseTradeForm",
+   "Reference EXIT LOG",
+   "Positions CLOSED LEDGER"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "No alert (manual_close)",
+  "cat": "status-lamp",
+  "short": "A tag on closes you performed yourself — they show in the ledger but are deliberately left out of the hourly email so you're never paged about your own close.",
+  "why": "Explains why some ledger closes never emailed you: quiet alert, but a complete audit trail.",
+  "appears": [
+   "Reference EXIT LOG"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Universe",
+  "cat": "config",
+  "short": "The fixed list of roughly 500 US stocks the screener is allowed to consider.",
+  "why": "Nothing outside the universe can ever be a pick; it bounds what the whole system watches.",
+  "appears": [
+   "Reference UNIVERSE",
+   "charter docs"
+  ],
+  "risk": "low"
+ },
+ {
+  "term": "Run / run date",
+  "cat": "provenance",
+  "short": "One execution of a scheduled job (for example the evening screen), stamped with its date.",
+  "why": "Picks, caps, and reports are all tied to a run; 'run 2026-07-12' tells you which batch produced what you're seeing.",
+  "appears": [
+   "Candidates",
+   "Positions caps",
+   "Market Weather",
+   "Reference"
+  ],
+  "risk": "low"
+ },
+ {
+  "term": "Azure / ACA jobs / db chip / sign-in",
+  "cat": "system-action",
+  "short": "The system's scheduled work runs as cloud jobs on Microsoft Azure (Azure Container Apps, 'ACA'). The masthead db chip shows whether the cockpit can reach the database, with an Azure sign-in button when your login expired.",
+  "why": "If the db chip is red, your Azure sign-in likely expired — data won't load until you sign in again.",
+  "appears": [
+   "Masthead db chip & Azure sign-in",
+   "charter docs"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "Hold-to-confirm",
+  "cat": "system-action",
+  "short": "A control you must press and hold for a moment, not just click, to fire consequential actions.",
+  "why": "Deliberate friction so you can't disarm the broker or approve a config change with an accidental click.",
+  "appears": [
+   "DISARM",
+   "Playbooks approve/withdraw"
+  ],
+  "risk": "low"
+ },
+ {
+  "term": "LOG TRADE",
+  "cat": "system-action",
+  "short": "Records a trade you actually took, prefilled from a pick's engine plan. It only writes down the fill — it never places an order.",
+  "why": "How your real and manual trades enter the ledger; logging against a signal id lets the system check your fill against the plan.",
+  "appears": [
+   "Positions",
+   "Candidates",
+   "PickCard"
+  ],
+  "risk": "medium"
+ },
+ {
+  "term": "CLOSE TRADE",
+  "cat": "system-action",
+  "short": "Records the close of one open trade at the price you report, and computes the realized R and dollars. It writes a close, it does not send an order to the broker.",
+  "why": "How you settle a manual position in the ledger; a null realized R means the recorded risk was degenerate, shown as 'not computable' rather than a fake zero.",
+  "appears": [
+   "Positions CloseTradeForm"
+  ],
+  "risk": "medium"
+ }
+]

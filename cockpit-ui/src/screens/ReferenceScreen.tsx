@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { POLL_MS, getEmails, getExits, getUniverse, usePolling } from '../lib/api'
 import type { ExitRow, UniverseRow } from '../lib/api'
+import { GlossaryPanel } from '../components/GlossaryPanel'
 import { PanelBody } from '../components/PanelBody'
 import { Segmented } from '../components/Segmented'
 
@@ -300,6 +301,7 @@ function EmailPanel({ wake }: { wake: number }) {
 export function ReferenceScreen({ wake }: { wake: number }) {
   return (
     <main className="grid-single">
+      <GlossaryPanel />
       <UniversePanel wake={wake} />
       <ExitLogPanel wake={wake} />
       <EmailPanel wake={wake} />
