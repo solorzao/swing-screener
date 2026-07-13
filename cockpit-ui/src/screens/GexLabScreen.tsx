@@ -130,8 +130,22 @@ const gradeToken = (g: string): string =>
 
 const gradeText = (g: string): string => (g === 'no_trade' ? 'no trade' : g)
 
-function GradeChip({ grade }: { grade: string }) {
-  return <span className={`gex-grade gex-grade-${gradeToken(grade)}`}>{gradeText(grade)}</span>
+/** The advisory grade's gating reason in plain language — the chip alone doesn't
+ * say WHY, and the whole B-vs-no_trade call hinges on a single item. */
+function gradeReason(checks: GexChecklist): string {
+  const unchecked = CHK_ITEMS.filter((it) => !checks[it.key])
+  if (unchecked.length === 0) return 'all 12 checked'
+  if (unchecked.length === 1 && unchecked[0].key === 'chk_confirmation_candle')
+    return 'confirmation candle → B'
+  return `${unchecked.length} unchecked`
+}
+
+function GradeChip({ grade, lg }: { grade: string; lg?: boolean }) {
+  return (
+    <span className={`gex-grade gex-grade-${gradeToken(grade)}${lg ? ' gex-grade-lg' : ''}`}>
+      {gradeText(grade)}
+    </span>
+  )
 }
 
 /** Local calendar date (YYYY-MM-DD) — the cockpit runs beside its server, so the
@@ -192,7 +206,7 @@ function SnapshotsTable({ rows }: { rows: GexSnapshot[] }) {
 
 function BuiltPlans({ plans }: { plans: GexDayPlan[] }) {
   if (plans.length === 0) {
-    return <div className="gex-actionnote">built — no plans returned (no watchlist snapshots)</div>
+    return <div className="panel-wait">built — no plans returned (no watchlist snapshots)</div>
   }
   return (
     <div className="gex-table-wrap">
@@ -382,6 +396,19 @@ function GraderPanel({ onAction }: { onAction: () => void }) {
 
   const grade = previewGrade(checks)
 
+  // Deterministic R / R:R read-out off the bracket — the "reward-to-risk ≥ 2R"
+  // check is easier to honour when the number is live. Null → em dash (a fact,
+  // never a fabricated 0), same posture as the GEX levels.
+  const rEntry = num(entry)
+  const rStop = num(stop)
+  const rTarget = num(target)
+  const risk = rEntry !== null && rStop !== null ? Math.abs(rEntry - rStop) : null
+  const reward = rEntry !== null && rTarget !== null ? Math.abs(rTarget - rEntry) : null
+  const rr = risk !== null && risk > 0 && reward !== null ? reward / risk : null
+  const rrText = `R ${risk === null ? '—' : risk.toFixed(2)} · R:R ${
+    rr === null ? '—' : `${rr.toFixed(1)}×`
+  }`
+
   const reset = () => {
     setUnderlying('')
     setDirection('long')
@@ -433,7 +460,13 @@ function GraderPanel({ onAction }: { onAction: () => void }) {
           the 12-point <HelpTerm term="A+ checklist">A+ checklist</HelpTerm> · graded live (server regrades at insert)
         </span>
       </div>
-      <div className="gex-grader">
+      <form
+        className="gex-grader"
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (!submitting && underlying.trim() !== '') submit()
+        }}
+      >
         <div className="gex-grader-top">
           <label className="gex-field gex-field-tkr">
             <span className="gex-lab">underlying</span>
@@ -456,47 +489,52 @@ function GraderPanel({ onAction }: { onAction: () => void }) {
               onChange={setDirection}
             />
           </span>
-          <label className="gex-field">
-            <span className="gex-lab">entry</span>
+          <div className="gex-bracket">
+            <label className="gex-field gex-field-num">
+              <span className="gex-lab">entry</span>
+              <input
+                className="gex-in gex-in-num mono"
+                type="number"
+                step="0.01"
+                value={entry}
+                onChange={(e) => setEntry(e.target.value)}
+              />
+            </label>
+            <label className="gex-field gex-field-num">
+              <span className="gex-lab">stop</span>
+              <input
+                className="gex-in gex-in-num mono"
+                type="number"
+                step="0.01"
+                value={stop}
+                onChange={(e) => setStop(e.target.value)}
+              />
+            </label>
+            <label className="gex-field gex-field-num">
+              <span className="gex-lab">target</span>
+              <input
+                className="gex-in gex-in-num mono"
+                type="number"
+                step="0.01"
+                value={target}
+                onChange={(e) => setTarget(e.target.value)}
+              />
+            </label>
+            <span className="gex-rr mono" aria-live="polite">
+              {rrText}
+            </span>
+          </div>
+          <label className="gex-field gex-field-num">
+            <span className="gex-lab">pivot</span>
             <input
-              className="gex-in mono"
-              type="number"
-              step="0.01"
-              value={entry}
-              onChange={(e) => setEntry(e.target.value)}
-            />
-          </label>
-          <label className="gex-field">
-            <span className="gex-lab">stop</span>
-            <input
-              className="gex-in mono"
-              type="number"
-              step="0.01"
-              value={stop}
-              onChange={(e) => setStop(e.target.value)}
-            />
-          </label>
-          <label className="gex-field">
-            <span className="gex-lab">target</span>
-            <input
-              className="gex-in mono"
-              type="number"
-              step="0.01"
-              value={target}
-              onChange={(e) => setTarget(e.target.value)}
-            />
-          </label>
-          <label className="gex-field">
-            <span className="gex-lab">pivot level</span>
-            <input
-              className="gex-in mono"
+              className="gex-in gex-in-num mono"
               type="number"
               step="0.01"
               value={pivot}
               onChange={(e) => setPivot(e.target.value)}
             />
           </label>
-          <label className="gex-field">
+          <label className="gex-field gex-field-regime">
             <span className="gex-lab">regime</span>
             <input
               className="gex-in mono"
@@ -506,7 +544,7 @@ function GraderPanel({ onAction }: { onAction: () => void }) {
               onChange={(e) => setRegime(e.target.value)}
             />
           </label>
-          <label className="gex-field gex-field-wide">
+          <label className="gex-field gex-field-grow">
             <span className="gex-lab">pattern</span>
             <input
               className="gex-in"
@@ -527,31 +565,43 @@ function GraderPanel({ onAction }: { onAction: () => void }) {
         </div>
 
         <div className="gex-blocks">
-          {BLOCKS.map((block) => (
-            <div key={block.id} className="gex-block">
-              <div className="gex-block-head">{block.label}</div>
-              {CHK_ITEMS.filter((it) => it.block === block.id).map((it) => (
-                <label key={it.key} className="gex-check">
-                  <input
-                    type="checkbox"
-                    checked={checks[it.key]}
-                    onChange={() => toggle(it.key)}
-                  />
-                  <span>{it.label}</span>
-                </label>
-              ))}
-            </div>
-          ))}
+          {BLOCKS.map((block) => {
+            const items = CHK_ITEMS.filter((it) => it.block === block.id)
+            const checkedN = items.filter((it) => checks[it.key]).length
+            return (
+              <div key={block.id} className="gex-block">
+                <div className="gex-block-head">
+                  {block.label}
+                  <span
+                    className={`gex-block-count${checkedN === items.length ? ' done' : ''}`}
+                  >
+                    {checkedN}/{items.length}
+                  </span>
+                </div>
+                {items.map((it) => (
+                  <label key={it.key} className="gex-check">
+                    <input
+                      type="checkbox"
+                      checked={checks[it.key]}
+                      onChange={() => toggle(it.key)}
+                    />
+                    <span>{it.label}</span>
+                  </label>
+                ))}
+              </div>
+            )
+          })}
         </div>
 
         <div className="gex-grader-foot">
-          <span className="gex-grade-preview">
-            live grade <GradeChip grade={grade} />
+          <span className="gex-grade-preview" aria-live="polite">
+            <span className="gex-grade-preview-lab">live grade</span>
+            <GradeChip grade={grade} lg />
+            <span className="gex-grade-reason">{gradeReason(checks)}</span>
           </span>
           <button
-            type="button"
+            type="submit"
             className="gex-btn gex-submit"
-            onClick={submit}
             disabled={submitting || underlying.trim() === ''}
           >
             {submitting ? 'saving…' : 'Grade & journal setup'}
@@ -573,7 +623,7 @@ function GraderPanel({ onAction }: { onAction: () => void }) {
             </button>
           </div>
         )}
-      </div>
+      </form>
     </section>
   )
 }
@@ -971,8 +1021,13 @@ export function GexLabScreen({ wake }: { wake: number }) {
     <main className="grid-single">
       <DayPlanPanel wake={wakeAll} onAction={onAction} />
       <GraderPanel onAction={onAction} />
-      <JournalPanel wake={wakeAll} onAction={onAction} />
-      <LabStatsPanel wake={wakeAll} />
+      {/* The write→result band: today's setups (1fr) beside the all-time
+          expectancy + premium scoreboard (380px rail) — the PositionsScreen
+          pos-cols idiom, so the sparse stats panel stops reading as dead space. */}
+      <div className="pos-cols">
+        <JournalPanel wake={wakeAll} onAction={onAction} />
+        <LabStatsPanel wake={wakeAll} />
+      </div>
       <ImportPanel onAction={onAction} />
     </main>
   )

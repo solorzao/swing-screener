@@ -4,6 +4,13 @@
 /* Derived tokens (compositions over tokens.css primitives — the primitives file
    itself stays verbatim-from-mockup). */
 :root {
+  /* The whole app is dark: tell the engine so NATIVE control chrome (checkboxes,
+     number spinners, <select> arrows + option popups, scrollbars, date pickers)
+     is painted dark instead of the default light theme. Without this, WebView2 /
+     Chromium composites white UA chrome over authored backgrounds — the reason the
+     grader checkboxes rendered as light squares. One line, app-wide; supersedes the
+     per-control color-scheme on .jr-day-in. */
+  color-scheme: dark;
   /* THE amber "lamp lit" treatment — hb-late is the reference; every lit-amber
      element (late lamp, awaiting-decision state chip, needs-hand item) uses this
      one set of numbers. --lamp-amber-drop is the same glow for clip-path shapes:
@@ -227,6 +234,14 @@ button.db-login:disabled {
   cursor: not-allowed;
 }
 
+/* Keyboard focus ring, matching every other control (.gex-in / .ltf-in): the bare
+   border is too weak to track by eye. Purely additive — only shows on :focus-visible. */
+.seg button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--blue) 60%, transparent);
+  outline-offset: 1px;
+  position: relative;
+}
+
 /* Selected segment: blue-tinted, never green (blue is the neutral-info accent). */
 .seg button.seg-on {
   color: var(--txt);
@@ -396,12 +411,19 @@ button.mh-screen:hover {
 .panel-head {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 4px 8px;
   padding: 9px 12px;
   border-bottom: 1px solid var(--line);
   font-size: 10.5px;
   letter-spacing: 0.14em;
   color: var(--dim);
+  white-space: nowrap;
+}
+/* the caption is the one head element allowed to wrap its text (long subtitles in
+   a narrow rail); the terse UPPERCASE title and trailing controls stay one-line. */
+.panel-caption {
+  white-space: normal;
 }
 
 .panel-caption {
@@ -4709,6 +4731,7 @@ button.needs-hand-btn:hover {
   font-size: 9px;
   letter-spacing: 0.02em;
 }
+
 /* ============================================================================
    GEX LAB (digitless masthead screen) — the options lab. Reuses the shared
    .panel / .panel-head / StatChip / Segmented / PanelBody chrome; everything
@@ -4723,7 +4746,10 @@ button.needs-hand-btn:hover {
 }
 .gex-table {
   border-collapse: collapse;
-  width: 100%;
+  /* content-width up to the panel, then the wrap scrolls — keeps columns tight and
+     left-grouped on a wide full-width panel instead of spraying them apart. */
+  width: max-content;
+  max-width: 100%;
   font-size: 11.5px;
 }
 .gex-table th {
@@ -4866,6 +4892,14 @@ button.needs-hand-btn:hover {
   color: var(--txt);
   border-color: var(--line);
 }
+/* Every interactive control gets the app's real focus ring — the bare border is
+   "too weak to track by eye" (the .ltf-in comment). Matches .gex-in:focus-visible. */
+.gex-btn:focus-visible,
+.gex-select:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--blue) 60%, transparent);
+  outline-offset: 1px;
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
 .gex-btn:disabled {
   color: var(--faint);
   cursor: wait;
@@ -4875,8 +4909,10 @@ button.needs-hand-btn:hover {
   padding: 2px 8px;
   letter-spacing: 0.06em;
 }
+/* --dim, not --faint: a clickable control must clear the 3:1 non-text floor at
+   rest (skip / dismiss are operable, not decoration). */
 .gex-btn-quiet {
-  color: var(--faint);
+  color: var(--dim);
 }
 /* the commit / journal submits: blue-tinted (neutral-info accent), never green */
 .gex-btn.gex-submit {
@@ -4902,6 +4938,13 @@ button.needs-hand-btn:hover {
   cursor: pointer;
   font-size: 0;
 }
+/* The real <input type=file> is opacity:0, so its native focus ring is invisible —
+   reflect keyboard focus on the visible label instead (WCAG 2.4.7). */
+.gex-file:focus-within {
+  outline: 2px solid color-mix(in srgb, var(--blue) 60%, transparent);
+  outline-offset: 1px;
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
 
 /* --- grade chips (qualitative label, never the green edge claim) --- */
 .gex-grade {
@@ -4923,8 +4966,10 @@ button.needs-hand-btn:hover {
   background: color-mix(in srgb, var(--amber) 12%, transparent);
   border-color: color-mix(in srgb, var(--amber) 40%, var(--line2));
 }
+/* --dim (not --faint): "no trade" is a VERDICT the user reads, the most common one
+   — it must be legible, not near-invisible. Dashed border keeps it visually quiet. */
 .gex-grade-notrade {
-  color: var(--faint);
+  color: var(--dim);
   border-style: dashed;
 }
 
@@ -4936,9 +4981,10 @@ button.needs-hand-btn:hover {
   gap: 12px;
 }
 .gex-grader-top {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 8px 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+  align-items: flex-end;
 }
 .gex-field {
   display: flex;
@@ -4946,8 +4992,52 @@ button.needs-hand-btn:hover {
   gap: 3px;
   min-width: 0;
 }
+/* Fields sized to their content role, so a ticker and a 2-decimal price don't each
+   sprawl to a quarter-panel. */
+.gex-field-tkr {
+  width: 116px;
+  flex: none;
+}
+.gex-field-num {
+  width: 88px;
+  flex: none;
+}
+.gex-field-regime {
+  width: 148px;
+  flex: none;
+}
+.gex-field-grow {
+  flex: 1 1 220px;
+  min-width: 200px;
+}
 .gex-field-wide {
-  grid-column: 1 / -1;
+  flex-basis: 100%;
+}
+/* The entry/stop/target bracket reads as ONE unit — a trader eyeballs R and 2R
+   across the three — so they stay adjacent and never wrap apart. */
+.gex-bracket {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+/* live R and R:R off the bracket — a deterministic read-out (null → em dash),
+   so the "reward-to-risk ≥ 2R" check has its number in view while typing. */
+.gex-rr {
+  align-self: flex-end;
+  padding-bottom: 5px;
+  font-size: 10.5px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+/* Prices right-align like every other number in the app; the native spinner is
+   removed for a clean field (color-scheme already darkens what remains). */
+.gex-in-num {
+  text-align: right;
+}
+.gex-in[type='number']::-webkit-outer-spin-button,
+.gex-in[type='number']::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 .gex-lab {
   font-size: 10px;
@@ -4958,7 +5048,7 @@ button.needs-hand-btn:hover {
 
 .gex-blocks {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 10px;
 }
 .gex-block {
@@ -4972,6 +5062,20 @@ button.needs-hand-btn:hover {
 }
 .gex-block-head {
   padding: 0 0 2px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+/* per-block completion counter — right-aligned, mono; goes blue-tinted when the
+   whole block is satisfied (a quiet "this group is clear" cue, never green). */
+.gex-block-count {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--dim);
+}
+.gex-block-count.done {
+  color: color-mix(in srgb, var(--blue) 55%, var(--txt));
 }
 .gex-check {
   display: flex;
@@ -4982,10 +5086,44 @@ button.needs-hand-btn:hover {
   cursor: pointer;
   line-height: 1.3;
 }
+/* A designed checkbox, not the native control: a bordered panel box that fills
+   blue with a CSS checkmark when ticked. color-scheme:dark already darkens native
+   chrome app-wide; this goes further to match the cockpit's own control vocabulary
+   (the blue-tint + line2 border of .seg-on / .ltf-in), never green. */
 .gex-check input {
-  margin-top: 1px;
-  accent-color: var(--blue);
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 1px 0 0;
   flex: none;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  background: var(--panel);
+  cursor: pointer;
+  position: relative;
+}
+.gex-check input:hover {
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+.gex-check input:checked {
+  background: color-mix(in srgb, var(--blue) 30%, var(--panel2));
+  border-color: color-mix(in srgb, var(--blue) 60%, var(--line2));
+}
+.gex-check input:checked::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 8px;
+  border: solid var(--txt);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.gex-check input:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--blue) 60%, transparent);
+  outline-offset: 1px;
 }
 
 .gex-grader-foot {
@@ -4998,9 +5136,28 @@ button.needs-hand-btn:hover {
 .gex-grade-preview {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   font-size: 11px;
   color: var(--dim);
+}
+.gex-grade-preview-lab {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+/* the gating reason in plain language ("3 unchecked", "confirmation candle → B") —
+   the advisory grade is silent about its own cause without this. */
+.gex-grade-reason {
+  font-size: 10.5px;
+  color: var(--dim);
+}
+/* the larger read-out chip: the grade is the form's whole output, so it earns a
+   size step above the inline chips used in tables. */
+.gex-grade.gex-grade-lg {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  padding: 2px 9px;
 }
 .gex-note {
   font-size: 10.5px;
@@ -5019,9 +5176,11 @@ button.needs-hand-btn:hover {
   color: var(--txt);
   padding: 0 12px;
 }
+/* Neutral action confirmation, NOT an edge claim — green is reserved for confirmed
+   edge only (the .gex-submit rule says "never green"); a commit succeeding is txt. */
 .gex-done-inline {
   font-size: 11px;
-  color: var(--green);
+  color: var(--txt);
 }
 
 /* --- journal --- */
@@ -5060,11 +5219,15 @@ button.needs-hand-btn:hover {
 .gex-stats-head {
   padding: 0 0 6px;
 }
+/* StatChips are width:100%, so a plain flex row stacks them one-per-line with a
+   huge right-hand gulf (the label pinned left, the number pinned right). A reflowing
+   grid gives each chip a bounded cell so they flow into columns when there's width
+   and read as a compact scoreboard in the narrow rail. */
 .gex-stats-chips {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 10px 16px;
-  align-items: flex-start;
+  align-items: start;
 }
 .gex-rh {
   display: flex;
@@ -5099,13 +5262,8 @@ button.needs-hand-btn:hover {
   white-space: nowrap;
 }
 
-/* --- grader + blocks collapse to a single column when the panel is narrow --- */
-@media (max-width: 900px) {
-  .gex-grader-top,
-  .gex-blocks {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
+/* The grader-top (flex-wrap) and the checklist blocks (auto-fit grid) now reflow
+   intrinsically with panel width — no hard breakpoint needed. */
 
 /* ========== Metrics scoreboard — BookMetricCard tile (Task 7) ========== */
 
@@ -5242,6 +5400,8 @@ button.needs-hand-btn:hover {
 /* The window Segmented rides the right edge of the panel head, as .perf-tabs does. */
 .metrics-win {
   margin-left: auto;
+}
+
 /* ============================================================================
    GLOSSARY (GlossaryPanel.tsx, screen 10) + inline HelpTerm
    The reading surface for re-learning the cockpit's vocabulary. Quiet and dense
