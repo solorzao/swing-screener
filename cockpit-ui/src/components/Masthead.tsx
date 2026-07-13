@@ -6,6 +6,7 @@ import { screenDef, screenNumber } from '../lib/screens'
 import type { ScreenId } from '../lib/screens'
 import { DisarmControl } from './DisarmControl'
 import { FacetToggle } from './FacetToggle'
+import { HelpTerm } from './HelpTerm'
 import { Segmented } from './Segmented'
 
 /** The one selectable cost level. `@0.10` is disabled-honest: replay-only, no
@@ -148,11 +149,16 @@ export function Masthead({
         className="gate-chip"
         title={gate !== null ? gate.countdown : 'gate status unavailable'}
       >
-        {gate === null
-          ? '…'
-          : gate.ready
-            ? 'READY'
-            : `NOT READY · ${gate.countdown.split('\n')[0] ?? ''}`}
+        {gate === null ? (
+          '…'
+        ) : gate.ready ? (
+          <HelpTerm term="Autonomy gate">READY</HelpTerm>
+        ) : (
+          <>
+            <HelpTerm term="Autonomy gate">NOT READY</HelpTerm>
+            {` · ${gate.countdown.split('\n')[0] ?? ''}`}
+          </>
+        )}
       </span>
       {gate !== null && (
         <span className="mode-chip" title="execution mode">

@@ -32,6 +32,7 @@ import type {
   WeaknessesProfile,
 } from '../lib/api'
 import { dashOr, fmtR } from '../lib/fmt'
+import { HelpTerm } from '../components/HelpTerm'
 import { PanelBody } from '../components/PanelBody'
 import { Segmented } from '../components/Segmented'
 import { Sparkline } from '../components/Sparkline'
@@ -333,10 +334,23 @@ function BreakdownsPanel({ book, wake }: { book: JournalBook; wake: number }) {
 
 /** One labeled metric cell (label above value) — the plain, non-Stat treatment
  * excursion means and discipline metrics ride on (no CI machinery exists). */
-function Metric({ label, value, tone }: { label: string; value: string; tone?: string }) {
+function Metric({
+  label,
+  value,
+  tone,
+  term,
+}: {
+  label: string
+  value: string
+  tone?: string
+  /** Glossary key — when set, the label becomes an inline HelpTerm. */
+  term?: string
+}) {
   return (
     <div className="jr-metric">
-      <span className="jr-metric-lab">{label}</span>
+      <span className="jr-metric-lab">
+        {term === undefined ? label : <HelpTerm term={term}>{label}</HelpTerm>}
+      </span>
       <span className={`jr-metric-val mono ${tone ?? ''}`}>{value}</span>
     </div>
   )
@@ -354,7 +368,10 @@ function ExcursionsPanel({ book, wake }: { book: JournalBook; wake: number }) {
     <section className="panel">
       <div className="panel-head">
         EXCURSIONS
-        <span className="panel-caption">MAE / MFE in R · means &amp; medians · {book} book</span>
+        <span className="panel-caption">
+          <HelpTerm term="MAE">MAE</HelpTerm> / <HelpTerm term="MFE">MFE</HelpTerm> in R · means
+          &amp; medians · {book} book
+        </span>
       </div>
       <PanelBody polled={exc} noun="excursions">
         {(data: JournalExcursions) =>
@@ -362,10 +379,10 @@ function ExcursionsPanel({ book, wake }: { book: JournalBook; wake: number }) {
             <div className="panel-wait">no instrumented trades to measure</div>
           ) : (
             <div className="jr-metrics">
-              <Metric label="avg MAE" value={rOr(data.avg_mae_r)} tone="jr-down" />
-              <Metric label="avg MFE" value={rOr(data.avg_mfe_r)} tone="jr-up" />
-              <Metric label="median MAE" value={rOr(data.median_mae_r)} tone="jr-down" />
-              <Metric label="median MFE" value={rOr(data.median_mfe_r)} tone="jr-up" />
+              <Metric label="avg MAE" term="MAE" value={rOr(data.avg_mae_r)} tone="jr-down" />
+              <Metric label="avg MFE" term="MFE" value={rOr(data.avg_mfe_r)} tone="jr-up" />
+              <Metric label="median MAE" term="MAE" value={rOr(data.median_mae_r)} tone="jr-down" />
+              <Metric label="median MFE" term="MFE" value={rOr(data.median_mfe_r)} tone="jr-up" />
               <Metric label="n measured" value={String(data.n)} />
             </div>
           )
@@ -389,9 +406,23 @@ function DisciplinePanel({ book, wake }: { book: JournalBook; wake: number }) {
             <div className="panel-wait">no closed trades in this book yet</div>
           ) : (
             <div className="jr-metrics">
-              <Metric label="giveback (R left)" value={rOr(data.giveback_r)} tone="jr-down" />
-              <Metric label="stop-honored rate" value={rateOr(data.stop_honored_rate)} />
-              <Metric label="MAE before win" value={rOr(data.avg_mae_before_win)} tone="jr-down" />
+              <Metric
+                label="giveback (R left)"
+                term="giveback"
+                value={rOr(data.giveback_r)}
+                tone="jr-down"
+              />
+              <Metric
+                label="stop-honored rate"
+                term="stop-honored"
+                value={rateOr(data.stop_honored_rate)}
+              />
+              <Metric
+                label="MAE before win"
+                term="MAE"
+                value={rOr(data.avg_mae_before_win)}
+                tone="jr-down"
+              />
               <Metric label="closed" value={String(data.n_closed)} />
               <Metric label="with excursion" value={String(data.n_with_excursion)} />
               <Metric label="wins" value={String(data.n_wins)} />

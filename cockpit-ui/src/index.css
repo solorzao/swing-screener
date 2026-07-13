@@ -5243,8 +5243,11 @@ button.needs-hand-btn:hover {
    A dotted-underlined label; blue dotted affordance brightening to --txt on
    hover. Never green/amber. */
 .help-term {
+  /* Inherits the host's text color so it composes in any context (masthead chip,
+     panel caption, metric label, facet tag); the blue dotted underline is the
+     affordance, not a color shift. */
   font: inherit;
-  color: var(--dim);
+  color: inherit;
   background: none;
   border: none;
   padding: 0;
