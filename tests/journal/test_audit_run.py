@@ -83,6 +83,28 @@ def test_run_weekly_writes_one_row_and_is_idempotent(monkeypatch):
         assert a2.id == a1.id
 
 
+def test_enabled_but_clean_week_skips_the_llm(monkeypatch):
+    # $0 on a dead week: enabled + nothing to report -> deterministic template, no LLM.
+    s_ = _settings(monkeypatch, audit_enabled=True)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        a = run_weekly(s, settings=s_, period_from=_FROM, period_to=_TO, now=_NOW,
+                       client=_FakeClient(text="LLM-NARRATION"))
+        assert "LLM-NARRATION" not in (a.narrative or "")   # LLM was NOT called
+        assert "conduct audit" in a.narrative.lower()        # template instead
+        assert a.est_cost_usd is None and a.severity == "info"
+
+
+def test_enabled_with_a_finding_calls_the_llm(monkeypatch):
+    # something to report (a cap breach) -> the LLM narrates.
+    s_ = _settings(monkeypatch, audit_enabled=True, max_notional=1000.0)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        s.add_all([_log(notional=800.0, key="a"), _log(notional=800.0, key="b")])  # 1600 > 1000
+        s.commit()
+        a = run_weekly(s, settings=s_, period_from=_FROM, period_to=_TO, now=_NOW,
+                       client=_FakeClient(text="LLM-NARRATION"))
+        assert a.narrative == "LLM-NARRATION" and a.severity == "alert"
+
+
 def test_run_weekly_severity_alert_on_cap_breach(monkeypatch):
     s_ = _settings(monkeypatch, audit_enabled=False, max_notional=1000.0)
     with Session(get_engine("sqlite:///:memory:")) as s:
