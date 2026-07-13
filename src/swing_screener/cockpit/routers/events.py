@@ -228,10 +228,12 @@ def _change_token(engine: Engine, edge_dir: Path) -> dict[str, str]:
                                           .where(JournalReview.human_edit.is_not(None)))),
             )),
             # A system audit's acknowledged_by_human flag is an UPDATE -> pipe its count.
+            # `== True` renders `= 1`; `.is_(True)` renders `IS 1`, which SQL Server
+            # rejects -- and this token is computed by the desktop app against Azure SQL.
             "system_audits": "|".join((
                 _watermark(session.scalar(select(func.max(SystemAudit.id)))),
                 _watermark(session.scalar(select(func.count(SystemAudit.id))
-                                          .where(SystemAudit.acknowledged_by_human.is_(True)))),
+                                          .where(SystemAudit.acknowledged_by_human == True))),  # noqa: E712
             )),
         }
     token["verdicts"] = "|".join(
