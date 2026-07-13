@@ -1,5 +1,6 @@
 import type { BreakdownRow, Performance } from '../lib/api'
 import { fmtCountPct } from '../lib/fmt'
+import { HelpTerm } from './HelpTerm'
 import { Segmented } from './Segmented'
 import { Sparkline } from './Sparkline'
 import { StatChip } from './StatChip'
@@ -84,7 +85,9 @@ export function PerformancePanel({
       <div className="perf-kpis">
         <StatChip stat={kpis.expectancy} label="expectancy" />
         <div className="perf-kpi-cells">
-          win {fmtCountPct(kpis.win_rate)} · fill {fmtCountPct(kpis.fill_rate)} · PF{' '}
+          <HelpTerm term="win rate">win</HelpTerm> {fmtCountPct(kpis.win_rate)} ·{' '}
+          <HelpTerm term="fill rate">fill</HelpTerm> {fmtCountPct(kpis.fill_rate)} ·{' '}
+          <HelpTerm term="profit factor">PF</HelpTerm>{' '}
           {kpis.profit_factor === null ? '∞' : kpis.profit_factor.toFixed(2)} ·{' '}
           {kpis.n_closed} closed
         </div>

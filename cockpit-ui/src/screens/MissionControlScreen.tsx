@@ -7,6 +7,7 @@ import {
   getPositions,
   usePolling,
 } from '../lib/api'
+import { HelpTerm } from '../components/HelpTerm'
 import type {
   CohortRow,
   Cohorts,
@@ -38,7 +39,7 @@ function CohortsSection({ facet, cohorts }: { facet: Facet; cohorts: Polled<Coho
   return (
     <section className="panel">
       <div className="panel-head">
-        COHORTS <FacetCaption facet={facet} />
+        <HelpTerm term="Cohort">COHORTS</HelpTerm> <FacetCaption facet={facet} />
       </div>
       <PanelBody polled={cohorts} noun="cohorts">
         {(data) =>
@@ -112,7 +113,7 @@ function TodayZone({
               {data.extras.length > 0 && (
                 <>
                   <div className="pk-extra-head">
-                    flagged extras · dropped for liveness, never in the five
+                    <HelpTerm term="flagged">flagged extras</HelpTerm> · dropped for liveness, never in the five
                   </div>
                   {data.extras.map((p) => (
                     <PickCard
@@ -235,7 +236,7 @@ export function MissionControlScreen({
       </div>
       <main className="grid">
         <section className="panel">
-          <div className="panel-head">SYSTEMS</div>
+          <div className="panel-head"><HelpTerm term="SYSTEMS rail">SYSTEMS</HelpTerm></div>
           <PanelBody polled={beats} noun="heartbeats">
             {(data) => <HeartbeatRail beats={data} />}
           </PanelBody>
@@ -246,7 +247,7 @@ export function MissionControlScreen({
 
           <section className="panel">
             <div className="panel-head">
-              REVERSAL FUNNEL
+              <HelpTerm term="reversal funnel">REVERSAL FUNNEL</HelpTerm>
               <span className="panel-caption">latest daily digest</span>
             </div>
             <PanelBody polled={funnel} noun="funnel">

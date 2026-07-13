@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { POLL_MS, getPositions, usePolling } from '../lib/api'
+import { HelpTerm } from '../components/HelpTerm'
 import type { PositionRow, Positions, RealPositionRow } from '../lib/api'
 import { dashOr, fmtClock, fmtPct, fmtR, fmtSignedUsd, fmtSize, fmtUsd } from '../lib/fmt'
 import { BracketLamp } from '../components/BracketLamp'
@@ -207,7 +208,7 @@ export function PositionsScreen({ wake }: { wake: number }) {
         <div className="panel-head">
           OPEN POSITIONS
           <span className="panel-caption">
-            real (manual) + live broker rows · prices as of last close
+            real (manual) + live broker rows · prices as of <HelpTerm term="last close">last close</HelpTerm>
             {positions.data !== null &&
               ` · quotes ${fmtClock(positions.data.quotes_as_of)} · ${
                 positions.data.broker_as_of === null
@@ -226,7 +227,7 @@ export function PositionsScreen({ wake }: { wake: number }) {
                   <tr>
                     <th aria-label="state" />
                     <th className="left">ticker</th>
-                    <th className="left">book</th>
+                    <th className="left"><HelpTerm term="book">book</HelpTerm></th>
                     <th>entry</th>
                     <th>size</th>
                     <th>stop</th>
@@ -234,9 +235,9 @@ export function PositionsScreen({ wake }: { wake: number }) {
                     <th>last close</th>
                     <th>P/L $</th>
                     <th>P/L %</th>
-                    <th>R</th>
+                    <th><HelpTerm term="R-multiple">R</HelpTerm></th>
                     <th>to stop</th>
-                    <th className="left">bracket</th>
+                    <th className="left"><HelpTerm term="bracket">bracket</HelpTerm></th>
                     <th className="left">flags</th>
                     <th aria-label="actions" />
                   </tr>
@@ -265,7 +266,7 @@ export function PositionsScreen({ wake }: { wake: number }) {
             LOG TRADE
             <span className="panel-caption">
               records a fill you took — places no order · engine defaults via
-              signal id
+              <HelpTerm term="signal id">signal id</HelpTerm>
             </span>
           </div>
           <LogTradeForm onLogged={bump} />
@@ -273,7 +274,7 @@ export function PositionsScreen({ wake }: { wake: number }) {
 
         <section className="panel">
           <div className="panel-head">
-            HARD CAPS
+            <HelpTerm term="hard caps">HARD CAPS</HelpTerm>
             <span className="panel-caption">the loss cap is an R threshold, not dollars</span>
           </div>
           <PanelBody polled={positions} noun="cap usage">
