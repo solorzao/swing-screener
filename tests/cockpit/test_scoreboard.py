@@ -8,7 +8,6 @@ never enters an R pool; the ``paper`` card is the curated gold/baseline/default 
 from datetime import date, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from swing_screener.cockpit.scoreboard import build_scoreboard
