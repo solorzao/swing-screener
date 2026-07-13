@@ -195,3 +195,25 @@ cross-unit "grand total" mixing R and $.
 - No cross-unit grand total (R + $).
 - No combined that crosses into options.
 - No new hotkey reassignment (digitless masthead link for now).
+
+## Implementation notes (post-build)
+
+Deviations from this design that surfaced during implementation, recorded for accuracy:
+
+1. **Paper card: gold facet dropped (open item resolved).** The `paper` account
+   adapter (`pipeline/execution.py` `PaperAdapter._open`) never stamps `would_surface`
+   — that field is only set on the `research` grid. So `facet_filter(paper_rows,"gold")`
+   would drop every paper row in production. The paper card instead scopes on
+   `account="paper"` closed rows → `arm==BASELINE` → `variant==DEFAULT_VARIANT`
+   (the paper book is the curated intent book by construction, so no gold gate is needed).
+2. **Frontend has no test framework.** `cockpit-ui` has no vitest/testing-library; the
+   UI is verified by `tsc -b` + `oxlint` + driving the built app. The plan's Task 7/8
+   component unit tests were replaced by that convention; behaviour was confirmed by
+   loading the METRICS screen against a seeded DB.
+3. **MetricsScreen owns its own polling.** It takes `wake`, owns the window state, and
+   polls `getScoreboard(win)` internally (matching `WeatherScreen`), rather than App
+   owning `data`/`window`/`onWindow`. Simpler and matches the codebase convention.
+4. **Masthead link is hand-added.** The Masthead lists each digitless screen by hand
+   (it does not derive links from the registry), so registering `metrics` also required
+   adding a `METRICS` masthead button. Caught by driving the built app (it was otherwise
+   unreachable — no digit key and no masthead door).
