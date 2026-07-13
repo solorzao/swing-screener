@@ -9,6 +9,7 @@ import {
   postWithdrawProposal,
   usePolling,
 } from '../lib/api'
+import { HelpTerm } from '../components/HelpTerm'
 import type {
   ConcretePlayType,
   DriftReport,
@@ -578,8 +579,8 @@ export function PlaybooksScreen({ wake }: { wake: number }) {
         <div className="panel-head">
           PLAYBOOKS
           <span className="panel-caption">
-            numbers come from the code-owned sidecar · the prose is verbatim · the
-            first saturated green is a forward-confirmed verdict (none exist yet)
+            numbers come from the code-owned <HelpTerm term="sidecar">sidecar</HelpTerm> · the prose is verbatim · the
+            first saturated green is a <HelpTerm term="forward-confirmed">forward-confirmed</HelpTerm> verdict (none exist yet)
           </span>
           <span className="spacer" />
           {playbooks.data !== null && (

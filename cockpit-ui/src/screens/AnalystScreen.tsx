@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { POLL_MS, getAnalyst, getAnalysisList, usePolling } from '../lib/api'
+import { HelpTerm } from '../components/HelpTerm'
 import type {
   AnalystFreshness,
   AnalystPlayType,
@@ -209,7 +210,7 @@ export function AnalystScreen({ wake }: { wake: number }) {
     <main className="grid-single">
       <section className="panel">
         <div className="panel-head">
-          ANALYST CALIBRATION
+          ANALYST <HelpTerm term="Calibration">CALIBRATION</HelpTerm>
           <span className="panel-caption">
             every R is the shadow book’s — scored research-grid calls, no real dollars ·
             a grade with no scored history is unproven, not a zero
@@ -231,7 +232,7 @@ export function AnalystScreen({ wake }: { wake: number }) {
 
       <section className="panel">
         <div className="panel-head">
-          DEEP ANALYSIS
+          <HelpTerm term="deep analysis">DEEP ANALYSIS</HelpTerm>
           <span className="panel-caption">
             queue an on-demand single-ticker report · the worker runs it later, bounded
             by the run-cost cap

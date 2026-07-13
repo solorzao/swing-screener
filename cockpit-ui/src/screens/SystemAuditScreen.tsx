@@ -6,6 +6,7 @@ import {
   postAuditAck,
   usePolling,
 } from '../lib/api'
+import { HelpTerm } from '../components/HelpTerm'
 import type { AuditReport } from '../lib/api'
 import { PanelBody } from '../components/PanelBody'
 
@@ -70,7 +71,7 @@ function BreachesPanel({ wake }: { wake: number }) {
   return (
     <section className="panel">
       <div className="panel-head">
-        BREACHES
+        <HelpTerm term="BREACH">BREACHES</HelpTerm>
         <span className="panel-caption">immediate hard breaches (caps, disarms) — flagged on the next run</span>
       </div>
       <PanelBody polled={breaches} noun="breaches">
@@ -97,7 +98,7 @@ function ReportsPanel({ wake }: { wake: number }) {
   return (
     <section className="panel">
       <div className="panel-head">
-        WEEKLY CONDUCT
+        <HelpTerm term="weekly conduct">WEEKLY CONDUCT</HelpTerm>
         <span className="panel-caption">the auditor's weekly sweep — did the agents follow their own rules</span>
       </div>
       <PanelBody polled={reports} noun="reports">

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { POLL_MS, getPositions, usePolling } from '../lib/api'
+import { HelpTerm } from '../components/HelpTerm'
 import type { PositionRow, Positions, RealPositionRow } from '../lib/api'
 import { dashOr, fmtClock, fmtPct, fmtR, fmtSignedUsd, fmtSize, fmtUsd } from '../lib/fmt'
 import { BracketLamp } from '../components/BracketLamp'
@@ -207,7 +208,7 @@ export function PositionsScreen({ wake }: { wake: number }) {
         <div className="panel-head">
           OPEN POSITIONS
           <span className="panel-caption">
-            real (manual) + live broker rows · prices as of last close
+            real (manual) + live broker rows · prices as of <HelpTerm term="last close">last close</HelpTerm>
             {positions.data !== null &&
               ` · quotes ${fmtClock(positions.data.quotes_as_of)} · ${
                 positions.data.broker_as_of === null
@@ -273,7 +274,7 @@ export function PositionsScreen({ wake }: { wake: number }) {
 
         <section className="panel">
           <div className="panel-head">
-            HARD CAPS
+            <HelpTerm term="hard caps">HARD CAPS</HelpTerm>
             <span className="panel-caption">the loss cap is an R threshold, not dollars</span>
           </div>
           <PanelBody polled={positions} noun="cap usage">

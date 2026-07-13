@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { POLL_MS, getExecutionSafety, getPositions, usePolling } from '../lib/api'
+import { HelpTerm } from '../components/HelpTerm'
 import type { ExecutionSafety, Polled } from '../lib/api'
 import { BracketLamp } from '../components/BracketLamp'
 import { CapGauge } from '../components/CapGauge'
@@ -133,7 +134,7 @@ export function SafetyScreen({ wake }: { wake: number }) {
 
           <section className="panel">
             <div className="panel-head">
-              ARMING LOCKS
+              <HelpTerm term="arming locks">ARMING LOCKS</HelpTerm>
               <span className="panel-caption">off is the safe state — calm by design</span>
             </div>
             <SafetyBody polled={safety}>
@@ -172,7 +173,7 @@ export function SafetyScreen({ wake }: { wake: number }) {
 
           <section className="panel">
             <div className="panel-head">
-              HARD CAPS
+              <HelpTerm term="hard caps">HARD CAPS</HelpTerm>
               <span className="panel-caption">the loss cap is an R threshold, not dollars</span>
             </div>
             <PanelBody polled={positions} noun="cap usage">
@@ -196,7 +197,7 @@ export function SafetyScreen({ wake }: { wake: number }) {
         <div className="col-stack">
           <section className="panel">
             <div className="panel-head">
-              PREFLIGHT
+              <HelpTerm term="preflight">PREFLIGHT</HelpTerm>
               {safe !== null &&
                 (safe.preflight.go ? (
                   <span className="sfy-go">GO — a human may arm</span>
@@ -227,7 +228,7 @@ export function SafetyScreen({ wake }: { wake: number }) {
 
           <section className="panel">
             <div className="panel-head">
-              BRACKET SHIELD
+              <HelpTerm term="bracket">BRACKET</HelpTerm> SHIELD
               <span className="panel-caption">venue truth — UNKNOWN is never green</span>
             </div>
             <SafetyBody polled={safety}>

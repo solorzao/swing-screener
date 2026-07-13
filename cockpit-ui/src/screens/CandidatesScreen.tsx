@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { POLL_MS, getCohorts, getFunnel, getPicks, usePolling } from '../lib/api'
+import { HelpTerm } from '../components/HelpTerm'
 import type { CohortRow, Facet, PickRow } from '../lib/api'
 import { fmtClock } from '../lib/fmt'
 import { resolveCohortStat } from '../lib/picks'
@@ -107,7 +108,7 @@ export function CandidatesScreen({
         <div className="panel-head">
           CANDIDATES
           <span className="panel-caption">
-            digest order · the surfaced five match the email · prices as of last close
+            <HelpTerm term="Digest">digest</HelpTerm> order · the <HelpTerm term="the surfaced five">surfaced five</HelpTerm> match the email · prices as of <HelpTerm term="last close">last close</HelpTerm>
             {picks.data?.run_date != null && ` · run ${picks.data.run_date}`}
             {picks.data !== null && ` · quotes ${fmtClock(picks.data.quotes_as_of)}`}
           </span>
@@ -198,7 +199,7 @@ export function CandidatesScreen({
 
       <section className="panel">
         <div className="panel-head">
-          REVERSAL FUNNEL
+          <HelpTerm term="reversal funnel">REVERSAL FUNNEL</HelpTerm>
           <span className="panel-caption">latest daily digest</span>
         </div>
         <PanelBody polled={funnel} noun="funnel">

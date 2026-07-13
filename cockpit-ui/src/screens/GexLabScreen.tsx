@@ -12,6 +12,7 @@ import {
   postGexSetupStatus,
   usePolling,
 } from '../lib/api'
+import { HelpTerm } from '../components/HelpTerm'
 import type {
   GexAnalyzed,
   GexChecklist,
@@ -429,7 +430,7 @@ function GraderPanel({ onAction }: { onAction: () => void }) {
       <div className="panel-head">
         CHECKLIST GRADER
         <span className="panel-caption">
-          the 12-point A+ checklist · graded live (server regrades at insert)
+          the 12-point <HelpTerm term="A+ checklist">A+ checklist</HelpTerm> · graded live (server regrades at insert)
         </span>
       </div>
       <div className="gex-grader">

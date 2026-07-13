@@ -1,4 +1,5 @@
 import { POLL_MS, getPlaybooks, usePolling } from '../lib/api'
+import { HelpTerm } from '../components/HelpTerm'
 import type { Heartbeat, PlaybookBook, Polled } from '../lib/api'
 import { HeartbeatRail } from '../components/HeartbeatRail'
 import { PanelBody } from '../components/PanelBody'
@@ -64,8 +65,8 @@ export function SystemsScreen({
 
       <section className="panel">
         <div className="panel-head">
-          PLAYBOOK INTEGRITY
-          <span className="panel-caption">numbers come from the sidecar, prose from the md</span>
+          <HelpTerm term="Playbook">PLAYBOOK</HelpTerm> INTEGRITY
+          <span className="panel-caption">numbers come from the <HelpTerm term="sidecar">sidecar</HelpTerm>, prose from the md</span>
         </div>
         <PanelBody polled={playbooks} noun="playbook integrity">
           {(data) => (
