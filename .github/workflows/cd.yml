@@ -76,7 +76,7 @@ jobs:
         # aborting -- otherwise one un-provisioned job (`bash -e`) leaves every job
         # after it on the old image. Once provisioned, the next run picks it up.
         run: |
-          for job in evening-screen daily-digest on-demand-analysis intraday-exit weekly-digest monthly-digest market-weather; do
+          for job in evening-screen daily-digest on-demand-analysis intraday-exit weekly-digest monthly-digest market-weather journal-coach journal-audit-weekly journal-audit-breach; do
             if ! az containerapp job show --name "$job" --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
               echo "Skipping $job -- not provisioned yet (run the bicep deploy to create it)"
               continue
