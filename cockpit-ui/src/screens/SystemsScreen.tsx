@@ -57,7 +57,7 @@ export function SystemsScreen({
   return (
     <main className="grid-2">
       <section className="panel">
-        <div className="panel-head">SYSTEMS</div>
+        <div className="panel-head"><HelpTerm term="SYSTEMS rail">SYSTEMS</HelpTerm></div>
         <PanelBody polled={beats} noun="heartbeats">
           {(data) => <HeartbeatRail beats={data} />}
         </PanelBody>

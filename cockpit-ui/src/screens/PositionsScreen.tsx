@@ -227,7 +227,7 @@ export function PositionsScreen({ wake }: { wake: number }) {
                   <tr>
                     <th aria-label="state" />
                     <th className="left">ticker</th>
-                    <th className="left">book</th>
+                    <th className="left"><HelpTerm term="book">book</HelpTerm></th>
                     <th>entry</th>
                     <th>size</th>
                     <th>stop</th>
@@ -235,9 +235,9 @@ export function PositionsScreen({ wake }: { wake: number }) {
                     <th>last close</th>
                     <th>P/L $</th>
                     <th>P/L %</th>
-                    <th>R</th>
+                    <th><HelpTerm term="R-multiple">R</HelpTerm></th>
                     <th>to stop</th>
-                    <th className="left">bracket</th>
+                    <th className="left"><HelpTerm term="bracket">bracket</HelpTerm></th>
                     <th className="left">flags</th>
                     <th aria-label="actions" />
                   </tr>
@@ -266,7 +266,7 @@ export function PositionsScreen({ wake }: { wake: number }) {
             LOG TRADE
             <span className="panel-caption">
               records a fill you took — places no order · engine defaults via
-              signal id
+              <HelpTerm term="signal id">signal id</HelpTerm>
             </span>
           </div>
           <LogTradeForm onLogged={bump} />

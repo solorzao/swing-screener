@@ -643,7 +643,7 @@ function RecordsPanel({ book, wake }: { book: JournalBook; wake: number }) {
                     <th>dir</th>
                     <th>opened</th>
                     <th>closed</th>
-                    <th className="ref-num">R</th>
+                    <th className="ref-num"><HelpTerm term="R-multiple">R</HelpTerm></th>
                     <th>tags</th>
                     <th>theses</th>
                   </tr>

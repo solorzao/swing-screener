@@ -72,7 +72,7 @@ function BreachesPanel({ wake }: { wake: number }) {
     <section className="panel">
       <div className="panel-head">
         <HelpTerm term="BREACH">BREACHES</HelpTerm>
-        <span className="panel-caption">immediate hard breaches (caps, disarms) — flagged on the next run</span>
+        <span className="panel-caption">immediate hard breaches (caps, <HelpTerm term="DISARM">disarms</HelpTerm>) — flagged on the next run</span>
       </div>
       <PanelBody polled={breaches} noun="breaches">
         {(rows: AuditReport[]) =>
@@ -99,7 +99,7 @@ function ReportsPanel({ wake }: { wake: number }) {
     <section className="panel">
       <div className="panel-head">
         <HelpTerm term="weekly conduct">WEEKLY CONDUCT</HelpTerm>
-        <span className="panel-caption">the auditor's weekly sweep — did the agents follow their own rules</span>
+        <span className="panel-caption">the <HelpTerm term="auditor">auditor</HelpTerm>'s weekly sweep — did the agents follow their own rules</span>
       </div>
       <PanelBody polled={reports} noun="reports">
         {(rows: AuditReport[]) =>

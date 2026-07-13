@@ -113,7 +113,7 @@ function TodayZone({
               {data.extras.length > 0 && (
                 <>
                   <div className="pk-extra-head">
-                    flagged extras · dropped for liveness, never in the five
+                    <HelpTerm term="flagged">flagged extras</HelpTerm> · dropped for liveness, never in the five
                   </div>
                   {data.extras.map((p) => (
                     <PickCard
@@ -236,7 +236,7 @@ export function MissionControlScreen({
       </div>
       <main className="grid">
         <section className="panel">
-          <div className="panel-head">SYSTEMS</div>
+          <div className="panel-head"><HelpTerm term="SYSTEMS rail">SYSTEMS</HelpTerm></div>
           <PanelBody polled={beats} noun="heartbeats">
             {(data) => <HeartbeatRail beats={data} />}
           </PanelBody>

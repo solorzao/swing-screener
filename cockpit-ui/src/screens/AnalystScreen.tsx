@@ -65,7 +65,7 @@ function CalibrationTable({ rows }: { rows: CalibrationRow[] }) {
         <thead>
           <tr>
             <th>grade</th>
-            <th>mean R (scored)</th>
+            <th><HelpTerm term="R-multiple">mean R</HelpTerm> (scored)</th>
           </tr>
         </thead>
         <tbody>
@@ -141,7 +141,7 @@ function Progress({ p }: { p: CalibrationProgress }) {
         <span className="cal-dim"> · {p.reason}</span>
       </div>
       <div className="cal-prog-row mono">
-        high−low {fmtR(p.high_minus_low)} · lower bound{' '}
+        high−low {fmtR(p.high_minus_low)} · <HelpTerm term="lower bound">lower bound</HelpTerm>{' '}
         {p.ci_low === null ? (
           <em className="cal-na" title="below the data floors the true bound is −inf, which JSON cannot carry — an honest unknown, never green">
             insufficient data
@@ -212,7 +212,7 @@ export function AnalystScreen({ wake }: { wake: number }) {
         <div className="panel-head">
           ANALYST <HelpTerm term="Calibration">CALIBRATION</HelpTerm>
           <span className="panel-caption">
-            every R is the shadow book’s — scored research-grid calls, no real dollars ·
+            every R is the <HelpTerm term="shadow book">shadow book</HelpTerm>’s — scored research-grid calls, no real dollars ·
             a grade with no scored history is unproven, not a zero
           </span>
         </div>

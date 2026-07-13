@@ -167,7 +167,7 @@ function SnapshotsTable({ rows }: { rows: GexSnapshot[] }) {
             <th className="gex-num">spot</th>
             <th className="gex-num">call wall</th>
             <th className="gex-num">put wall</th>
-            <th className="gex-num">gamma flip</th>
+            <th className="gex-num"><HelpTerm term="gamma flip">gamma flip</HelpTerm></th>
             <th className="left">regime</th>
             <th className="left">flags</th>
           </tr>
@@ -729,7 +729,7 @@ function LabStatsPanel({ wake }: { wake: number }) {
       <div className="panel-head">
         LAB STATS
         <span className="panel-caption">
-          lab expectancy is session-clustered (a Stat) · the Robinhood book is
+          lab <HelpTerm term="expectancy">expectancy</HelpTerm> is <HelpTerm term="cluster">session-clustered</HelpTerm> (a Stat) · the Robinhood book is
           premium dollars, a labeled display
         </span>
       </div>

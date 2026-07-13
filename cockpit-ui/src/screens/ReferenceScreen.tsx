@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { POLL_MS, getEmails, getExits, getUniverse, usePolling } from '../lib/api'
+import { HelpTerm } from '../components/HelpTerm'
 import type { ExitRow, UniverseRow } from '../lib/api'
 import { GlossaryPanel } from '../components/GlossaryPanel'
 import { PanelBody } from '../components/PanelBody'
@@ -144,9 +145,9 @@ function ExitTable({ rows }: { rows: ExitRow[] }) {
           <tr>
             <th>date</th>
             <th>reason</th>
-            <th>book</th>
+            <th><HelpTerm term="book">book</HelpTerm></th>
             <th>account</th>
-            <th>tier</th>
+            <th><HelpTerm term="Verdict / tier">tier</HelpTerm></th>
             <th>detail</th>
           </tr>
         </thead>
@@ -276,7 +277,7 @@ function EmailPanel({ wake }: { wake: number }) {
                     <th>sent</th>
                     <th>kind</th>
                     <th>subject</th>
-                    <th>run date</th>
+                    <th><HelpTerm term="run date">run date</HelpTerm></th>
                   </tr>
                 </thead>
                 <tbody>

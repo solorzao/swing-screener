@@ -110,12 +110,12 @@ function VerdictTable({ verdicts }: { verdicts: VerdictRow[] }) {
       <table className="pb-table">
         <thead>
           <tr>
-            <th>tier</th>
+            <th><HelpTerm term="Verdict / tier">tier</HelpTerm></th>
             <th>bucket</th>
-            <th>expectancy</th>
-            <th>bound</th>
-            <th>book</th>
-            <th>provenance</th>
+            <th><HelpTerm term="expectancy">expectancy</HelpTerm></th>
+            <th><HelpTerm term="bound">bound</HelpTerm></th>
+            <th><HelpTerm term="book">book</HelpTerm></th>
+            <th><HelpTerm term="Provenance">provenance</HelpTerm></th>
           </tr>
         </thead>
         <tbody>

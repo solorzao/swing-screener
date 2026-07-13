@@ -142,8 +142,8 @@ function HistoryTable({ history }: { history: WeatherResponse['history'] }) {
       <table className="wx-hist">
         <thead>
           <tr>
-            <th>run date</th>
-            <th>HA alignment</th>
+            <th><HelpTerm term="run date">run date</HelpTerm></th>
+            <th><HelpTerm term="HA alignment">HA alignment</HelpTerm></th>
             <th>flip</th>
             <th>core read</th>
           </tr>
