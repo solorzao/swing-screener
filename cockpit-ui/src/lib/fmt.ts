@@ -40,6 +40,13 @@ export function fmtPct(v: number): string {
   return `${v < 0 ? MINUS : '+'}${Math.abs(v * 100).toFixed(1)}%`
 }
 
+/** A FRACTION on the wire (0.55) → a whole-number, UNSIGNED percent: a count
+ * tally (win rate, fill rate), not a signed change. `55%`, `100%`, `0%`. Distinct
+ * from `fmtPct`, which signs a 1-decimal fractional delta. */
+export function fmtCountPct(v: number): string {
+  return `${Math.round(v * 100)}%`
+}
+
 /** Share / size count — whole when integral, else two decimals. */
 export function fmtSize(v: number): string {
   return v % 1 === 0 ? v.toFixed(0) : v.toFixed(2)

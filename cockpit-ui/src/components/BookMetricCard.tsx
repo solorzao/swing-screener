@@ -1,5 +1,5 @@
 import type { ScoreboardCard, ScoreboardCombined } from '../lib/api'
-import { dashOr, fmtSignedUsd } from '../lib/fmt'
+import { dashOr, fmtCountPct, fmtSignedUsd } from '../lib/fmt'
 import { Lamp } from './Lamp'
 import type { LampColor } from './Lamp'
 import { StatChip } from './StatChip'
@@ -16,10 +16,6 @@ import { StatChip } from './StatChip'
    book (n_closed === 0), or the shouldn't-happen R-book-with-null-expectancy, shows a
    muted em dash — an honest-empty face, never a fabricated zero. No per-tile equity
    curve here: the combined curve is a MetricsScreen footer (design decision). */
-
-/** Percentage of counts (0..1 fraction on the wire) — plain by design, the same
- * spelling as PerformancePanel's `pct`. */
-const pct = (v: number): string => `${Math.round(v * 100)}%`
 
 export function BookMetricCard({
   card,
@@ -84,7 +80,7 @@ export function BookMetricCard({
 
       {!noRead && (
         <div className="bmc-sub">
-          win {pct(card.win_rate)} · {card.n_wins}W–{card.n_losses}L
+          win {fmtCountPct(card.win_rate)} · {card.n_wins}W–{card.n_losses}L
           {card.profit_factor !== null
             ? ` · PF ${card.profit_factor.toFixed(2)}`
             : card.unit === 'R' && card.n_wins > 0

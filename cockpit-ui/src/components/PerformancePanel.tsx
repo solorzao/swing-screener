@@ -1,4 +1,5 @@
 import type { BreakdownRow, Performance } from '../lib/api'
+import { fmtCountPct } from '../lib/fmt'
 import { Segmented } from './Segmented'
 import { Sparkline } from './Sparkline'
 import { StatChip } from './StatChip'
@@ -13,9 +14,6 @@ import { StatChip } from './StatChip'
 /** Breakdown-tab selection. State lives in App next to window/play-type — local
  * state here would be reset by the key-remount blast on every param flip. */
 export type BreakdownTab = 'timeframe' | 'rank' | 'score' | 'regime'
-
-/** Percentage of counts (0..1 fraction on the wire) — plain by design. */
-const pct = (v: number): string => `${Math.round(v * 100)}%`
 
 function FlagBadge({ flag }: { flag: 'iid' | 'thin' | 'ok' }) {
   if (flag === 'ok') return null // quiet cockpit: healthy rows carry no badge
@@ -53,7 +51,7 @@ function BreakdownTable({ caption, rows }: { caption?: string; rows: BreakdownRo
             <td className="cell-stat">
               <StatChip stat={r.stat} />
             </td>
-            <td className="cell-num">{pct(r.win_rate)}</td>
+            <td className="cell-num">{fmtCountPct(r.win_rate)}</td>
             <td className="cell-num">{r.n_closed}</td>
           </tr>
         ))}
@@ -86,7 +84,7 @@ export function PerformancePanel({
       <div className="perf-kpis">
         <StatChip stat={kpis.expectancy} label="expectancy" />
         <div className="perf-kpi-cells">
-          win {pct(kpis.win_rate)} · fill {pct(kpis.fill_rate)} · PF{' '}
+          win {fmtCountPct(kpis.win_rate)} · fill {fmtCountPct(kpis.fill_rate)} · PF{' '}
           {kpis.profit_factor === null ? '∞' : kpis.profit_factor.toFixed(2)} ·{' '}
           {kpis.n_closed} closed
         </div>
@@ -113,8 +111,8 @@ export function PerformancePanel({
                   <td className="cell-stat">
                     <StatChip stat={r.stat} />
                   </td>
-                  <td className="cell-num">{pct(r.win_rate)}</td>
-                  <td className="cell-num">{pct(r.fill_rate)}</td>
+                  <td className="cell-num">{fmtCountPct(r.win_rate)}</td>
+                  <td className="cell-num">{fmtCountPct(r.fill_rate)}</td>
                   <td className="cell-num">{r.n_total}</td>
                   <td>
                     <FlagBadge flag={r.flag} />
