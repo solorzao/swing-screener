@@ -17,8 +17,9 @@ import { useAnchoredPopover } from '../lib/useAnchoredPopover'
    cohort/leaderboard row, a bottom KPI cell). Fixed + portal escapes every
    ancestor's clip. It opens UPWARD when the trigger sits in the lower half of
    the viewport (else downward) and clamps into the viewport both ways, so it is
-   always fully visible. A scroll or resize detaches a fixed panel from its
-   moving trigger, so either closes it.
+   always fully visible. A resize, or a scroll that MOVES THE TRIGGER, detaches a
+   fixed panel from its trigger and closes it — an unrelated container scrolling
+   itself (Zone E's ticker marquee) does not.
 
    HONESTY POSTURE (the whole reason this exists): every field is read STRAIGHT
    off the Stat — nothing is fabricated. A null cost_level renders "not measured"
