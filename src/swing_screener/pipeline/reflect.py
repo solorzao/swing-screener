@@ -107,17 +107,26 @@ class Verdict:
     ``cost_level`` / ``corpus_id`` are PROVENANCE stamps applied post-``grade`` by
     ``_stamp_provenance`` (``grade`` itself stays pure and emits the defaults). They
     MUST default to ``None``: ``load_verdicts`` is a strict ``Verdict(**d)`` and the
-    committed pre-Phase-3 sidecars lack the keys."""
+    committed pre-Phase-3 sidecars lack the keys.
+
+    ``n_forward`` / ``n_replay`` carry BOTH books' depths on every row, so which book
+    ``n``/``expectancy_r``/``ci_low`` describe is always auditable from the sidecar
+    alone. A hunch stamps ``source="none"`` (nothing was confirmed), which used to erase
+    that -- and erasing it is why a lone forward trade rendered over a 6458-trade replay
+    book for a week before anyone could see it (2026-07-12). Default to 0 for the same
+    reason the stamps default to None: the committed sidecars predate the keys."""
 
     play_type: str
     dimension: str  # "market_trend" | "volatility_tier" | "score"
     bucket: str  # e.g. "bull", "high", "0.70-0.80"
     tier: str  # "forward_confirmed" | "replay_screened" | "hunch"
-    n: int  # n_closed of the deciding source (or the better of the two)
+    n: int  # n_closed of the deciding source (or the richer of the two)
     expectancy_r: float
     ci_low: float  # MC-corrected effective lower bound on the deciding source
     n_clusters: int
     source: str  # "forward" | "replay" | "none"
+    n_forward: int = 0  # closed trades in the forward book for this cell
+    n_replay: int = 0  # closed trades in the replay book for this cell
     cost_level: str | None = None  # slippage level the deciding book's R provably carries
     corpus_id: str | None = None  # replay corpus stamp (replay-sourced verdicts only)
 
@@ -214,27 +223,33 @@ def grade(
                     play_type=play_type, dimension=dimension, bucket=bucket,
                     tier="forward_confirmed", n=f.n_closed, expectancy_r=f.expectancy_r,
                     ci_low=f.eff_low, n_clusters=f.n_clusters, source="forward",
+                    n_forward=f.n_closed, n_replay=r.n_closed,
                 ))
             elif _confirms(r.eff_low, r.n_closed, r.n_clusters, r.thin):
                 verdicts.append(Verdict(
                     play_type=play_type, dimension=dimension, bucket=bucket,
                     tier="replay_screened", n=r.n_closed, expectancy_r=r.expectancy_r,
                     ci_low=r.eff_low, n_clusters=r.n_clusters, source="replay",
+                    n_forward=f.n_closed, n_replay=r.n_closed,
                 ))
             else:
-                # Hunch: carry the richer book for display (forward if it has any closed
-                # trades, else replay, else an empty placeholder), but stamp source "none"
-                # -- nothing was confirmed.
-                if f.n_closed > 0:
-                    disp = f
-                elif r.n_closed > 0:
-                    disp = r
-                else:
+                # Hunch: nothing was confirmed (source "none"), so the row is DISPLAY
+                # only -- carry the RICHER book, i.e. the deeper closed sample. Ties go
+                # to forward: at equal depth the live book is the more relevant one.
+                # This must compare depths, not merely test forward for existence: the
+                # would_surface gold filter keeps the forward book thin for months after
+                # it ships, so "forward if it has any closed trades" let a SINGLE gold
+                # trade displace a 6458-trade replay book and publish n=1 verdicts
+                # (the 2026-07-12 reflection, PR #111 -- five zero-width CIs).
+                if max(f.n_closed, r.n_closed) == 0:
                     disp = _BucketBound(0.0, 0, 0, 0.0, True)
+                else:
+                    disp = f if f.n_closed >= r.n_closed else r
                 verdicts.append(Verdict(
                     play_type=play_type, dimension=dimension, bucket=bucket,
                     tier="hunch", n=disp.n_closed, expectancy_r=disp.expectancy_r,
                     ci_low=disp.eff_low, n_clusters=disp.n_clusters, source="none",
+                    n_forward=f.n_closed, n_replay=r.n_closed,
                 ))
     return verdicts
 
@@ -402,11 +417,19 @@ def _condition(v: Verdict) -> str:
 
 def _stats_suffix(v: Verdict) -> str:
     """The honesty trio shared by confirmed + screened lines: point estimate, n, the
-    clustered 95% CI lower bound, and the net-of-cost caveat. Never a bare base rate."""
-    return (
-        f"expectancy {v.expectancy_r:+.2f}R, n={v.n} ({v.n_clusters} tickers), "
-        f"clustered 95% CI lower bound {v.ci_low:+.2f}R, {_COST_CAVEAT}"
-    )
+    clustered 95% CI lower bound, and the net-of-cost caveat. Never a bare base rate.
+
+    Below 2 closed trades the sample stdev is undefined, so ``summarize`` sets stderr to
+    0 (documented there) and the "bound" collapses onto the point estimate: a zero-width
+    95% interval. That is a FALSE claim, not a conservative one -- it reads as certainty
+    at the exact n where there is none -- so state the estimate and refuse the bound.
+    (The 2026-07-12 reflection published five, e.g. "expectancy +1.47R, n=1, clustered
+    95% CI lower bound +1.47R". No tier can rest on it -- ``_confirms`` needs n >= 20 --
+    but the file the analyst reads must not assert it.)"""
+    head = f"expectancy {v.expectancy_r:+.2f}R, n={v.n} ({v.n_clusters} tickers), "
+    if v.n < 2:
+        return f"{head}too few trades to bound, {_COST_CAVEAT}"
+    return f"{head}clustered 95% CI lower bound {v.ci_low:+.2f}R, {_COST_CAVEAT}"
 
 
 def _verdict_sort_key(v: Verdict) -> tuple[str, str]:
@@ -1221,8 +1244,12 @@ def run_reflection(
             calibration_note=calibration_note,
         )
         (edge_dir / f"{pt}.md").write_text(content, encoding="utf-8")
-        log.info("reflected %s: %d forward closed, %d replay-screened",
-                 pt, len(forward), len(replay_pt))
+        # len(forward_gold), NOT len(forward): the gold filter above is what the grader
+        # actually consumes, and logging the unfiltered book advertises a sample that
+        # never reaches it (709 vs 15 on 2026-07-12 -- the line that made a thin-book
+        # run read as data corruption and cost a full investigation to unwind).
+        log.info("reflected %s: %d forward closed (%d gold-filtered), %d replay-screened",
+                 pt, len(forward), len(forward_gold), len(replay_pt))
 
         # North Star #9: on the "needs a test" hunches, let the (optional, fail-safe) drafter
         # QUEUE validated candidate screen variants for the optimizer to sweep. The LLM only
