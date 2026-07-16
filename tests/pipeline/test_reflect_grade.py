@@ -197,6 +197,80 @@ def test_score_band_bucket_grades_off_score_bucket_labels():
     assert empty_band.tier == "hunch" and empty_band.n == 0
 
 
+# ---------------------------------------------------------------------------
+# #7: a hunch displays the RICHER book, never merely the forward one.
+#
+# The 2026-07-12 reflection (PR #111) rendered n=1 cells over a 6458-trade replay
+# book because the display rule read "forward if it has ANY closed trades" while its
+# own comment said "richer". The would_surface gold filter (#91) made the forward book
+# thin, so a single gold trade displaced the whole replay sample -- publishing
+# expectancy +1.47R at n=1 as a verdict. Nothing was confirmed either way (tier and
+# the money path are gated on _confirms), but the file the analyst reads lied.
+# ---------------------------------------------------------------------------
+def test_hunch_displays_the_richer_book_not_a_lone_forward_trade():
+    # Forward: ONE closed trade -- a book far too thin to say anything at all.
+    forward = _spread_book([1.5], per=1, prefix="F")  # 1 ticker, 1 closed
+    # Replay: deep, but wide per-ticker means -> the corrected bound dips <= 0, so the
+    # cell stays a HUNCH and the display-precedence rule alone decides what is shown.
+    replay = _spread_book([-1.0, -0.6, -0.2, 0.2, 0.6, 1.0, 1.4, 1.8, 2.2, 2.6], per=3,
+                          prefix="R")  # 10 tickers, 30 closed
+
+    verdicts = grade("continuation", forward, replay)
+    v = _find(verdicts, "market_trend", "bull")
+
+    assert v.tier == "hunch" and v.source == "none"  # nothing confirmed; display-only
+    # The 30-trade replay book is richer than the 1-trade forward book -- show it.
+    assert v.n == 30, "a lone forward trade must not displace a 30-trade replay book"
+    assert v.n_clusters == 10
+    # ...and both books' depths travel with the row, so which one was rendered is
+    # auditable from the sidecar alone (source="none" cannot say).
+    assert v.n_forward == 1
+    assert v.n_replay == 30
+
+
+def test_hunch_displays_the_forward_book_when_it_is_the_richer_one():
+    # The mirror case: forward is deeper, so it wins the display -- the rule is
+    # "richer", not "always replay".
+    forward = _spread_book([-1.0, -0.6, -0.2, 0.2, 0.6, 1.0, 1.4, 1.8, 2.2, 2.6], per=3,
+                           prefix="F")  # 30 closed
+    replay = _spread_book([0.5], per=1, prefix="R")  # 1 closed
+
+    v = _find(grade("continuation", forward, replay), "market_trend", "bull")
+
+    assert v.tier == "hunch"
+    assert v.n == 30
+    assert v.n_forward == 30
+    assert v.n_replay == 1
+
+
+def test_stats_suffix_omits_a_ci_bound_it_cannot_compute():
+    """At n < 2 the sample stdev is undefined, so summarize's stderr collapses to 0 and
+    the 'CI lower bound' equals the point estimate exactly -- a zero-width 95% interval
+    is a false statistical claim, not a conservative one. PR #111 published five. The
+    prose must state the point estimate and refuse the bound."""
+    from swing_screener.pipeline.reflect import Verdict, _stats_suffix
+
+    lone = Verdict(
+        play_type="continuation", dimension="volatility_tier", bucket="high",
+        tier="hunch", n=1, expectancy_r=1.4678884986036167,
+        ci_low=1.4678884986036167, n_clusters=1, source="none",
+    )
+    suffix = _stats_suffix(lone)
+
+    assert "n=1" in suffix
+    assert "+1.47R" in suffix                      # the point estimate still shows
+    assert "CI lower bound" not in suffix          # but never a bound it cannot compute
+    assert "too few trades to bound" in suffix
+
+    # A real sample still gets the full honesty trio.
+    deep = Verdict(
+        play_type="continuation", dimension="market_trend", bucket="bull",
+        tier="hunch", n=2442, expectancy_r=-0.129, ci_low=-0.194, n_clusters=100,
+        source="none",
+    )
+    assert "clustered 95% CI lower bound -0.19R" in _stats_suffix(deep)
+
+
 def test_score_dimension_ignores_pre_v2_forward_reversal_rows():
     """Score v2 (2026-07-03) changed what signal_score MEANS for the reversal book: a
     forward row scored before it measures a different quantity, so the score dimension
