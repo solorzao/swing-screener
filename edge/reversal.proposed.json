@@ -34,5 +34,17 @@
     "status": "withdrawn",
     "drafted_at": "2026-07-02",
     "provenance": "reflection-opus"
+  },
+  {
+    "name": "reversal_volatility_tier_med_1_q",
+    "play_type": "reversal",
+    "delta": {
+      "max_extension_atr": 2.5
+    },
+    "rationale": "Reversal setups likely fail when price is overextended; capping extension may lift the high-expectancy mid-score band toward significance by dropping late/exhausted entries in med volatility.",
+    "hunch_ref": "volatility_tier=med",
+    "status": "queued",
+    "drafted_at": "2026-07-16",
+    "provenance": "reflection-opus"
   }
 ]
