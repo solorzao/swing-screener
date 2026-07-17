@@ -1186,6 +1186,22 @@ def run_reflection(
     if not due:
         return []
 
+    # There is a book to grade -- refuse to grade it against nothing. An empty corpus
+    # means the screened tier grades every bucket empty and each hunch falls back to the
+    # (post-#127: richer, but here only) forward book, reproducing the thin-book failure
+    # that opened PR #111. reflect.yml pins nothing, so the corpus is a fresh fetch: this
+    # fires on a total fetch failure, or on a hypothetical --as-of pin against the
+    # ephemeral runner's empty cache (the loader is cache-only). Same "never silently
+    # no-op" posture as reflect.yml's production-DB guard -- fail loudly, write nothing,
+    # open no PR. (The due-gate above runs first, so a quiet week with no fetched data is
+    # a clean no-op, never this error.)
+    if not replay_frames:
+        raise ValueError(
+            f"reflection has due play types {due} but the replay corpus is empty -- "
+            "refusing to grade the screened tier against no data (a total fetch failure, "
+            "or an --as-of pin that matched no cache snapshot)"
+        )
+
     # Replay ONCE over the whole universe (the screened tier is the same corpus for every play
     # type; we just slice it per play type below), with the haircut on both the base + default
     # variant and the regime stamped from SPY.

@@ -20,6 +20,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 from sqlalchemy.orm import Session
 
 from swing_screener.db.models import Base, PaperTrade
@@ -250,6 +251,42 @@ def test_run_reflection_rewrites_due_advances_counter_and_leaves_other_untouched
     assert "Authored prose." in cont_after
     # The non-due file is byte-for-byte untouched.
     assert (edge_dir / "reversal.md").read_text(encoding="utf-8") == reversal_before
+
+
+def test_run_reflection_refuses_to_grade_a_due_book_against_an_empty_corpus(tmp_path):
+    """A due play type with NO replay corpus must FAIL LOUDLY, never silently grade the
+    screened tier against nothing and open a PR (reflect.yml's 'never silently no-op'
+    DB-guard ethos). The concrete trigger: reflect.yml pins nothing, so the corpus is a
+    fresh fetch -- a total fetch failure (network down), or a hypothetical --as-of pin on
+    the ephemeral runner's empty cache (the loader is cache-only), yields {} here. Without
+    this guard the run would grade every replay bucket empty and open a garbage PR."""
+    edge_dir = _seed_edge_dir(tmp_path)
+    n = _REFLECT_TRIGGER_N + 5  # continuation is due
+    with _mem_session() as session:
+        _seed(session, [_closed_trade(f"T{i}", 1.0, "continuation") for i in range(n)])
+        with pytest.raises(ValueError, match="replay corpus is empty"):
+            run_reflection(
+                session, replay_frames={}, spy_daily=None,
+                edge_dir=edge_dir, client=_FakeClient("## Thesis\n\nx.\n"),
+                today="2026-06-20",
+            )
+    # The due file is left byte-for-byte untouched -- a failed run writes nothing.
+    assert parse_state(
+        (edge_dir / "continuation.md").read_text(encoding="utf-8")
+    ).forward_closed_at_last_reflection == 0
+
+
+def test_run_reflection_empty_corpus_is_a_clean_noop_when_nothing_is_due(tmp_path):
+    """The guard fires only when there is a book to grade AND nothing to grade it against.
+    With no due play type there is nothing to screen, so an empty corpus is a clean no-op
+    (the early return), never an error -- the guard must not punish a quiet week."""
+    edge_dir = _seed_edge_dir(tmp_path)  # counters 0, and no forward trades seeded -> none due
+    with _mem_session() as session:
+        reflected = run_reflection(
+            session, replay_frames={}, spy_daily=None,
+            edge_dir=edge_dir, client=_FakeClient("## Thesis\n\nx.\n"), today="2026-06-20",
+        )
+    assert reflected == []
 
 
 def test_run_reflection_preserves_prior_thesis(tmp_path):
