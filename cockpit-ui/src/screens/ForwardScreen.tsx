@@ -22,7 +22,7 @@ export function ForwardScreen({
       <ForwardBooksPanel
         fb={fb}
         facet={facet}
-        caption="an “awaiting decision” card settles by a human PR: delete its roster line (arms.py / variants.py), mark its edge/experiments.json row retired with decided_at + decision — one commit, audit record kept"
+        caption="an “awaiting decision” card carries its DECIDE box: reason + hold-to-retire marks the registry (edge/experiments.json, audit fields stamped); the roster-line deletion + one commit stay yours — the checklist appears on the card"
       />
     </main>
   )

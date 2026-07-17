@@ -71,14 +71,18 @@ export function NeedsHandStrip({
             </button>
           )),
           ...attention.reflection_due.map((pt) => (
+            // Informational, not a hand: reflection resolves ITSELF on the
+            // weekly workflow's Sunday run (its output arrives later as a PR
+            // item above). The copy must say so — an unactionable "due" chip
+            // trains the owner to ignore the strip.
             <button
               key={`r:${pt}`}
               type="button"
               className="needs-hand-item needs-hand-btn"
-              title="this play type's forward book re-armed a reflection — click to review in Playbooks"
+              title="this play type's forward book re-armed a reflection — the weekly workflow runs it automatically on Sunday (its edge-file PR will appear here for review); nothing needs your hand now. Click to review the playbook."
               onClick={nav('playbooks')}
             >
-              {pt} reflection due
+              {pt} reflection due · auto Sun
             </button>
           )),
           ...((attention.audit_unacked ?? 0) > 0

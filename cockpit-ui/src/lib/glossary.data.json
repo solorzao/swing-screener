@@ -796,16 +796,27 @@
   "source": "cockpit/settlement.py: target_ci_halfwidth_r"
  },
  {
-  "term": "Settlement decision (the settle/retire PR)",
+  "term": "Settlement decision (decide → retire)",
   "cat": "system-action",
-  "short": "How an 'awaiting decision' card is actually decided: one human pull request that deletes the experiment's roster line and marks its registry row retired with the date and your decision. The cockpit never does this for you.",
-  "why": "The human gate (North Star #3): settling an experiment changes what the machine forward-tests, so it stays a deliberate commit with an audit record — the Forward Books caption and the strip's 'decide' items land you at the card; the PR is yours.",
+  "short": "How an 'awaiting decision' card is decided: the card's DECIDE box (reason + hold-to-retire) marks the registry row retired with the date and your verbatim reason — an uncommitted edit to edge/experiments.json. The roster-line deletion and the one commit for both stay yours (the card hands you the checklist).",
+  "why": "The human gate (North Star #3): settling changes what the machine forward-tests, so the cockpit only MARKS — the deliberate commit with its audit record is yours, and the registry↔roster lockstep test fails any commit that takes one half without the other.",
   "appears": [
    "Forward Books",
    "Needs-Your-Hand strip"
   ],
   "risk": "high",
-  "source": "pipeline/variants.py"
+  "source": "pipeline/registry.py"
+ },
+ {
+  "term": "Trailing expectancy",
+  "cat": "risk-metric",
+  "short": "The book's running average R per closed trade, recomputed as each trade closes and plotted left-to-right — the line shows whether results are drifting up, down, or holding steady as evidence accrues. Early points average only the few closes that exist so far, so the line's start is noisy by construction.",
+  "why": "Drift-spotting only, never certification: a sagging line warns you early, but every gate and verdict reads the hardened confidence bounds, not this sparkline.",
+  "appears": [
+   "SettlementCard (Forward Books)"
+  ],
+  "risk": "medium",
+  "source": "cockpit/settlement.py"
  },
  {
   "term": "Open book",

@@ -49,7 +49,7 @@ digitless links, and every placeholder title render from it.
 | `1` | **Mission Control** | the home dashboard: the masthead lamps, heartbeat pulse, COHORTS, plus the Phase-3 zones — Zone B (open positions / risk strip), Zone D (today's surfaced picks), Zone E (the event ticker) — and the SINCE YOU LAST LOOKED recap: new events per source since your last visit, computed from the ticker feed against a localStorage watermark |
 | `2` | **Candidates** | today's picks in digest order (continuation + reversal), each graded live against its latest close (✅ actionable / 🏃 already ran / ⛔ stopped), with the flagged extras that never consume the top-5 slots, plus the reversal funnel |
 | `3` | **Positions & Ledger** | open real + live-book positions with live P/L, bracket lamps and risk badges; the closed-trade ledger + equity curve; the **log-trade** and **close-trade** forms |
-| `4` | **Forward Books** | the settlement wall — one card per registered experiment with its verbatim stopping rule, decision-forcing states first; each card renders the settle/retire procedure caption at the point of decision, and the OPEN paper book rides alongside as a browsable running-trades table (`/api/books/open`) |
+| `4` | **Forward Books** | the settlement wall — one card per registered experiment with its verbatim stopping rule, decision-forcing states first; an awaiting-decision card carries its **DECIDE box** (reason + hold-to-retire — marks the registry, hands back the roster/commit checklist), and the OPEN paper book rides alongside as a browsable running-trades table (`/api/books/open`) |
 | `5` | **Playbooks** | each strategy's edge file rendered from its sidecar: verdict rows with tier chips, the drift lamp, reflection-due counter, and the proposal decisions block (**approve** / **withdraw**) |
 | `6` | **Analyst** | the insight-engine calibration (per-grade mean R, all shadow-book), nudge attribution, the unfilled-fraction split, spend today/7d/30d, and the deep-analysis surface (**request analysis**, status list, report viewer) |
 | `7` | **Execution Safety** | the preflight GO/NO-GO checklist, the three locks + caps mandate, the bracket-shield table, and the masthead **DISARM** control's screen home |
@@ -74,10 +74,10 @@ Everything else the cockpit does is read-only. Every mutating endpoint is guarde
 the `X-Cockpit` header (a same-origin guard → 403 without it) and wakes every other
 open window via the post-action nonce on the SSE token; where an action has a
 precondition, violating it is a loud 404/409/422, never a silent no-op. The writes
-group into three families — the six swing-book actions, the journal & oversight
+group into three families — the seven swing-book actions, the journal & oversight
 actions, and the GEX lab actions — plus the `azure-login` credential refresh.
 
-### The six swing-book actions
+### The seven swing-book actions
 
 Money-adjacent, so the posture is strictest here: nothing in this family writes
 config, promotes a proposal, or flips an execution mode.
@@ -89,6 +89,7 @@ config, promotes a proposal, or flips an execution mode.
 | **Request deep analysis** | `POST /api/analysis` | queues a single-ticker Opus report. In the cloud the on-demand worker drains it hourly (`on-demand-analysis`, cron `0 * * * *`); locally it waits for `python -m swing_screener.notify.ondemand` (the UI says so). The status list flags a request `stalled` after 30 min, mirroring the worker's requeue window. |
 | **Approve proposal** | `POST /api/proposals/{play_type}/{name}/approve` | flips a queued variant proposal to `approved`, appends a dated rationale, and raises a Needs-Your-Hand item carrying the verbatim **three-artifact promotion checklist** (variants.py roster line, experiments.json registry row, proposed.json flip — one commit). **Approve marks; it never promotes.** Promotion stays a deliberate human commit; the edit the cockpit writes is a local working-tree edit under `edge/`, committed with your decision. |
 | **Withdraw proposal** | `POST /api/proposals/{play_type}/{name}/withdraw` | flips a queued/approved proposal to `withdrawn` with a dated reason. A withdrawn (or approved) name is not silently re-queued by the next reflection redraft — decided rows win the name collision. |
+| **Decide experiment** | `POST /api/experiments/{name}/decide` | retires a settled/futile experiment — **decide marks; the commit stays yours** (the approve posture applied to settlement). The only write is the `edge/experiments.json` flip (status `retired`, `decided_at`, the verbatim reason) as an uncommitted working-tree edit; the response checklist is the human half: delete the roster line and land both in one commit (the registry↔roster lockstep test fails a commit that takes one without the other). 404 unknown name, 409 already decided. |
 | **DISARM** | `POST /api/disarm?dry_run=0\|1` | the **venue sweep, and only that**: cancels resting entry-side orders and keeps/restores the bracket **stops** (restore levels are *copied* from ExecutionLog tickets, never computed). It never closes a position and never flips `SWING_EXECUTION_MODE` — the remote mode flip stays the Azure runbook's `az containerapp job update`. The button caption says exactly this: *"cancels entry-side, keeps bracket stops."* Hold-to-confirm (900 ms) fires the `dry_run=1` preview on hold-start and only arms the real POST once that preview has landed — a completed hold before the preview renders waits, it never fires blind. With no broker configured the endpoint 409s (`no broker configured`) and the masthead button is disabled with that tooltip. |
 
 ### Journal & oversight actions

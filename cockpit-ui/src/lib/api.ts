@@ -992,6 +992,17 @@ export const getForwardBooks = (facet: Facet = 'research'): Promise<ForwardBooks
 export const getOpenBook = (facet: Facet = 'research'): Promise<OpenBook> =>
   fetchJson<OpenBook>(`/api/books/open?facet=${facet}`)
 
+/** POST /api/experiments/{name}/decide result — decide MARKS the registry
+ * (uncommitted working-tree edit); the checklist is the human half (roster
+ * line + one commit). */
+export interface ExperimentDecided {
+  name: string
+  status: string
+  decided_at: string | null
+  note: string
+  checklist: string[]
+}
+
 export const getFunnel = (): Promise<FunnelResponse> => fetchJson<FunnelResponse>('/api/funnel')
 
 export const getPerformance = (
@@ -1105,6 +1116,18 @@ export const postWithdrawProposal = (
 ): Promise<ProposalDecided> =>
   postAction<ProposalDecided>(
     `/api/proposals/${playType}/${encodeURIComponent(name)}/withdraw`,
+    { reason },
+  )
+
+/** Retire a settled/futile experiment — decide MARKS edge/experiments.json
+ * (working-tree edit + audit fields); the roster deletion + commit stay human
+ * (the response checklist). 404 unknown, 409 already decided. */
+export const postDecideExperiment = (
+  name: string,
+  reason: string,
+): Promise<ExperimentDecided> =>
+  postAction<ExperimentDecided>(
+    `/api/experiments/${encodeURIComponent(name)}/decide`,
     { reason },
   )
 
