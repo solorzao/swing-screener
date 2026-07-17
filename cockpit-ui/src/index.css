@@ -5947,3 +5947,40 @@ a.needs-hand-link:hover {
   letter-spacing: 0.06em;
   margin-bottom: 4px;
 }
+
+/* ---------- CONFIGURATION panel (SafetyScreen ConfigPanel) ----------
+   Read-only knob inventory: section title + change-via pointer, then a plain
+   table. Quiet — configuration is reference, not a lamp. */
+
+.cfg-sections {
+  display: grid;
+  gap: 14px;
+  padding: 4px 0;
+}
+
+.cfg-title {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--txt);
+  padding: 4px 12px;
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.cfg-change {
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  color: var(--faint);
+}
+
+.cfg-env {
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.cfg-note {
+  color: var(--faint);
+  font-size: 11px;
+}

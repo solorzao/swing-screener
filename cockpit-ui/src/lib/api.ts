@@ -1022,6 +1022,31 @@ export const getScoreboard = (win: Window): Promise<Scoreboard> =>
 
 export const getGate = (): Promise<Gate> => fetchJson<Gate>('/api/gate')
 
+/** GET /api/config — the read-only configuration panel: every live knob with
+ * its env var, current value, and where the REAL edit lives (the cockpit never
+ * writes config — North Star #1/#3; env is per-process, so a cockpit edit
+ * could not reach the Azure jobs anyway). */
+export interface ConfigRow {
+  key: string
+  env: string | null
+  value: unknown
+  note: string
+}
+
+export interface ConfigSection {
+  title: string
+  change_via: string
+  rows: ConfigRow[]
+}
+
+export interface CockpitConfig {
+  env_scope: string
+  sections: ConfigSection[]
+}
+
+export const getConfig = (): Promise<CockpitConfig> =>
+  fetchJson<CockpitConfig>('/api/config')
+
 /** POST an action with the X-Cockpit guard header (the one mutation guard — it
  * forces cross-origin callers into a failing CORS preflight; same-origin us
  * attaches it trivially). Backend errors surface their one safe {detail} line
