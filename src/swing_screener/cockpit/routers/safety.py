@@ -6,7 +6,7 @@ and every status code are unchanged."""
 import logging
 import threading
 from collections.abc import Callable, Iterator
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -32,11 +32,14 @@ from swing_screener.pipeline.preflight import (
     broker_error_detail,
     preflight,
 )
+from swing_screener.config import StrategyConfig
+from swing_screener.options.config import GexConfig
 from swing_screener.settings import (
     load_settings,
     real_money_limits_ok,
     resolve_edge_dir,
     resolve_execution,
+    resolve_risk_unit,
 )
 
 
@@ -63,6 +66,14 @@ def _record_disarm(session: Session, *, reason: str, orders_cancelled: int) -> N
             session.rollback()
         except Exception:  # noqa: BLE001 -- a dead session must not mask the response either
             log.warning("DisarmEvent rollback also failed", exc_info=True)
+
+
+def _cfg_row(
+    key: str, env: str | None, value: object, note: str = ""
+) -> dict[str, object]:
+    """One CONFIG panel row: display key, the env var that sets it (None for a
+    code constant), the CURRENT resolved value, and a short meaning note."""
+    return {"key": key, "env": env, "value": value, "note": note}
 
 
 def build_safety_router(
@@ -267,6 +278,105 @@ def build_safety_router(
                             "critical": c.critical} for c in report.checks],
             },
             "bracket_shield": _bracket_shield(session, broker_snapshot.get()),
+        }
+
+    @router.get("/api/config")
+    def config() -> dict[str, object]:
+        """The live configuration, READ-ONLY BY DESIGN -- the instrument panel
+        shows every knob; git remains the control column (North Star #1/#3: no
+        config write ever originates in the cockpit, and env is per-process, so
+        a cockpit 'edit' could not reach the Azure jobs anyway). Three sections,
+        each row ``{key, env, value, note}`` with a per-section ``change_via``
+        stating exactly where the real edit lives. Leak posture: secrets are
+        never echoed (the one secret-adjacent value here is the broker's
+        real-money switch, a boolean); the DB URL is deliberately absent (the
+        masthead chip already carries its safe label). ``env_scope`` mirrors
+        the safety report's honesty label: these are THIS process's values --
+        the Azure jobs run under their own env (infra/main.bicepparam)."""
+        s = load_settings()
+        risk_unit, max_shares = resolve_risk_unit(s)
+        mode, limits = resolve_execution(s)
+        strategy = StrategyConfig()
+        gex = GexConfig()
+        sizing = [
+            _cfg_row("account equity", "SWING_ACCOUNT_EQUITY", s.account_equity,
+                     "dollars; 1R = equity × risk pct"),
+            _cfg_row("risk pct", "SWING_RISK_PCT", s.risk_pct,
+                     "fraction of equity risked per trade (default 0.01)"),
+            _cfg_row("risk per trade $", "SWING_RISK_PER_TRADE_DOLLARS",
+                     s.risk_per_trade_dollars,
+                     "explicit 1R override — wins over equity × pct when set"),
+            _cfg_row("resolved 1R", None, risk_unit,
+                     "the computed risk unit; 0 = sizing unconfigured (R-multiples only)"),
+            _cfg_row("max shares", "SWING_MAX_SHARES", max_shares,
+                     "hard share cap per order (null = uncapped)"),
+        ]
+        execution = [
+            _cfg_row("execution mode", "SWING_EXECUTION_MODE", mode,
+                     "off | manual | paper | live — unknown coerces to off (fail-safe)"),
+            _cfg_row("broker", "SWING_BROKER", s.broker or None,
+                     "venue for brackets/DISARM; unset = lamps UNKNOWN, DISARM disabled"),
+            _cfg_row("allow real money", "SWING_BROKER_ALLOW_REAL_MONEY",
+                     s.allow_real_money,
+                     "one of the three live locks — false blocks live arming"),
+            _cfg_row("max daily notional $", "SWING_MAX_DAILY_NOTIONAL",
+                     limits.max_daily_notional,
+                     "per-account-day recorded order notional (null = unbounded)"),
+            _cfg_row("max daily loss (R)", "SWING_MAX_DAILY_LOSS",
+                     limits.max_daily_loss,
+                     "R threshold: new orders blocked once the day sums ≤ −this"),
+            _cfg_row("max concurrent", "SWING_MAX_CONCURRENT", limits.max_concurrent,
+                     "open positions per account (null = unbounded)"),
+        ]
+        analyst = [
+            _cfg_row("deep analysis", "SWING_DEEP_ANALYSIS", s.deep_analysis_enabled,
+                     "the Opus web-search analyst (default off)"),
+            _cfg_row("analysis model", "SWING_ANALYSIS_MODEL", s.analysis_model, ""),
+            _cfg_row("deep analysis max $/run", "SWING_DEEP_ANALYSIS_MAX_USD",
+                     s.deep_analysis_max_usd, "per-run spend ceiling (null = uncapped)"),
+            _cfg_row("coach", "SWING_COACH_ENABLED", s.coach_enabled,
+                     "Personal Trade Coach (Journal)"),
+            _cfg_row("auditor", "SWING_AUDIT_ENABLED", s.audit_enabled,
+                     "System Behavior Auditor (System Audit)"),
+        ]
+        return {
+            "env_scope": "this process — the Azure jobs run under their own env",
+            "sections": [
+                {
+                    "title": "sizing",
+                    "change_via": "user-level env on this box · infra/main.bicepparam in prod (bicep deploy applies)",
+                    "rows": sizing,
+                },
+                {
+                    "title": "execution",
+                    "change_via": "user-level env on this box · infra/main.bicepparam in prod (bicep deploy applies)",
+                    "rows": execution,
+                },
+                {
+                    "title": "analyst & coaches",
+                    "change_via": "user-level env on this box · infra/main.bicepparam or jobs.bicep in prod",
+                    "rows": analyst,
+                },
+                {
+                    "title": "engine (StrategyConfig — the incumbent)",
+                    "change_via": "config.py via PR — the optimizer proposes, evidence gates, a human merges (North Star #1)",
+                    "rows": [
+                        _cfg_row(k, None, v, "")
+                        for k, v in asdict(strategy).items()
+                    ],
+                },
+                {
+                    "title": "GEX lab (GexConfig)",
+                    "change_via": "options/config.py via PR — lab knobs never live in the equity config",
+                    "rows": [
+                        _cfg_row(
+                            k, None,
+                            list(v) if isinstance(v, tuple) else v, "",
+                        )
+                        for k, v in asdict(gex).items()
+                    ],
+                },
+            ],
         }
 
     return router

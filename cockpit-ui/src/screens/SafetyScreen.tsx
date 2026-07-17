@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
-import { POLL_MS, getExecutionSafety, getPositions, usePolling } from '../lib/api'
+import { POLL_MS, getConfig, getExecutionSafety, getPositions, usePolling } from '../lib/api'
 import { HelpTerm } from '../components/HelpTerm'
-import type { ExecutionSafety, Polled } from '../lib/api'
+import type { CockpitConfig, ExecutionSafety, Polled } from '../lib/api'
 import { BracketLamp } from '../components/BracketLamp'
 import { CapGauge } from '../components/CapGauge'
 import { PanelBody } from '../components/PanelBody'
@@ -70,6 +70,70 @@ function SafetyBody({
         ? `UNKNOWN — safety read failed (${polled.error})`
         : 'waiting for first fetch…'}
     </div>
+  )
+}
+
+
+/** The read-only CONFIGURATION panel: every live knob, its env var, and where
+ * the real edit lives. The cockpit shows; git changes (North Star #1/#3) —
+ * env is per-process, so a cockpit "edit" could not reach the Azure jobs. */
+function ConfigPanel({ wake }: { wake: number }) {
+  const cfg = usePolling(getConfig, POLL_MS, wake)
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        CONFIGURATION
+        <span className="panel-caption">
+          read-only by design — the cockpit never writes config; each section says
+          where the real edit lives
+          {cfg.data !== null && ` · scope: ${cfg.data.env_scope}`}
+        </span>
+      </div>
+      <PanelBody polled={cfg} noun="configuration">
+        {(data: CockpitConfig) => (
+          <div className="cfg-sections">
+            {data.sections.map((sec) => (
+              <div key={sec.title} className="cfg-section">
+                <div className="cfg-title">
+                  {sec.title}
+                  <span className="cfg-change">change via: {sec.change_via}</span>
+                </div>
+                <table className="ref-table cfg-table">
+                  <thead>
+                    <tr>
+                      <th>setting</th>
+                      <th>env var</th>
+                      <th className="ref-num">value</th>
+                      <th>meaning</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sec.rows.map((row) => (
+                      <tr key={row.key}>
+                        <td>{row.key}</td>
+                        <td className="mono cfg-env">{row.env ?? '— (code)'}</td>
+                        <td className="mono ref-num">
+                          {row.value === null || row.value === undefined
+                            ? 'unset'
+                            : typeof row.value === 'boolean'
+                              ? row.value
+                                ? 'on'
+                                : 'off'
+                              : Array.isArray(row.value)
+                                ? row.value.join(' · ')
+                                : String(row.value)}
+                        </td>
+                        <td className="cfg-note">{row.note}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))}
+          </div>
+        )}
+      </PanelBody>
+    </section>
   )
 }
 
@@ -277,6 +341,8 @@ export function SafetyScreen({ wake }: { wake: number }) {
             </SafetyBody>
           </section>
         </div>
+
+        <ConfigPanel wake={wake} />
       </main>
     </>
   )
