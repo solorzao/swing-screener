@@ -2,12 +2,16 @@
 
    There is deliberately NO router: StaticFiles(html=True) is not an SPA
    fallback (a deep link would 404) and pywebview loads the root URL once —
-   screens are App STATE, switched by the 1-9 keys per the design's fixed
-   numbering. Screen 10 (Reference) has no digit; it rides the masthead link.
+   screens are App STATE. The nine design-numbered screens ride the 1-9 keys;
+   the five digitless screens (Reference, Journal, GEX Lab, System Audit,
+   Metrics) ride registry-rendered masthead links AND the `g`-leader chord:
+   press `g`, then the screen's chord letter (600 ms window, bails in typing
+   contexts exactly like the digits).
 
    This registry is the ONE source of screen-naming truth: the keydown map,
-   the masthead current-screen indicator, and the placeholder titles all
-   render from it — a screen renamed here is renamed everywhere. */
+   the chord map, the masthead links + current-screen indicator, and the
+   placeholder titles all render from it — a screen renamed here is renamed
+   everywhere. */
 
 export type ScreenId =
   | 'mission'
@@ -27,8 +31,11 @@ export type ScreenId =
 
 export interface ScreenDef {
   id: ScreenId
-  /** The 1-9 jump key; null = no digit (Reference is masthead-link only). */
+  /** The 1-9 jump key; null = no digit (digitless screens ride the masthead
+   * links and the g-chord). */
   digit: string | null
+  /** The g-leader chord letter (digitless screens only): g then this key. */
+  chord?: string
   title: string
   /** The Phase-3 plan task that builds the screen; absent = already built.
    * PlaceholderScreen renders from this — it disappears as tasks land. */
@@ -45,12 +52,16 @@ export const SCREENS: ScreenDef[] = [
   { id: 'safety', digit: '7', title: 'EXECUTION SAFETY' },
   { id: 'weather', digit: '8', title: 'MARKET WEATHER' },
   { id: 'systems', digit: '9', title: 'SYSTEMS' },
-  { id: 'reference', digit: null, title: 'REFERENCE' },
-  { id: 'journal', digit: null, title: 'JOURNAL' },
-  { id: 'gexlab', digit: null, title: 'GEX LAB' },
-  { id: 'systemaudit', digit: null, title: 'SYSTEM AUDIT' },
-  { id: 'metrics', digit: null, title: 'METRICS' },
+  { id: 'reference', digit: null, chord: 'r', title: 'REFERENCE' },
+  { id: 'journal', digit: null, chord: 'j', title: 'JOURNAL' },
+  { id: 'gexlab', digit: null, chord: 'x', title: 'GEX LAB' },
+  { id: 'systemaudit', digit: null, chord: 'a', title: 'SYSTEM AUDIT' },
+  { id: 'metrics', digit: null, chord: 'm', title: 'METRICS' },
 ]
+
+/** The g-leader itself — one place, so App's keydown and the masthead hint
+ * can never disagree. */
+export const CHORD_LEADER = 'g'
 
 const BY_ID = new Map(SCREENS.map((s) => [s.id, s]))
 
@@ -63,9 +74,8 @@ export function screenDef(id: ScreenId): ScreenDef {
 }
 
 /** The display NUMBER (design numbering): the digit key for the 1-9 screens, or
- * a sequential 10, 11, … for the digitless masthead-link screens (Reference is
- * 10, GEX LAB 11) — derived from registry order, so a new digitless screen never
- * collides on a hard-coded number. */
+ * a sequential 10, 11, … for the digitless screens — derived from registry
+ * order, so a new digitless screen never collides on a hard-coded number. */
 const DIGITLESS = SCREENS.filter((s) => s.digit === null)
 export const screenNumber = (def: ScreenDef): string =>
   def.digit ?? String(10 + DIGITLESS.indexOf(def))

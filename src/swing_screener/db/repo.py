@@ -186,6 +186,24 @@ def load_research_paper_trades(session: Session) -> list[PaperTrade]:
     return list(session.scalars(stmt))
 
 
+def load_open_forward_book(session: Session) -> list[PaperTrade]:
+    """Every OPEN trade in the FORWARD book: the research grid pinned to
+    (``arm == BASELINE``, ``variant == DEFAULT_VARIANT``).
+
+    The running complement of ``load_closed_paper_trades``'s reflection slice --
+    the same account/arm/variant pin, minus the closed/filled/realized filters --
+    so the cockpit's open-book panel shows exactly the trades whose closes the
+    reflection will later grade. Pinning arm+variant is what DEDUPES the shadow
+    grid's arm x variant fill multiplication: each distinct entry appears ONCE,
+    not once per exit arm and once per screen variant. ``==`` renders
+    ``col = 'x'`` (portable to SQL Server), not a boolean ``.is_()``."""
+    stmt = select(PaperTrade).where(
+        PaperTrade.status == "open", PaperTrade.account == "research",
+        PaperTrade.arm == BASELINE, PaperTrade.variant == DEFAULT_VARIANT,
+    )
+    return list(session.scalars(stmt))
+
+
 def load_closed_paper_trades(
     session: Session, *, play_type: str | None = None, arm: str | None = None,
     variant: str | None = None,

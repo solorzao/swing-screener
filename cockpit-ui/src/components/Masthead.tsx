@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { postAzureLogin } from '../lib/api'
 import type { Facet, Gate, Health, Heartbeat } from '../lib/api'
 import { fmtUsd } from '../lib/fmt'
-import { screenDef, screenNumber } from '../lib/screens'
+import { CHORD_LEADER, SCREENS, screenDef, screenNumber } from '../lib/screens'
 import type { ScreenId } from '../lib/screens'
 import { DisarmControl } from './DisarmControl'
 import { FacetToggle } from './FacetToggle'
@@ -40,6 +40,7 @@ export function Masthead({
   onCost,
   screen,
   onNavigate,
+  chordPending = false,
 }: {
   health: Health | null
   beats: Heartbeat[] | null
@@ -52,9 +53,12 @@ export function Masthead({
   onCost: (cost: CostLevel) => void
   /** The active screen — the indicator renders it from the registry. */
   screen: ScreenId
-  /** Screen navigation: the REFERENCE link (screen 10 has no digit key — this
-   * is its one door) and the indicator's click-home both route here. */
+  /** Screen navigation: the digitless-screen links and the indicator's
+   * click-home both route here. */
   onNavigate: (id: ScreenId) => void
+  /** True while a pressed `g` leader awaits its chord letter — renders the
+   * "g ·" hint so the modal key state is never invisible. */
+  chordPending?: boolean
 }) {
   const def = screenDef(screen)
   const anyLit =
@@ -201,59 +205,28 @@ export function Masthead({
 
       <FacetToggle facet={facet} onFacet={onFacet} />
 
-      {/* The digitless screens (design numbering stops at 9) — these masthead
-          links are their only entrance. */}
-      <button
-        type="button"
-        className="mh-ref"
-        title="Reference — screen 10 (universe, digest log, exit log)"
-        onClick={() => onNavigate('reference')}
-      >
-        REFERENCE
-      </button>
-
-      <button
-        type="button"
-        className="mh-ref"
-        title="Journal — screen 11 (P&L calendar, equity + drawdown, breakdowns, discipline, notebook)"
-        onClick={() => onNavigate('journal')}
-      >
-        JOURNAL
-      </button>
-
-      {/* GEX LAB — the second digitless screen (options lab: day plan, checklist
-          grader, journal, lab stats, broker import). Same masthead-link door. */}
-      <button
-        type="button"
-        className="mh-ref"
-        title="GEX LAB — the options lab (day plan, checklist grader, setup journal, lab stats, broker import)"
-        onClick={() => onNavigate('gexlab')}
-      >
-        GEX LAB
-      </button>
-
-      {/* SYSTEM AUDIT — the third-party machine-conduct auditor (compliance,
-          anomalies, breaches). Its own door: distinct from the personal Journal. */}
-      <button
-        type="button"
-        className="mh-ref"
-        title="System Audit — machine-conduct oversight (caps, reject rate, disarms, drought, calibration drift)"
-        onClick={() => onNavigate('systemaudit')}
-      >
-        SYSTEM AUDIT
-      </button>
-
-      {/* METRICS — the cross-book scoreboard (wins & P&L per book, plus the one
-          sanctioned real-money aggregate). Digitless, so this masthead link is
-          its only entrance — the Masthead lists each digitless screen by hand. */}
-      <button
-        type="button"
-        className="mh-ref"
-        title="Metrics — the cross-book scoreboard (wins & P&L across your trading books)"
-        onClick={() => onNavigate('metrics')}
-      >
-        METRICS
-      </button>
+      {/* The digitless screens, REGISTRY-rendered (screens.ts is the one
+          source of naming truth — a hand-listed link here once drifted from it).
+          Each link is a door AND a location lamp: the active screen's link
+          carries aria-current + the lit style. Keyboard door: g then the
+          registry chord letter (shown in the tooltip). */}
+      {chordPending && (
+        <span className="mh-chord-pending" title="press a screen letter to jump; any other key cancels">
+          {CHORD_LEADER} ·
+        </span>
+      )}
+      {SCREENS.filter((s) => s.digit === null).map((s) => (
+        <button
+          key={s.id}
+          type="button"
+          className={screen === s.id ? 'mh-ref mh-ref-active' : 'mh-ref'}
+          aria-current={screen === s.id ? 'page' : undefined}
+          title={`${s.title} — screen ${screenNumber(s)} · keys: ${CHORD_LEADER} then ${s.chord ?? '?'}`}
+          onClick={() => onNavigate(s.id)}
+        >
+          {s.title}
+        </button>
+      ))}
 
       {/* DISARM enablement keys on the PERMANENT gate poll's broker_configured
           (settings truthiness, never connectivity); App force-nulls the gate on

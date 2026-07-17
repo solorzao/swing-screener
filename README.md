@@ -35,7 +35,8 @@ feed, no Azure job, no execution path exists. CLI (`python -m swing_screener.opt
 | `import-robinhood <csv> [--tag-all=gex\|other]` | import a Robinhood activity export into a separate premium book, review-and-tag which trades were GEX |
 
 Charter: [docs/modules/gex-lab.md](docs/modules/gex-lab.md) · playbook: [edge/gex.md](edge/gex.md).
-The cockpit GEX Lab tab lands after the cockpit Phase-3 restructure.
+The cockpit **GEX LAB** screen is live (masthead link, or the `g x` chord): day plan,
+checklist grader, setup journal, lab stats, broker import, and the settle sweep.
 
 ## Module 1: the swing screener
 
@@ -87,7 +88,7 @@ level or grades what ships; nothing arms real money without a human acting on pu
 
 ## What runs automatically (the daily / weekly cadence)
 
-Deployed, the system runs **seven scheduled Azure Container Apps Jobs** (one image, one managed
+Deployed, the system runs **ten scheduled Azure Container Apps Jobs** (one image, one managed
 identity) behind an **Eastern-time gate** — the UTC crons fire on both EST and EDT, and the gate
 (`ops/eastern_gate.py`) lets each job proceed only at the right ET hour (and, for the monthly
 digest, only on the last business day). Unattended, day to day:
@@ -101,6 +102,9 @@ digest, only on the last business day). Unattended, day to day:
 | `weekly-digest` | Fridays, ~4pm | the weekly digest |
 | `monthly-digest` | last business day of the month, ~4pm | the monthly digest |
 | `market-weather` | Sundays, ~9am | the weekly macro **Market Weather** report (MTF SPY regime + VIX/yields → analyst email) |
+| `journal-coach` | hourly | drains the Personal Trade Coach's on-close review-draft queue + refreshes the weekly Weaknesses Profile |
+| `journal-audit-weekly` | Saturdays, ~4pm | the System Behavior Auditor's weekly conduct report |
+| `journal-audit-breach` | weekdays, ~4pm | the Auditor's daily breach scan (caps exceeded, disarms) |
 
 Plus two **weekly, human-gated** GitHub Actions that open a PR for you to review — **nothing
 auto-merges**:

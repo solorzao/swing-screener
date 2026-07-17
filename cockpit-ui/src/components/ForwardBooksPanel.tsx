@@ -10,14 +10,19 @@ import { SettlementCard } from './SettlementCard'
 export function ForwardBooksPanel({
   fb,
   facet,
+  caption,
 }: {
   fb: Polled<ForwardBooks>
   facet: Facet
+  /** Extra panel-head caption (screen 4 states the settle-decision procedure
+   * here; Mission Control omits it to keep the home zone compact). */
+  caption?: string
 }) {
   return (
     <section className="panel">
       <div className="panel-head">
         FORWARD BOOKS <FacetCaption facet={facet} />
+        {caption !== undefined && <span className="panel-caption">{caption}</span>}
       </div>
       <PanelBody polled={fb} noun="forward books">
         {(data) =>

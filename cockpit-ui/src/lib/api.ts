@@ -106,6 +106,40 @@ export interface SettlementCard {
 }
 
 /** Cards arrive pre-ordered: awaiting-decision → accruing → retired. */
+/** One currently-RUNNING paper trade from the open research book (baseline arm /
+ * default variant — the slice reflection grades, deduped of the arm×variant fill
+ * multiplication). Live fields null with `quote_error` (class name only) when the
+ * quote read failed — one bad row never blanks the panel. */
+export interface OpenBookRow {
+  id: number
+  ticker: string
+  play_type: string
+  strength: string | null
+  conviction_tier: string | null
+  opened_date: string
+  age_days: number
+  entry: number
+  stop: number
+  target: number
+  risk: number
+  last_close: number | null
+  unrealized_r: number | null
+  unrealized_pct: number | null
+  to_stop_r: number | null
+  to_target_r: number | null
+  quote_error: string | null
+}
+
+/** GET /api/books/open — the browsable open forward book (the running-paper-
+ * trades surface). `book_label` states the slice honestly; prices ride the same
+ * QuoteCache as /api/positions ("as of last close"). */
+export interface OpenBook {
+  rows: OpenBookRow[]
+  count: number
+  as_of: string | null
+  book_label: string
+}
+
 export interface ForwardBooks {
   cards: SettlementCard[]
 }
@@ -385,6 +419,10 @@ export interface PositionCaps {
    * at used <= -limit) — NOT a spent-dollars meter. Label it as R. */
   loss_r: CapUsage
   concurrent: CapUsage
+  /** The execution mode the caps were computed under. Under 'off' the
+   * concurrent count is the DISPLAYED accounts (manual + live), never the
+   * research shadow grid — caption it with the mode. Optional: older payloads. */
+  mode?: string
 }
 
 export interface ClosedTrade {
@@ -503,6 +541,9 @@ export interface ProposalRow {
   /** Mirrors the optimizer's no-op guard: a valid delta equal to the incumbent.
    * A row that FAILS the gate is invalid, not a no-op — noop stays false. */
   noop: boolean
+  /** The three-artifact promotion steps, served on status=='approved' rows so
+   * the checklist survives the transient approve response (and app restarts). */
+  promotion_checklist?: string[] | null
 }
 
 export interface Proposals {
@@ -700,6 +741,10 @@ export interface VerdictRow {
   source: 'forward' | 'replay' | 'none'
   cost_level: string | null
   corpus_id: string | null
+  /** Which book backs the row (the hunch-display disambiguation): closed
+   * forward-book n vs replay-corpus n. Optional — older sidecars lack them. */
+  n_forward?: number | null
+  n_replay?: number | null
 }
 
 /** The structural md-vs-sidecar check — an ADVISORY amber, never numeric. */
@@ -833,14 +878,33 @@ export interface AnalystReport {
   r_basis: string
 }
 
+/** One open research PR (reflection edge-file update / optimizer config) —
+ * the learning loop's GitHub-side accept/reject gate, surfaced so the strip
+ * can say so. Empty when SWING_GH_TOKEN/REPO are unset or the poll failed. */
+export interface ResearchPr {
+  title: string
+  url: string
+  kind: 'reflection' | 'optimizer'
+}
+
 /** The Needs-Your-Hand strip's permanent-poll feed — cheap file+DB reads only.
- * Corrupt stores degrade QUIETLY here (the loud markers live on the screens). */
+ * Corrupt stores degrade QUIETLY here (the loud markers live on the screens).
+ * The audit/coach/PR fields are optional so a newer frontend degrades cleanly
+ * against an older backend payload (they simply don't render). */
 export interface Attention {
   proposals_queued: string[]
+  /** Approved rows whose name is NOT yet in edge/experiments.json — a name that
+   * reaches the registry counts as promoted and leaves this list. */
   proposals_approved_pending: string[]
   reflection_due: string[]
   /** Compare to the localStorage last-seen id for the unread badge (client-side). */
   latest_analysis_id: number | null
+  /** Unacknowledged System-Audit breach rows awaiting the human ACK. */
+  audit_unacked?: number
+  audit_worst?: 'info' | 'warn' | 'alert' | null
+  /** Coach reviews awaiting a human tag-confirm (Journal screen). */
+  coach_pending?: number
+  research_prs?: ResearchPr[]
 }
 
 /** One 422 field error, flattened from FastAPI's Pydantic detail row: `loc` is
@@ -924,6 +988,9 @@ export const getCohorts = (facet: Facet = 'research'): Promise<Cohorts> =>
 
 export const getForwardBooks = (facet: Facet = 'research'): Promise<ForwardBooks> =>
   fetchJson<ForwardBooks>(`/api/forward-books?facet=${facet}`)
+
+export const getOpenBook = (facet: Facet = 'research'): Promise<OpenBook> =>
+  fetchJson<OpenBook>(`/api/books/open?facet=${facet}`)
 
 export const getFunnel = (): Promise<FunnelResponse> => fetchJson<FunnelResponse>('/api/funnel')
 
@@ -1364,8 +1431,19 @@ export const postAuditAck = (id: number): Promise<AuditReport> =>
 
 /* ---------- GEX lab wire shapes (routers/gex.py) ---------- */
 
+/** One per-strike dollar-gamma row of the profile chart (calls ≥ 0, puts ≤ 0;
+ * net = call_gex + put_gex, computed client-side). */
+export interface GexStrike {
+  strike: number
+  call_gex: number
+  put_gex: number
+}
+
 /** One GEX snapshot — deterministic level facts, so plain nullable numbers, NOT
- * Stats (a level has no n / CI / provenance). A null level renders an em dash. */
+ * Stats (a level has no n / CI / provenance). A null level renders an em dash.
+ * `profile` is null when the stored blob is absent/corrupt (chart degrades,
+ * levels still render); `reading` is the deterministic what-this-means lines
+ * (options/reading.py — thin warning first, model-honesty line last). */
 export interface GexSnapshot {
   underlying: string
   ts: string
@@ -1375,6 +1453,9 @@ export interface GexSnapshot {
   gamma_flip: number | null
   regime: string
   thin_chain: boolean
+  net_gex?: number | null
+  profile?: GexStrike[] | null
+  reading?: string[]
 }
 
 export interface GexPlanResponse {
@@ -1408,6 +1489,9 @@ export interface GexAnalyzed {
   spot: number | null
   thin_chain: boolean
   thin_reasons: string[]
+  net_gex?: number | null
+  profile?: GexStrike[]
+  reading?: string[]
 }
 
 /** plan/build returns EITHER {plans} (no ticker) OR {analyzed} (a ticker) —
@@ -1438,6 +1522,16 @@ export interface GexChecklist {
 
 /** One journaled setup — the checklist booleans ride inline (spread into the
  * row server-side). grade is the graded verdict ("A+"|"B"|"no_trade"). */
+/** The linked lab paper trade's outcome, joined onto its setup row — a taken
+ * setup finally answers "was I right?" without the CLI. null = no trade
+ * (idea/skipped, or the take predates the link). */
+export interface GexSetupTrade {
+  status: 'open' | 'closed'
+  opened_at: string
+  exit_reason: string | null
+  realized_r: number | null
+}
+
 export interface GexSetup extends GexChecklist {
   id: number
   ts: string
@@ -1452,6 +1546,7 @@ export interface GexSetup extends GexChecklist {
   entry: number | null
   stop: number | null
   target: number | null
+  trade?: GexSetupTrade | null
 }
 
 export interface GexSetupsResponse {
@@ -1495,6 +1590,15 @@ export interface GexStats {
   overall: Stat
   by_grade: GexGradeStat[]
   robinhood: Record<string, RobinhoodBook>
+  /** Open (unsettled) lab paper trades — the settle sweep's pending work. */
+  open_trades?: number
+}
+
+/** POST /api/gex/settle — the idempotent settle sweep (the CLI ritual, now a
+ * button): grades due open lab trades; 200 with settled=0 when nothing is due. */
+export interface GexSettleResult {
+  settled: number
+  open_remaining: number
 }
 
 /** One paired import episode (open→close of an occ contract). needs_review
@@ -1537,11 +1641,16 @@ export const postGexBuild = (ticker?: string): Promise<GexBuildResult> =>
     ticker !== undefined && ticker.trim() !== '' ? { ticker: ticker.trim() } : {},
   )
 
-export const getGexSetups = (day?: string): Promise<GexSetupsResponse> =>
+export const getGexSetups = (
+  day?: string,
+  recent = false,
+): Promise<GexSetupsResponse> =>
   fetchJson<GexSetupsResponse>(
-    day === undefined || day === ''
-      ? '/api/gex/setups'
-      : `/api/gex/setups?day=${encodeURIComponent(day)}`,
+    recent
+      ? '/api/gex/setups?recent=1'
+      : day === undefined || day === ''
+        ? '/api/gex/setups'
+        : `/api/gex/setups?day=${encodeURIComponent(day)}`,
   )
 
 /** Journal a graded setup — the server grades the checklist and returns the row. */
@@ -1570,6 +1679,10 @@ export const postGexImportCommit = (
 
 export const getGexStats = (): Promise<GexStats> =>
   fetchJson<GexStats>('/api/gex/stats')
+
+/** The settle sweep (idempotent; X-Cockpit like every action). */
+export const postGexSettle = (): Promise<GexSettleResult> =>
+  postAction<GexSettleResult>('/api/gex/settle')
 
 export interface Polled<T> {
   data: T | null

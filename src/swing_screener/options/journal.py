@@ -6,6 +6,11 @@ at creation via the checklist ``grade()`` -- which raises on unknown/missing key
 so a malformed checklist never persists a mis-graded row. Taking a setup opens
 exactly one ``OptionPaperTrade`` on the firewalled ``options-lab`` book; a
 double-take is a no-op (the guard queries for an existing trade first).
+
+LAB TIME CONVENTION: every lab writer stamps NAIVE US/Eastern wall time
+(``chain._now_eastern``). ``settle.py`` depends on it -- bar indexes are
+normalized to naive Eastern and compared against ``opened_at`` directly -- so
+``at``/``ts`` arguments must never be UTC or machine-local.
 """
 
 from datetime import date, datetime, timedelta
@@ -17,6 +22,12 @@ from swing_screener.db.models import OptionPaperTrade, OptionSetup
 from swing_screener.options.checklist import grade
 
 _STATUSES = frozenset({"idea", "taken", "skipped"})
+
+
+class SettledTradeError(ValueError):
+    """A status change would orphan a SETTLED paper trade: the setup was taken and
+    its trade already closed into the lab book, so un-taking it would silently
+    rewrite graded history. The cockpit router maps this to 409."""
 
 
 def create_setup(
@@ -66,10 +77,16 @@ def create_setup(
 def set_status(
     session: Session, setup_id: int, status: str, *, at: datetime
 ) -> OptionSetup:
-    """Transition a setup's status; opening a paper trade on the way TO ``taken``.
+    """Transition a setup's status; opening a paper trade on the way TO ``taken``
+    and deleting the not-yet-settled trade on the way OFF it.
 
     The paper trade is opened once -- a repeated take (or a take after a skip)
     never opens a second trade, since we query for an existing one first.
+    Leaving ``taken`` (-> idea/skipped) deletes the linked OPEN trade, so the
+    settle sweep never grades a setup that was un-taken; if the trade already
+    SETTLED (closed), the transition is refused with ``SettledTradeError`` --
+    graded history is immutable. ``at`` follows the lab's naive-Eastern
+    convention (module docstring).
     """
     if status not in _STATUSES:
         raise ValueError(f"unknown setup status: {status!r}")
@@ -96,6 +113,16 @@ def set_status(
                     status="open",
                 )
             )
+    elif setup.status == "taken":
+        linked = session.scalar(
+            select(OptionPaperTrade).where(OptionPaperTrade.setup_id == setup_id)
+        )
+        if linked is not None:
+            if linked.status == "closed":
+                raise SettledTradeError(
+                    f"setup {setup_id} already settled; cannot leave 'taken'"
+                )
+            session.delete(linked)
 
     setup.status = status
     session.commit()
@@ -113,4 +140,20 @@ def list_setups(session: Session, *, day: date | None) -> list[OptionSetup]:
             OptionSetup.ts >= start,
             OptionSetup.ts < start + timedelta(days=1),
         )
+    return list(session.scalars(stmt))
+
+
+def list_recent_setups(
+    session: Session, *, end_day: date, days: int = 7
+) -> list[OptionSetup]:
+    """Setups from the ``days`` calendar days ending at ``end_day`` (inclusive),
+    newest-first -- the cockpit's bounded 'recent' window, never an unpaginated
+    full-table read. ``end_day`` is the caller's lab-clock today (naive-Eastern
+    convention, module docstring), passed in so this module stays clock-free."""
+    end = datetime(end_day.year, end_day.month, end_day.day) + timedelta(days=1)
+    stmt = (
+        select(OptionSetup)
+        .where(OptionSetup.ts >= end - timedelta(days=days), OptionSetup.ts < end)
+        .order_by(OptionSetup.ts.desc())
+    )
     return list(session.scalars(stmt))

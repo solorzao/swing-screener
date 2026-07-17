@@ -20,7 +20,7 @@ import statistics
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from swing_screener.analytics.performance import _Z95, _clustered_ci_low
@@ -87,6 +87,21 @@ def lab_summary(
         OptionPaperTrade.realized_r.is_not(None),
     )
     return _stat_from_sessions(_sessions(session.scalars(stmt))).as_dict()
+
+
+def open_trade_count(session: Session, *, account: str = "options-lab") -> int:
+    """Open trades on ``account`` -- the lab's unsettled-work count. The cockpit
+    LAB STATS panel shows it next to the settle sweep, so a lingering open trade
+    is visible instead of silently aging until the next settle run."""
+    count = session.scalar(
+        select(func.count())
+        .select_from(OptionPaperTrade)
+        .where(
+            OptionPaperTrade.account == account,
+            OptionPaperTrade.status == "open",
+        )
+    )
+    return int(count or 0)
 
 
 def by_grade(session: Session, *, account: str) -> list[dict[str, object]]:

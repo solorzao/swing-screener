@@ -557,6 +557,24 @@ function ProposalCard({ p, onDecided }: { p: ProposalRow; onDecided: () => void 
         gate: {gateOk ? 'ok' : p.gate_verdict}
       </div>
       <div className="pp-rationale">{p.rationale}</div>
+      {p.status === 'approved' &&
+        p.promotion_checklist != null &&
+        p.promotion_checklist.length > 0 && (
+          // The three-artifact steps, PERSISTENT — the approve response's
+          // transient panel used to be their only home, so a dismiss (or an app
+          // restart) stranded the promotion. The '· promote' strip item lands
+          // here now, on the actual steps.
+          <div className="pp-promo">
+            <div className="pp-promo-head">
+              promotion checklist — approved, awaiting your one commit
+            </div>
+            <ol className="pp-checklist">
+              {p.promotion_checklist.map((step, idx) => (
+                <li key={idx}>{step}</li>
+              ))}
+            </ol>
+          </div>
+        )}
       <ProposalDecider p={p} onDecided={onDecided} />
     </div>
   )

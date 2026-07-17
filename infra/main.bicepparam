@@ -48,3 +48,31 @@ param digestTo = ''
 // time like digestTo (an empty address fails the action group deployment
 // LOUDLY -- alerting must never be silently absent). ---
 param alertEmail = ''
+
+// --- Sizing: the funded account's equity in dollars (2026-07-17 decision --
+// a $1,000 starter account). 1R = equity x riskPct, conviction-scaled per
+// pick; picks whose per-share risk exceeds the budget size to 0 shares
+// (honest: they don't fit this account). Empty = R-multiples only. ---
+param accountEquity = '1000'
+
+// --- Risk per trade: 10% of equity (2026-07-17 decision -- deliberately hot
+// for the $1,000 starter: 1R = $100, so nearly every pick sizes to real
+// shares; a -3R day is -30% of the account. Revisit as the account grows). ---
+param riskPct = '0.10'
+
+// --- Execution: PAPER (2026-07-17 decision) -- the PaperAdapter opens
+// simulated fills in the curated account="paper" intent book (no broker, no
+// dollars, fenced out of research stats). This is the North-Star Mid-term
+// order-flow proving leg: intents -> sizing -> caps -> fills, end to end.
+// Live stays behind the three locks + caps mandate; this param never
+// arms it. ---
+param executionMode = 'paper'
+
+// --- Hard caps (2026-07-17 decision -- bounded to the $1,000 account so the
+// paper rehearsal enforces real limits; also pre-satisfies the live caps
+// mandate). Notional: a $1,000 cash account cannot buy more than $1,000 of
+// stock in a day. Loss: a 2R day (-$200 at 1R=$100, -20% of equity) halts new
+// entries. Concurrent: 3 open positions = at most 30% of equity at risk. ---
+param maxDailyNotional = '1000'
+param maxDailyLoss = '2.0'
+param maxConcurrent = '3'

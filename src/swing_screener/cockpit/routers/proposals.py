@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 from swing_screener.cockpit.common import ActionNonce, _require_cockpit
 from swing_screener.config import StrategyConfig
 from swing_screener.pipeline.proposed import (
+    APPROVED,
     PLAY_TYPES,
     ProposedVariant,
     decide_proposal,
@@ -61,7 +62,10 @@ def build_proposals_router(
         ``ProposedVariant``'s 8 fields verbatim plus three derived decision aids --
         ``gate_verdict``, ``delta_vs_incumbent``, ``noop`` (semantics + leak posture
         in ``_proposal_row``) -- computed against the incumbent ``StrategyConfig()``,
-        the same base the optimizer sweeps. A missing proposed.json is a play type
+        the same base the optimizer sweeps -- plus ``promotion_checklist``: the
+        verbatim three-artifact checklist on every APPROVED row (null otherwise),
+        so the next-steps card survives a refresh instead of living only in the
+        transient approve response. A missing proposed.json is a play type
         with nothing queued: its rows are simply absent, never an error. A CORRUPT
         store (malformed JSON, a row ``load_proposed`` can't rebuild, OR a row with
         the right keys but wrong TYPES -- e.g. ``"delta": 1.5`` -- that only fails
@@ -82,7 +86,7 @@ def build_proposals_router(
                 # extend-with-generator, which would append the healthy rows a lazy
                 # generator had already yielded before the wrong-TYPES row raised,
                 # leaking a partial store onto the wire.
-                built = [_proposal_row(pv, base) for pv in items]
+                built = [_proposal_row(pv, base, pt) for pv in items]
             except (ValueError, TypeError):  # JSONDecodeError IS a ValueError
                 store_errors.append(pt)
                 continue
@@ -162,7 +166,9 @@ def build_proposals_router(
     return router
 
 
-def _proposal_row(pv: ProposedVariant, base: StrategyConfig) -> dict[str, object]:
+def _proposal_row(
+    pv: ProposedVariant, base: StrategyConfig, store_pt: str
+) -> dict[str, object]:
     """One proposal's wire form -- hand-rolled like ``_beat_dict``, never ``asdict``.
 
     ``gate_verdict`` runs the REAL gatekeeper (``proposed.to_config``) inline: 'ok',
@@ -174,7 +180,12 @@ def _proposal_row(pv: ProposedVariant, base: StrategyConfig) -> dict[str, object
     the gate is invalid, not a no-op: ``noop`` stays False and the verdict says why.
     ``delta_vs_incumbent`` reads ``current`` off the incumbent config only for REAL
     dataclass fields; an unknown knob's current is null -- never a blind ``getattr``,
-    which would hand a method repr to a delta key that happened to name one."""
+    which would hand a method repr to a delta key that happened to name one.
+    ``promotion_checklist`` is the same verbatim three-artifact list the approve
+    response carries, on every APPROVED row (null otherwise) -- parameterized by
+    ``store_pt``, the play type of the FILE the row was loaded from (the
+    ``_decision_dict`` rule: a hand-mangled row's stored ``play_type`` can never
+    mislabel the store the checklist names)."""
     verdict = "ok"
     noop = False
     try:
@@ -198,6 +209,9 @@ def _proposal_row(pv: ProposedVariant, base: StrategyConfig) -> dict[str, object
             for k, v in pv.delta.items()
         ],
         "noop": noop,
+        "promotion_checklist": (
+            _promotion_checklist(store_pt) if pv.status == APPROVED else None
+        ),
     }
 
 

@@ -71,6 +71,25 @@ param digestTo string
 @description('Email address for ops alerts (failed job / missing evening screen).')
 param alertEmail string
 
+@description('''Account equity in dollars for R-based sizing (SWING_ACCOUNT_EQUITY on
+every job). Empty = unconfigured: digests render R-multiples, never a guessed dollar.''')
+param accountEquity string = ''
+
+@description('Risk per trade as a fraction of equity (SWING_RISK_PCT). Empty = code default 0.01.')
+param riskPct string = ''
+
+@description('Execution adapter (SWING_EXECUTION_MODE): off | manual | paper | live. Empty = code default off.')
+param executionMode string = ''
+
+@description('Hard cap: dollars of recorded order notional per account-day (SWING_MAX_DAILY_NOTIONAL). Empty = unbounded.')
+param maxDailyNotional string = ''
+
+@description('Hard cap: daily realized-loss breaker in R (SWING_MAX_DAILY_LOSS). Empty = unbounded.')
+param maxDailyLoss string = ''
+
+@description('Hard cap: max concurrent open positions per account (SWING_MAX_CONCURRENT). Empty = unbounded.')
+param maxConcurrent string = ''
+
 @description('Seed Key Vault secret VALUES from the params above. Set false on re-deploys so an existing/rotated secret is never overwritten.')
 param seedSecrets bool = true
 
@@ -218,6 +237,12 @@ module jobs 'modules/jobs.bicep' = {
     acsSender: acs.outputs.senderAddress
     keyVaultUrl: keyvault.outputs.vaultUri
     secretNames: keyvault.outputs.secretNames
+    accountEquity: accountEquity
+    riskPct: riskPct
+    executionMode: executionMode
+    maxDailyNotional: maxDailyNotional
+    maxDailyLoss: maxDailyLoss
+    maxConcurrent: maxConcurrent
     tags: commonTags
   }
 }

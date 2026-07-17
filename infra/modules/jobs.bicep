@@ -1,6 +1,6 @@
 // =============================================================================
 // jobs.bicep
-// SEVEN scheduled Container Apps Jobs, all sharing ONE image and ONE UAMI.
+// TEN scheduled Container Apps Jobs, all sharing ONE image and ONE UAMI.
 //
 // Each job keeps the image ENTRYPOINT (the US-Eastern gate,
 // `python -m swing_screener.ops.eastern_gate`) and sets container `args` to the
@@ -68,6 +68,34 @@ param secretNames object
 
 @description('Replica timeout (seconds) for the screen job.')
 param screenTimeoutSeconds int = 3600
+
+@description('''Account equity in dollars for R-based sizing (SWING_ACCOUNT_EQUITY).
+Empty = sizing unconfigured: digests and order intents render R-multiples, never a
+guessed dollar (settings.resolve_risk_unit). Set to the real funded amount --
+1R = equity x SWING_RISK_PCT, conviction-scaled per pick. A string
+so "" can mean unset (bicep has no null string param).''')
+param accountEquity string = ''
+
+@description('''Risk per trade as a fraction of equity (SWING_RISK_PCT; settings
+default 0.01 when absent). 1R = equity x this. Empty = absent (code default).''')
+param riskPct string = ''
+
+@description('''The execution adapter (SWING_EXECUTION_MODE): off | manual | paper |
+live. Empty = absent -> code default "off" (fail-safe: the screener never arms by
+accident; unknown values also coerce to off). "paper" runs the PaperAdapter --
+simulated fills into the curated account="paper" intent book, no broker, fenced out
+of research aggregates -- the North-Star Mid-term order-flow proving leg.''')
+param executionMode string = ''
+
+@description('''The three hard caps the adapter's submit() clamp enforces per
+account-day (empty = that cap absent -> unbounded, the code's None sentinel).
+maxDailyNotional is DOLLARS of recorded order notional; maxDailyLoss is an R
+THRESHOLD (new orders blocked once the day's summed realized R <= -this);
+maxConcurrent is open positions. Also the Safety screen's caps mandate: live
+arming requires all three set.''')
+param maxDailyNotional string = ''
+param maxDailyLoss string = ''
+param maxConcurrent string = ''
 
 // 1800s (30 min) comfortably covers deep (Opus + web-search) analysis of the
 // top-N picks (~1 min/pick) plus the email build.
@@ -149,7 +177,40 @@ var secretDefs = [
 ]
 
 // Env shared by every job. Secret values arrive via secretRef; the rest plain.
-var commonEnv = [
+// Sizing/execution env, present only when actually configured -- an empty value
+// must stay ABSENT so settings reads its honest code default (unconfigured
+// sizing -> R-multiples; absent mode -> fail-safe "off"), never a parse of ''.
+var equityEnv = accountEquity == ''
+  ? []
+  : [
+      {
+        name: 'SWING_ACCOUNT_EQUITY'
+        value: accountEquity
+      }
+    ]
+var riskPctEnv = riskPct == ''
+  ? []
+  : [
+      {
+        name: 'SWING_RISK_PCT'
+        value: riskPct
+      }
+    ]
+var executionModeEnv = executionMode == ''
+  ? []
+  : [
+      {
+        name: 'SWING_EXECUTION_MODE'
+        value: executionMode
+      }
+    ]
+var capsEnv = concat(
+  maxDailyNotional == '' ? [] : [{ name: 'SWING_MAX_DAILY_NOTIONAL', value: maxDailyNotional }],
+  maxDailyLoss == '' ? [] : [{ name: 'SWING_MAX_DAILY_LOSS', value: maxDailyLoss }],
+  maxConcurrent == '' ? [] : [{ name: 'SWING_MAX_CONCURRENT', value: maxConcurrent }]
+)
+
+var commonEnv = concat(equityEnv, riskPctEnv, executionModeEnv, capsEnv, [
   {
     name: 'ANTHROPIC_API_KEY'
     secretRef: 'anthropic-api-key'
@@ -244,7 +305,7 @@ var commonEnv = [
     name: 'SWING_AUDIT_MAX_USD'
     value: auditMaxUsd
   }
-]
+])
 
 // Per-job spec: cron + container args + gate env + timeout. The jobs differ
 // ONLY in these. UTC crons fire on both EST and EDT; the gate selects ET.
