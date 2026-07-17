@@ -162,6 +162,7 @@ reviewer) should hold it to:
 | `SWING_GH_REPO` (env) | unset | `owner/repo` the workflow poller asks about; both GH vars are required — with either missing the GH rows read an honest UNKNOWN and the research-PRs item simply doesn't render |
 | `SWING_BROKER` (env) | unset | the venue for the bracket-shield lamps + DISARM. Unset (today's reality) → the lamps read UNKNOWN and DISARM is disabled; `broker_configured` on `/api/gate` and `/api/execution/safety` is this setting's truthiness, **not** connectivity |
 | `SWING_EXECUTION_MODE` (env) | `off` | the execution adapter; the cockpit reads it for the safety screen's mode line. The cockpit never writes it — DISARM does not flip it |
+| `SWING_ACCOUNT_EQUITY` (env) | unset | account equity in dollars for R-based sizing: 1R = equity × `SWING_RISK_PCT` (default 1%), conviction-scaled — the log-trade prefill's share count reads it. Unset → `sizing unconfigured`, R-multiples only, never a guessed dollar. Set it at the **user** level (like `SWING_DB_URL`) so the Start-menu shortcut sees it; prod jobs get it from `infra/main.bicepparam`'s `accountEquity` |
 | `SWING_BLOB_ACCOUNT_URL` / `SWING_BLOB_CONTAINER` (env) | unset | Azure Blob for the chart/PDF report proxies when pointed at Azure; locally the resolvers fall back to on-disk chart/PDF paths |
 
 One instance runs at a time: a second launch finds the live one (via a port-file +

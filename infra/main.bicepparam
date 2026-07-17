@@ -48,3 +48,10 @@ param digestTo = ''
 // time like digestTo (an empty address fails the action group deployment
 // LOUDLY -- alerting must never be silently absent). ---
 param alertEmail = ''
+
+// --- Sizing: the funded account's equity in dollars (2026-07-17 decision --
+// a $1,000 starter account). 1R = equity x SWING_RISK_PCT (default 1% -> $10),
+// conviction-scaled per pick; picks whose per-share risk exceeds the budget
+// size to 0 shares (honest: they don't fit this account). Empty = R-multiples
+// only. ---
+param accountEquity = '1000'

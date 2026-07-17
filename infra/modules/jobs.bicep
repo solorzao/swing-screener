@@ -69,6 +69,13 @@ param secretNames object
 @description('Replica timeout (seconds) for the screen job.')
 param screenTimeoutSeconds int = 3600
 
+@description('''Account equity in dollars for R-based sizing (SWING_ACCOUNT_EQUITY).
+Empty = sizing unconfigured: digests and order intents render R-multiples, never a
+guessed dollar (settings.resolve_risk_unit). Set to the real funded amount --
+1R = equity x SWING_RISK_PCT (default 1%), conviction-scaled per pick. A string
+so "" can mean unset (bicep has no null string param).''')
+param accountEquity string = ''
+
 // 1800s (30 min) comfortably covers deep (Opus + web-search) analysis of the
 // top-N picks (~1 min/pick) plus the email build.
 @description('Replica timeout (seconds) for digest/alert jobs.')
@@ -149,7 +156,19 @@ var secretDefs = [
 ]
 
 // Env shared by every job. Secret values arrive via secretRef; the rest plain.
-var commonEnv = [
+// Sizing env, present only when equity is actually configured -- an empty
+// SWING_ACCOUNT_EQUITY must stay ABSENT so settings reads honest-unconfigured
+// (0-risk-unit -> R-multiples), never a parse of ''.
+var equityEnv = accountEquity == ''
+  ? []
+  : [
+      {
+        name: 'SWING_ACCOUNT_EQUITY'
+        value: accountEquity
+      }
+    ]
+
+var commonEnv = concat(equityEnv, [
   {
     name: 'ANTHROPIC_API_KEY'
     secretRef: 'anthropic-api-key'
@@ -244,7 +263,7 @@ var commonEnv = [
     name: 'SWING_AUDIT_MAX_USD'
     value: auditMaxUsd
   }
-]
+])
 
 // Per-job spec: cron + container args + gate env + timeout. The jobs differ
 // ONLY in these. UTC crons fire on both EST and EDT; the gate selects ET.

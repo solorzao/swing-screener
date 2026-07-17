@@ -71,6 +71,10 @@ param digestTo string
 @description('Email address for ops alerts (failed job / missing evening screen).')
 param alertEmail string
 
+@description('''Account equity in dollars for R-based sizing (SWING_ACCOUNT_EQUITY on
+every job). Empty = unconfigured: digests render R-multiples, never a guessed dollar.''')
+param accountEquity string = ''
+
 @description('Seed Key Vault secret VALUES from the params above. Set false on re-deploys so an existing/rotated secret is never overwritten.')
 param seedSecrets bool = true
 
@@ -218,6 +222,7 @@ module jobs 'modules/jobs.bicep' = {
     acsSender: acs.outputs.senderAddress
     keyVaultUrl: keyvault.outputs.vaultUri
     secretNames: keyvault.outputs.secretNames
+    accountEquity: accountEquity
     tags: commonTags
   }
 }
