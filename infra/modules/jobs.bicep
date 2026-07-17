@@ -87,6 +87,16 @@ simulated fills into the curated account="paper" intent book, no broker, fenced 
 of research aggregates -- the North-Star Mid-term order-flow proving leg.''')
 param executionMode string = ''
 
+@description('''The three hard caps the adapter's submit() clamp enforces per
+account-day (empty = that cap absent -> unbounded, the code's None sentinel).
+maxDailyNotional is DOLLARS of recorded order notional; maxDailyLoss is an R
+THRESHOLD (new orders blocked once the day's summed realized R <= -this);
+maxConcurrent is open positions. Also the Safety screen's caps mandate: live
+arming requires all three set.''')
+param maxDailyNotional string = ''
+param maxDailyLoss string = ''
+param maxConcurrent string = ''
+
 // 1800s (30 min) comfortably covers deep (Opus + web-search) analysis of the
 // top-N picks (~1 min/pick) plus the email build.
 @description('Replica timeout (seconds) for digest/alert jobs.')
@@ -194,8 +204,13 @@ var executionModeEnv = executionMode == ''
         value: executionMode
       }
     ]
+var capsEnv = concat(
+  maxDailyNotional == '' ? [] : [{ name: 'SWING_MAX_DAILY_NOTIONAL', value: maxDailyNotional }],
+  maxDailyLoss == '' ? [] : [{ name: 'SWING_MAX_DAILY_LOSS', value: maxDailyLoss }],
+  maxConcurrent == '' ? [] : [{ name: 'SWING_MAX_CONCURRENT', value: maxConcurrent }]
+)
 
-var commonEnv = concat(equityEnv, riskPctEnv, executionModeEnv, [
+var commonEnv = concat(equityEnv, riskPctEnv, executionModeEnv, capsEnv, [
   {
     name: 'ANTHROPIC_API_KEY'
     secretRef: 'anthropic-api-key'

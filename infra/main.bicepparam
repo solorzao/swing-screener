@@ -67,3 +67,12 @@ param riskPct = '0.10'
 // Live stays behind the three locks + caps mandate; this param never
 // arms it. ---
 param executionMode = 'paper'
+
+// --- Hard caps (2026-07-17 decision -- bounded to the $1,000 account so the
+// paper rehearsal enforces real limits; also pre-satisfies the live caps
+// mandate). Notional: a $1,000 cash account cannot buy more than $1,000 of
+// stock in a day. Loss: a 2R day (-$200 at 1R=$100, -20% of equity) halts new
+// entries. Concurrent: 3 open positions = at most 30% of equity at risk. ---
+param maxDailyNotional = '1000'
+param maxDailyLoss = '2.0'
+param maxConcurrent = '3'

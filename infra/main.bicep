@@ -81,6 +81,15 @@ param riskPct string = ''
 @description('Execution adapter (SWING_EXECUTION_MODE): off | manual | paper | live. Empty = code default off.')
 param executionMode string = ''
 
+@description('Hard cap: dollars of recorded order notional per account-day (SWING_MAX_DAILY_NOTIONAL). Empty = unbounded.')
+param maxDailyNotional string = ''
+
+@description('Hard cap: daily realized-loss breaker in R (SWING_MAX_DAILY_LOSS). Empty = unbounded.')
+param maxDailyLoss string = ''
+
+@description('Hard cap: max concurrent open positions per account (SWING_MAX_CONCURRENT). Empty = unbounded.')
+param maxConcurrent string = ''
+
 @description('Seed Key Vault secret VALUES from the params above. Set false on re-deploys so an existing/rotated secret is never overwritten.')
 param seedSecrets bool = true
 
@@ -231,6 +240,9 @@ module jobs 'modules/jobs.bicep' = {
     accountEquity: accountEquity
     riskPct: riskPct
     executionMode: executionMode
+    maxDailyNotional: maxDailyNotional
+    maxDailyLoss: maxDailyLoss
+    maxConcurrent: maxConcurrent
     tags: commonTags
   }
 }
