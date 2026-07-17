@@ -9,24 +9,61 @@ action nonce so other windows wake.
 
 from collections.abc import Callable, Iterator
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from swing_screener.cockpit.common import ActionNonce, _finite_or_none, _require_cockpit, _utc_iso
-from swing_screener.db.models import GexSnapshot, OptionSetup
+from swing_screener.cockpit.common import ActionNonce, _finite_or_none, _require_cockpit
+from swing_screener.db.models import GexSnapshot, OptionPaperTrade, OptionSetup
 from swing_screener.options import broker_import
+from swing_screener.options.chain import _now_eastern
 from swing_screener.options.config import GexConfig
-from swing_screener.options.journal import create_setup, list_setups, set_status
-from swing_screener.options.run import Snapshotter, run_analyze, run_plan
-from swing_screener.options.stats import by_grade, lab_summary, robinhood_summary
+from swing_screener.options.journal import (
+    SettledTradeError,
+    create_setup,
+    list_recent_setups,
+    list_setups,
+    set_status,
+)
+from swing_screener.options.run import BarsFetcher, Snapshotter, run_analyze, run_plan, run_settle
+from swing_screener.options.stats import by_grade, lab_summary, open_trade_count, robinhood_summary
+
+_EASTERN = ZoneInfo("America/New_York")
+
 
 def _num(v: float | None) -> float | None:
     """None-safe finite guard: pass None through, null out inf/nan on real values.
     (common._finite_or_none assumes a real float and raises on None.)"""
     return None if v is None else _finite_or_none(v)
+
+
+def _lab_iso(value: datetime | None) -> str | None:
+    """A lab-table datetime as an ISO string with the correct Eastern offset.
+
+    LAB TIME CONVENTION (options/journal.py module docstring): every lab writer
+    stamps NAIVE US/Eastern wall time (``chain._now_eastern`` -- this router's
+    create/status stamps route through it too). ``settle.py`` depends on it: bar
+    indexes are normalized to naive Eastern and compared against ``opened_at``
+    directly, so writers must never stamp UTC or machine-local. Serving therefore
+    localizes with ``America/New_York`` (emitting -04:00/-05:00 per DST) instead
+    of ``common._utc_iso``, which assumes UTC writers and would render every lab
+    timestamp 4-5 hours wrong."""
+    return value.replace(tzinfo=_EASTERN).isoformat() if value is not None else None
+
+
+def _parse_day(day: str | None) -> date | None:
+    """A ``YYYY-MM-DD`` query string as a date, or None. A malformed value is a
+    422 (client error), never a 500 -- routers/journal.py's ``_parse_month``
+    posture."""
+    if not day:
+        return None
+    try:
+        return date.fromisoformat(day)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="day must be YYYY-MM-DD") from exc
 
 
 _CHK_KEYS = [
@@ -71,7 +108,7 @@ class CommitBody(BaseModel):
 def _snapshot_dict(snap: GexSnapshot) -> dict[str, object]:
     return {
         "underlying": snap.underlying,
-        "ts": _utc_iso(snap.ts),
+        "ts": _lab_iso(snap.ts),
         "spot": _num(snap.spot),
         "call_wall": _num(snap.call_wall),
         "put_wall": _num(snap.put_wall),
@@ -96,18 +133,52 @@ def _plan_dict(plan: object) -> dict[str, object]:
     }
 
 
-def _setup_dict(s: OptionSetup) -> dict[str, object]:
+def _trade_dict(t: OptionPaperTrade | None) -> dict[str, object] | None:
+    """The linked paper trade's outcome (or None for an untaken setup) -- the
+    frontend's outcome-chip contract: status/opened_at/exit_reason/realized_r."""
+    if t is None:
+        return None
+    return {
+        "status": t.status,
+        "opened_at": _lab_iso(t.opened_at),
+        "exit_reason": t.exit_reason,
+        "realized_r": _num(t.realized_r),
+    }
+
+
+def _setup_dict(
+    s: OptionSetup, *, trade: OptionPaperTrade | None = None
+) -> dict[str, object]:
     d: dict[str, object] = {
-        "id": s.id, "ts": _utc_iso(s.ts), "underlying": s.underlying,
+        "id": s.id, "ts": _lab_iso(s.ts), "underlying": s.underlying,
         "direction": s.direction, "regime": s.regime, "grade": s.grade,
         "status": s.status, "pattern": s.pattern, "notes": s.notes,
         "pivot_level": _num(s.pivot_level),
         "entry": _num(s.entry), "stop": _num(s.stop),
         "target": _num(s.target),
+        "trade": _trade_dict(trade),
     }
     for key in _CHK_KEYS:
         d[key] = getattr(s, key)
     return d
+
+
+def _trade_for(session: Session, setup_id: int) -> OptionPaperTrade | None:
+    return session.scalar(
+        select(OptionPaperTrade).where(OptionPaperTrade.setup_id == setup_id)
+    )
+
+
+def _trades_by_setup(
+    session: Session, setup_ids: list[int]
+) -> dict[int, OptionPaperTrade]:
+    """The linked lab trades for a page of setups, one query (not per-row)."""
+    if not setup_ids:
+        return {}
+    rows = session.scalars(
+        select(OptionPaperTrade).where(OptionPaperTrade.setup_id.in_(setup_ids))
+    )
+    return {t.setup_id: t for t in rows if t.setup_id is not None}
 
 
 def _episode_dict(e: broker_import.Episode) -> dict[str, object]:
@@ -129,10 +200,12 @@ def build_gex_router(
     action_nonce: ActionNonce,
     snapshotter: Snapshotter | None = None,
     daily_bars: Callable[[str], object] | None = None,
+    bars_5m: BarsFetcher | None = None,
 ) -> APIRouter:
-    """``snapshotter`` / ``daily_bars`` are the plan-build test seams (None binds the
-    real yfinance chain + daily-bar fetch); nothing here touches the network until a
-    build/analyze POST asks."""
+    """``snapshotter`` / ``daily_bars`` are the plan-build test seams and ``bars_5m``
+    the settle-sweep one (None binds the real yfinance chain / daily-bar / 5m-bar
+    fetches); nothing here touches the network until a build/analyze/settle POST
+    asks."""
     router = APIRouter()
     cfg = GexConfig()
 
@@ -168,16 +241,27 @@ def build_gex_router(
         return {"plans": [_plan_dict(p) for p in plans]}
 
     @router.get("/api/gex/setups")
-    def setups(day: str | None = None, session: Session = Depends(_session)) -> dict[str, object]:
-        parsed = date.fromisoformat(day) if day else None
-        rows = list_setups(session, day=parsed)
-        return {"setups": [_setup_dict(s) for s in rows]}
+    def setups(
+        day: str | None = None, recent: int = 0,
+        session: Session = Depends(_session),
+    ) -> dict[str, object]:
+        """One day's setups (``day`` = YYYY-MM-DD; malformed is 422), or with
+        ``recent=1`` the last 7 calendar days newest-first (``day`` is ignored --
+        the bounded cockpit history window). Each row carries its linked trade's
+        outcome (``trade``: null until taken)."""
+        if recent:
+            rows = list_recent_setups(session, end_day=_now_eastern().date())
+        else:
+            rows = list_setups(session, day=_parse_day(day))
+        trades = _trades_by_setup(session, [s.id for s in rows])
+        return {"setups": [_setup_dict(s, trade=trades.get(s.id)) for s in rows]}
 
     @router.post("/api/gex/setups", dependencies=[Depends(_require_cockpit)])
     def create(body: SetupBody, session: Session = Depends(_session)) -> dict[str, object]:
         try:
+            # Lab convention: stamp naive Eastern (see _lab_iso), never local/UTC.
             row = create_setup(
-                session, ts=datetime.now(), underlying=body.underlying,
+                session, ts=_now_eastern(), underlying=body.underlying,
                 direction=body.direction, checklist=body.checklist,
                 entry=body.entry, stop=body.stop, target=body.target,
                 regime=body.regime, pivot_level=body.pivot_level,
@@ -192,11 +276,20 @@ def build_gex_router(
     @router.post("/api/gex/setups/{setup_id}/status", dependencies=[Depends(_require_cockpit)])
     def status(setup_id: int, body: StatusBody,
                session: Session = Depends(_session)) -> dict[str, object]:
+        """404 on an unknown id; 409 when leaving ``taken`` would orphan a SETTLED
+        trade (``SettledTradeError`` -- graded history is immutable); the ``at``
+        stamp is naive Eastern per the lab convention (see ``_lab_iso``)."""
         if body.status not in {"idea", "taken", "skipped"}:
             raise HTTPException(status_code=422, detail="status must be idea|taken|skipped")
-        row = set_status(session, setup_id, body.status, at=datetime.now())
+        try:
+            row = set_status(session, setup_id, body.status, at=_now_eastern())
+        except SettledTradeError as exc:  # BEFORE ValueError: it subclasses it
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:  # unknown setup id
+            raise HTTPException(
+                status_code=404, detail=f"no setup with id {setup_id}") from exc
         action_nonce.bump()
-        return _setup_dict(row)
+        return _setup_dict(row, trade=_trade_for(session, setup_id))
 
     @router.post("/api/gex/import/parse", dependencies=[Depends(_require_cockpit)])
     def import_parse(body: ParseBody,
@@ -222,12 +315,28 @@ def build_gex_router(
         action_nonce.bump()
         return {"committed": committed}
 
+    @router.post("/api/gex/settle", dependencies=[Depends(_require_cockpit)])
+    def settle(session: Session = Depends(_session)) -> dict[str, object]:
+        """Sweep due open lab trades through the CLI's settle path (``run_settle``
+        -- same logic, not duplicated). Idempotent: nothing due is still a 200
+        with ``settled: 0``, never an error. Trades whose underlying has no bars
+        yet stay open and count in ``open_remaining``."""
+        result = run_settle(session, cfg=cfg, bars_fetcher=bars_5m)
+        if result.settled:
+            action_nonce.bump()  # only when a write actually landed
+        return {
+            "settled": result.settled,
+            "open_remaining": open_trade_count(session),
+        }
+
     @router.get("/api/gex/stats")
     def stats(session: Session = Depends(_session)) -> dict[str, object]:
         return {
             "overall": lab_summary(session, account="options-lab"),
             "by_grade": by_grade(session, account="options-lab"),
             "robinhood": robinhood_summary(session),
+            # unsettled lab work: what a POST /api/gex/settle would try to sweep
+            "open_trades": open_trade_count(session),
         }
 
     return router

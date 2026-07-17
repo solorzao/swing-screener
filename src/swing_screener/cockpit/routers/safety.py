@@ -25,7 +25,7 @@ from swing_screener.cockpit.spend import spend_rows_since
 from swing_screener.db.models import DisarmEvent
 from swing_screener.db.repo import latest_recorded_stop
 from swing_screener.pipeline.autonomy import autonomy_gate, gate_countdown
-from swing_screener.pipeline.broker import BrokerClient
+from swing_screener.pipeline.broker import BrokerClient, BrokerOrder
 from swing_screener.pipeline.disarm import ensure_stop_protection, pull_entry_orders
 from swing_screener.pipeline.preflight import (
     PreflightReport,
@@ -45,15 +45,24 @@ log = logging.getLogger(__name__)
 
 def _record_disarm(session: Session, *, reason: str, orders_cancelled: int) -> None:
     """Persist a DisarmEvent so the System Behavior Auditor can see an unexpected
-    disarm. Best-effort: a completed disarm has moved venue state, so a failure to
-    log it must not turn the response into a 503."""
+    disarm. Best-effort: a disarm (complete OR partial) has moved venue state, so
+    a failure to log it must not change the response -- a completed run's 200
+    stays a 200, and a failed run's 503 must carry the ORIGINAL broker error,
+    never a masking DB one. The rollback-first clears any failed transaction the
+    request may have left (the SQLAlchemyError path arrives here with a poisoned
+    session; add+commit on it would always lose the event) -- safe because this
+    endpoint only READS before recording, so there is nothing pending to lose."""
     try:
+        session.rollback()
         session.add(DisarmEvent(
             created_at=datetime.now(UTC), reason=reason, orders_cancelled=orders_cancelled))
         session.commit()
     except Exception:  # noqa: BLE001 -- audit logging is best-effort; the disarm stands
         log.warning("failed to persist DisarmEvent", exc_info=True)
-        session.rollback()
+        try:
+            session.rollback()
+        except Exception:  # noqa: BLE001 -- a dead session must not mask the response either
+            log.warning("DisarmEvent rollback also failed", exc_info=True)
 
 
 def build_safety_router(
@@ -130,10 +139,12 @@ def build_safety_router(
         carrying the exception CLASS only (leak posture). ``dry_run=1`` previews
         -- ``cancelled`` / ``stops_restored`` say what a real run WOULD do, the
         venue is untouched. After a REAL run the broker snapshot cache is
-        invalidated AND the post-action nonce bumps (both in ``finally`` -- a
-        partial disarm has still moved venue state), so the UI never renders
-        pre-disarm orders for up to a TTL and other windows wake immediately
-        even when the run 503s partway.
+        invalidated, the post-action nonce bumps, AND a DisarmEvent is persisted
+        for the System Behavior Auditor (all three in ``finally`` -- a partial
+        disarm has still moved venue state), so the UI never renders pre-disarm
+        orders for up to a TTL, other windows wake immediately, and the Auditor's
+        breach scan sees the attempt even when the run 503s partway (reason
+        ``cockpit`` on completion, ``cockpit-partial`` on the failure path).
         """
         if not disarm_lock.acquire(blocking=False):
             raise HTTPException(status_code=409, detail="disarm already in flight")
@@ -146,12 +157,19 @@ def build_safety_router(
                 ) from exc
             if broker is None:
                 raise HTTPException(status_code=409, detail="no broker configured")
+            # Pre-bound so the FAILURE path can report how many entries were pulled
+            # before the raise: pull_entry_orders raising mid-cancel leaves the name
+            # unbound, and 0 ("we don't know that any cancel landed") is the honest
+            # floor -- never an invented count.
+            entries: list[BrokerOrder] = []
+            completed = False
             try:
                 entries, sells = pull_entry_orders(broker, dry_run=dry_run)
                 restored, unprotected = ensure_stop_protection(
                     broker, lambda sym: latest_recorded_stop(session, sym),
                     key_suffix=f"cockpit-{datetime.now(UTC):%Y%m%d%H%M%S}",
                     dry_run=dry_run)
+                completed = True
             except SQLAlchemyError:
                 raise  # the app-level handler's 503: a DB failure is not a broker error
             except Exception as exc:
@@ -160,19 +178,27 @@ def build_safety_router(
                 ) from exc
             finally:
                 if not dry_run:
-                    # A PARTIAL disarm has still moved venue state, so BOTH run on
-                    # the failure path too: invalidate FIRST (a woken fetch must
+                    # A PARTIAL disarm has still moved venue state, so ALL THREE run
+                    # on the failure path too: invalidate FIRST (a woken fetch must
                     # never hit the stale cache), then the post-action wake -- the
                     # venue calls that returned before a raise are durable, and
                     # other windows must refetch NOW, not at the 60s poll floor;
                     # staleness is scariest on exactly this action. A dry run does
-                    # neither: it changed nothing, and Task 15's hold-to-confirm
+                    # none of them: it changed nothing, and Task 15's hold-to-confirm
                     # fires a preview on EVERY hold-start -- waking all windows
                     # per hold would be noise.
                     broker_snapshot.invalidate()
                     action_nonce.bump()
-            if not dry_run:  # a real disarm moved venue state -> record it for the Auditor
-                _record_disarm(session, reason="cockpit", orders_cancelled=len(entries))
+                    # Every REAL attempt is recorded for the Auditor -- the breach
+                    # scan exists to flag disarms, and a disarm that cancelled the
+                    # entries then died restoring stops has moved MORE alarming
+                    # venue state than a clean one, not less. 'cockpit-partial'
+                    # names the failure path; best-effort (_record_disarm never
+                    # raises), so a failed event write cannot mask the 503.
+                    _record_disarm(
+                        session,
+                        reason="cockpit" if completed else "cockpit-partial",
+                        orders_cancelled=len(entries))
             return {
                 "dry_run": dry_run,
                 "cancelled": [{"symbol": o.symbol,

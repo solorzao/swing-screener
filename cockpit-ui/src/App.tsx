@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   POLL_MS,
   getAttention,
@@ -11,7 +11,7 @@ import {
   usePolling,
 } from './lib/api'
 import type { Facet, PlayType, Window } from './lib/api'
-import { SCREENS } from './lib/screens'
+import { CHORD_LEADER, SCREENS } from './lib/screens'
 import type { ScreenId } from './lib/screens'
 import { EventTicker } from './components/EventTicker'
 import { Masthead } from './components/Masthead'
@@ -39,6 +39,27 @@ import { WeatherScreen } from './screens/WeatherScreen'
  * fresh install treats every existing analysis as already-seen only once it
  * views the screen; a NEW id past this is the unread nudge. */
 const SEEN_ANALYSIS_KEY = 'cockpit.analysis.lastSeenId'
+
+/** When the user last OPENED the cockpit (localStorage) — read once at App
+ * mount into `prevVisit`, then immediately re-stamped to now. Mission Control's
+ * SINCE-YOU-LAST-LOOKED recap counts ticker events newer than the previous
+ * stamp; a first run (no stamp) reads null and the recap says so. */
+const LAST_VISIT_KEY = 'cockpit.lastVisit'
+
+function readAndStampLastVisit(): Date | null {
+  try {
+    const raw = window.localStorage.getItem(LAST_VISIT_KEY)
+    window.localStorage.setItem(LAST_VISIT_KEY, new Date().toISOString())
+    if (raw === null) return null
+    const d = new Date(raw)
+    return Number.isNaN(d.getTime()) ? null : d
+  } catch {
+    return null // storage disabled — the recap just shows its first-run state
+  }
+}
+
+/** How long a pressed `g` leader stays armed for its chord letter. */
+const CHORD_WINDOW_MS = 600
 
 function readSeenAnalysis(): number {
   try {
@@ -94,20 +115,53 @@ export default function App() {
   // Analyst screen marks the latest id seen (below) — reached by digit 6, the
   // strip item, or the masthead spend chip, all through `screen === 'analyst'`.
   const [seenAnalysisId, setSeenAnalysisId] = useState<number>(readSeenAnalysis)
+  // The previous visit's stamp, read-and-restamped ONCE per app open (lazy
+  // initializer — a re-render must not move the goalpost mid-session).
+  const [prevVisit] = useState<Date | null>(readAndStampLastVisit)
 
-  // The 1-9 keys, one App-level listener (plan scope decision 9): digits follow
-  // the design's fixed numbering (the SCREENS registry); typing contexts and
-  // modifier chords bail so a digit in a form field (or Ctrl+1 in the browser)
-  // never switches screens. `/` palette, j/k rows, Enter drill-in: deferred.
+  // The 1-9 keys + the g-leader chord, one App-level listener (plan scope
+  // decision 9): digits follow the design's fixed numbering; the five digitless
+  // screens ride `g` then a letter (registry `chord` field) so every screen has
+  // a keyboard door. Typing contexts and modifier chords bail so a key in a
+  // form field (or Ctrl+1 in the browser) never switches screens. The pending
+  // leader lives in a ref (the listener subscribes once) with a mirrored state
+  // for the masthead's "g ·" hint; it disarms on timeout, on a non-chord key,
+  // or on use. `/` palette, j/k rows, Enter drill-in: still deferred.
+  const chordArmed = useRef(false)
+  const chordTimer = useRef<number | null>(null)
+  const [chordPending, setChordPending] = useState(false)
   useEffect(() => {
+    const disarm = () => {
+      chordArmed.current = false
+      setChordPending(false)
+      if (chordTimer.current !== null) {
+        window.clearTimeout(chordTimer.current)
+        chordTimer.current = null
+      }
+    }
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
       if (isTypingContext(e.target)) return
+      if (chordArmed.current) {
+        const hit = SCREENS.find((s) => s.chord === e.key)
+        disarm()
+        if (hit !== undefined) setScreen(hit.id)
+        return // a non-chord key after g just disarms — it must not also jump screens
+      }
+      if (e.key === CHORD_LEADER) {
+        chordArmed.current = true
+        setChordPending(true)
+        chordTimer.current = window.setTimeout(disarm, CHORD_WINDOW_MS)
+        return
+      }
       const hit = SCREENS.find((s) => s.digit === e.key)
       if (hit !== undefined) setScreen(hit.id)
     }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      disarm()
+    }
   }, [])
 
   /* The PERMANENT poll roster (plan scope decision 15) — exactly these SIX
@@ -178,6 +232,7 @@ export default function App() {
         onCost={setCost}
         screen={screen}
         onNavigate={setScreen}
+        chordPending={chordPending}
       />
 
       {dbDown && health.data !== null ? (
@@ -218,6 +273,8 @@ export default function App() {
               onPlayType={setPlayType}
               onTab={setTab}
               onLogPick={onLogPick}
+              ticker={ticker}
+              prevVisit={prevVisit}
             />
           ) : screen === 'candidates' ? (
             <CandidatesScreen
@@ -233,7 +290,7 @@ export default function App() {
           ) : screen === 'analyst' ? (
             <AnalystScreen wake={wake} />
           ) : screen === 'forward' ? (
-            <ForwardScreen fb={fb} facet={facet} />
+            <ForwardScreen fb={fb} facet={facet} wake={wake} />
           ) : screen === 'safety' ? (
             <SafetyScreen wake={wake} />
           ) : screen === 'systems' ? (

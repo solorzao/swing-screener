@@ -1,18 +1,25 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from swing_screener.cockpit.api import create_app
-from swing_screener.db.models import GexSnapshot
+from swing_screener.cockpit.common import ActionNonce, build_engine_seams
+from swing_screener.cockpit.routers.gex import build_gex_router
+from swing_screener.db.models import GexSnapshot, OptionPaperTrade
 from swing_screener.db.session import get_engine
 from swing_screener.options.chain import ChainSnapshot
 from swing_screener.options.checklist import CHECKLIST_ITEMS
+from swing_screener.options.journal import create_setup
 
 _HDR = {"X-Cockpit": "1"}
 _FIXTURE = Path(__file__).parent.parent / "options" / "fixtures" / "robinhood_sample.csv"
+_EASTERN = ZoneInfo("America/New_York")
 
 
 def _db_url(tmp_path: Path) -> str:
@@ -138,3 +145,172 @@ def test_dead_db_is_503(tmp_path: Path) -> None:
     client = TestClient(create_app(url, edge_dir=tmp_path), raise_server_exceptions=False)
     for path in ("/api/gex/plan", "/api/gex/stats"):
         assert client.get(path).status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# friendly failures (garbage day / unknown id)
+
+def test_garbage_day_param_is_422_not_500(tmp_path: Path) -> None:
+    r = _client(tmp_path).get("/api/gex/setups", params={"day": "garbage"})
+    assert r.status_code == 422
+    assert "YYYY-MM-DD" in r.json()["detail"]
+
+
+def test_unknown_setup_id_status_is_404(tmp_path: Path) -> None:
+    r = _client(tmp_path).post("/api/gex/setups/999/status",
+                               json={"status": "taken"}, headers=_HDR)
+    assert r.status_code == 404
+    assert "no setup with id 999" in r.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# lab timestamp convention: naive Eastern in the DB, Eastern offset on the wire
+
+def test_snapshot_ts_serves_the_eastern_offset(tmp_path: Path) -> None:
+    client = _client(tmp_path, seams=True)
+    client.post("/api/gex/plan/build", json={}, headers=_HDR)
+    snaps = client.get("/api/gex/plan").json()["snapshots"]
+    # chain.py stamps naive Eastern (2026-07-13 09:10 in the fixture); the wire
+    # form must carry EDT's -04:00, never _utc_iso's +00:00 (a 4h skew).
+    assert snaps[0]["ts"] == "2026-07-13T09:10:00-04:00"
+
+
+def test_setup_ts_is_stamped_and_served_as_eastern_wall_time(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    body = {"underlying": "SPY", "direction": "long", "checklist": _all_true()}
+    ts = client.post("/api/gex/setups", json=body, headers=_HDR).json()["ts"]
+    parsed = datetime.fromisoformat(ts)
+    now_eastern = datetime.now(tz=_EASTERN)
+    assert parsed.utcoffset() == now_eastern.utcoffset()
+    assert abs((parsed - now_eastern).total_seconds()) < 120
+
+
+# ---------------------------------------------------------------------------
+# setup rows carry the linked trade's outcome
+
+def _graded_body() -> dict[str, object]:
+    return {"underlying": "SPY", "direction": "long", "checklist": _all_true(),
+            "entry": 558.0, "stop": 556.5, "target": 565.0}
+
+
+def test_setup_rows_carry_the_trade_outcome(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    created = client.post("/api/gex/setups", json=_graded_body(), headers=_HDR).json()
+    assert created["trade"] is None
+    taken = client.post(f"/api/gex/setups/{created['id']}/status",
+                        json={"status": "taken"}, headers=_HDR).json()
+    trade = taken["trade"]
+    assert trade["status"] == "open" and trade["opened_at"] is not None
+    assert trade["exit_reason"] is None and trade["realized_r"] is None
+    listed = client.get("/api/gex/setups").json()["setups"]
+    assert listed[0]["trade"]["status"] == "open"
+
+
+def test_untake_deletes_the_open_trade(tmp_path: Path) -> None:
+    url = _db_url(tmp_path)
+    client = _client(tmp_path)
+    setup_id = client.post("/api/gex/setups", json=_graded_body(),
+                           headers=_HDR).json()["id"]
+    client.post(f"/api/gex/setups/{setup_id}/status",
+                json={"status": "taken"}, headers=_HDR)
+    skipped = client.post(f"/api/gex/setups/{setup_id}/status",
+                          json={"status": "skipped"}, headers=_HDR)
+    assert skipped.status_code == 200 and skipped.json()["trade"] is None
+    with Session(get_engine(url)) as s:
+        assert list(s.scalars(select(OptionPaperTrade))) == []
+
+
+def test_untake_after_settlement_is_409(tmp_path: Path) -> None:
+    url = _db_url(tmp_path)
+    client = _client(tmp_path)
+    setup_id = client.post("/api/gex/setups", json=_graded_body(),
+                           headers=_HDR).json()["id"]
+    client.post(f"/api/gex/setups/{setup_id}/status",
+                json={"status": "taken"}, headers=_HDR)
+    with Session(get_engine(url)) as s:
+        trade = s.scalars(select(OptionPaperTrade)).one()
+        trade.status = "closed"
+        trade.exit_reason = "target"
+        trade.realized_r = 2.0
+        s.commit()
+    r = client.post(f"/api/gex/setups/{setup_id}/status",
+                    json={"status": "skipped"}, headers=_HDR)
+    assert r.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# settle sweep + open-trade count
+
+def _settle_client(tmp_path: Path, bars: pd.DataFrame) -> tuple[TestClient, str]:
+    """Router mounted directly so the 5m-bars seam (create_app doesn't thread it)
+    can be injected; everything else matches the full app's wiring."""
+    url = _db_url(tmp_path)
+    get_engine(url)  # create tables
+    _engine, _session = build_engine_seams(url)
+    app = FastAPI()
+    app.include_router(build_gex_router(
+        _session=_session, action_nonce=ActionNonce(), bars_5m=lambda ticker: bars,
+    ))
+    return TestClient(app), url
+
+
+def _target_hit_bars() -> pd.DataFrame:
+    idx = pd.date_range("2026-07-13 09:30", periods=3, freq="5min")
+    return pd.DataFrame({
+        "open": [558.0, 559.0, 560.0], "high": [559.0, 566.0, 566.0],
+        "low": [557.5, 558.5, 559.5], "close": [559.0, 565.5, 565.0],
+    }, index=idx)
+
+
+def test_settle_endpoint_sweeps_due_trades_and_is_idempotent(tmp_path: Path) -> None:
+    client, url = _settle_client(tmp_path, _target_hit_bars())
+    setup_id = client.post("/api/gex/setups", json=_graded_body(),
+                           headers=_HDR).json()["id"]
+    client.post(f"/api/gex/setups/{setup_id}/status",
+                json={"status": "taken"}, headers=_HDR)
+    r = client.post("/api/gex/settle", headers=_HDR)
+    assert r.status_code == 200
+    assert r.json() == {"settled": 1, "open_remaining": 0}
+    # idempotent sweep: nothing due is still a 200, not an error
+    again = client.post("/api/gex/settle", headers=_HDR)
+    assert again.status_code == 200
+    assert again.json() == {"settled": 0, "open_remaining": 0}
+    listed = client.get("/api/gex/setups").json()["setups"]
+    assert listed[0]["trade"]["status"] == "closed"
+    assert listed[0]["trade"]["exit_reason"] == "target"
+    assert listed[0]["trade"]["realized_r"] is not None
+
+
+def test_settle_requires_cockpit_header(tmp_path: Path) -> None:
+    client, _ = _settle_client(tmp_path, _target_hit_bars())
+    assert client.post("/api/gex/settle").status_code == 403
+
+
+def test_stats_payload_carries_open_trade_count(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    assert client.get("/api/gex/stats").json()["open_trades"] == 0
+    setup_id = client.post("/api/gex/setups", json=_graded_body(),
+                           headers=_HDR).json()["id"]
+    client.post(f"/api/gex/setups/{setup_id}/status",
+                json={"status": "taken"}, headers=_HDR)
+    assert client.get("/api/gex/stats").json()["open_trades"] == 1
+
+
+# ---------------------------------------------------------------------------
+# recent window
+
+def test_recent_setups_returns_last_seven_days_and_ignores_day(tmp_path: Path) -> None:
+    url = _db_url(tmp_path)
+    client = _client(tmp_path)
+    now = datetime.now(tz=_EASTERN).replace(tzinfo=None)  # the lab's naive-Eastern clock
+    with Session(get_engine(url)) as s:
+        create_setup(s, ts=now - timedelta(days=10), underlying="OLD",
+                     direction="long", checklist=_all_true())
+        create_setup(s, ts=now - timedelta(days=2), underlying="MID",
+                     direction="long", checklist=_all_true())
+        create_setup(s, ts=now, underlying="NEW", direction="long",
+                     checklist=_all_true())
+    r = client.get("/api/gex/setups",
+                   params={"recent": 1, "day": (now - timedelta(days=10)).date().isoformat()})
+    assert r.status_code == 200
+    assert [x["underlying"] for x in r.json()["setups"]] == ["NEW", "MID"]

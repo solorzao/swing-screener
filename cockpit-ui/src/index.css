@@ -5627,3 +5627,170 @@ button.needs-hand-btn:hover {
   content: '▸ SOURCE  ';
   color: color-mix(in srgb, var(--blue) 65%, var(--dim));
 }
+
+/* ---------- 2026-07-17 usability pass ---------- */
+
+/* Masthead digitless links, registry-rendered: the ACTIVE screen's link is a
+   location lamp (quiet blue face, not amber — position, not attention). */
+button.mh-ref-active {
+  color: var(--txt);
+  border-color: color-mix(in srgb, var(--blue) 55%, var(--line2));
+  background: color-mix(in srgb, var(--blue) 14%, var(--panel2));
+}
+
+/* The g-leader chord's pending hint — the app's one modal key state must never
+   be invisible. Mono, dim, disappears on resolve/timeout. */
+.mh-chord-pending {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--amber);
+  padding: 2px 6px;
+  border: 1px dashed var(--lamp-amber-border);
+  border-radius: 3px;
+}
+
+/* Strip variants: the alert-severity audit item burns red (a breach outranks
+   amber); the research-PR anchor wears the same actionable-lamp face as the
+   buttons (anchors don't inherit button resets). */
+button.needs-hand-alert {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 55%, var(--line2));
+  background: color-mix(in srgb, var(--red) 14%, var(--panel2));
+  box-shadow: 0 0 8px 2px color-mix(in srgb, var(--red) 45%, transparent);
+}
+
+a.needs-hand-link {
+  font: inherit;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+a.needs-hand-link:hover {
+  border-color: var(--amber);
+}
+
+/* SINCE YOU LAST LOOKED (MissionControlScreen RecapZone) — a one-row recap
+   band between Zone B and the grid: counts, then the newest few events held
+   still (the ticker animates them away; this zone doesn't). */
+.recap {
+  margin: 0 14px;
+  margin-top: 14px;
+}
+
+.recap-body {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 8px 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.recap-empty {
+  color: var(--faint);
+}
+
+.recap-counts {
+  color: var(--txt);
+  white-space: nowrap;
+}
+
+.recap-item {
+  color: var(--dim);
+  white-space: nowrap;
+  border-left: 2px solid var(--line2);
+  padding-left: 8px;
+}
+
+.recap-more {
+  color: var(--faint);
+  font-size: 11px;
+}
+
+/* OPEN BOOK (OpenBookPanel on screen 4) — the running-paper-trades table.
+   Reuses pos-table cell idiom; the scroll wrap keeps a big book inside one
+   viewport (the caption counts what's shown — no silent truncation). */
+.ob-caption {
+  color: var(--dim);
+  font-size: 11px;
+  padding: 6px 12px 0;
+}
+
+.ob-scroll {
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.ob-pos {
+  color: var(--green);
+}
+
+.ob-neg {
+  color: var(--red);
+}
+
+/* Playbooks: the PERSISTED promotion checklist on an approved proposal card —
+   same list styling as the transient approve result, framed as pending work. */
+.pp-promo {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--lamp-amber-border);
+  background: var(--lamp-amber-bg);
+  border-radius: 3px;
+}
+
+.pp-promo-head {
+  color: var(--amber);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  margin-bottom: 4px;
+}
+
+/* GEX LAB: stale-snapshot honesty + settle + outcomes. */
+.gex-stale {
+  color: var(--amber);
+  border: 1px solid var(--lamp-amber-border);
+  background: var(--lamp-amber-bg);
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.gex-flags-cell {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.gex-plan-stale {
+  margin: 8px 12px 0;
+  padding: 6px 10px;
+  color: var(--amber);
+  border: 1px dashed var(--lamp-amber-border);
+  border-radius: 3px;
+  font-size: 11.5px;
+}
+
+.gex-settle-note {
+  padding: 6px 12px 0;
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.gex-outcome {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.gex-outcome-open {
+  color: var(--dim);
+}
+
+.gex-outcome-win {
+  color: var(--green);
+}
+
+.gex-outcome-loss {
+  color: var(--red);
+}

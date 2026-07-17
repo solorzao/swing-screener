@@ -339,19 +339,28 @@ def build_trades_router(
           know it exists, so ``db-only`` is its honest ceiling. ``unprotected``
           is reserved for a row with no recorded stop at all (both stop columns
           are NOT NULL today, so it is a wire-contract state, not a live one).
-        * CAPS mirror ``execution._limit_block``'s reads EXACTLY: ``notional``
-          sums ``ExecutionLog.notional`` over ``execution_logs_for_day`` (the
+        * CAPS mirror ``execution._limit_block``'s reads: ``notional`` sums
+          ``ExecutionLog.notional`` over ``execution_logs_for_day`` (the
           REPO filters to the counting statuses -- skipped/canceled/rejected
           never reserved notional); ``loss_r`` is ``realized_r_on`` -- an R
           THRESHOLD, today's realized R with sign preserved (the breaker fires
-          at ``used <= -limit``), NOT a spent-dollars meter; ``concurrent`` is
-          ``count_open_positions`` (PaperTrade rows only -- exactly what the
-          adapter checks; open manual Trades don't count there either).
-          ``account`` maps from the CURRENT execution mode (off -> the research
-          label, per the adapter constants); ``run_date = latest_run_date``;
-          with no runs yet the day-scoped used values are an honest 0.0 and
-          ``run_date`` null. A ``None`` cap is unbounded: ``limit: null`` on the
-          wire, NEVER 0/0.
+          at ``used <= -limit``), NOT a spent-dollars meter; ``concurrent``
+          under a REAL execution mode (manual/paper/live -- where the adapter
+          genuinely enforces the per-account cap) is ``count_open_positions``
+          (PaperTrade rows only -- exactly what the adapter checks; open manual
+          Trades don't count there either). Under mode ``off`` (the default)
+          NOTHING enforces anything and ``OFF_ACCOUNT`` is merely the research
+          LABEL, so the adapter read would count the open research SHADOW GRID
+          -- potentially hundreds of rows with zero corresponding trades on
+          this screen; ``concurrent.used`` therefore counts what the screen
+          DISPLAYS (the open rows above: open manual Trades + open live
+          PaperTrades). ``mode`` (ADDITIVE, 2026-07) carries the execution mode
+          and ``account`` keeps its adapter-constant label (off -> the research
+          label, unchanged) so the frontend can caption the gauge honestly;
+          every pre-existing field keeps its meaning for non-off modes.
+          ``run_date = latest_run_date``; with no runs yet the day-scoped used
+          values are an honest 0.0 and ``run_date`` null. A ``None`` cap is
+          unbounded: ``limit: null`` on the wire, NEVER 0/0.
         * ``closed`` arrives newest-exit first (the repo's order); ``equity`` is
           the retired Streamlit ``_render_closed`` math verbatim: dated closes
           ascending, running sum of ``((exit or entry) - entry) * size`` rounded
@@ -393,6 +402,14 @@ def build_trades_router(
             notional_used = sum(e.notional for e in execution_logs_for_day(
                 session, run_date=run_d, account=account))
             loss_used = realized_r_on(session, run_date=run_d, account=account)
+        if mode == "off":
+            # HONESTY (2026-07 usability finding): with execution off no adapter
+            # enforces a cap and OFF_ACCOUNT is the research LABEL -- counting
+            # that account here rendered "N concurrent positions used" off the
+            # invisible shadow grid. Count what THIS screen displays instead.
+            concurrent_used = len(open_rows)
+        else:
+            concurrent_used = count_open_positions(session, account=account)
 
         closed_trades = get_closed_trades(session)
         dated = sorted((t for t in closed_trades if t.exit_date is not None),
@@ -406,13 +423,14 @@ def build_trades_router(
         return {
             "open": open_rows,
             "caps": {
+                "mode": mode,
                 "account": account,
                 "run_date": run_d.isoformat() if run_d is not None else None,
                 "notional": {"used": notional_used,
                              "limit": limits.max_daily_notional},
                 "loss_r": {"used": loss_used, "limit": limits.max_daily_loss},
                 "concurrent": {
-                    "used": count_open_positions(session, account=account),
+                    "used": concurrent_used,
                     "limit": limits.max_concurrent,
                 },
             },
@@ -589,6 +607,29 @@ def _live_shares(session: Session, ticker: str) -> int | None:
     return session.scalars(stmt).first()
 
 
+def _live_grades(
+    price: float, *, entry: float, risk: float, stop: float, target: float
+) -> dict[str, float | None]:
+    """The size-independent live-grading math for one OPEN paper position at
+    ``price`` -- the ONE home shared by ``_live_position_row`` (the positions
+    screen's live rows) and the books router's ``/api/books/open`` rows, so the
+    two surfaces can never drift. Long-only book: every sign reads long. Each
+    denominator is guarded per FIELD (risk/entry/price non-positive -> that
+    field null) -- the shared never-503 posture. Keep the pct fields in
+    lockstep with ``analytics.pl.PositionPL`` (the real rows' source, via
+    ``_pl_dict``); the ``to_*_r`` pair is the same distance math in R units:
+    negative ``to_stop_r`` = the stop is breached, negative ``to_target_r`` =
+    the target is overshot."""
+    return {
+        "unrealized_pct": (price - entry) / entry if entry > 0 else None,
+        "r_multiple": (price - entry) / risk if risk > 0 else None,
+        "dist_to_stop_pct": (price - stop) / price if price > 0 else None,
+        "dist_to_target_pct": (target - price) / price if price > 0 else None,
+        "to_stop_r": (price - stop) / risk if risk > 0 else None,
+        "to_target_r": (target - price) / risk if risk > 0 else None,
+    }
+
+
 def _live_position_row(p: PaperTrade, price: float | None, shares: int | None, *,
                        snapshot: Snapshot | None,
                        armed: frozenset[str]) -> dict[str, object]:
@@ -597,11 +638,10 @@ def _live_position_row(p: PaperTrade, price: float | None, shares: int | None, *
     while the R-multiple still renders from the persisted per-share ``risk`` and
     the size-independent percent fields stay honest. A pending entry
     (``entry_price`` null) carries ``pl: null``; the badge still reads off the
-    quote (stop/target are always recorded). Each denominator is guarded per
-    FIELD (risk/entry/price non-positive -> that field null) -- same never-503
-    posture as the real rows. Keep the field math in lockstep with
-    ``analytics.pl.PositionPL`` (the real rows' source, via ``_pl_dict``). Live
-    rows have no ``override`` column: null, with ``unlinked`` still keyed off
+    quote (stop/target are always recorded). The size-independent fields come
+    from ``_live_grades`` (shared with /api/books/open -- one home for the
+    math); only the shares-dependent dollar P/L is computed here. Live rows
+    have no ``override`` column: null, with ``unlinked`` still keyed off
     ``signal_id`` (a reconciler-materialized fill carries none)."""
     pl: dict[str, object] | None = None
     badge = "unknown"
@@ -609,14 +649,15 @@ def _live_position_row(p: PaperTrade, price: float | None, shares: int | None, *
         badge = _badge(price, stop=p.stop, target=p.target)
         if p.entry_price is not None:
             entry = p.entry_price
+            g = _live_grades(price, entry=entry, risk=p.risk,
+                             stop=p.stop, target=p.target)
             pl = {
                 "unrealized_pl": ((price - entry) * shares
                                   if shares is not None else None),
-                "unrealized_pct": (price - entry) / entry if entry > 0 else None,
-                "r_multiple": (price - entry) / p.risk if p.risk > 0 else None,
-                "dist_to_stop_pct": (price - p.stop) / price if price > 0 else None,
-                "dist_to_target_pct": ((p.target - price) / price
-                                       if price > 0 else None),
+                "unrealized_pct": g["unrealized_pct"],
+                "r_multiple": g["r_multiple"],
+                "dist_to_stop_pct": g["dist_to_stop_pct"],
+                "dist_to_target_pct": g["dist_to_target_pct"],
             }
     return {
         "kind": "live",

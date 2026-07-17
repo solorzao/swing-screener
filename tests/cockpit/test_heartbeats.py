@@ -13,15 +13,36 @@ from swing_screener.cockpit.heartbeats import (
     beat_state,
     collect_heartbeats,
 )
-from swing_screener.db.models import EmailLog, MarketReport, Signal
+from swing_screener.db.models import (
+    EmailLog,
+    MarketReport,
+    Signal,
+    SystemAudit,
+    WeaknessesProfile,
+)
 from swing_screener.db.session import get_engine
 
 NOW = datetime(2026, 7, 5, 16, 0, tzinfo=UTC)
 
+# The roster contract: every job infra/modules/jobs.bicep deploys appears here --
+# a deployed job must never be invisible in the rail.
 ROSTER = {
     "evening screen", "daily digest", "weekly digest", "monthly digest",
     "market weather", "reflection verdicts",
+    "intraday exit", "on-demand analysis", "journal coach",
+    "journal audit · weekly", "journal audit · breach",
     "GH · optimizer", "GH · reflection", "GH · CI",
+}
+
+# The three deployed jobs with no per-run watermark (they write only when there is
+# something to report): honest UNKNOWN placeholders, each naming its kind of silence.
+SPARSE_DETAILS = {
+    "intraday exit":
+        "alerts only when an exit trips; a quiet market and a dead job read the same",
+    "on-demand analysis":
+        "queue-drain worker; writes only when a request is queued",
+    "journal audit · breach":
+        "writes only on a hard breach; a clean day and a dead job read the same",
 }
 
 
@@ -218,6 +239,103 @@ def test_gh_poller_none_answer_reads_unknown(tmp_path: Path) -> None:
         assert beats[name].state == "unknown"
         assert beats[name].period_s == 0 and beats[name].grace_s == 0
         assert beats[name].detail == "no completed run observed or GitHub unreachable"
+
+
+def test_journal_coach_watermarks_on_the_weaknesses_profile(tmp_path: Path) -> None:
+    """The hourly coach job appends a WeaknessesProfile row EVERY run (build_profile
+    is unconditional in coach_run.main), so max(generated_at) is a true watermark:
+    1h period + 15m grace against the bicep's `0 * * * *`. No row ever -> unknown
+    (covered by the sparse-placeholder test's empty DB)."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add(WeaknessesProfile(generated_at=NOW - timedelta(minutes=30)))
+        s.commit()
+        beats = {b.name: b for b in collect_heartbeats(s, now=NOW, edge_dir=tmp_path)}
+    coach = beats["journal coach"]
+    assert coach.state == "up"
+    assert coach.last == NOW - timedelta(minutes=30)
+    assert coach.period_s == 3600 and coach.grace_s == 15 * 60
+
+    engine = get_engine("sqlite:///:memory:")  # fresh DB: the late scenario
+    with Session(engine) as s:
+        s.add(WeaknessesProfile(generated_at=NOW - timedelta(hours=1, minutes=10)))
+        s.add(WeaknessesProfile(generated_at=NOW - timedelta(hours=3)))  # max() wins
+        s.commit()
+        beats = {b.name: b for b in collect_heartbeats(s, now=NOW, edge_dir=tmp_path)}
+    assert beats["journal coach"].state == "late"   # 1h10m: past period, inside grace
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add(WeaknessesProfile(generated_at=NOW - timedelta(hours=2)))
+        s.commit()
+        beats = {b.name: b for b in collect_heartbeats(s, now=NOW, edge_dir=tmp_path)}
+    assert beats["journal coach"].state == "down"   # a stopped hourly job says so fast
+
+
+def test_journal_audit_weekly_watermarks_on_the_weekly_audit_row(tmp_path: Path) -> None:
+    """The Saturday sweep UPSERTS its one weekly SystemAudit row every run (a clean
+    week still writes, template narrative at $0), so the kind-filtered
+    max(generated_at) is a true watermark on the weekly 7d/3h contract. The
+    divergence probe: a FRESH breach row must NOT feed the weekly beat -- without
+    the kind filter a breach-y day would mask a dead weekly sweep forever."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add(SystemAudit(kind="weekly", period_from=(NOW - timedelta(days=8)).date(),
+                          period_to=(NOW - timedelta(days=2)).date(),
+                          generated_at=NOW - timedelta(days=2)))
+        s.commit()
+        beats = {b.name: b for b in collect_heartbeats(s, now=NOW, edge_dir=tmp_path)}
+    weekly = beats["journal audit · weekly"]
+    assert weekly.state == "up"
+    assert weekly.last == NOW - timedelta(days=2)
+    assert weekly.period_s == 7 * 86400 and weekly.grace_s == 3 * 3600
+
+    engine = get_engine("sqlite:///:memory:")  # fresh DB: breach rows must not count
+    with Session(engine) as s:
+        s.add(SystemAudit(kind="breach", period_from=NOW.date(), period_to=NOW.date(),
+                          breach_key="disarm:2026-07-05",
+                          generated_at=NOW - timedelta(hours=1)))
+        s.commit()
+        beats = {b.name: b for b in collect_heartbeats(s, now=NOW, edge_dir=tmp_path)}
+    assert beats["journal audit · weekly"].state == "unknown"  # no WEEKLY row ever
+
+
+def test_sparse_writers_read_honest_unknown_placeholders(tmp_path: Path) -> None:
+    """The three deployed jobs that write only when there is something to report
+    (intraday exit, on-demand analysis, breach scan): explicit UNKNOWN placeholders
+    in the GH rows' shape -- no last, 0/0 'no contract stated', the reason named in
+    detail -- and present in the roster even on an empty DB. A deployed job must
+    never be invisible, and silence must never read as a false 'down'."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        beats = {b.name: b for b in collect_heartbeats(s, now=NOW, edge_dir=tmp_path)}
+    assert set(beats) == ROSTER
+    for name, reason in SPARSE_DETAILS.items():
+        b = beats[name]
+        assert b.state == "unknown"
+        assert b.last is None
+        assert b.period_s == 0 and b.grace_s == 0
+        assert b.detail == reason
+
+
+def test_sparse_writers_never_read_down_off_stale_activity(tmp_path: Path) -> None:
+    """The false-'down' guard: WEEKS-old traces of the sparse jobs' last real work
+    (an old exit alert, an old breach row) must not flip their beats to down -- a
+    quiet market/clean stretch is normal for these jobs, and from DB data alone it
+    is indistinguishable from death, so the beat stays honest UNKNOWN."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add(EmailLog(sent_at=NOW - timedelta(days=21), kind="exit",
+                       subject="Exit", run_date=(NOW - timedelta(days=21)).date(),
+                       alert_key="abc"))
+        s.add(SystemAudit(kind="breach", period_from=(NOW - timedelta(days=30)).date(),
+                          period_to=(NOW - timedelta(days=30)).date(),
+                          breach_key="cap:2026-06-05",
+                          generated_at=NOW - timedelta(days=30)))
+        s.commit()
+        beats = {b.name: b for b in collect_heartbeats(s, now=NOW, edge_dir=tmp_path)}
+    assert beats["intraday exit"].state == "unknown"
+    assert beats["journal audit · breach"].state == "unknown"
+    assert beats["on-demand analysis"].state == "unknown"
 
 
 def test_holiday_list_covers_the_current_year() -> None:

@@ -10,16 +10,19 @@ import type { ScreenId } from '../lib/screens'
       (or errored, force-nulled by App), which must render "…", never the empty
       state — an unknown must not read as "nothing needs your hand".
 
-   2. The permanent `/api/attention` poll's client-known facts (Task 20 completes
-      this roster): queued proposals ("· decide"), approved-pending-promotion
-      ("· promote" — an approval MARKS, a human promotes, so it stays until the
-      promotion commit lands), reflection-due play types, and the unread deep
-      analysis (Task 19 — "unread" is a client-side localStorage compare done in
-      App and passed as a bool). These are ALWAYS-known facts (last-good attention
-      is fine for a low-stakes nudge) and never gate the cards' "…".
+   2. The permanent `/api/attention` poll's client-known facts: queued proposals
+      ("· decide"), approved-pending-promotion ("· promote" — an approval MARKS,
+      a human promotes; the item clears once the name lands in the experiment
+      registry), reflection-due play types, unacked System-Audit breaches,
+      pending coach tag-confirms, open reflection/optimizer GitHub PRs (the
+      loop's off-app accept/reject gate), and the unread deep analysis
+      ("unread" is a client-side localStorage compare done in App and passed as
+      a bool). These are ALWAYS-known facts (last-good attention is fine for a
+      low-stakes nudge) and never gate the cards' "…".
 
-   Every attention/analysis item is a button that navigates to where it is acted
-   on: proposals + reflection → Playbooks; unread analysis → Analyst. */
+   EVERY item is a door that lands where it is acted on: proposals + reflection
+   → Playbooks; settlements → Forward Books; breaches → System Audit; coach →
+   Journal; research PRs → the PR itself (browser); unread analysis → Analyst. */
 
 export function NeedsHandStrip({
   cards,
@@ -78,6 +81,50 @@ export function NeedsHandStrip({
               {pt} reflection due
             </button>
           )),
+          ...((attention.audit_unacked ?? 0) > 0
+            ? [
+                <button
+                  key="audit"
+                  type="button"
+                  className={
+                    attention.audit_worst === 'alert'
+                      ? 'needs-hand-item needs-hand-btn needs-hand-alert'
+                      : 'needs-hand-item needs-hand-btn'
+                  }
+                  title="System-Audit findings awaiting your acknowledgment — click to review"
+                  onClick={nav('systemaudit')}
+                >
+                  {attention.audit_unacked} audit{' '}
+                  {attention.audit_unacked === 1 ? 'finding' : 'findings'} · ack
+                </button>,
+              ]
+            : []),
+          ...((attention.coach_pending ?? 0) > 0
+            ? [
+                <button
+                  key="coach"
+                  type="button"
+                  className="needs-hand-item needs-hand-btn"
+                  title="coach reviews with tag proposals awaiting your confirm — click to open the Journal"
+                  onClick={nav('journal')}
+                >
+                  {attention.coach_pending} coach{' '}
+                  {attention.coach_pending === 1 ? 'review' : 'reviews'} · confirm
+                </button>,
+              ]
+            : []),
+          ...(attention.research_prs ?? []).map((pr) => (
+            <a
+              key={`pr:${pr.url}`}
+              className="needs-hand-item needs-hand-btn needs-hand-link"
+              href={pr.url}
+              target="_blank"
+              rel="noreferrer"
+              title={`${pr.title} — the ${pr.kind} run's output arrives as a GitHub PR; merging (or closing) it IS the accept/reject`}
+            >
+              {pr.kind} PR · review
+            </a>
+          )),
         ]
 
   const analysisItem =
@@ -121,11 +168,20 @@ export function NeedsHandStrip({
       ) : (
         <>
           {pending.map((c) => (
-            <span key={c.name} className="needs-hand-item">
+            // The most decision-forcing item in the app must be a DOOR like its
+            // siblings — it lands on the Forward wall, where the card carries
+            // the stopping rule and the retire procedure.
+            <button
+              key={c.name}
+              type="button"
+              className="needs-hand-item needs-hand-btn"
+              title="this experiment's stopping rule has fired — click to read the card and decide (a settle/retire PR)"
+              onClick={nav('forward')}
+            >
               {c.name} ·{' '}
               {c.state === 'settled-awaiting-decision' ? 'settled' : 'futile'} —
               decide
-            </span>
+            </button>
           ))}
           {clientItems}
         </>

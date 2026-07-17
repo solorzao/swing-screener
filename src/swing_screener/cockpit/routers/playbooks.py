@@ -20,8 +20,14 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from swing_screener.cockpit.common import _finite_or_none
+from swing_screener.cockpit.gh import open_research_prs
 from swing_screener.cockpit.playbooks import DriftReport, playbook_drift
-from swing_screener.db.models import AnalysisRequest
+from swing_screener.db.models import (
+    AnalysisRequest,
+    JournalReview,
+    JournalTradeTag,
+    SystemAudit,
+)
 from swing_screener.pipeline.proposed import (
     APPROVED,
     PLAY_TYPES,
@@ -37,6 +43,7 @@ from swing_screener.pipeline.reflect import (
     parse_state,
     verdicts_filename,
 )
+from swing_screener.pipeline.registry import load_experiments
 from swing_screener.settings import resolve_edge_dir
 
 # The one wire statement of what a verdict's bound IS -- served with every playbooks
@@ -49,6 +56,13 @@ _CI_NOTE = (
     "ci_low is the Bonferroni-corrected one-sided lower bound on the deciding "
     "book; verdicts carry no ci_high"
 )
+
+# The Auditor's closed severity vocabulary (``journal/audit_run.py`` writes exactly
+# these; the column defaults to "info"), ranked so ``audit_worst`` can pick the
+# gravest unacked row. An out-of-vocab string (a hand-mangled row) ranks lowest --
+# a real warn/alert always outranks garbage -- and is served verbatim, never
+# laundered into a severity nobody wrote.
+_SEVERITY_RANK = {"info": 0, "warn": 1, "alert": 2}
 
 
 def build_playbooks_router(
@@ -165,10 +179,15 @@ def build_playbooks_router(
 
         * ``proposals_queued`` / ``proposals_approved_pending``: proposal NAMES by
           status, both play types -- approved-pending-promotion is a DISTINCT
-          visible state (an approval marks, a human promotes; the strip must keep
-          saying so until the promotion commit lands and the row leaves the
-          store). A corrupt store degrades QUIETLY here (that play type's names
-          are simply absent) -- the loud ``store_errors`` marker lives on
+          visible state (an approval marks, a human promotes). The promotion
+          commit flips nothing back in the store, so "promoted" is detected by
+          CROSS-CHECK: an approved name that exists as an ``edge/experiments.json``
+          registry row (ANY status -- a 'retired' row still proves the experiment
+          existed, i.e. was promoted) leaves this list; approved names absent
+          from the registry keep nagging. An unreadable registry excludes
+          nothing -- a nag that persists beats one that silently vanishes. A
+          corrupt store degrades QUIETLY here (that play type's names are simply
+          absent) -- the loud ``store_errors`` marker lives on
           ``/api/proposals``, where a human is looking; a strip that 500s every
           60s helps nobody.
         * ``reflection_due``: the play types whose forward book re-armed a
@@ -180,8 +199,24 @@ def build_playbooks_router(
         * ``latest_analysis_id``: ``max(AnalysisRequest.id)`` or null -- the
           client compares it to its localStorage last-seen id for the unread
           badge (Phase 3 plan, scope decision 14: unread is client-side).
+        * ``audit_unacked`` / ``audit_worst``: how many SystemAudit rows (weekly
+          reports AND breaches -- both are ack-able, the audit router's own
+          semantics) still await the human ack, and the gravest severity among
+          them (the Auditor's info < warn < alert; null when none). One grouped
+          COUNT -- no row scan.
+        * ``coach_pending``: per-trade Coach reviews carrying PARKED auto-tag
+          proposals whose trade has no ``source="analyst"`` tag yet -- i.e. the
+          confirm gate has not been exercised (confirming writes the overlay
+          tag but leaves ``facts_json`` untouched, so the tag row is the only
+          durable evidence). One aggregate COUNT over a serialized-shape LIKE
+          (``json.dumps`` in ``routers/trades.py`` writes the
+          ``"tag_proposals": [{`` shape being matched) -- no row scan.
+        * ``research_prs``: OPEN reflection/optimizer PRs (``gh.open_research_prs``
+          -- TTL-cached like the workflow poller; unconfigured token or any
+          polling failure is an honest ``[]``, never an error).
         """
         edir = resolve_edge_dir(edge_dir)
+        promoted = _promoted_names(edir)
         queued: list[str] = []
         approved: list[str] = []
         for pt in PLAY_TYPES:
@@ -190,16 +225,57 @@ def build_playbooks_router(
             except (ValueError, TypeError):
                 continue  # degrade quietly; /api/proposals carries the loud marker
             queued += [pv.name for pv in items if pv.status == QUEUED]
-            approved += [pv.name for pv in items if pv.status == APPROVED]
+            approved += [pv.name for pv in items
+                         if pv.status == APPROVED and pv.name not in promoted]
+        # `== False` renders `= 0`; `.is_(False)` renders `IS 0`, which SQL Server
+        # rejects -- and the desktop app polls this against Azure SQL.
+        severities = session.execute(
+            select(SystemAudit.severity, func.count(SystemAudit.id))
+            .where(SystemAudit.acknowledged_by_human == False)  # noqa: E712
+            .group_by(SystemAudit.severity)
+        ).all()
+        confirmed = select(JournalTradeTag.id).where(
+            JournalTradeTag.trade_id == JournalReview.trade_id,
+            JournalTradeTag.book == JournalReview.book,
+            JournalTradeTag.source == "analyst",
+        ).exists()
+        coach_pending = session.scalar(
+            select(func.count(JournalReview.id)).where(
+                JournalReview.trade_id.is_not(None),
+                JournalReview.facts_json.like(
+                    '%"tag_proposals": \\[{%', escape="\\"),
+                ~confirmed,
+            )
+        )
         return {
             "proposals_queued": queued,
             "proposals_approved_pending": approved,
             "reflection_due": _due_or_empty(session, edir),
             "latest_analysis_id": session.scalar(
                 select(func.max(AnalysisRequest.id))),
+            "audit_unacked": sum(n for _, n in severities),
+            "audit_worst": max(
+                (s for s, _ in severities),
+                key=lambda s: _SEVERITY_RANK.get(s, -1), default=None),
+            "coach_pending": coach_pending or 0,
+            "research_prs": open_research_prs(),
         }
 
     return router
+
+
+def _promoted_names(edir: Path) -> frozenset[str]:
+    """Names with an ``edge/experiments.json`` registry row -- the registry's OWN
+    loader (``pipeline.registry.load_experiments``; the forward-books endpoint's
+    precedent), never a second parser. ALL statuses count: promotion is the human
+    commit that CREATES the registry row, so a later 'retired' does not un-promote.
+    Unreadable/corrupt registry -> empty set: with no readable evidence of
+    promotion, every approved row keeps nagging (the safe direction -- the loud
+    corrupt-file marker belongs to the surfaces a human reads)."""
+    try:
+        return frozenset(e.name for e in load_experiments(edir))
+    except (OSError, ValueError, TypeError):  # JSONDecodeError IS a ValueError
+        return frozenset()
 
 
 def _due_or_empty(session: Session, edir: Path) -> list[str]:
@@ -244,6 +320,13 @@ def _verdict_row(v: Verdict) -> dict[str, object]:
         "ci_low": _finite_or_none(v.ci_low),
         "n_clusters": v.n_clusters,
         "source": v.source,
+        # Both books' depths on every row (the 2026-07-12 hunch-display fix): which
+        # book n/expectancy_r/ci_low describe is auditable on the wire, not just in
+        # the sidecar. Pre-fix rows lack the keys and load as the dataclass's 0 --
+        # served as 0 (the reflection's own "no recorded depth"), the same
+        # convention `load_verdicts` gives every other consumer.
+        "n_forward": v.n_forward,
+        "n_replay": v.n_replay,
         "cost_level": v.cost_level,
         "corpus_id": v.corpus_id,
     }

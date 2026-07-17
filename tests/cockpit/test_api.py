@@ -1910,7 +1910,7 @@ ROW_KEYS_COMMON = {"kind", "ticker", "timeframe", "entry_price", "size", "stop",
                    "signal_id", "unlinked"}
 REAL_ROW_KEYS = ROW_KEYS_COMMON | {"trade_id"}
 LIVE_ROW_KEYS = ROW_KEYS_COMMON | {"paper_id"}
-CAPS_KEYS = {"account", "run_date", "notional", "loss_r", "concurrent"}
+CAPS_KEYS = {"mode", "account", "run_date", "notional", "loss_r", "concurrent"}
 CLOSED_KEYS = {"trade_id", "ticker", "entry_date", "exit_date", "entry_price",
                "exit_price", "size", "realized_usd", "exit_reason"}
 
@@ -2141,6 +2141,7 @@ def test_positions_caps_mirror_limit_block_semantics(
         s.commit()
     caps = client.get("/api/positions").json()["caps"]
     assert set(caps) == CAPS_KEYS
+    assert caps["mode"] == "manual"  # the additive caption field, mode verbatim
     assert caps["account"] == "manual"
     assert caps["run_date"] == "2026-07-08"
     assert caps["notional"] == {"used": pytest.approx(1250.0), "limit": 5000.0}
@@ -2152,10 +2153,11 @@ def test_positions_caps_unbounded_shape_and_no_run_date(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """No cap configured -> limit null (NEVER 0: 0 would read as 'nothing allowed');
-    mode off maps to the research account; an empty signals table -> run_date null
-    with the day-scoped used values an honest 0 (there is no day to sum), while
-    concurrent still counts (it is not day-scoped). Empty book: every zone empty,
-    quotes_as_of still stamped."""
+    mode off keeps the research account LABEL; an empty signals table -> run_date
+    null with the day-scoped used values an honest 0 (there is no day to sum).
+    Under mode off ``concurrent`` counts what the screen DISPLAYS -- so the open
+    research shadow row contributes NOTHING (the caps-honesty rule, tested in
+    depth below). Empty book: every zone empty, quotes_as_of still stamped."""
     for var in ("SWING_EXECUTION_MODE", "SWING_MAX_DAILY_NOTIONAL",
                 "SWING_MAX_DAILY_LOSS", "SWING_MAX_CONCURRENT"):
         monkeypatch.delenv(var, raising=False)
@@ -2165,13 +2167,43 @@ def test_positions_caps_unbounded_shape_and_no_run_date(
         s.commit()
     body = client.get("/api/positions").json()
     caps = body["caps"]
+    assert caps["mode"] == "off"          # the default mode, carried verbatim
     assert caps["account"] == "research"  # mode 'off' books nothing, reads research
     assert caps["run_date"] is None
     assert caps["notional"] == {"used": 0.0, "limit": None}
     assert caps["loss_r"] == {"used": 0.0, "limit": None}
-    assert caps["concurrent"] == {"used": 1, "limit": None}
+    assert caps["concurrent"] == {"used": 0, "limit": None}
     assert body["open"] == [] and body["closed"] == [] and body["equity"] == []
     assert datetime.fromisoformat(body["quotes_as_of"])
+
+
+def test_positions_caps_off_mode_counts_the_displayed_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The caps-honesty rule (2026-07 usability finding): under mode 'off' no
+    adapter enforces a cap and OFF_ACCOUNT is merely the research LABEL, so the
+    old per-account read counted the open research SHADOW GRID -- 'N concurrent
+    positions used' with zero corresponding visible trades. ``concurrent.used``
+    must count what the screen displays: open manual Trades + open live
+    PaperTrades, and nothing else."""
+    monkeypatch.delenv("SWING_EXECUTION_MODE", raising=False)  # default: off
+    client, engine = _positions_client(tmp_path, {"AMD": 104.0, "LIV": 52.0})
+    with Session(engine) as s:
+        for i in range(5):  # the invisible shadow grid: must contribute NOTHING
+            s.add(_live_paper(ticker=f"R{i}", account="research"))
+        s.add(_live_paper(ticker="P1", account="paper"))  # curated book: also unseen
+        s.add(Trade(ticker="AMD", timeframe="1d", horizon="medium",
+                    entry_date=date(2026, 7, 1), entry_price=100.0, size=10.0,
+                    stop=95.0, target=110.0))            # displayed: real row
+        s.add(_live_paper(ticker="LIV"))                 # displayed: live row
+        s.commit()
+    body = client.get("/api/positions").json()
+    assert {r["ticker"] for r in body["open"]} == {"AMD", "LIV"}  # the screen
+    caps = body["caps"]
+    assert set(caps) == CAPS_KEYS
+    assert caps["mode"] == "off"
+    assert caps["account"] == "research"  # the label field keeps its old meaning
+    assert caps["concurrent"]["used"] == 2  # exactly the two rows rendered above
 
 
 def test_account_for_mode_covers_every_settings_mode() -> None:
@@ -2631,10 +2663,11 @@ def test_signal_chart_blob_branch(
 # ---- proposals: GET /api/proposals + the approve/withdraw decisions ----
 
 # The proposal wire form -- a closed set, like STAT_KEYS: the 8 stored
-# ProposedVariant fields plus the three derived decision aids.
+# ProposedVariant fields plus the three derived decision aids and the
+# promotion checklist (populated on approved rows only, null otherwise).
 PROPOSAL_KEYS = {"name", "play_type", "delta", "rationale", "hunch_ref", "status",
                  "drafted_at", "provenance", "gate_verdict", "delta_vs_incumbent",
-                 "noop"}
+                 "noop", "promotion_checklist"}
 
 # Both decision responses carry this honesty line verbatim: decide_proposal edits
 # the WORKING TREE only -- git capturing the flip is the human's move.
@@ -2659,7 +2692,7 @@ def _write_proposals(edge_dir: Path, play_type: str,
 
 def test_proposals_list_both_play_types_in_file_order(tmp_path: Path) -> None:
     """GET /api/proposals returns continuation then reversal, file order within;
-    every row is the closed 11-key wire set with the 8 stored fields verbatim."""
+    every row is the closed 12-key wire set with the 8 stored fields verbatim."""
     _write_proposals(tmp_path, "continuation",
                      [_proposal("c1", "continuation", {"max_extension_atr": 1.5})])
     _write_proposals(tmp_path, "reversal", [
@@ -2855,6 +2888,44 @@ def test_approve_proposal_rewrites_the_store_with_the_checklist(
     assert reloaded.status == "approved"
     assert reloaded.rationale.endswith(
         f" APPROVED {date.today().isoformat()}: worth a slot")
+
+
+def test_proposals_get_carries_the_checklist_on_approved_rows(
+    tmp_path: Path,
+) -> None:
+    """The promotion checklist is RECOVERABLE: an approved row's GET carries the
+    same verbatim three-artifact list the approve response built -- closing the
+    approve-then-refresh trap, where the next steps lived only in the transient
+    POST body. Queued and withdrawn rows carry null. The list is parameterized
+    by the STORE's play type (the file the row was loaded from), so item 3
+    names the right proposed.json per book."""
+    _write_proposals(tmp_path, "continuation", [
+        _proposal("c_ok", "continuation", {"max_extension_atr": 1.5},
+                  status="approved"),
+    ])
+    _write_proposals(tmp_path, "reversal", [
+        _proposal("r_q", "reversal", {"min_target_r": 2.0}),
+        _proposal("r_ok", "reversal", {"min_target_r": 3.0},
+                  status="approved"),
+        _proposal("r_out", "reversal", {"min_target_r": 4.0},
+                  status="withdrawn"),
+    ])
+    rows = {row["name"]: row for row in
+            _client(tmp_path).get("/api/proposals").json()["proposals"]}
+    assert rows["c_ok"]["promotion_checklist"] == [
+        "1. pipeline/variants.py — add the roster line (replace(base, **delta))",
+        "2. edge/experiments.json — add the registry row (stopping rule, mde_r, "
+        "target_ci_halfwidth_r, registered sha)",
+        "3. edge/continuation.proposed.json — this flip (done)",
+    ]
+    assert rows["r_ok"]["promotion_checklist"] == [
+        "1. pipeline/variants.py — add the roster line (replace(base, **delta))",
+        "2. edge/experiments.json — add the registry row (stopping rule, mde_r, "
+        "target_ci_halfwidth_r, registered sha)",
+        "3. edge/reversal.proposed.json — this flip (done)",
+    ]
+    assert rows["r_q"]["promotion_checklist"] is None
+    assert rows["r_out"]["promotion_checklist"] is None
 
 
 def test_withdraw_proposal_and_withdraw_after_approve(tmp_path: Path) -> None:
@@ -3866,9 +3937,10 @@ BOOK_KEYS = {"play_type", "md", "md_error", "frontmatter", "verdicts",
 # and deliberately NO ci_high (the wire's ci_note says why).
 VERDICT_ROW_KEYS = {"play_type", "dimension", "bucket", "tier", "n",
                     "expectancy_r", "ci_low", "n_clusters", "source",
-                    "cost_level", "corpus_id"}
+                    "n_forward", "n_replay", "cost_level", "corpus_id"}
 ATTENTION_KEYS = {"proposals_queued", "proposals_approved_pending",
-                  "reflection_due", "latest_analysis_id"}
+                  "reflection_due", "latest_analysis_id", "audit_unacked",
+                  "audit_worst", "coach_pending", "research_prs"}
 ANALYST_KEYS = {"play_types", "spend", "today", "r_basis"}
 ANALYST_PT_KEYS = {"play_type", "calibration", "nudge", "freshness", "progress"}
 PROGRESS_KEYS = {"calibrated", "high_minus_low", "ci_low", "n_high", "n_low",
@@ -3896,15 +3968,19 @@ def _sidecar_verdict(**over: object) -> Verdict:
 
 
 def test_playbooks_verdicts_carry_cost_corpus(tmp_path: Path) -> None:
-    """Verdict wire rows are the SIDECAR verbatim: the closed 11-key set with the
+    """Verdict wire rows are the SIDECAR verbatim: the closed 13-key set with the
     provenance stamps riding along. A stamped row serves cost_level/corpus_id
     verbatim; a PRE-Phase-3 row (both keys ABSENT from the committed JSON)
     serves an explicit None for each -- backfilling any default there is the
-    fabricated-provenance mutation this test exists to kill. ``ci_note`` states
-    the bound's meaning on the wire (Bonferroni-corrected lower, no ci_high)."""
+    fabricated-provenance mutation this test exists to kill. The hunch-display
+    fix's ``n_forward``/``n_replay`` book depths ride verbatim too; a row that
+    predates THOSE keys serves the loader's own 0 (the reflection's "no recorded
+    depth" convention, same for every consumer). ``ci_note`` states the bound's
+    meaning on the wire (Bonferroni-corrected lower, no ci_high)."""
     stamped = _sidecar_verdict(cost_level="0.05",
-                               corpus_id="corpus sha=abc as_of=20260705")
-    legacy = {  # a committed pre-Phase-3 sidecar row: NO cost/corpus keys at all
+                               corpus_id="corpus sha=abc as_of=20260705",
+                               n_forward=1, n_replay=2387)
+    legacy = {  # a committed pre-Phase-3 sidecar row: NO cost/corpus/depth keys
         "play_type": "reversal", "dimension": "volatility_tier", "bucket": "low",
         "tier": "hunch", "n": 1950, "expectancy_r": 0.0506, "ci_low": -0.0568,
         "n_clusters": 72, "source": "none",
@@ -3924,8 +4000,10 @@ def test_playbooks_verdicts_carry_cost_corpus(tmp_path: Path) -> None:
     assert [set(row) for row in rows] == [VERDICT_ROW_KEYS] * 2
     assert rows[0]["cost_level"] == "0.05"
     assert rows[0]["corpus_id"] == "corpus sha=abc as_of=20260705"
+    assert rows[0]["n_forward"] == 1 and rows[0]["n_replay"] == 2387
     assert rows[1]["cost_level"] is None  # served None, never fabricated
     assert rows[1]["corpus_id"] is None
+    assert rows[1]["n_forward"] == 0 and rows[1]["n_replay"] == 0
     assert rows[1]["n"] == 1950 and rows[1]["ci_low"] == -0.0568
 
 
@@ -4253,19 +4331,27 @@ def test_analyst_spend_windows_and_undercount(tmp_path: Path) -> None:
     assert "undercount" in spend["note"]
 
 
-def test_attention_shape(tmp_path: Path) -> None:
-    """The permanent-poll strip feed's EXACT four-key shape. Queued and
+def test_attention_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The permanent-poll strip feed's EXACT eight-key shape. Queued and
     approved-pending are DISTINCT lists -- an approval only MARKS, so the strip
-    must keep showing it until a human promotes and the row leaves the store; a
-    withdrawn row appears in neither. A corrupt store degrades QUIETLY (its
-    names absent, still 200 -- the loud marker lives on /api/proposals);
-    ``latest_analysis_id`` is the max id or null."""
+    must keep showing it until a human promotes (the registry cross-check,
+    tested below); a withdrawn row appears in neither. A corrupt store degrades
+    QUIETLY (its names absent, still 200 -- the loud marker lives on
+    /api/proposals); ``latest_analysis_id`` is the max id or null. The empty DB
+    is all-quiet: zero counts, null worst, empty PR list (poller unconfigured
+    -> honest [], never an error)."""
+    monkeypatch.delenv("SWING_GH_TOKEN", raising=False)
+    monkeypatch.delenv("SWING_GH_REPO", raising=False)
     client, engine = _client_and_engine(tmp_path)
     empty = client.get("/api/attention")
     assert empty.status_code == 200
     assert empty.json() == {"proposals_queued": [],
                             "proposals_approved_pending": [],
-                            "reflection_due": [], "latest_analysis_id": None}
+                            "reflection_due": [], "latest_analysis_id": None,
+                            "audit_unacked": 0, "audit_worst": None,
+                            "coach_pending": 0, "research_prs": []}
 
     _write_proposals(tmp_path, "reversal", [
         _proposal("r_q", "reversal", {"max_extension_atr": 1.5}),
@@ -4287,3 +4373,134 @@ def test_attention_shape(tmp_path: Path) -> None:
     assert body["proposals_approved_pending"] == ["r_ok"]  # distinct, visible
     assert body["reflection_due"] == []
     assert body["latest_analysis_id"] == latest_id
+
+
+def test_attention_approved_pending_clears_once_promoted(tmp_path: Path) -> None:
+    """The '· promote' nag must END when the promotion commit lands: an approved
+    proposal whose name has an edge/experiments.json registry row (the loader the
+    forward-books surface already uses) has been promoted and leaves
+    ``proposals_approved_pending`` -- a RETIRED registry row still counts (the
+    experiment existed; retiring is not un-promoting). An approved name with no
+    registry row keeps nagging, and an UNREADABLE registry excludes nothing (a
+    persistent nag beats a silently vanished one)."""
+    _write_proposals(tmp_path, "reversal", [
+        _proposal("promoted_v1", "reversal", {"min_target_r": 2.0},
+                  status="approved"),
+        _proposal("retired_v1", "reversal", {"min_target_r": 3.0},
+                  status="approved"),
+        _proposal("still_waiting", "reversal", {"max_extension_atr": 1.5},
+                  status="approved"),
+    ])
+    _write_registry(tmp_path, [
+        _experiment("promoted_v1", kind="variant"),
+        _experiment("retired_v1", kind="variant", status="retired",
+                    decision="no edge"),
+    ])
+    client = _client(tmp_path)
+    body = client.get("/api/attention").json()
+    assert body["proposals_approved_pending"] == ["still_waiting"]
+
+    (tmp_path / "experiments.json").write_text("{not json", encoding="utf-8")
+    nagging = client.get("/api/attention").json()["proposals_approved_pending"]
+    assert nagging == ["promoted_v1", "retired_v1", "still_waiting"]
+
+
+def test_attention_audit_counts_unacked_and_worst_severity(tmp_path: Path) -> None:
+    """``audit_unacked`` counts EVERY SystemAudit row awaiting the human ack --
+    weekly reports and breaches alike (both are ack-able; the audit router's own
+    semantics) -- and ``audit_worst`` is the gravest unacked severity (info <
+    warn < alert). An acked alert contributes to neither: acking the only alert
+    demotes worst to the surviving warn, and acking everything reads 0/null."""
+    from swing_screener.db.models import SystemAudit
+
+    client, engine = _client_and_engine(tmp_path)
+    with Session(engine) as s:
+        s.add(SystemAudit(kind="weekly", period_from=date(2026, 7, 6),
+                          period_to=date(2026, 7, 12), severity="info"))
+        s.add(SystemAudit(kind="weekly", period_from=date(2026, 7, 13),
+                          period_to=date(2026, 7, 19), severity="warn"))
+        s.add(SystemAudit(kind="breach", period_from=date(2026, 7, 8),
+                          period_to=date(2026, 7, 8), breach_key="cap:2026-07-08",
+                          severity="alert"))
+        s.add(SystemAudit(kind="breach", period_from=date(2026, 7, 9),
+                          period_to=date(2026, 7, 9), breach_key="cap:2026-07-09",
+                          severity="alert", acknowledged_by_human=True))
+        s.commit()
+    body = client.get("/api/attention").json()
+    assert body["audit_unacked"] == 3
+    assert body["audit_worst"] == "alert"
+    with Session(engine) as s:
+        for row in s.query(SystemAudit).filter_by(severity="alert").all():
+            row.acknowledged_by_human = True
+        s.commit()
+    body = client.get("/api/attention").json()
+    assert body["audit_unacked"] == 2
+    assert body["audit_worst"] == "warn"  # the acked alert no longer dominates
+    with Session(engine) as s:
+        for row in s.query(SystemAudit).all():
+            row.acknowledged_by_human = True
+        s.commit()
+    body = client.get("/api/attention").json()
+    assert body["audit_unacked"] == 0
+    assert body["audit_worst"] is None
+
+
+def test_attention_coach_pending_counts_unconfirmed_proposal_reviews(
+    tmp_path: Path,
+) -> None:
+    """``coach_pending`` counts per-trade Coach reviews with PARKED auto-tag
+    proposals whose trade has no analyst-source overlay tag yet -- confirming
+    writes the tag but leaves facts_json untouched, so the tag row is the only
+    durable 'handled' evidence. Facts are serialized exactly as the writer does
+    (``json.dumps`` in routers/trades.py -- the LIKE the endpoint matches). Not
+    pending: an empty proposal list, a weekly rollup (no trade to tag), a review
+    whose trade already carries an analyst tag. A HUMAN-sourced tag is not a
+    confirm (the gate writes source='analyst')."""
+    from swing_screener.db.models import JournalReview, JournalTag, JournalTradeTag
+
+    def _facts(proposals: list[dict[str, str]]) -> str:
+        return json.dumps({"realized_r": 1.2, "tag_proposals": proposals})
+
+    parked = [{"name": "moved_stop", "kind": "mistake", "reason": "r"}]
+    client, engine = _client_and_engine(tmp_path)
+    with Session(engine) as s:
+        tag = JournalTag(kind="mistake", name="moved_stop")
+        s.add(tag)
+        s.flush()
+        s.add(JournalReview(identity_key="trade_close:manual_equity:1",
+                            kind="trade_close", book="manual_equity", trade_id=1,
+                            facts_json=_facts(parked), source="analyst"))
+        # a HUMAN tag on trade 1 is not the confirm gate's write: still pending
+        s.add(JournalTradeTag(trade_id=1, book="manual_equity", tag_id=tag.id,
+                              source="human"))
+        s.add(JournalReview(identity_key="trade_close:manual_equity:2",
+                            kind="trade_close", book="manual_equity", trade_id=2,
+                            facts_json=_facts(parked), source="analyst"))
+        s.add(JournalTradeTag(trade_id=2, book="manual_equity", tag_id=tag.id,
+                              source="analyst"))  # confirmed: not pending
+        s.add(JournalReview(identity_key="trade_close:manual_equity:3",
+                            kind="trade_close", book="manual_equity", trade_id=3,
+                            facts_json=_facts([]), source="analyst"))  # to plan
+        s.add(JournalReview(identity_key="weekly_rollup:manual_equity:a:b",
+                            kind="weekly_rollup", book="manual_equity",
+                            trade_id=None, facts_json=_facts(parked),
+                            source="analyst"))  # rollup: nothing to confirm
+        s.commit()
+    assert client.get("/api/attention").json()["coach_pending"] == 1
+
+
+def test_attention_research_prs_ride_the_gh_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``research_prs`` is ``gh.open_research_prs``'s answer verbatim -- the
+    reflection/optimizer PRs that otherwise have zero cockpit surface. The
+    endpoint adds nothing and reorders nothing (the gh module owns matching,
+    caching, and the honest-[] failure posture, tested in test_gh.py)."""
+    prs = [{"title": "reflection: update edge playbooks from the forward book",
+            "url": "https://github.com/o/r/pull/7", "kind": "reflection"},
+           {"title": "optimizer: raise max_extension_atr",
+            "url": "https://github.com/o/r/pull/8", "kind": "optimizer"}]
+    monkeypatch.setattr(
+        "swing_screener.cockpit.routers.playbooks.open_research_prs", lambda: prs)
+    body = _client(tmp_path).get("/api/attention").json()
+    assert body["research_prs"] == prs

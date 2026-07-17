@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import {
   POLL_MS,
   getCohorts,
@@ -16,6 +17,8 @@ import type {
   Heartbeat,
   PlayType,
   Polled,
+  TickerFeed,
+  TickerSource,
   Window,
 } from '../lib/api'
 import { fmtClock } from '../lib/fmt'
@@ -34,6 +37,87 @@ import { StatChip } from '../components/StatChip'
 
 const WINDOWS: Window[] = ['all', '90', '180', '365']
 const PLAY_TYPES: PlayType[] = ['all', 'continuation', 'reversal']
+
+/** Plural-friendly labels for the recap's per-source counts. */
+const SOURCE_LABEL: Record<TickerSource, string> = {
+  exit: 'exits',
+  execution: 'executions',
+  email: 'emails',
+  analyst: 'analyst calls',
+  analysis: 'analyses',
+}
+
+/* SINCE YOU LAST LOOKED — the morning answer to "what happened while I was
+   away", built from the ALREADY-fetched Zone E feed (no new endpoint) plus the
+   last-visit watermark App reads-and-restamps once per open. The ticker strip
+   animates events away; this zone holds the new-since-last-visit ones still:
+   per-source counts, then the newest few verbatim. First run (no stamp) says
+   so honestly instead of fabricating "nothing new". */
+function RecapZone({
+  ticker,
+  prevVisit,
+}: {
+  ticker: Polled<TickerFeed>
+  prevVisit: Date | null
+}) {
+  const events = ticker.error === null ? (ticker.data?.events ?? null) : null
+  let body: ReactNode
+  if (prevVisit === null) {
+    body = (
+      <span className="recap-empty">
+        first open on this browser — the recap accrues from your next visit
+      </span>
+    )
+  } else if (events === null) {
+    body = <span className="recap-empty">…</span>
+  } else {
+    const cutoff = prevVisit.getTime()
+    const fresh = events.filter((e) => new Date(e.ts).getTime() > cutoff)
+    if (fresh.length === 0) {
+      body = (
+        <span className="recap-empty">
+          nothing new since your last look ({prevVisit.toLocaleString()})
+        </span>
+      )
+    } else {
+      const counts = new Map<TickerSource, number>()
+      for (const e of fresh) counts.set(e.source, (counts.get(e.source) ?? 0) + 1)
+      body = (
+        <>
+          <span className="recap-counts mono">
+            {[...counts.entries()]
+              .map(([s, n]) => `${n} ${SOURCE_LABEL[s]}`)
+              .join(' · ')}
+          </span>
+          {fresh.slice(0, 4).map((e) => (
+            <span
+              key={`${e.source}|${e.ts}|${e.headline}`}
+              className="recap-item"
+              title={e.detail}
+            >
+              {fmtClock(e.ts)} {e.ticker !== null && `${e.ticker} `}
+              {e.headline}
+            </span>
+          ))}
+          {fresh.length > 4 && (
+            <span className="recap-more">+{fresh.length - 4} more in the feed below</span>
+          )}
+        </>
+      )
+    }
+  }
+  return (
+    <section className="panel recap">
+      <div className="panel-head">
+        SINCE YOU LAST LOOKED
+        {prevVisit !== null && (
+          <span className="panel-caption">last visit {prevVisit.toLocaleString()}</span>
+        )}
+      </div>
+      <div className="recap-body">{body}</div>
+    </section>
+  )
+}
 
 function CohortsSection({ facet, cohorts }: { facet: Facet; cohorts: Polled<Cohorts> }) {
   return (
@@ -210,6 +294,8 @@ export function MissionControlScreen({
   onPlayType,
   onTab,
   onLogPick,
+  ticker,
+  prevVisit,
 }: {
   beats: Polled<Heartbeat[]>
   fb: Polled<ForwardBooks>
@@ -223,6 +309,11 @@ export function MissionControlScreen({
   onTab: (tab: BreakdownTab) => void
   /** Zone D LOG hand-off: navigate to Candidates and prefill there. */
   onLogPick: (signalId: number) => void
+  /** The permanent Zone E feed (App's poll) — the recap zone reads it. */
+  ticker: Polled<TickerFeed>
+  /** The previous visit's stamp (null on a first run) — App owns the read/
+   * restamp so a mid-session re-render can't move the goalpost. */
+  prevVisit: Date | null
 }) {
   const funnel = usePolling(getFunnel, POLL_MS, wake)
   const positions = usePolling(getPositions, POLL_MS, wake)
@@ -234,6 +325,7 @@ export function MissionControlScreen({
       <div className="zone-b">
         <RiskStrip polled={positions} />
       </div>
+      <RecapZone ticker={ticker} prevVisit={prevVisit} />
       <main className="grid">
         <section className="panel">
           <div className="panel-head"><HelpTerm term="SYSTEMS rail">SYSTEMS</HelpTerm></div>

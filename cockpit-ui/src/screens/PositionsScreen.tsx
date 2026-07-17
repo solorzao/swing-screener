@@ -220,7 +220,10 @@ export function PositionsScreen({ wake }: { wake: number }) {
         <PanelBody polled={positions} noun="positions">
           {(data: Positions) =>
             data.open.length === 0 ? (
-              <div className="panel-wait">no open positions</div>
+              <div className="panel-wait">
+                no open positions — your real (logged) and live-broker trades land
+                here; the machine's running paper book is 4 · FORWARD BOOKS
+              </div>
             ) : (
               <table className="pos-table">
                 <thead>
@@ -286,6 +289,9 @@ export function PositionsScreen({ wake }: { wake: number }) {
                 <div className="sfy-note">
                   account {data.caps.account} ·{' '}
                   {data.caps.run_date === null ? 'no runs yet' : `run ${data.caps.run_date}`}
+                  {data.caps.mode !== undefined && ` · mode ${data.caps.mode}`}
+                  {data.caps.mode === 'off' &&
+                    ' — counts the positions shown above; no adapter is enforcing caps'}
                 </div>
               </div>
             )}

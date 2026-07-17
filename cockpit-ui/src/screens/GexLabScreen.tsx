@@ -8,6 +8,7 @@ import {
   postGexBuild,
   postGexImportCommit,
   postGexImportParse,
+  postGexSettle,
   postGexSetup,
   postGexSetupStatus,
   usePolling,
@@ -168,6 +169,13 @@ function ThinBadge({ title }: { title?: string }) {
   )
 }
 
+/** True when the snapshot's (lab-tz) day is BEFORE the client's local day —
+ * the GEX model is morning-static and valid for ONE session, so yesterday's
+ * walls must never present as today's decision levels. */
+function snapshotIsStale(ts: string): boolean {
+  return ts.slice(0, 10) < localToday()
+}
+
 function SnapshotsTable({ rows }: { rows: GexSnapshot[] }) {
   if (rows.length === 0) {
     return <div className="panel-wait">no snapshots yet — build today’s plan</div>
@@ -178,6 +186,7 @@ function SnapshotsTable({ rows }: { rows: GexSnapshot[] }) {
         <thead>
           <tr>
             <th className="left">underlying</th>
+            <th className="gex-num">as of</th>
             <th className="gex-num">spot</th>
             <th className="gex-num">call wall</th>
             <th className="gex-num">put wall</th>
@@ -190,12 +199,28 @@ function SnapshotsTable({ rows }: { rows: GexSnapshot[] }) {
           {rows.map((s) => (
             <tr key={s.underlying}>
               <td className="mono gex-tkr">{s.underlying}</td>
+              <td
+                className="mono gex-num"
+                title={`snapshot taken ${s.ts.slice(0, 16).replace('T', ' ')}`}
+              >
+                {snapshotIsStale(s.ts) ? s.ts.slice(0, 10) : s.ts.slice(11, 16)}
+              </td>
               <td className="mono gex-num">{level(s.spot)}</td>
               <td className="mono gex-num">{level(s.call_wall)}</td>
               <td className="mono gex-num">{level(s.put_wall)}</td>
               <td className="mono gex-num">{level(s.gamma_flip)}</td>
               <td>{s.regime === '' ? '—' : s.regime}</td>
-              <td>{s.thin_chain && <ThinBadge />}</td>
+              <td className="gex-flags-cell">
+                {s.thin_chain && <ThinBadge />}
+                {snapshotIsStale(s.ts) && (
+                  <span
+                    className="gex-stale"
+                    title="this snapshot predates today's session — the GEX map is morning-static and valid for one session; rebuild the plan"
+                  >
+                    stale
+                  </span>
+                )}
+              </td>
             </tr>
           ))}
         </tbody>
@@ -352,6 +377,16 @@ function DayPlanPanel({ wake, onAction }: { wake: number; onAction: () => void }
             {data.watchlist.length > 0 && (
               <div className="gex-watchlist mono">watchlist: {data.watchlist.join(' · ')}</div>
             )}
+            {data.snapshots.length > 0 &&
+              data.snapshots.every((s) => snapshotIsStale(s.ts)) && (
+                <div
+                  className="gex-plan-stale"
+                  role="status"
+                  title="every snapshot predates today's session — a stale GEX map must not read as current decision levels"
+                >
+                  plan not built today — these are a previous session’s levels
+                </div>
+              )}
             <SnapshotsTable rows={data.snapshots} />
           </>
         )}
@@ -655,6 +690,30 @@ function JournalRow({
         <span className={`gex-status gex-status-${setup.status}`}>{setup.status}</span>
       </td>
       <td>
+        {setup.trade == null ? (
+          <span className="gex-noaction">—</span>
+        ) : setup.trade.status === 'open' ? (
+          <span
+            className="gex-outcome gex-outcome-open"
+            title="the linked lab paper trade is still open — the settle sweep grades it"
+          >
+            open
+          </span>
+        ) : (
+          <span
+            className={`gex-outcome ${
+              (setup.trade.realized_r ?? 0) >= 0 ? 'gex-outcome-win' : 'gex-outcome-loss'
+            }`}
+            title={`settled ${setup.trade.exit_reason ?? '—'}`}
+          >
+            {setup.trade.exit_reason ?? 'closed'}{' '}
+            {setup.trade.realized_r === null
+              ? ''
+              : `${setup.trade.realized_r >= 0 ? '+' : MINUS}${Math.abs(setup.trade.realized_r).toFixed(2)}R`}
+          </span>
+        )}
+      </td>
+      <td>
         {setup.status === 'idea' ? (
           <div className="gex-row-actions">
             <button
@@ -684,7 +743,15 @@ function JournalRow({
 
 function JournalPanel({ wake, onAction }: { wake: number; onAction: () => void }) {
   const day = localToday()
-  const setups = usePolling(() => getGexSetups(day), POLL_MS, wake, day)
+  // today vs the last 7 days — a taken setup's outcome usually lands AFTER its
+  // day (the settle sweep), so a today-only journal read "taken" forever.
+  const [scope, setScope] = useState<'today' | 'recent'>('today')
+  const setups = usePolling(
+    () => getGexSetups(day, scope === 'recent'),
+    POLL_MS,
+    wake,
+    `${day}|${scope}`,
+  )
   const [busyId, setBusyId] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -708,9 +775,19 @@ function JournalPanel({ wake, onAction }: { wake: number; onAction: () => void }
       <div className="panel-head">
         JOURNAL
         <span className="panel-caption">
-          today’s setups, newest first · taking one opens a paper trade on the
-          firewalled lab book
+          setups newest first · taking one opens a paper trade on the firewalled
+          lab book · outcomes land via the settle sweep
         </span>
+        <span className="spacer" />
+        <Segmented
+          title="journal scope"
+          options={[
+            { value: 'today', label: 'today' },
+            { value: 'recent', label: '7d' },
+          ]}
+          value={scope}
+          onChange={setScope}
+        />
       </div>
       {error !== null && (
         <div className="gex-err" role="alert">
@@ -720,7 +797,11 @@ function JournalPanel({ wake, onAction }: { wake: number; onAction: () => void }
       <PanelBody polled={setups} noun="setups">
         {(data) =>
           data.setups.length === 0 ? (
-            <div className="panel-wait">no setups journaled today</div>
+            <div className="panel-wait">
+              {scope === 'today'
+                ? 'no setups journaled today'
+                : 'no setups journaled in the last 7 days'}
+            </div>
           ) : (
             <div className="gex-table-wrap">
               <table className="gex-table">
@@ -734,6 +815,7 @@ function JournalPanel({ wake, onAction }: { wake: number; onAction: () => void }
                     <th className="gex-num">stop</th>
                     <th className="gex-num">target</th>
                     <th className="left">status</th>
+                    <th className="left">outcome</th>
                     <th className="left">action</th>
                   </tr>
                 </thead>
@@ -772,8 +854,28 @@ function RobinhoodRow({ tag, book }: { tag: string; book: RobinhoodBook }) {
   )
 }
 
-function LabStatsPanel({ wake }: { wake: number }) {
+function LabStatsPanel({ wake, onAction }: { wake: number; onAction: () => void }) {
   const stats = usePolling(getGexStats, POLL_MS, wake)
+  const [settling, setSettling] = useState(false)
+  const [settleNote, setSettleNote] = useState<string | null>(null)
+  const openCount = stats.data?.open_trades ?? null
+
+  const settle = () => {
+    setSettling(true)
+    setSettleNote(null)
+    postGexSettle().then(
+      (r) => {
+        setSettling(false)
+        setSettleNote(`settled ${r.settled} · ${r.open_remaining} still open`)
+        onAction()
+      },
+      (err: unknown) => {
+        setSettling(false)
+        setSettleNote(err instanceof Error ? err.message : String(err))
+      },
+    )
+  }
+
   return (
     <section className="panel">
       <div className="panel-head">
@@ -782,7 +884,26 @@ function LabStatsPanel({ wake }: { wake: number }) {
           lab <HelpTerm term="expectancy">expectancy</HelpTerm> is <HelpTerm term="cluster">session-clustered</HelpTerm> (a Stat) · the Robinhood book is
           premium dollars, a labeled display
         </span>
+        <span className="spacer" />
+        <button
+          type="button"
+          className="gex-btn"
+          disabled={settling}
+          title="grade due open lab paper trades against their bars (the CLI settle ritual, idempotent) — an open trade contributes nothing until settled"
+          onClick={settle}
+        >
+          {settling
+            ? 'settling…'
+            : openCount === null
+              ? 'Settle open trades'
+              : `Settle open trades (${openCount})`}
+        </button>
       </div>
+      {settleNote !== null && (
+        <div className="gex-settle-note mono" role="status">
+          {settleNote}
+        </div>
+      )}
       <PanelBody polled={stats} noun="lab stats">
         {(data) => {
           const rhTags = Object.keys(data.robinhood).sort((a, b) => {
@@ -1026,7 +1147,7 @@ export function GexLabScreen({ wake }: { wake: number }) {
           pos-cols idiom, so the sparse stats panel stops reading as dead space. */}
       <div className="pos-cols">
         <JournalPanel wake={wakeAll} onAction={onAction} />
-        <LabStatsPanel wake={wakeAll} />
+        <LabStatsPanel wake={wakeAll} onAction={onAction} />
       </div>
       <ImportPanel onAction={onAction} />
     </main>

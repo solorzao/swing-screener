@@ -1,6 +1,6 @@
 // =============================================================================
 // jobs.bicep
-// SEVEN scheduled Container Apps Jobs, all sharing ONE image and ONE UAMI.
+// TEN scheduled Container Apps Jobs, all sharing ONE image and ONE UAMI.
 //
 // Each job keeps the image ENTRYPOINT (the US-Eastern gate,
 // `python -m swing_screener.ops.eastern_gate`) and sets container `args` to the

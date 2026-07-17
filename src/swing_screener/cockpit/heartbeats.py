@@ -20,7 +20,13 @@ from typing import Literal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from swing_screener.db.models import EmailLog, MarketReport, Signal
+from swing_screener.db.models import (
+    EmailLog,
+    MarketReport,
+    Signal,
+    SystemAudit,
+    WeaknessesProfile,
+)
 from swing_screener.settings import resolve_edge_dir
 
 # The closed four-state set (same convention as signals/actionability.py's Status):
@@ -109,6 +115,14 @@ def collect_heartbeats(
 ) -> list[Heartbeat]:
     """Assemble the heartbeat roster from the DB, the edge dir, and (optionally) GH.
 
+    COVERAGE DOCTRINE: every scheduled job ``infra/modules/jobs.bicep`` deploys
+    (all TEN) has a row here -- a deployed job missing from the rail is invisible,
+    the one failure mode this module exists to prevent. Jobs whose every run
+    provably writes something get a real ``max()`` watermark beat against their
+    bicep cron; jobs that write only when there is something to report get the
+    explicit-UNKNOWN placeholder (``_sparse_beat``) -- never a false 'down', and
+    never absence.
+
     The two weekday jobs (evening screen, daily digest) measure against a
     BUSINESS-DAY period (``_business_period``): the next weekday after the last
     run, skipping ``_MARKET_HOLIDAYS`` -- a Friday run reads up all weekend and
@@ -138,9 +152,59 @@ def collect_heartbeats(
               timedelta(days=7), timedelta(hours=3)),
         _beat("reflection verdicts", newest_verdicts_mtime(resolved_edge), now,
               timedelta(days=7), timedelta(hours=3)),
+        # -- the remaining five deployed jobs (shipped without beats: each read
+        # healthy by silence until here). Two have a real per-run watermark;
+        # three are sparse writers and get the honest placeholder.
+        # intraday-exit (hourly, ET 9-16 weekdays): EmailLog kind='exit' rows exist
+        # only when an exit actually trips -- and are deduped per exit-event SET,
+        # so even the write is not per-run. No watermark exists.
+        _sparse_beat(
+            "intraday exit",
+            "alerts only when an exit trips; a quiet market and a dead job read the same"),
+        # on-demand-analysis (hourly): drains the analysis_requests queue; the
+        # claim/finish stamps move only when a request exists (the queue is
+        # near-always empty -- 2026-07 audit), so silence proves nothing.
+        _sparse_beat(
+            "on-demand analysis",
+            "queue-drain worker; writes only when a request is queued"),
+        # journal-coach (hourly, un-gated): every run appends a WeaknessesProfile
+        # row via build_profile (coach_run.main always calls it; --skip-rollup is
+        # a CLI-only escape the deployed job never passes), so max(generated_at)
+        # is a true per-run watermark. 15m grace covers container-start +
+        # Azure-SQL-wake latency on the 1h cadence.
+        _beat("journal coach",
+              session.scalar(select(func.max(WeaknessesProfile.generated_at))), now,
+              timedelta(hours=1), timedelta(minutes=15)),
+        # journal-audit-weekly (Sat 16:00 ET): run_weekly UPSERTS the one weekly
+        # SystemAudit row every run -- a clean week still writes (template
+        # narrative at $0) and re-stamps generated_at -- so the kind-filtered max
+        # is a true watermark. 7d/3h mirrors the other weekly beats.
+        _beat("journal audit · weekly",
+              session.scalar(select(func.max(SystemAudit.generated_at))
+                             .where(SystemAudit.kind == "weekly")), now,
+              timedelta(days=7), timedelta(hours=3)),
+        # journal-audit-breach (weekdays 16:00 ET): writes a SystemAudit row ONLY
+        # when it finds a NEW hard breach (cap exceeded, a disarm). A clean day
+        # writes nothing, so from DB data alone a quiet stretch is
+        # indistinguishable from a dead job.
+        _sparse_beat(
+            "journal audit · breach",
+            "writes only on a hard breach; a clean day and a dead job read the same"),
     ]
     beats += [_gh_beat(name, wf, gh_latest, now) for name, wf in _GH_WORKFLOWS]
     return beats
+
+
+def _sparse_beat(name: str, reason: str) -> Heartbeat:
+    """The honest placeholder for a deployed job whose runs leave no per-run
+    watermark (it writes only when there is something to report). Same shape as
+    the GH rows' honest UNKNOWN -- state unknown, no last, 0/0 'no contract
+    stated' -- with ``detail`` naming WHY the DB cannot vouch for it, so the row
+    is never mistaken for a dead poller. The alternative readings are both worse:
+    a time-based beat would cry false 'down' through every quiet stretch, and
+    dropping the row would make a deployed job invisible."""
+    return Heartbeat(name=name, state="unknown", last=None, period_s=0, grace_s=0,
+                     detail=reason)
 
 
 # Heartbeat name -> workflow file, the mapping the poller is asked about. The names

@@ -89,7 +89,7 @@ A new module ships, at minimum:
 
 ## Extraction policy (strangler fig, not big bang)
 
-The suite is live in production (seven scheduled Azure jobs). Physical restructuring follows
+The suite is live in production (ten scheduled Azure jobs). Physical restructuring follows
 proven need, not aesthetics:
 
 - Shared code is **promoted to a platform namespace when it gains its second consumer** —

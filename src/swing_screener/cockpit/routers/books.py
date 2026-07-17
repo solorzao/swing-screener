@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
@@ -45,11 +45,13 @@ from swing_screener.cockpit.settlement import (
     build_cards,
     facet_filter,
 )
+from swing_screener.cockpit.routers.trades import _live_grades
 from swing_screener.cockpit.stats import stat_from_paired_delta, stat_from_summary
 from swing_screener.db.models import PaperTrade
 from swing_screener.db.repo import (
     latest_reversal_funnel,
     load_closed_paper_trades,
+    load_open_forward_book,
     load_research_paper_trades,
 )
 from swing_screener.pipeline.arms import BASELINE
@@ -166,6 +168,84 @@ def build_books_router(
         )
         cards.sort(key=lambda c: (_STATE_RANK[c.state], c.name))
         return {"cards": [_card_dict(c) for c in cards]}
+
+    @router.get("/api/books/open")
+    def open_forward_book(
+        request: Request,
+        facet: Literal["research", "gold"] = "research",
+        session: Session = Depends(_session),
+    ) -> dict[str, object]:
+        """The RUNNING forward book: every OPEN research-grid trade at
+        (arm=BASELINE, variant=DEFAULT_VARIANT), live-graded at the cached quote.
+
+        The open-trade complement of /api/forward-books' closed aggregates,
+        loaded by ``load_open_forward_book`` -- the exact slice reflection
+        grades, whose arm+variant pin dedupes the shadow grid's arm x variant
+        fill multiplication (each distinct entry appears ONCE). ``facet``
+        mirrors the cohort endpoint: ``gold`` keeps only would_surface-truthy
+        rows (settlement's ``facet_filter``, applied before anything else);
+        anything else is FastAPI's 422 via the ``Literal``.
+
+        Wire: ``{"rows": [...], "count": n, "as_of": iso | null,
+        "book_label": str}``, rows ordered ``opened_date`` DESC then ``ticker``
+        ASC. Each row: id / ticker / play_type / strength / conviction_tier /
+        opened_date / age_days / entry / stop / target / risk / last_close /
+        unrealized_r / unrealized_pct / to_stop_r / to_target_r / quote_error.
+        The live grades come from ``_live_grades`` -- the SAME helper behind
+        /api/positions' live rows, one home for the math: ``unrealized_r =
+        (last_close - entry) / risk``; ``to_stop_r`` / ``to_target_r`` are the
+        signed R distances ``(last_close - stop) / risk`` / ``(target -
+        last_close) / risk`` (negative = stop breached / target overshot).
+        Long-only book, so every sign reads long. ``age_days`` counts
+        ``opened_date`` -> today.
+
+        Degradation, per ROW (one bad row never 503s the panel): a quote MISS
+        (absent from the cache dict -- the fetch's normal failure shape) nulls
+        ``last_close`` + the live fields with ``quote_error`` null (a miss is
+        not an error); a RAISING quote fetch degrades EVERY row -- live fields
+        null, ``quote_error`` = the exception CLASS NAME only (never the
+        message: quote errors can embed hosts/paths -- the ``_down_summary``
+        leak posture), ``as_of`` null; a per-row grading surprise stamps the
+        same class-name-only ``quote_error`` with ``last_close`` kept (the
+        quote itself was fine -- mirrors /api/positions' malformed-row rule). A
+        legacy row missing ``opened_date`` keeps honest nulls for
+        ``opened_date``/``age_days`` and sorts oldest. ONE ``QuoteCache.get``
+        batch per request -- the SAME instance /api/positions reads, reached
+        via ``app.state.quote_cache`` (the factory parks it there; this router
+        predates the livedata seams, so the state lookup avoids widening every
+        build signature); ``as_of`` is the quote window's timestamp, the same
+        source as /api/positions' ``quotes_as_of``. ``book_label`` states the
+        slice honestly (and says so when the gold facet narrows it) so the
+        frontend never captions this as a real-money book.
+        """
+        trades = facet_filter(load_open_forward_book(session), facet)
+        # opened_date DESC then ticker ASC: two stable passes (a None opened_date
+        # sorts oldest -- honest for a legacy row).
+        trades.sort(key=lambda t: t.ticker)
+        trades.sort(key=lambda t: t.opened_date or date.min, reverse=True)
+
+        batch_error: str | None = None
+        prices: dict[str, float] = {}
+        as_of: str | None = None
+        try:
+            quotes = request.app.state.quote_cache.get([t.ticker for t in trades])
+            prices = quotes.prices
+            as_of = quotes.as_of.isoformat()
+        except Exception as exc:  # noqa: BLE001 -- degrade the panel, never 503 it
+            batch_error = type(exc).__name__
+
+        today = date.today()
+        rows = [
+            _open_book_row(t, prices.get(t.ticker), today=today,
+                           quote_error=batch_error)
+            for t in trades
+        ]
+        label = "research · baseline/default — the forward shadow book"
+        if facet == "gold":
+            label = ("research · baseline/default · gold (would-surface only) — "
+                     "the forward shadow book")
+        return {"rows": rows, "count": len(rows), "as_of": as_of,
+                "book_label": label}
 
     @router.get("/api/funnel")
     def funnel(session: Session = Depends(_session)) -> dict[str, object]:
@@ -432,6 +512,55 @@ def _breakdown_row(
         "win_rate": summary.win_rate,
         "n_closed": summary.n_closed,
     }
+
+
+def _open_book_row(
+    t: PaperTrade, price: float | None, *, today: date, quote_error: str | None
+) -> dict[str, object]:
+    """One /api/books/open row -- hand-rolled wire form (the ``_beat_dict`` rule).
+
+    The live fields start null and fill in only when a price exists AND the
+    grading math holds. ``quote_error`` arrives as the batch fetch's class name
+    (or None); a per-row grading surprise (e.g. a pathological null entry that
+    slipped past booking) overwrites it for THIS row only, with ``last_close``
+    kept -- the quote itself was fine, and one sick row never blanks the panel.
+    A priced row with a null ``entry_price`` keeps null live fields with no
+    error stamp (mirrors ``_live_position_row``'s pending-entry rule)."""
+    row: dict[str, object] = {
+        "id": t.id,
+        "ticker": t.ticker,
+        "play_type": t.play_type,
+        "strength": t.strength,
+        "conviction_tier": t.conviction_tier,
+        "opened_date": t.opened_date.isoformat() if t.opened_date else None,
+        "age_days": (today - t.opened_date).days if t.opened_date else None,
+        "entry": t.entry_price,
+        "stop": t.stop,
+        "target": t.target,
+        "risk": t.risk,
+        "last_close": None,
+        "unrealized_r": None,
+        "unrealized_pct": None,
+        "to_stop_r": None,
+        "to_target_r": None,
+        "quote_error": quote_error,
+    }
+    if quote_error is not None or price is None:
+        return row
+    row["last_close"] = price
+    if t.entry_price is None:  # pathological: nothing to grade against
+        return row
+    try:
+        g = _live_grades(price, entry=t.entry_price, risk=t.risk,
+                         stop=t.stop, target=t.target)
+    except Exception as exc:  # noqa: BLE001 -- one sick row must degrade, never 503
+        row["quote_error"] = type(exc).__name__
+        return row
+    row["unrealized_r"] = g["r_multiple"]
+    row["unrealized_pct"] = g["unrealized_pct"]
+    row["to_stop_r"] = g["to_stop_r"]
+    row["to_target_r"] = g["to_target_r"]
+    return row
 
 
 # Forward Books wall order: decision-forcing cards first (settled and futile both
