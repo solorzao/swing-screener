@@ -24,7 +24,7 @@ from collections.abc import Callable, Iterator
 from datetime import UTC, date, datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -48,6 +48,8 @@ from swing_screener.journal.curve import drawdown_series, max_drawdown
 from swing_screener.journal.discipline import discipline_report
 from swing_screener.journal.excursions import excursion_summary
 from swing_screener.journal.mistakes import mistake_cost
+from swing_screener.pipeline.arms import BASELINE
+from swing_screener.pipeline.variants import DEFAULT_VARIANT
 from swing_screener.journal.record import (
     TradeRecord,
     manual_equity_records,
@@ -93,18 +95,35 @@ def build_journal_router(
     wake nonce (bumped by the two write actions here)."""
     router = APIRouter()
 
-    def _book_trades(session: Session, book: str) -> list[PaperTrade]:
-        """Every ``PaperTrade`` in one book (its account), open or closed. Each journal
-        function re-applies its own closed-filled filter, so the raw cohort is handed
-        through; the per-book firewall is this account scope."""
-        return list(session.scalars(
-            select(PaperTrade).where(PaperTrade.account == book)
-        ))
+    def _book_trades(
+        session: Session, book: str, scope: str = "baseline"
+    ) -> list[PaperTrade]:
+        """One book's ``PaperTrade`` cohort, open or closed, at the chosen SCOPE.
+
+        The machine books are an arm x variant experiment GRID: every screened
+        candidate books one row per active arm and variant, so the raw account
+        pool counts the same underlying fill up to a dozen times and its R sums
+        pool the whole tournament -- unit-mixing the North Star bans from
+        displays. ``scope="baseline"`` (the default, and the journal's honest
+        evaluation slice) filters to arm==BASELINE and variant==DEFAULT_VARIANT
+        -- the same one-row-per-candidate slice reflection grades and
+        /api/books/open lists. ``scope="grid"`` hands through the full pool for
+        deliberate grid-wide inspection; every response carries the scope so
+        the display can label it. Each journal function re-applies its own
+        closed-filled filter; the per-book firewall is the account scope."""
+        stmt = select(PaperTrade).where(PaperTrade.account == book)
+        if scope == "baseline":
+            stmt = stmt.where(
+                PaperTrade.arm == BASELINE,
+                PaperTrade.variant == DEFAULT_VARIANT,
+            )
+        return list(session.scalars(stmt))
 
     @router.get("/api/journal/calendar")
     def calendar(
         book: str = "research",
         month: str | None = None,
+        scope: Literal["baseline", "grid"] = "baseline",
         session: Session = Depends(_session),
     ) -> dict[str, object]:
         """R-native P&L calendar for one book. ``month`` (``YYYY-MM``) narrows the day
@@ -112,20 +131,23 @@ def build_journal_router(
         whole cohort. Cells are plain ``{r, n}`` dicts (r routed through the
         non-finite->null rule); ``cost_level`` is the book's vintage stamp."""
         month_date = _parse_month(month)
-        cal = pnl_calendar(_book_trades(session, book), month=month_date)
+        cal = pnl_calendar(_book_trades(session, book, scope), month=month_date)
         return {
             "days": {k: _cell(v) for k, v in cal["days"].items()},
             "months": {k: _cell(v) for k, v in cal["months"].items()},
             "cost_level": cal["cost_level"],
+            "scope": scope,
         }
 
     @router.get("/api/journal/curve")
     def curve(
-        book: str = "research", session: Session = Depends(_session)
+        book: str = "research",
+        scope: Literal["baseline", "grid"] = "baseline",
+        session: Session = Depends(_session),
     ) -> dict[str, object]:
         """The book's realized equity curve, its underwater (drawdown) series, and the
         max drawdown -- all in R. Points are ``[iso_date, value]`` pairs."""
-        points = equity_curve(_book_trades(session, book))
+        points = equity_curve(_book_trades(session, book, scope))
         return {
             "curve": [[d.isoformat(), _finite_or_none(r)] for d, r in points],
             "drawdown": [[d.isoformat(), _finite_or_none(dd)]
@@ -135,13 +157,15 @@ def build_journal_router(
 
     @router.get("/api/journal/excursions")
     def excursions(
-        book: str = "research", session: Session = Depends(_session)
+        book: str = "research",
+        scope: Literal["baseline", "grid"] = "baseline",
+        session: Session = Depends(_session),
     ) -> dict[str, object]:
         """MAE/MFE-in-R summary for the book (means + medians over instrumented
         closed-filled trades). Descriptive, not a Stat -- there is no CI machinery
         behind an excursion mean, so it rides as plain floats, never a fabricated
         interval. Uninstrumented / legacy rows are honoured as absent."""
-        summ = excursion_summary(_book_trades(session, book))
+        summ = excursion_summary(_book_trades(session, book, scope))
         return {
             "n": summ["n"],
             "avg_mae_r": _finite_or_none(summ["avg_mae_r"]),
@@ -154,12 +178,13 @@ def build_journal_router(
     def breakdowns(
         book: str = "research",
         by: Literal["dow", "hold", "symbol"] = "dow",
+        scope: Literal["baseline", "grid"] = "baseline",
         session: Session = Depends(_session),
     ) -> dict[str, object]:
         """Day-of-week / hold-time / symbol slices, each bucket a full Stat (rule 1).
         ``by`` is a closed set (anything else is 422). Empty buckets are kept (dow/hold
         always show every label); ``symbol`` shows only tickers that traded."""
-        trades = _book_trades(session, book)
+        trades = _book_trades(session, book, scope)
         groups: dict[str, PerformanceSummary]
         if by == "dow":
             groups = by_day_of_week(trades)
@@ -178,12 +203,14 @@ def build_journal_router(
 
     @router.get("/api/journal/discipline")
     def discipline(
-        book: str = "research", session: Session = Depends(_session)
+        book: str = "research",
+        scope: Literal["baseline", "grid"] = "baseline",
+        session: Session = Depends(_session),
     ) -> dict[str, object]:
         """Swing discipline metrics over the book's existing columns (giveback,
         stop-honored rate, MAE-before-win) with their counts. Descriptive floats
         (None-safe), routed through the non-finite->null rule."""
-        rep = discipline_report(_book_trades(session, book))
+        rep = discipline_report(_book_trades(session, book, scope))
         return {
             "giveback_r": _opt_finite(rep["giveback_r"]),
             "stop_honored_rate": _opt_finite(rep["stop_honored_rate"]),
@@ -197,12 +224,14 @@ def build_journal_router(
 
     @router.get("/api/journal/mistakes")
     def mistakes(
-        book: str = "research", session: Session = Depends(_session)
+        book: str = "research",
+        scope: Literal["baseline", "grid"] = "baseline",
+        session: Session = Depends(_session),
     ) -> list[dict[str, object]]:
         """Per-mistake realized cost, worst-first. ``total_r``/``n`` are the aggregate
         cost + count (plain, like a KPI); the per-trade expectancy rides as a full Stat
         so the edge claim carries its CI. Book-level cost provenance."""
-        trades = _book_trades(session, book)
+        trades = _book_trades(session, book, scope)
         cost = cost_level_for(trades)
         return [
             {
@@ -263,18 +292,31 @@ def build_journal_router(
 
     @router.get("/api/journal/records")
     def records(
-        book: str = "research", session: Session = Depends(_session)
-    ) -> list[dict[str, object]]:
-        """The book's trades as display records (with tags + theses). Display only --
-        never an aggregate. The two PERSONAL books dispatch to their own producers
-        (Trade / robinhood OptionPaperTrade); every machine book reads PaperTrade."""
+        book: str = "research",
+        scope: Literal["baseline", "grid"] = "baseline",
+        limit: int = Query(default=200, ge=1, le=1000),
+        session: Session = Depends(_session),
+    ) -> dict[str, object]:
+        """The book's trades as display records (with tags + theses), NEWEST first,
+        paginated. Display only -- never an aggregate. The two PERSONAL books
+        dispatch to their own producers (Trade / robinhood OptionPaperTrade) and
+        ignore ``scope``; every machine book reads PaperTrade at the chosen scope
+        (baseline slice by default -- see ``_book_trades``). ``total`` counts the
+        whole cohort so the display can say "newest N of M" instead of silently
+        truncating a multi-thousand-row book."""
         if book == "manual_equity":
             recs = manual_equity_records(session)
         elif book == "robinhood":
             recs = robinhood_records(session)
         else:
-            recs = trade_records(session, book=book)
-        return [_record_dict(rec) for rec in recs]
+            recs = trade_records(session, book=book, scope=scope)
+        total = len(recs)
+        newest_first = list(reversed(recs))[:limit]
+        return {
+            "records": [_record_dict(rec) for rec in newest_first],
+            "total": total,
+            "scope": scope,
+        }
 
     return router
 

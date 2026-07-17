@@ -61,7 +61,8 @@ def test_calendar_groups_by_day_and_month(tmp_path: Path) -> None:
     r = _client(tmp_path).get("/api/journal/calendar?book=research")
     assert r.status_code == 200
     body = r.json()
-    assert set(body) == {"days", "months", "cost_level"}
+    assert set(body) == {"days", "months", "cost_level", "scope"}
+    assert body["scope"] == "baseline"
     assert body["days"]["2026-01-05"] == {"r": 1.0, "n": 2}
     assert set(body["months"]) == {"2026-01", "2026-02"}
     # month filter narrows the day grid but not the month roll-up
@@ -180,7 +181,7 @@ def test_tag_a_trade_requires_header_and_shows_up(tmp_path: Path) -> None:
     assert r.status_code == 200
     assert r.json()["source"] == "human"
     # the tag now rides the trade's record
-    rec = client.get("/api/journal/records?book=research").json()[0]
+    rec = client.get("/api/journal/records?book=research").json()["records"][0]
     assert rec["tags"] == [{"name": "chased", "kind": "mistake", "source": "human"}]
 
 
@@ -194,7 +195,10 @@ def test_tag_unknown_trade_is_404(tmp_path: Path) -> None:
 def test_records_shape(tmp_path: Path) -> None:
     url = _db_url(tmp_path)
     _seed(url, [_pt("AMD", 2.0, exit_date=date(2026, 1, 5))])
-    rec = _client(tmp_path).get("/api/journal/records?book=research").json()
+    body = _client(tmp_path).get("/api/journal/records?book=research").json()
+    assert set(body) == {"records", "total", "scope"}
+    assert body["total"] == 1 and body["scope"] == "baseline"
+    rec = body["records"]
     assert len(rec) == 1
     assert set(rec[0]) == {"trade_id", "book", "module", "symbol", "direction",
                            "opened", "closed", "unit", "r", "tags", "theses"}
@@ -202,6 +206,54 @@ def test_records_shape(tmp_path: Path) -> None:
     assert rec[0]["unit"] == "R"
     assert rec[0]["direction"] == "long"
     assert rec[0]["r"] == 2.0
+
+
+def _pt_arm(ticker: str, r: float, *, exit_date: date, arm: str) -> PaperTrade:
+    """A closed-filled GRID row (non-baseline arm) — must vanish from the
+    default baseline scope and reappear under scope=grid."""
+    t = _pt(ticker, r, exit_date=exit_date)
+    t.arm = arm
+    return t
+
+
+def test_scope_baseline_excludes_the_experiment_grid(tmp_path: Path) -> None:
+    """The journal's default slice is one row per screened candidate: the
+    arm×variant grid rows (the tournament multiplication Oliver saw as
+    hundreds of 'trades' per day) only appear under the explicit grid scope,
+    and every payload says which slice it is."""
+    url = _db_url(tmp_path)
+    _seed(url, [
+        _pt("AMD", 2.0, exit_date=date(2026, 1, 5)),
+        _pt_arm("AMD", -1.0, exit_date=date(2026, 1, 5), arm="no_flip"),
+        _pt_arm("AMD", -1.0, exit_date=date(2026, 1, 5), arm="be_1r"),
+    ])
+    client = _client(tmp_path)
+    # calendar: baseline counts ONE trade on the day; grid counts all three.
+    base = client.get("/api/journal/calendar?book=research").json()
+    assert base["days"]["2026-01-05"] == {"r": 2.0, "n": 1}
+    grid = client.get("/api/journal/calendar?book=research&scope=grid").json()
+    assert grid["days"]["2026-01-05"] == {"r": 0.0, "n": 3}
+    assert grid["scope"] == "grid"
+    # records: same split, and the totals say so.
+    assert client.get("/api/journal/records?book=research").json()["total"] == 1
+    assert (
+        client.get("/api/journal/records?book=research&scope=grid").json()["total"]
+        == 3
+    )
+
+
+def test_records_paginates_newest_first(tmp_path: Path) -> None:
+    url = _db_url(tmp_path)
+    _seed(url, [
+        _pt("AMD", 1.0, exit_date=date(2026, 1, 5)),
+        _pt("NVDA", 1.0, exit_date=date(2026, 1, 6)),
+        _pt("MSFT", 1.0, exit_date=date(2026, 1, 7)),
+    ])
+    body = _client(tmp_path).get(
+        "/api/journal/records?book=research&limit=2"
+    ).json()
+    assert body["total"] == 3
+    assert [r["symbol"] for r in body["records"]] == ["MSFT", "NVDA"]
 
 
 def test_journal_calendar_dead_db_is_503(tmp_path: Path) -> None:

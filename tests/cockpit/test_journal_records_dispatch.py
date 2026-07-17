@@ -24,7 +24,7 @@ def test_manual_equity_records_come_from_the_trade_table(tmp_path: Path):
                     entry_price=100.0, size=1.0, stop=95.0, target=110.0, status="closed",
                     exit_price=110.0, exit_date=date(2026, 7, 5), exit_reason="target"))
         s.commit()
-    rows = client.get("/api/journal/records?book=manual_equity").json()
+    rows = client.get("/api/journal/records?book=manual_equity").json()["records"]
     assert [r["symbol"] for r in rows] == ["AMD"]
     assert rows[0]["unit"] == "R" and rows[0]["r"] == 2.0
 
@@ -37,5 +37,5 @@ def test_robinhood_records_are_dollar_unit(tmp_path: Path):
                                closed_at=datetime(2026, 7, 1, 15, 0), premium_pnl=42.0,
                                status="closed"))
         s.commit()
-    rows = client.get("/api/journal/records?book=robinhood").json()
+    rows = client.get("/api/journal/records?book=robinhood").json()["records"]
     assert rows[0]["symbol"] == "SPY" and rows[0]["unit"] == "$" and rows[0]["r"] == 42.0
