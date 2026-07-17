@@ -1,4 +1,8 @@
-import type { SettlementCard as SettlementCardData } from '../lib/api'
+import { useState } from 'react'
+import { ApiError, postDecideExperiment } from '../lib/api'
+import type { ExperimentDecided, SettlementCard as SettlementCardData } from '../lib/api'
+import { HelpTerm } from './HelpTerm'
+import { HoldToConfirm } from './HoldToConfirm'
 import { Sparkline } from './Sparkline'
 import { StatChip } from './StatChip'
 
@@ -6,7 +10,13 @@ import { StatChip } from './StatChip'
    through StatChip — the card's own numerals are structural counts only
    (n accrued, n needed). The stopping rule renders VERBATIM in the mono block
    with its registration date + sha: the rule IS the point of the card (the solo
-   pre-registration-theater mitigation), so it is never truncated. */
+   pre-registration-theater mitigation), so it is never truncated.
+
+   An awaiting-decision card carries the DECIDE box: reason + hold-to-confirm
+   retire. Decide MARKS the registry (an uncommitted edge/experiments.json edit,
+   audit fields stamped) — the proposals' approve-marks posture applied to
+   settlement; the result panel hands back the roster+commit checklist that
+   stays human. The SSE nonce re-renders the card retired in every window. */
 
 const STATE_LABEL: Record<SettlementCardData['state'], string> = {
   accruing: 'accruing',
@@ -51,6 +61,88 @@ function SettlementBar({ card }: { card: SettlementCardData }) {
           />
         </>
       )}
+    </div>
+  )
+}
+
+type DecidePhase =
+  | { kind: 'idle' }
+  | { kind: 'firing' }
+  | { kind: 'done'; result: ExperimentDecided }
+  | { kind: 'error'; detail: string }
+
+/** The decide box (awaiting-decision states only): reason → hold 400 ms →
+ * registry marked retired; the result panel is the remaining human half. */
+function DecideBox({ name }: { name: string }) {
+  const [reason, setReason] = useState('')
+  const [phase, setPhase] = useState<DecidePhase>({ kind: 'idle' })
+  const busy = phase.kind === 'firing'
+  const reasonEmpty = reason.trim() === ''
+
+  if (phase.kind === 'done') {
+    const r = phase.result
+    return (
+      <div className="scard-decide-done" role="status">
+        <div className="scard-decide-head">
+          RETIRED — {r.name} marked {r.decided_at ?? ''}
+        </div>
+        <div className="pp-result-note">
+          The registry is edited in your working tree (uncommitted). Finish with
+          the one commit:
+        </div>
+        <ol className="pp-checklist">
+          {r.checklist.map((step, idx) => (
+            <li key={idx}>{step}</li>
+          ))}
+        </ol>
+      </div>
+    )
+  }
+
+  return (
+    <div className="scard-decide">
+      {phase.kind === 'error' && (
+        <div className="gex-err" role="alert">
+          {phase.detail}
+        </div>
+      )}
+      <input
+        className="pp-reason"
+        value={reason}
+        maxLength={200}
+        placeholder="decision — why retire? lands verbatim in the registry's audit record"
+        aria-label={`decision reason for ${name}`}
+        onChange={(e) => setReason(e.target.value)}
+      />
+      <HoldToConfirm
+        holdMs={400}
+        className="pp-withdraw"
+        disabled={reasonEmpty || busy}
+        title={
+          reasonEmpty
+            ? 'enter a reason first'
+            : 'hold 400 ms — marks this experiment retired in edge/experiments.json (an uncommitted working-tree edit); the roster line + commit stay yours'
+        }
+        label={<span className="pp-hold-label">hold to RETIRE this experiment</span>}
+        onFire={() => {
+          setPhase({ kind: 'firing' })
+          postDecideExperiment(name, reason.trim()).then(
+            (result) => setPhase({ kind: 'done', result }),
+            (err: unknown) =>
+              setPhase({
+                kind: 'error',
+                detail:
+                  err instanceof ApiError
+                    ? err.message
+                    : 'backend unreachable — the registry may or may not be edited',
+              }),
+          )
+        }}
+      />
+      <div className="pp-decide-note">
+        retiring marks the registry only — the roster line + one commit stay
+        yours (the checklist appears after)
+      </div>
     </div>
   )
 }
@@ -107,10 +199,15 @@ export function SettlementCard({ card }: { card: SettlementCardData }) {
         <div className="scard-decision">decision: {card.decision}</div>
       )}
 
+      {(card.state === 'settled-awaiting-decision' ||
+        card.state === 'futile-awaiting-decision') && <DecideBox name={card.name} />}
+
       {card.spark.length > 0 && (
         <div className="scard-spark">
           <Sparkline points={card.spark} width={260} height={30} />
-          <span className="scard-spark-cap">trailing expectancy</span>
+          <span className="scard-spark-cap">
+            <HelpTerm term="trailing expectancy">trailing expectancy</HelpTerm>
+          </span>
         </div>
       )}
     </div>

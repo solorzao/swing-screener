@@ -175,7 +175,7 @@ def create_app(
 
     app.include_router(build_books_router(
         db_url=db_url, _engine=_engine, _session=_session, edge_dir=edge_dir,
-        gh_latest=gh_latest, spawner=spawner,
+        gh_latest=gh_latest, spawner=spawner, action_nonce=action_nonce,
     ))
     app.include_router(build_safety_router(
         _session=_session, edge_dir=edge_dir,

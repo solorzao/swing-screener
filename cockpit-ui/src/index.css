@@ -5919,3 +5919,31 @@ a.needs-hand-link:hover {
   color: var(--faint);
   font-size: 11px;
 }
+
+/* ---------- Settlement DECIDE box (SettlementCard.tsx) ----------
+   The awaiting-decision card's in-place action: reason + hold-to-retire,
+   then the roster/commit checklist. Reuses the Playbooks decide primitives
+   (.pp-reason / .pp-withdraw / .pp-checklist) — same decision, same face. */
+
+.scard-decide {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line2);
+}
+
+.scard-decide-done {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--lamp-amber-border);
+  background: var(--lamp-amber-bg);
+  border-radius: 3px;
+}
+
+.scard-decide-head {
+  color: var(--amber);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  margin-bottom: 4px;
+}

@@ -23,7 +23,25 @@ from swing_screener.db.repo import (
     get_analysis_request,
     list_analysis_requests,
 )
-from swing_screener.storage.blob import resolve_chart_bytes, resolve_pdf_bytes
+from swing_screener.storage.blob import blob_enabled, resolve_chart_bytes, resolve_pdf_bytes
+
+
+def _unavailable_detail(noun: str) -> str:
+    """Why an asset that IS recorded could not be served, by configuration state.
+
+    Two very different situations produced the same bare '{noun} unavailable':
+    with the blob store CONFIGURED, the key genuinely missed (aged-out blob --
+    normal); with it UNCONFIGURED, this box simply cannot reach assets that live
+    in Azure (the cockpit-against-Azure-SQL setup) -- an actionable local-env
+    fix, and the message must say so instead of reading as data loss."""
+    if blob_enabled():
+        return f"{noun} unavailable -- the stored blob is missing or aged out"
+    return (
+        f"{noun} unavailable -- it lives in Azure blob storage and this box has "
+        "no blob store configured: set SWING_BLOB_ACCOUNT_URL + "
+        "SWING_BLOB_CONTAINER (user-level, like SWING_DB_URL), then sign in "
+        "with az login"
+    )
 
 
 class AnalysisCreate(BaseModel):
@@ -142,7 +160,7 @@ def build_analysis_router(
             raise HTTPException(status_code=404, detail="no such chart")
         data = resolve_chart_bytes(keys[index])
         if data is None:
-            raise HTTPException(status_code=404, detail="chart unavailable")
+            raise HTTPException(status_code=404, detail=_unavailable_detail("chart"))
         return Response(content=data, media_type="image/png")
 
     @router.get("/api/analysis/{request_id}/pdf")
@@ -162,7 +180,7 @@ def build_analysis_router(
             raise HTTPException(status_code=404, detail="unknown analysis request")
         data = resolve_pdf_bytes(req.pdf_blob_key)
         if data is None:
-            raise HTTPException(status_code=404, detail="pdf unavailable")
+            raise HTTPException(status_code=404, detail=_unavailable_detail("pdf"))
         disposition = f'attachment; filename="{_pdf_filename(req.ticker)}"'
         return Response(content=data, media_type="application/pdf",
                         headers={"Content-Disposition": disposition})
@@ -183,7 +201,7 @@ def build_analysis_router(
             raise HTTPException(status_code=404, detail="no chart for this signal")
         data = resolve_chart_bytes(sig.chart_path)
         if data is None:
-            raise HTTPException(status_code=404, detail="chart unavailable")
+            raise HTTPException(status_code=404, detail=_unavailable_detail("chart"))
         return Response(content=data, media_type="image/png")
 
     return router

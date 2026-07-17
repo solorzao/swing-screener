@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
@@ -30,6 +31,7 @@ from swing_screener.analytics.performance import (
     summarize,
 )
 from swing_screener.cockpit.common import (
+    ActionNonce,
     _down_summary,
     _finite_or_none,
     _is_azure,
@@ -55,9 +57,17 @@ from swing_screener.db.repo import (
     load_research_paper_trades,
 )
 from swing_screener.pipeline.arms import BASELINE
-from swing_screener.pipeline.registry import load_experiments
+from swing_screener.pipeline.registry import decide_experiment, load_experiments
 from swing_screener.pipeline.variants import DEFAULT_VARIANT
 from swing_screener.settings import resolve_edge_dir
+
+
+class ExperimentDecision(BaseModel):
+    """POST /api/experiments/{name}/decide body: the decision reason -- required
+    (non-blank after strip), <=200 chars; it lands VERBATIM in the registry row's
+    ``decision`` field, the settlement's permanent audit record."""
+
+    reason: str = Field(min_length=1, max_length=200)
 
 
 def build_books_router(
@@ -68,10 +78,12 @@ def build_books_router(
     edge_dir: Path | None,
     gh_latest: Callable[[str], tuple[datetime, str] | None] | None,
     spawner: Callable[[], _LoginProc | None],
+    action_nonce: ActionNonce,
 ) -> APIRouter:
-    """The Phase-2 read endpoints plus ``/api/azure-login``, closed over the app's
-    seams: the shared engine accessor / session dependency, the heartbeats edge
-    dir, the optional GH poller, and the (already resolved) ``az login`` spawner."""
+    """The Phase-2 read endpoints plus ``/api/azure-login`` and the settlement
+    decide action, closed over the app's seams: the shared engine accessor /
+    session dependency, the heartbeats edge dir, the optional GH poller, the
+    (already resolved) ``az login`` spawner, and the action nonce."""
     router = APIRouter()
 
     @router.get("/api/health")
@@ -168,6 +180,42 @@ def build_books_router(
         )
         cards.sort(key=lambda c: (_STATE_RANK[c.state], c.name))
         return {"cards": [_card_dict(c) for c in cards]}
+
+    @router.post("/api/experiments/{name}/decide",
+                 dependencies=[Depends(_require_cockpit)])
+    def decide(name: str, body: ExperimentDecision) -> dict[str, object]:
+        """Retire one active experiment -- decide MARKS the registry, the roster
+        stays yours (the proposals' approve-marks-never-promotes posture, applied
+        to settlement). The ONLY write is the ``edge/experiments.json`` flip
+        (status -> retired, ``decided_at``, the verbatim ``reason``) -- an
+        uncommitted working-tree edit in this checkout. The response's checklist
+        is the remaining human half: delete the roster line and commit both
+        together (the registry<->roster lockstep test fails any commit that
+        takes one without the other). 404 unknown name; 409 already decided;
+        the reason is required and lands verbatim (audit record). Nonce-bumped:
+        the card re-renders retired in every window on the next poll."""
+        try:
+            decided = decide_experiment(
+                resolve_edge_dir(edge_dir), name, decision=body.reason
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=exc.args[0]) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        action_nonce.bump()
+        roster = "pipeline/arms.py" if decided.kind == "arm" else "pipeline/variants.py"
+        return {
+            "name": decided.name,
+            "status": decided.status,
+            "decided_at": decided.decided_at,
+            "note": "uncommitted working-tree edit -- commit it with the roster removal",
+            "checklist": [
+                f"{roster} -- DELETE the '{decided.name}' roster line "
+                "(the lockstep test fails a commit that keeps it)",
+                "edge/experiments.json -- this retire flip (done)",
+                f"one commit for both, e.g.: settle({decided.name}): {body.reason}",
+            ],
+        }
 
     @router.get("/api/books/open")
     def open_forward_book(
