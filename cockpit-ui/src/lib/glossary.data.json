@@ -819,6 +819,17 @@
   "source": "cockpit/routers/books.py"
  },
  {
+  "term": "GEX profile",
+  "cat": "strategy",
+  "short": "Per-strike dealer dollar gamma (Black-Scholes gamma × open interest), calls positive and puts negative. Green bars = positive net gamma (dealer hedging dampens moves toward that strike); red bars = negative (hedging amplifies moves). The walls and flip are the extremes and zero-crossing of this profile.",
+  "why": "The bars are WHERE the wall and flip numbers come from — seeing the whole profile shows how concentrated (trustworthy) or scattered (fragile) each level is; the reading lines under the chart translate the mechanics.",
+  "appears": [
+   "GEX Lab (day plan + analyze)"
+  ],
+  "risk": "medium",
+  "source": "options/gex.py"
+ },
+ {
   "term": "Stopping rule / pre-registration",
   "cat": "system-action",
   "short": "The success or failure criteria written down before an experiment starts, shown word-for-word on its card with a registration date.",

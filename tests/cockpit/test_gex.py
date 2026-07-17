@@ -314,3 +314,53 @@ def test_recent_setups_returns_last_seven_days_and_ignores_day(tmp_path: Path) -
                    params={"recent": 1, "day": (now - timedelta(days=10)).date().isoformat()})
     assert r.status_code == 200
     assert [x["underlying"] for x in r.json()["setups"]] == ["NEW", "MID"]
+
+
+def test_plan_snapshots_carry_profile_reading_and_net(tmp_path: Path) -> None:
+    """The Day Plan wire serves the persisted per-strike profile, the
+    deterministic reading lines, and net_gex -- the chart + callout contract."""
+    client = _client(tmp_path, seams=True)
+    client.post("/api/gex/plan/build", json={}, headers=_HDR)
+    snaps = client.get("/api/gex/plan").json()["snapshots"]
+    assert len(snaps) == 2
+    for snap in snaps:
+        assert isinstance(snap["net_gex"], float)
+        profile = snap["profile"]
+        assert profile is not None and len(profile) == 2  # the 2-strike fixture
+        assert {"strike", "call_gex", "put_gex"} <= set(profile[0])
+        reading = snap["reading"]
+        assert isinstance(reading, list) and len(reading) >= 2
+        # The 2-strike fixture trips the populated-strikes floor: thin first.
+        assert reading[0].startswith("THIN CHAIN")
+        assert reading[-1].startswith("Model:")
+
+
+def test_plan_snapshot_corrupt_profile_degrades_quietly(tmp_path: Path) -> None:
+    """A corrupt profile_json nulls the chart, never 500s the plan -- the level
+    numbers and the reading still serve."""
+    url = _db_url(tmp_path)
+    with Session(get_engine(url)) as s:
+        s.add(GexSnapshot(
+            underlying="SPY", ts=datetime(2026, 7, 13, 9, 10), spot=100.0,
+            call_wall=105.0, put_wall=95.0, gamma_flip=99.0, net_gex=1.0,
+            regime="positive", profile_json="{not json", thin_chain=False,
+            source="computed",
+        ))
+        s.commit()
+    r = _client(tmp_path).get("/api/gex/plan")
+    assert r.status_code == 200
+    snap = r.json()["snapshots"][0]
+    assert snap["profile"] is None
+    assert snap["call_wall"] == 105.0
+    assert snap["reading"][0].startswith("Positive gamma")
+
+
+def test_analyze_carries_profile_and_reading(tmp_path: Path) -> None:
+    r = _client(tmp_path, seams=True).post(
+        "/api/gex/plan/build", json={"ticker": "NVDA"}, headers=_HDR)
+    an = r.json()["analyzed"]
+    assert len(an["profile"]) == 2
+    assert an["reading"][0].startswith("THIN CHAIN")
+    # The analyze path DOES know the per-reason strings -- they ride the line.
+    assert "populated strikes" in an["reading"][0]
+    assert isinstance(an["net_gex"], float)

@@ -7,6 +7,7 @@ grade a setup, take/skip, import a CSV) are guarded by X-Cockpit and bump the
 action nonce so other windows wake.
 """
 
+import json
 from collections.abc import Callable, Iterator
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
@@ -28,6 +29,7 @@ from swing_screener.options.journal import (
     list_setups,
     set_status,
 )
+from swing_screener.options.reading import describe_gex
 from swing_screener.options.run import BarsFetcher, Snapshotter, run_analyze, run_plan, run_settle
 from swing_screener.options.stats import by_grade, lab_summary, open_trade_count, robinhood_summary
 
@@ -105,6 +107,26 @@ class CommitBody(BaseModel):
     tags: dict[str, str]
 
 
+def _profile_rows(profile_json: str | None) -> list[dict[str, float]] | None:
+    """The persisted per-strike dollar-gamma profile, or None when absent or
+    corrupt — a bad blob degrades the CHART quietly (the level numbers above it
+    still render; quiet-degrade is the plan payload's posture)."""
+    if not profile_json:
+        return None
+    try:
+        rows = json.loads(profile_json)
+        return [
+            {
+                "strike": float(r["strike"]),
+                "call_gex": float(r["call_gex"]),
+                "put_gex": float(r["put_gex"]),
+            }
+            for r in rows
+        ]
+    except (ValueError, TypeError, KeyError):
+        return None
+
+
 def _snapshot_dict(snap: GexSnapshot) -> dict[str, object]:
     return {
         "underlying": snap.underlying,
@@ -115,6 +137,20 @@ def _snapshot_dict(snap: GexSnapshot) -> dict[str, object]:
         "gamma_flip": _num(snap.gamma_flip),
         "regime": snap.regime,
         "thin_chain": snap.thin_chain,
+        "net_gex": _num(snap.net_gex),
+        "profile": _profile_rows(snap.profile_json),
+        # The deterministic what-this-means lines (options/reading.py) — pure
+        # templating over the stored levels; stored rows carry no per-reason
+        # thin strings, so the thin line stays generic here.
+        "reading": describe_gex(
+            spot=snap.spot,
+            call_wall=snap.call_wall,
+            put_wall=snap.put_wall,
+            gamma_flip=snap.gamma_flip,
+            regime=snap.regime,
+            net_gex=snap.net_gex,
+            thin_chain=snap.thin_chain,
+        ),
     }
 
 
@@ -234,6 +270,21 @@ def build_gex_router(
                 "gamma_flip": _num(levels.gamma_flip),
                 "spot": _num(levels.spot),
                 "thin_chain": liq.thin, "thin_reasons": liq.reasons,
+                "net_gex": _num(levels.net_gex),
+                "profile": [
+                    {"strike": p.strike, "call_gex": p.call_gex, "put_gex": p.put_gex}
+                    for p in levels.profile
+                ],
+                "reading": describe_gex(
+                    spot=levels.spot,
+                    call_wall=levels.call_wall,
+                    put_wall=levels.put_wall,
+                    gamma_flip=levels.gamma_flip,
+                    regime=levels.regime,
+                    net_gex=levels.net_gex,
+                    thin_chain=liq.thin,
+                    thin_reasons=liq.reasons,
+                ),
             }}
         plans = run_plan(session, cfg=cfg, snapshotter=snapshotter,
                          daily_bars=daily_bars)  # type: ignore[arg-type]

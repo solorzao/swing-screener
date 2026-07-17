@@ -5794,3 +5794,128 @@ a.needs-hand-link:hover {
 .gex-outcome-loss {
   color: var(--red);
 }
+
+/* ---------- GEX profile chart + reading (GexProfileChart / GexLabScreen) ----------
+   The public-dashboard visual, in cockpit tokens: green bars = positive net
+   dollar gamma (dampening), red = negative (acceleration fuel); level lines
+   only where the engine produced a level. The reading callout is the
+   deterministic sentence set from options/reading.py. */
+
+.gex-map {
+  margin: 10px 12px 4px;
+}
+
+.gex-map-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.gex-map-title {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+}
+
+.gpc-wrap {
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  background: var(--panel2);
+  padding: 8px 10px;
+}
+
+.gpc-legend {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 10.5px;
+  color: var(--dim);
+  margin-bottom: 4px;
+}
+
+.gpc-key-pos {
+  color: var(--green);
+}
+
+.gpc-key-neg {
+  color: var(--red);
+}
+
+.gpc-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.gpc-axis {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.gpc-bar-pos {
+  fill: color-mix(in srgb, var(--green) 65%, transparent);
+}
+
+.gpc-bar-neg {
+  fill: color-mix(in srgb, var(--red) 65%, transparent);
+}
+
+.gpc-tick {
+  fill: var(--faint);
+  font-size: 9px;
+  font-family: var(--mono);
+}
+
+.gpc-level {
+  stroke-width: 1;
+  stroke-dasharray: 5 3;
+}
+
+.gpc-level-lab {
+  font-size: 9px;
+  font-family: var(--mono);
+}
+
+.gpc-callwall {
+  stroke: var(--red);
+  fill: var(--red);
+  color: var(--red);
+}
+
+.gpc-putwall {
+  stroke: var(--green);
+  fill: var(--green);
+  color: var(--green);
+}
+
+.gpc-flip {
+  stroke: var(--amber);
+  fill: var(--amber);
+  color: var(--amber);
+}
+
+.gpc-spot {
+  stroke: var(--txt);
+  fill: var(--txt);
+  color: var(--txt);
+  stroke-dasharray: 2 3;
+}
+
+.gex-reading {
+  margin: 8px 0 2px;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--txt);
+  display: grid;
+  gap: 4px;
+}
+
+.gex-reading-warn {
+  color: var(--amber);
+}
+
+.gex-reading-model {
+  color: var(--faint);
+  font-size: 11px;
+}

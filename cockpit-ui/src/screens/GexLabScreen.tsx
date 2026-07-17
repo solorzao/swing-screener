@@ -24,8 +24,10 @@ import type {
   GexSetup,
   GexSetupCreate,
   GexSnapshot,
+  GexStrike,
   RobinhoodBook,
 } from '../lib/api'
+import { GexProfileChart } from '../components/GexProfileChart'
 import { dashOr, fmtSignedUsd, fmtUsd } from '../lib/fmt'
 import { PanelBody } from '../components/PanelBody'
 import { Segmented } from '../components/Segmented'
@@ -229,6 +231,71 @@ function SnapshotsTable({ rows }: { rows: GexSnapshot[] }) {
   )
 }
 
+/** The reading callout — the deterministic what-this-means lines under the
+ * chart (server-built, options/reading.py). Thin warning renders loud, the
+ * model-honesty closer dim. */
+function GexReading({ lines }: { lines: string[] | undefined }) {
+  if (lines === undefined || lines.length === 0) return null
+  return (
+    <ul className="gex-reading">
+      {lines.map((line, i) => (
+        <li
+          key={i}
+          className={
+            line.startsWith('THIN CHAIN')
+              ? 'gex-reading-warn'
+              : line.startsWith('Model:')
+                ? 'gex-reading-model'
+                : undefined
+          }
+        >
+          {line}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+/** The map section: one profile chart + reading per snapshot, an underlying
+ * selector when the watchlist has more than one charted name. Snapshots
+ * without a stored profile (corrupt blob) simply don't chart — their level
+ * numbers still sit in the table above. */
+function ProfileSection({ snapshots }: { snapshots: GexSnapshot[] }) {
+  const charted = snapshots.filter(
+    (s): s is GexSnapshot & { profile: GexStrike[] } =>
+      s.profile != null && s.profile.length >= 2,
+  )
+  const [selected, setSelected] = useState<string | null>(null)
+  if (charted.length === 0) return null
+  const active =
+    charted.find((s) => s.underlying === selected) ?? charted[0]
+  return (
+    <div className="gex-map">
+      <div className="gex-map-head">
+        <span className="gex-map-title">
+          NET <HelpTerm term="GEX profile">GEX PROFILE</HelpTerm>
+        </span>
+        {charted.length > 1 && (
+          <Segmented
+            title="charted underlying"
+            options={charted.map((s) => ({ value: s.underlying, label: s.underlying }))}
+            value={active.underlying}
+            onChange={setSelected}
+          />
+        )}
+      </div>
+      <GexProfileChart
+        profile={active.profile}
+        spot={active.spot}
+        callWall={active.call_wall}
+        putWall={active.put_wall}
+        gammaFlip={active.gamma_flip}
+      />
+      <GexReading lines={active.reading} />
+    </div>
+  )
+}
+
 function BuiltPlans({ plans }: { plans: GexDayPlan[] }) {
   if (plans.length === 0) {
     return <div className="panel-wait">built — no plans returned (no watchlist snapshots)</div>
@@ -287,6 +354,16 @@ function AnalyzedCard({ a }: { a: GexAnalyzed }) {
           ))}
         </ul>
       )}
+      {a.profile !== undefined && a.profile.length >= 2 && (
+        <GexProfileChart
+          profile={a.profile}
+          spot={a.spot}
+          callWall={a.call_wall}
+          putWall={a.put_wall}
+          gammaFlip={a.gamma_flip}
+        />
+      )}
+      <GexReading lines={a.reading} />
     </div>
   )
 }
@@ -388,6 +465,7 @@ function DayPlanPanel({ wake, onAction }: { wake: number; onAction: () => void }
                 </div>
               )}
             <SnapshotsTable rows={data.snapshots} />
+            <ProfileSection snapshots={data.snapshots} />
           </>
         )}
       </PanelBody>

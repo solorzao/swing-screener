@@ -1431,8 +1431,19 @@ export const postAuditAck = (id: number): Promise<AuditReport> =>
 
 /* ---------- GEX lab wire shapes (routers/gex.py) ---------- */
 
+/** One per-strike dollar-gamma row of the profile chart (calls ≥ 0, puts ≤ 0;
+ * net = call_gex + put_gex, computed client-side). */
+export interface GexStrike {
+  strike: number
+  call_gex: number
+  put_gex: number
+}
+
 /** One GEX snapshot — deterministic level facts, so plain nullable numbers, NOT
- * Stats (a level has no n / CI / provenance). A null level renders an em dash. */
+ * Stats (a level has no n / CI / provenance). A null level renders an em dash.
+ * `profile` is null when the stored blob is absent/corrupt (chart degrades,
+ * levels still render); `reading` is the deterministic what-this-means lines
+ * (options/reading.py — thin warning first, model-honesty line last). */
 export interface GexSnapshot {
   underlying: string
   ts: string
@@ -1442,6 +1453,9 @@ export interface GexSnapshot {
   gamma_flip: number | null
   regime: string
   thin_chain: boolean
+  net_gex?: number | null
+  profile?: GexStrike[] | null
+  reading?: string[]
 }
 
 export interface GexPlanResponse {
@@ -1475,6 +1489,9 @@ export interface GexAnalyzed {
   spot: number | null
   thin_chain: boolean
   thin_reasons: string[]
+  net_gex?: number | null
+  profile?: GexStrike[]
+  reading?: string[]
 }
 
 /** plan/build returns EITHER {plans} (no ticker) OR {analyzed} (a ticker) —
