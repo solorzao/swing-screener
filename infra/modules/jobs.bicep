@@ -72,9 +72,20 @@ param screenTimeoutSeconds int = 3600
 @description('''Account equity in dollars for R-based sizing (SWING_ACCOUNT_EQUITY).
 Empty = sizing unconfigured: digests and order intents render R-multiples, never a
 guessed dollar (settings.resolve_risk_unit). Set to the real funded amount --
-1R = equity x SWING_RISK_PCT (default 1%), conviction-scaled per pick. A string
+1R = equity x SWING_RISK_PCT, conviction-scaled per pick. A string
 so "" can mean unset (bicep has no null string param).''')
 param accountEquity string = ''
+
+@description('''Risk per trade as a fraction of equity (SWING_RISK_PCT; settings
+default 0.01 when absent). 1R = equity x this. Empty = absent (code default).''')
+param riskPct string = ''
+
+@description('''The execution adapter (SWING_EXECUTION_MODE): off | manual | paper |
+live. Empty = absent -> code default "off" (fail-safe: the screener never arms by
+accident; unknown values also coerce to off). "paper" runs the PaperAdapter --
+simulated fills into the curated account="paper" intent book, no broker, fenced out
+of research aggregates -- the North-Star Mid-term order-flow proving leg.''')
+param executionMode string = ''
 
 // 1800s (30 min) comfortably covers deep (Opus + web-search) analysis of the
 // top-N picks (~1 min/pick) plus the email build.
@@ -156,9 +167,9 @@ var secretDefs = [
 ]
 
 // Env shared by every job. Secret values arrive via secretRef; the rest plain.
-// Sizing env, present only when equity is actually configured -- an empty
-// SWING_ACCOUNT_EQUITY must stay ABSENT so settings reads honest-unconfigured
-// (0-risk-unit -> R-multiples), never a parse of ''.
+// Sizing/execution env, present only when actually configured -- an empty value
+// must stay ABSENT so settings reads its honest code default (unconfigured
+// sizing -> R-multiples; absent mode -> fail-safe "off"), never a parse of ''.
 var equityEnv = accountEquity == ''
   ? []
   : [
@@ -167,8 +178,24 @@ var equityEnv = accountEquity == ''
         value: accountEquity
       }
     ]
+var riskPctEnv = riskPct == ''
+  ? []
+  : [
+      {
+        name: 'SWING_RISK_PCT'
+        value: riskPct
+      }
+    ]
+var executionModeEnv = executionMode == ''
+  ? []
+  : [
+      {
+        name: 'SWING_EXECUTION_MODE'
+        value: executionMode
+      }
+    ]
 
-var commonEnv = concat(equityEnv, [
+var commonEnv = concat(equityEnv, riskPctEnv, executionModeEnv, [
   {
     name: 'ANTHROPIC_API_KEY'
     secretRef: 'anthropic-api-key'

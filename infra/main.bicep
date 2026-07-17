@@ -75,6 +75,12 @@ param alertEmail string
 every job). Empty = unconfigured: digests render R-multiples, never a guessed dollar.''')
 param accountEquity string = ''
 
+@description('Risk per trade as a fraction of equity (SWING_RISK_PCT). Empty = code default 0.01.')
+param riskPct string = ''
+
+@description('Execution adapter (SWING_EXECUTION_MODE): off | manual | paper | live. Empty = code default off.')
+param executionMode string = ''
+
 @description('Seed Key Vault secret VALUES from the params above. Set false on re-deploys so an existing/rotated secret is never overwritten.')
 param seedSecrets bool = true
 
@@ -223,6 +229,8 @@ module jobs 'modules/jobs.bicep' = {
     keyVaultUrl: keyvault.outputs.vaultUri
     secretNames: keyvault.outputs.secretNames
     accountEquity: accountEquity
+    riskPct: riskPct
+    executionMode: executionMode
     tags: commonTags
   }
 }

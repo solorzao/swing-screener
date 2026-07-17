@@ -50,8 +50,20 @@ param digestTo = ''
 param alertEmail = ''
 
 // --- Sizing: the funded account's equity in dollars (2026-07-17 decision --
-// a $1,000 starter account). 1R = equity x SWING_RISK_PCT (default 1% -> $10),
-// conviction-scaled per pick; picks whose per-share risk exceeds the budget
-// size to 0 shares (honest: they don't fit this account). Empty = R-multiples
-// only. ---
+// a $1,000 starter account). 1R = equity x riskPct, conviction-scaled per
+// pick; picks whose per-share risk exceeds the budget size to 0 shares
+// (honest: they don't fit this account). Empty = R-multiples only. ---
 param accountEquity = '1000'
+
+// --- Risk per trade: 10% of equity (2026-07-17 decision -- deliberately hot
+// for the $1,000 starter: 1R = $100, so nearly every pick sizes to real
+// shares; a -3R day is -30% of the account. Revisit as the account grows). ---
+param riskPct = '0.10'
+
+// --- Execution: PAPER (2026-07-17 decision) -- the PaperAdapter opens
+// simulated fills in the curated account="paper" intent book (no broker, no
+// dollars, fenced out of research stats). This is the North-Star Mid-term
+// order-flow proving leg: intents -> sizing -> caps -> fills, end to end.
+// Live stays behind the three locks + caps mandate; this param never
+// arms it. ---
+param executionMode = 'paper'
