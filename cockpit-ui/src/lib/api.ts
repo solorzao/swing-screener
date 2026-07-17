@@ -1324,36 +1324,72 @@ export interface TradeRecordRow {
   theses: JournalThesisView[]
 }
 
+/** The machine books' evaluation slice: 'baseline' (one row per screened
+ * candidate — the slice reflection grades; the honest default) or 'grid' (the
+ * full arm×variant tournament pool — sums POOL the grid; label it). Personal
+ * books ignore it server-side. */
+export type JournalScope = 'baseline' | 'grid'
+
 export const getJournalCalendar = (
   book: JournalBook,
   month?: string,
+  scope: JournalScope = 'baseline',
 ): Promise<JournalCalendar> =>
   fetchJson<JournalCalendar>(
     month === undefined || month === ''
-      ? `/api/journal/calendar?book=${book}`
-      : `/api/journal/calendar?book=${book}&month=${month}`,
+      ? `/api/journal/calendar?book=${book}&scope=${scope}`
+      : `/api/journal/calendar?book=${book}&month=${month}&scope=${scope}`,
   )
 
-export const getJournalCurve = (book: JournalBook): Promise<JournalCurve> =>
-  fetchJson<JournalCurve>(`/api/journal/curve?book=${book}`)
+export const getJournalCurve = (
+  book: JournalBook,
+  scope: JournalScope = 'baseline',
+): Promise<JournalCurve> =>
+  fetchJson<JournalCurve>(`/api/journal/curve?book=${book}&scope=${scope}`)
 
-export const getJournalExcursions = (book: JournalBook): Promise<JournalExcursions> =>
-  fetchJson<JournalExcursions>(`/api/journal/excursions?book=${book}`)
+export const getJournalExcursions = (
+  book: JournalBook,
+  scope: JournalScope = 'baseline',
+): Promise<JournalExcursions> =>
+  fetchJson<JournalExcursions>(`/api/journal/excursions?book=${book}&scope=${scope}`)
 
 export const getJournalBreakdowns = (
   book: JournalBook,
   by: BreakdownBy,
+  scope: JournalScope = 'baseline',
 ): Promise<JournalBreakdowns> =>
-  fetchJson<JournalBreakdowns>(`/api/journal/breakdowns?book=${book}&by=${by}`)
+  fetchJson<JournalBreakdowns>(
+    `/api/journal/breakdowns?book=${book}&by=${by}&scope=${scope}`,
+  )
 
-export const getJournalDiscipline = (book: JournalBook): Promise<JournalDiscipline> =>
-  fetchJson<JournalDiscipline>(`/api/journal/discipline?book=${book}`)
+export const getJournalDiscipline = (
+  book: JournalBook,
+  scope: JournalScope = 'baseline',
+): Promise<JournalDiscipline> =>
+  fetchJson<JournalDiscipline>(`/api/journal/discipline?book=${book}&scope=${scope}`)
 
-export const getJournalMistakes = (book: JournalBook): Promise<MistakeRow[]> =>
-  fetchJson<MistakeRow[]>(`/api/journal/mistakes?book=${book}`)
+export const getJournalMistakes = (
+  book: JournalBook,
+  scope: JournalScope = 'baseline',
+): Promise<MistakeRow[]> =>
+  fetchJson<MistakeRow[]>(`/api/journal/mistakes?book=${book}&scope=${scope}`)
 
-export const getJournalRecords = (book: JournalBook): Promise<TradeRecordRow[]> =>
-  fetchJson<TradeRecordRow[]>(`/api/journal/records?book=${book}`)
+/** Newest-first, paginated: `total` counts the whole cohort so the panel can
+ * say "newest N of M" instead of silently truncating. */
+export interface JournalRecords {
+  records: TradeRecordRow[]
+  total: number
+  scope: string
+}
+
+export const getJournalRecords = (
+  book: JournalBook,
+  scope: JournalScope = 'baseline',
+  limit = 200,
+): Promise<JournalRecords> =>
+  fetchJson<JournalRecords>(
+    `/api/journal/records?book=${book}&scope=${scope}&limit=${limit}`,
+  )
 
 /** Notes are DAY-scoped, not book-scoped (a bad date is the server's 422). */
 export const getJournalNotes = (day: string): Promise<JournalNote[]> =>

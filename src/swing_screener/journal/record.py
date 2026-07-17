@@ -28,6 +28,8 @@ from swing_screener.db.models import (
     PaperTrade,
     Trade,
 )
+from swing_screener.pipeline.arms import BASELINE
+from swing_screener.pipeline.variants import DEFAULT_VARIANT
 
 
 @dataclass(frozen=True)
@@ -65,18 +67,26 @@ class TradeRecord:
     theses: list[ThesisView] = field(default_factory=list)
 
 
-def trade_records(session: Session, *, book: str) -> list[TradeRecord]:
+def trade_records(
+    session: Session, *, book: str, scope: str = "grid"
+) -> list[TradeRecord]:
     """Every ``PaperTrade`` in ``book`` (its account) as a display TradeRecord, in
     stable id order, each carrying its book-scoped tags and theses.
 
-    ``opened`` prefers ``opened_date`` and falls back to ``entry_date`` (a legacy row
+    ``scope="baseline"`` narrows the machine books' arm x variant grid to the
+    baseline-arm / default-variant slice (one row per screened candidate — the
+    slice reflection grades); ``"grid"`` keeps the whole pool. ``opened``
+    prefers ``opened_date`` and falls back to ``entry_date`` (a legacy row
     may carry only the fill date); ``closed`` is ``exit_date`` (None while open);
     ``result`` is ``realized_r`` (None until closed). Tags/theses are display views in
     application order. Pure read; no aggregation. Empty book -> ``[]``.
     """
-    trades = list(session.scalars(
-        select(PaperTrade).where(PaperTrade.account == book).order_by(PaperTrade.id)
-    ))
+    stmt = select(PaperTrade).where(PaperTrade.account == book)
+    if scope == "baseline":
+        stmt = stmt.where(
+            PaperTrade.arm == BASELINE, PaperTrade.variant == DEFAULT_VARIANT
+        )
+    trades = list(session.scalars(stmt.order_by(PaperTrade.id)))
     if not trades:
         return []
 
@@ -187,17 +197,26 @@ def _tags_by_trade(
     session: Session, *, book: str, trade_ids: Iterable[int]
 ) -> dict[int, list[TagView]]:
     """``{trade_id: [TagView, ...]}`` for the book, one query for the links + one for
-    the (small) tag vocabulary -- no per-trade round-trips."""
+    the (small) tag vocabulary -- no per-trade round-trips.
+
+    Book-scoped, never id-list-scoped: ``trade_ids`` only prunes the RESULT (a
+    membership set), because an ``IN (<thousands of ids>)`` explodes past SQL
+    Server's ~2,100-parameter limit (the research book's DBAPIError; sqlite's
+    huge limit hid it). Links are written book-scoped with membership verified
+    at write time, so the book filter is the real firewall."""
+    wanted = set(trade_ids)
     tag_meta = {
         tag.id: (tag.name, tag.kind) for tag in session.scalars(select(JournalTag))
     }
     stmt = (
         select(JournalTradeTag)
-        .where(JournalTradeTag.book == book, JournalTradeTag.trade_id.in_(trade_ids))
+        .where(JournalTradeTag.book == book)
         .order_by(JournalTradeTag.id)
     )
     out: dict[int, list[TagView]] = {}
     for link in session.scalars(stmt):
+        if link.trade_id not in wanted:
+            continue
         name, kind = tag_meta.get(link.tag_id, ("?", "?"))
         out.setdefault(link.trade_id, []).append(
             TagView(name=name, kind=kind, source=link.source)
@@ -208,14 +227,19 @@ def _tags_by_trade(
 def _theses_by_trade(
     session: Session, *, book: str, trade_ids: Iterable[int]
 ) -> dict[int, list[ThesisView]]:
-    """``{trade_id: [ThesisView, ...]}`` for the book, in application order."""
+    """``{trade_id: [ThesisView, ...]}`` for the book, in application order.
+    Book-scoped with client-side membership pruning -- see ``_tags_by_trade``
+    for the SQL Server parameter-limit rationale."""
+    wanted = set(trade_ids)
     stmt = (
         select(JournalThesis)
-        .where(JournalThesis.book == book, JournalThesis.trade_id.in_(trade_ids))
+        .where(JournalThesis.book == book)
         .order_by(JournalThesis.id)
     )
     out: dict[int, list[ThesisView]] = {}
     for th in session.scalars(stmt):
+        if th.trade_id not in wanted:
+            continue
         out.setdefault(th.trade_id, []).append(
             ThesisView(event_kind=th.event_kind, source=th.source, body=th.body)
         )

@@ -17,6 +17,8 @@ import {
   usePolling,
 } from '../lib/api'
 import type {
+  JournalRecords,
+  JournalScope,
   BreakdownBy,
   CalendarCell,
   CoachBook,
@@ -28,7 +30,6 @@ import type {
   JournalExcursions,
   MistakeRow,
   NoteKind,
-  TradeRecordRow,
   WeaknessesProfile,
 } from '../lib/api'
 import { dashOr, fmtR } from '../lib/fmt'
@@ -145,11 +146,16 @@ function CalendarGrid({ month, days }: { month: string; days: Record<string, Cal
   )
 }
 
-function CalendarPanel({ book, wake }: { book: JournalBook; wake: number }) {
+function CalendarPanel({ book, wake, scope }: { book: JournalBook; wake: number; scope: JournalScope }) {
   // No `month` param: the wire returns EVERY closed day + the whole-cohort month
   // roll-up in one read, so month navigation is a client-side filter (no extra
   // poll). paramsKey=book → blank-then-refetch on a book flip.
-  const cal = usePolling(() => getJournalCalendar(book), POLL_MS, wake, book)
+  const cal = usePolling(
+    () => getJournalCalendar(book, undefined, scope),
+    POLL_MS,
+    wake,
+    `${book}|${scope}`,
+  )
   const [selected, setSelected] = useState<string | null>(null)
 
   const render = (data: JournalCalendar) => {
@@ -221,8 +227,13 @@ function clean(points: [string, number | null][]): [string, number][] {
   return points.filter((p): p is [string, number] => p[1] !== null)
 }
 
-function CurvePanel({ book, wake }: { book: JournalBook; wake: number }) {
-  const curve = usePolling(() => getJournalCurve(book), POLL_MS, wake, book)
+function CurvePanel({ book, wake, scope }: { book: JournalBook; wake: number; scope: JournalScope }) {
+  const curve = usePolling(
+    () => getJournalCurve(book, scope),
+    POLL_MS,
+    wake,
+    `${book}|${scope}`,
+  )
 
   const render = (data: JournalCurve) => {
     const equity = clean(data.curve)
@@ -285,13 +296,13 @@ const BY_OPTIONS: { value: BreakdownBy; label: string; title: string }[] = [
   { value: 'symbol', label: 'symbol', title: 'per ticker that traded' },
 ]
 
-function BreakdownsPanel({ book, wake }: { book: JournalBook; wake: number }) {
+function BreakdownsPanel({ book, wake, scope }: { book: JournalBook; wake: number; scope: JournalScope }) {
   const [by, setBy] = useState<BreakdownBy>('dow')
   const breakdowns = usePolling(
-    () => getJournalBreakdowns(book, by),
+    () => getJournalBreakdowns(book, by, scope),
     POLL_MS,
     wake,
-    `${book}|${by}`, // any book/axis flip blanks then refetches
+    `${book}|${by}|${scope}`, // any book/axis/scope flip blanks then refetches
   )
 
   return (
@@ -362,8 +373,13 @@ const rOr = (v: number | null): string => dashOr(v, fmtR)
 const rateOr = (v: number | null): string =>
   v === null ? '—' : `${Math.round(v * 100)}%`
 
-function ExcursionsPanel({ book, wake }: { book: JournalBook; wake: number }) {
-  const exc = usePolling(() => getJournalExcursions(book), POLL_MS, wake, book)
+function ExcursionsPanel({ book, wake, scope }: { book: JournalBook; wake: number; scope: JournalScope }) {
+  const exc = usePolling(
+    () => getJournalExcursions(book, scope),
+    POLL_MS,
+    wake,
+    `${book}|${scope}`,
+  )
   return (
     <section className="panel">
       <div className="panel-head">
@@ -392,8 +408,13 @@ function ExcursionsPanel({ book, wake }: { book: JournalBook; wake: number }) {
   )
 }
 
-function DisciplinePanel({ book, wake }: { book: JournalBook; wake: number }) {
-  const disc = usePolling(() => getJournalDiscipline(book), POLL_MS, wake, book)
+function DisciplinePanel({ book, wake, scope }: { book: JournalBook; wake: number; scope: JournalScope }) {
+  const disc = usePolling(
+    () => getJournalDiscipline(book, scope),
+    POLL_MS,
+    wake,
+    `${book}|${scope}`,
+  )
   return (
     <section className="panel">
       <div className="panel-head">
@@ -440,8 +461,13 @@ function DisciplinePanel({ book, wake }: { book: JournalBook; wake: number }) {
 
 /* ================= 5 · MISTAKES ================= */
 
-function MistakesPanel({ book, wake }: { book: JournalBook; wake: number }) {
-  const mistakes = usePolling(() => getJournalMistakes(book), POLL_MS, wake, book)
+function MistakesPanel({ book, wake, scope }: { book: JournalBook; wake: number; scope: JournalScope }) {
+  const mistakes = usePolling(
+    () => getJournalMistakes(book, scope),
+    POLL_MS,
+    wake,
+    `${book}|${scope}`,
+  )
   return (
     <section className="panel">
       <div className="panel-head">
@@ -619,19 +645,27 @@ function NotebookPanel({ wake }: { wake: number }) {
 
 /* ================= 7 · RECORDS ================= */
 
-function RecordsPanel({ book, wake }: { book: JournalBook; wake: number }) {
-  const records = usePolling(() => getJournalRecords(book), POLL_MS, wake, book)
+function RecordsPanel({ book, wake, scope }: { book: JournalBook; wake: number; scope: JournalScope }) {
+  const records = usePolling(
+    () => getJournalRecords(book, scope),
+    POLL_MS,
+    wake,
+    `${book}|${scope}`,
+  )
   return (
     <section className="panel">
       <div className="panel-head">
         RECORDS
         <span className="panel-caption">
-          every trade in the book with its tags &amp; theses · display only · {book} book
+          newest first, with tags &amp; theses · display only · {book} book
+          {records.data !== null &&
+            records.data.total > records.data.records.length &&
+            ` · showing newest ${records.data.records.length} of ${records.data.total}`}
         </span>
       </div>
       <PanelBody polled={records} noun="records">
-        {(rows: TradeRecordRow[]) =>
-          rows.length === 0 ? (
+        {(data: JournalRecords) =>
+          data.records.length === 0 ? (
             <div className="panel-wait">no trades in this book yet</div>
           ) : (
             <div className="ref-table-wrap">
@@ -649,7 +683,7 @@ function RecordsPanel({ book, wake }: { book: JournalBook; wake: number }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((r) => (
+                  {data.records.map((r) => (
                     <tr key={r.trade_id}>
                       <td className="mono">#{r.trade_id}</td>
                       <td className="mono ref-tkr">{r.symbol}</td>
@@ -812,6 +846,12 @@ function WeaknessesPanel({ wake }: { wake: number }) {
 
 export function JournalScreen({ wake }: { wake: number }) {
   const [book, setBook] = useState<JournalBook>('manual_equity')
+  // The machine books' evaluation slice (plan: the honest default). 'baseline'
+  // = one row per screened candidate (the slice reflection grades); 'grid' =
+  // the full arm×variant tournament pool, whose R sums POOL the grid — kept
+  // reachable for deliberate inspection, always labeled. Personal books
+  // ignore it server-side.
+  const [scope, setScope] = useState<JournalScope>('baseline')
   const personal = isPersonalBook(book)
 
   return (
@@ -824,10 +864,23 @@ export function JournalScreen({ wake }: { wake: number }) {
           value={book}
           onChange={setBook}
         />
+        {!personal && (
+          <Segmented
+            title="machine-book slice: baseline = one row per screened candidate (what reflection grades); full grid = every arm×variant experiment row (sums pool the tournament)"
+            options={[
+              { value: 'baseline', label: 'baseline' },
+              { value: 'grid', label: 'full grid' },
+            ]}
+            value={scope}
+            onChange={setScope}
+          />
+        )}
         <span className="jr-toolbar-note">
           {personal
             ? 'your real trades — the Coach view (never pooled with the machine books)'
-            : 'R-native · per-book firewall — one account, never pooled'}
+            : scope === 'baseline'
+              ? 'R-native · baseline/default slice — one row per screened candidate, the slice reflection grades'
+              : 'R-native · FULL EXPERIMENT GRID — every arm×variant row; totals pool the tournament, not one book'}
         </span>
       </div>
 
@@ -835,20 +888,20 @@ export function JournalScreen({ wake }: { wake: number }) {
         <>
           <CoachReviewsPanel book={book} wake={wake} />
           <WeaknessesPanel wake={wake} />
-          <RecordsPanel book={book} wake={wake} />
+          <RecordsPanel book={book} wake={wake} scope="baseline" />
         </>
       ) : (
         <>
-          <CalendarPanel book={book} wake={wake} />
-          <CurvePanel book={book} wake={wake} />
-          <BreakdownsPanel book={book} wake={wake} />
+          <CalendarPanel book={book} wake={wake} scope={scope} />
+          <CurvePanel book={book} wake={wake} scope={scope} />
+          <BreakdownsPanel book={book} wake={wake} scope={scope} />
           <div className="jr-two">
-            <ExcursionsPanel book={book} wake={wake} />
-            <DisciplinePanel book={book} wake={wake} />
+            <ExcursionsPanel book={book} wake={wake} scope={scope} />
+            <DisciplinePanel book={book} wake={wake} scope={scope} />
           </div>
-          <MistakesPanel book={book} wake={wake} />
+          <MistakesPanel book={book} wake={wake} scope={scope} />
           <NotebookPanel wake={wake} />
-          <RecordsPanel book={book} wake={wake} />
+          <RecordsPanel book={book} wake={wake} scope={scope} />
         </>
       )}
     </main>

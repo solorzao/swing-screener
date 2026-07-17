@@ -332,14 +332,14 @@ All GET unless noted. Each route's docstring in
 
 | Endpoint | What it answers |
 |---|---|
-| `/api/journal/calendar?book=&month=` | the R-native P&L calendar for one book: day grid (optionally one `YYYY-MM` month) + the whole-cohort month roll-up, `cost_level` stamped per book |
+| `/api/journal/calendar?book=&month=&scope=` | the R-native P&L calendar for one book: day grid (optionally one `YYYY-MM` month) + the whole-cohort month roll-up, `cost_level` stamped per book. `scope` (every machine-book journal read takes it): `baseline` (default) = the baseline-arm/default-variant slice — one row per screened candidate, the slice reflection grades; `grid` = the full arm×variant tournament pool, whose totals POOL the grid (labeled in the UI). Personal books ignore it |
 | `/api/journal/curve?book=` | the book's realized equity curve, its underwater (drawdown) series, and the max drawdown — all in R |
 | `/api/journal/excursions?book=` | MAE/MFE-in-R means + medians over instrumented closed trades — descriptive floats, never a fabricated CI |
 | `/api/journal/breakdowns?book=&by=dow\|hold\|symbol` | day-of-week / hold-time / symbol slices, each bucket a full Stat |
 | `/api/journal/discipline?book=` | giveback, stop-honored rate, MAE-before-win, with their counts |
 | `/api/journal/mistakes?book=` | per-mistake realized cost, worst-first; the per-trade expectancy rides as a full Stat |
 | `/api/journal/notes?day=` | the day's notebook entries, insertion order (the notebook is day-scoped, not book-scoped) |
-| `/api/journal/records?book=` | the book's trades as display records with tags + theses — display only, never an aggregate; the two personal books dispatch to their own producers |
+| `/api/journal/records?book=&scope=&limit=` | the book's trades as display records with tags + theses, NEWEST first, paginated (`{records, total, scope}` — the UI says "newest N of M"); display only, never an aggregate; the two personal books dispatch to their own producers |
 | `/api/coach/reviews?book=` | Coach reviews for a PERSONAL book only (manual_equity / robinhood — machine books are never served here), newest first |
 | `/api/coach/weaknesses` | the latest Weaknesses Profile, or an honest empty shell when none exists yet |
 | `/api/audit/reports`, `/api/audit/breaches` | the Auditor's weekly conduct reports / immediate breach feed (cap exceedances, disarms), newest first |

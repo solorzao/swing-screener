@@ -47,14 +47,18 @@ def mistake_cost(session: Session, trades: Iterable[PaperTrade]) -> list[dict]:
     if not trade_by_key:
         return []
 
-    trade_ids = {tid for tid, _ in trade_by_key}
+    # Scope by BOOK, never by an id list: the cohort can be thousands of trades,
+    # and an ``IN (<n ids>)`` explodes past SQL Server's ~2,100-parameter limit
+    # (DBAPIError; sqlite's huge limit hid it). The ``trade_by_key`` lookup below
+    # already prunes any link outside the cohort, so the book scope loses nothing.
+    books = {book for _, book in trade_by_key}
     stmt = (
         select(JournalTradeTag.trade_id, JournalTradeTag.book, JournalTag.name)
         .join(JournalTag, JournalTradeTag.tag_id == JournalTag.id)
         .where(
             JournalTag.kind == "mistake",
             JournalTradeTag.source.in_(_MISTAKE_SOURCES),
-            JournalTradeTag.trade_id.in_(trade_ids),
+            JournalTradeTag.book.in_(books),
         )
     )
 
