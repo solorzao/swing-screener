@@ -58,3 +58,5 @@ infra/main.json
 # Cockpit frontend: sources live in cockpit-ui/, the BUILT output is committed at
 # src/swing_screener/cockpit/static/ (zero-Node clones run). Only deps are ignored.
 cockpit-ui/node_modules/
+
+.playwright-mcp/
