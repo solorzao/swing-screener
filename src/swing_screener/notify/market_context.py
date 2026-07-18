@@ -11,11 +11,16 @@ where there is nothing at all.
 The raw yfinance calls are isolated in thin, mockable seams (``_yf_info`` /
 ``_yf_news``) so tests never touch the network. yfinance returns margins/growth/
 ROE as DECIMAL FRACTIONS (0.27 == 27%); ``debtToEquity`` is a PERCENT-style
-number (79.5 means D/E ~0.80). The news payload uses the current NESTED schema
-(``item["content"][...]``), not the legacy flat fields.
+number (79.5 means D/E ~0.80). Yahoo pads missing fundamentals with NaN as
+readily as None (PR #104's class) -- every numeric field is normalized through
+``_num`` at ingestion so a non-finite value gets the same missing treatment and
+``context_block`` can never feed the analyst a literal 'nan' fact. The news
+payload uses the current NESTED schema (``item["content"][...]``), not the
+legacy flat fields.
 """
 
 import logging
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -36,11 +41,21 @@ def _yf_news(ticker: str, n: int) -> list[dict]:
     return yf.Ticker(ticker).get_news(count=max(n, 1), tab="news") or []
 
 
-def _pct(x: object) -> float | None:
-    """Yahoo fraction -> percent (0.27 -> 27.0). None-safe; rejects bools."""
+def _num(x: object) -> float | None:
+    """A finite float from a raw yfinance value, else None (rejects bools).
+
+    NaN/inf get the same treatment as a missing field -- fail-safe, so the
+    ``is not None`` guards in ``context_block`` are sufficient to keep 'nan'
+    out of the analyst prompt."""
     if isinstance(x, bool) or not isinstance(x, (int, float)):
         return None
-    return round(x * 100, 2)
+    return float(x) if math.isfinite(x) else None
+
+
+def _pct(x: object) -> float | None:
+    """Yahoo fraction -> percent (0.27 -> 27.0). None/NaN-safe; rejects bools."""
+    n = _num(x)
+    return round(n * 100, 2) if n is not None else None
 
 
 @dataclass(frozen=True)
@@ -91,28 +106,30 @@ def get_fundamentals(
         return Fundamentals(ticker=ticker.upper(), ok=False)
 
     g = info.get
+    market_cap = _num(g("marketCap"))
+    num_analysts = _num(g("numberOfAnalystOpinions"))
     return Fundamentals(
         ticker=ticker.upper(),
-        ok=g("sector") is not None or g("marketCap") is not None,
+        ok=g("sector") is not None or market_cap is not None,
         sector=g("sector"),
         industry=g("industry"),
-        market_cap=g("marketCap"),
-        trailing_pe=g("trailingPE"),
-        forward_pe=g("forwardPE"),
+        market_cap=market_cap,
+        trailing_pe=_num(g("trailingPE")),
+        forward_pe=_num(g("forwardPE")),
         profit_margin_pct=_pct(g("profitMargins")),
         gross_margin_pct=_pct(g("grossMargins")),
         revenue_growth_pct=_pct(g("revenueGrowth")),
         earnings_growth_pct=_pct(g("earningsGrowth")),
-        debt_to_equity=g("debtToEquity"),
+        debt_to_equity=_num(g("debtToEquity")),
         return_on_equity_pct=_pct(g("returnOnEquity")),
         recommendation=g("recommendationKey"),
-        recommendation_mean=g("recommendationMean"),
-        num_analysts=g("numberOfAnalystOpinions"),
-        target_mean_price=g("targetMeanPrice"),
-        target_low_price=g("targetLowPrice"),
-        target_high_price=g("targetHighPrice"),
-        week52_low=g("fiftyTwoWeekLow"),
-        week52_high=g("fiftyTwoWeekHigh"),
+        recommendation_mean=_num(g("recommendationMean")),
+        num_analysts=int(num_analysts) if num_analysts is not None else None,
+        target_mean_price=_num(g("targetMeanPrice")),
+        target_low_price=_num(g("targetLowPrice")),
+        target_high_price=_num(g("targetHighPrice")),
+        week52_low=_num(g("fiftyTwoWeekLow")),
+        week52_high=_num(g("fiftyTwoWeekHigh")),
     )
 
 

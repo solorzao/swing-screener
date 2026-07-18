@@ -15,6 +15,7 @@ slow-EMA reclaim or the recent swing high), with a measured-move fallback. All
 pure: reads the enriched ``build_frame`` output, never mutates it.
 """
 
+import math
 from dataclasses import dataclass
 
 import pandas as pd
@@ -70,6 +71,13 @@ def detect_reversal(f: pd.DataFrame, cfg: StrategyConfig) -> ReversalContext | N
         return None
 
     last = f.iloc[-1]
+    # NaN fails safe (2026-07 audit; mirrors detect.py): the HA gates below never
+    # validate atr/rsi, NaN is truthy, and every NaN comparison is False -- so a
+    # NaN indicator sailed through and shipped a NaN-atr context, from which
+    # compute_reversal_zone built stop = low - buffer*NaN = NaN (its risk <= 0
+    # rejection is itself NaN-defeated). No finite indicator -> no signal.
+    if not (math.isfinite(float(last["atr"])) and math.isfinite(float(last["rsi"]))):
+        return None
 
     # 1) the HA flip. ``g`` is the trailing HA-green run ending today; the FLIP bar is its
     #    oldest bar (green out of red). g==1 -> the flip IS today (early). g>=2 -> a
@@ -106,9 +114,15 @@ def detect_reversal(f: pd.DataFrame, cfg: StrategyConfig) -> ReversalContext | N
     if red_run < cfg.reversal_min_bearish_bars:
         return None
 
-    # 3) beaten-down context: the decline low is below the slow EMA.
+    # 3) beaten-down context: the decline low is below the slow EMA. Finiteness is
+    #    explicit: reversal_low >= NaN is False, so a NaN EMA (or an all-NaN
+    #    decline window) would slip past this rejection and ship NaN into the
+    #    context -- and reversal_low is the STOP base. Unknown -> reject.
     reversal_low = float(decline["low"].min())
-    if reversal_low >= float(last["ema_slow"]):
+    ema_slow = float(last["ema_slow"])
+    if not (math.isfinite(reversal_low) and math.isfinite(ema_slow)):
+        return None
+    if reversal_low >= ema_slow:
         return None
 
     # Wyckoff spring: the bounce bar undercuts a recent support low (over the lookback ending
@@ -124,6 +138,12 @@ def detect_reversal(f: pd.DataFrame, cfg: StrategyConfig) -> ReversalContext | N
     min_rsi = float(f.iloc[-(cfg.reversal_oversold_lookback + 1):]["rsi"].min())
     avg_vol = float(f["volume"].tail(cfg.avg_dollar_vol_window).mean())
     vol_ratio = float(bounce["volume"]) / avg_vol if avg_vol > 0 else 1.0
+    # NaN flip volume (rows kept at the download seam -- index tickers) reads as
+    # the same neutral 1.0 as a missing baseline: a NaN ratio would defeat both
+    # rvol gates below (NaN comparisons are False), full-credit the score's
+    # volume term, and ship NaN into the context.
+    if not math.isfinite(vol_ratio):
+        vol_ratio = 1.0
     # experiment (edge-discovery exp 5): A/B the flip-bar volume sign. Low-vol-confirmation
     # gate (supply exhausted) vs high-vol-confirmation gate (demand stepped in); 0 = off.
     if cfg.reversal_max_flip_rvol > 0 and vol_ratio > cfg.reversal_max_flip_rvol:
@@ -163,7 +183,7 @@ def detect_reversal(f: pd.DataFrame, cfg: StrategyConfig) -> ReversalContext | N
         red_run=red_run,
         decline_bars=cfg.reversal_decline_bars,
         volume_ratio=vol_ratio,
-        ema_slow=float(last["ema_slow"]),
+        ema_slow=ema_slow,
         decline_high=decline_high,
         is_spring=is_spring,
         confirm_lag=g - 1 if strength == CONFIRMED else 0,

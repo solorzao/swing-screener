@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session
 
+from swing_screener.db.models import CoachDraftRequest
 from swing_screener.db.repo import (
     claim_queued_coach_drafts,
     complete_coach_draft_request,
@@ -39,6 +40,48 @@ def test_complete_and_fail_set_terminal_status():
         s.refresh(b)
         assert a.status == "done" and b.status == "failed"
         assert b.error == "error (RuntimeError)"
+
+
+def test_claim_stamps_microsecond_free_token():
+    """The claim must truncate its token to whole seconds BEFORE stamping.
+
+    Callers pass full-precision ``datetime.now(UTC)`` (coach_run.py); SQL Server's
+    DATETIME stores at 1/300s ticks (rounded), so a microsecond-bearing stamp never
+    equals the full-precision bind parameter in the ``started_at == now`` read-back
+    -- the claim returns [] on Azure SQL and drafts stall 'running' forever. Whole
+    seconds are exactly representable in DATETIME, so microsecond-free STORAGE is
+    the portable property that makes the equality hold on every backend. (SQLite
+    round-trips microseconds exactly, so we pin the stored value instead.)
+    """
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        req = create_coach_draft_request(s, review_id=9, requested_at=_T0)
+        req_id = req.id
+        claimed = claim_queued_coach_drafts(
+            s, now=datetime(2026, 7, 17, 12, 0, 0, 123456))
+        assert [c.review_id for c in claimed] == [9]
+        assert claimed[0].started_at.microsecond == 0
+    # Fresh session (not the identity-mapped object above): what actually got STORED
+    # is microsecond-free, so DATETIME rounding is a no-op.
+    with Session(engine) as s2:
+        stored = s2.get(CoachDraftRequest, req_id)
+        assert stored is not None
+        assert stored.started_at == datetime(2026, 7, 17, 12, 0, 0)
+
+
+def test_sequential_claims_keep_their_own_rows():
+    """Race-safety survives truncation: each claim stamps its own whole-second token
+    and only reads back rows carrying THAT token, so two workers claiming at
+    different times never return each other's rows."""
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        create_coach_draft_request(s, review_id=1, requested_at=_T0)
+        create_coach_draft_request(s, review_id=2, requested_at=_T0 + timedelta(minutes=1))
+        first = claim_queued_coach_drafts(s, now=_T0 + timedelta(seconds=10), limit=1)
+        second = claim_queued_coach_drafts(s, now=_T0 + timedelta(seconds=11), limit=1)
+        assert [c.review_id for c in first] == [1]
+        assert [c.review_id for c in second] == [2]
+        assert first[0].started_at == _T0 + timedelta(seconds=10)
+        assert second[0].started_at == _T0 + timedelta(seconds=11)
 
 
 def test_requeue_stale_running_recovers_a_crashed_worker():

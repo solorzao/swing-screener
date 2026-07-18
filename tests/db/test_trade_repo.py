@@ -1,16 +1,23 @@
 from datetime import date
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from swing_screener.db import repo
-from swing_screener.db.models import Trade
+from swing_screener.db.models import PaperTrade, Trade
 from swing_screener.db.session import get_engine
 
 
 def _trade(ticker="AAPL"):
     return Trade(ticker=ticker, timeframe="1d", horizon="medium", entry_date=date(2024, 1, 2),
                  entry_price=100.0, size=10.0, stop=95.0, target=110.0)
+
+
+def _paper_trade(account: str, opened: date) -> PaperTrade:
+    return PaperTrade(ticker="AMD", timeframe="1d", horizon="medium", signal_score=0.8,
+                      rank=1, account=account, fill_status="filled", stop=95.0,
+                      target=110.0, risk=5.0, status="open", opened_date=opened)
 
 
 def test_add_and_list_open_trades():
@@ -75,6 +82,20 @@ def test_close_trade_with_event_carries_both_rows():
                 s, t.id, exit_date=date(2024, 1, 10), exit_price=1.0,
                 exit_reason="x", event_reason="manual_close", event_message="",
                 created_date=date(2024, 1, 10))
+
+
+def test_delete_paper_trades_opened_on_only_touches_research():
+    """A same-day re-run delete must never touch live/paper/manual rows: only the
+    research shadow grid is re-created by the re-run, so deleting any other book
+    permanently loses real positions (2026-07-17 audit, critical)."""
+    engine = get_engine("sqlite:///:memory:")
+    opened = date(2026, 7, 17)
+    with Session(engine) as s:
+        s.add_all([_paper_trade(a, opened)
+                   for a in ("research", "live", "paper", "manual")])
+        s.commit()
+        repo.delete_paper_trades_opened_on(s, opened)
+        assert set(s.scalars(select(PaperTrade.account))) == {"live", "paper", "manual"}
 
 
 def test_update_trade_patches_fields():

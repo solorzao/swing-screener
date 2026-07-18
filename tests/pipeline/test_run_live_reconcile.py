@@ -94,6 +94,31 @@ def test_live_run_reconciles_a_broker_fill_into_a_live_position(tmp_path, bars, 
         assert event.is_paper is False
 
 
+def test_same_day_rerun_keeps_the_live_position(tmp_path, bars, monkeypatch):
+    """A screen RE-RUN for the same date (job retry, manual re-run) must not delete the
+    live book: the idempotency delete is research-only, because a live row is never
+    re-materialized -- its ExecutionLog is already ``filled_live`` (2026-07-17 audit)."""
+    monkeypatch.setenv("SWING_EXECUTION_MODE", "live")
+    monkeypatch.setattr(run, "_fetch_all_timeframes", lambda *a, **k: {})  # empty screen
+
+    url = f"sqlite:///{tmp_path / 'rerunreconcile.sqlite'}"
+    broker = FakeBroker(real_money=False)
+    oid = _submit_live_order(url, broker)
+    broker.fill(oid, price=99.5)
+
+    kw = dict(universe_path=_write_universe(tmp_path, ["ZZZ"]), db_url=url,
+              cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts", cfg=_NO_EXT_GATE,
+              broker=broker)
+    run.run_screen(today=date(2024, 4, 2), **kw)
+    run.run_screen(today=date(2024, 4, 2), **kw)  # the retry: same date, log already terminal
+
+    with Session(get_engine(url)) as s:
+        pt = s.scalars(select(PaperTrade).where(PaperTrade.account == "live")).one()
+        assert pt.status == "open"
+        assert pt.entry_price == 99.5
+        assert pt.opened_date == date(2024, 4, 2)
+
+
 def test_off_mode_does_not_reconcile_even_with_a_broker(tmp_path, bars, monkeypatch):
     """off (default) + a broker handed in -> NO reconcile: a filled broker order is left
     un-materialized (the live path stays dark)."""

@@ -18,12 +18,15 @@ from swing_screener.journal.audit_anomaly import anomaly_findings
 _FROM, _TO = date(2026, 7, 6), date(2026, 7, 12)
 
 
-def _funnel(run_date, *, detected, confirmed, fresh, actionable, surfaced):
+def _funnel(run_date, *, detected, confirmed, fresh, actionable, surfaced, overflow=""):
     return ReversalFunnel(run_date=run_date, detected=detected, confirmed=confirmed,
-                          fresh=fresh, actionable=actionable, surfaced=surfaced)
+                          fresh=fresh, actionable=actionable, surfaced=surfaced,
+                          overflow_tickers=overflow)
 
 
 def test_drought_and_would_surface_leaks():
+    # No overflow recorded on either day, so every actionable-vs-surfaced gap is
+    # UNEXPLAINED -- these are the genuine leaks and still count.
     with Session(get_engine("sqlite:///:memory:")) as s:
         s.add_all([
             _funnel(date(2026, 7, 7), detected=5, confirmed=3, fresh=2, actionable=2, surfaced=0),
@@ -32,7 +35,26 @@ def test_drought_and_would_surface_leaks():
         s.commit()
         f = anomaly_findings(s, period_from=_FROM, period_to=_TO)
         assert f.drought_days == 1                 # 7/7: detected 5 but surfaced 0
-        assert f.would_surface_leaks == 3          # (2-0) + (2-1)
+        assert f.would_surface_leaks == 3          # (2-0) + (2-1), none explained
+
+
+def test_routine_top5_sector_overflow_is_not_a_leak():
+    """Picks that only lost the top-5/sector race are recorded per-name in
+    overflow_tickers -- routine machinery, not an anomaly. Counting them fired the
+    leak alarm on every busy week and eroded the $0 dead-week gate."""
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        s.add_all([
+            # fully explained: gap of 3, all 3 named in the overflow line -> 0 leaks
+            _funnel(date(2026, 7, 7), detected=9, confirmed=9, fresh=8, actionable=8,
+                    surfaced=5, overflow="CRM,WDAY,PTC"),
+            # partially explained: gap of 3, only 2 recorded -> 1 genuine leak
+            _funnel(date(2026, 7, 8), detected=9, confirmed=9, fresh=8, actionable=8,
+                    surfaced=5, overflow="CRM,WDAY"),
+        ])
+        s.commit()
+        f = anomaly_findings(s, period_from=_FROM, period_to=_TO)
+        assert f.would_surface_leaks == 1
+        assert f.drought_days == 0
 
 
 def test_orphan_paper_exit_is_flagged():

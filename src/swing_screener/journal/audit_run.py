@@ -2,7 +2,7 @@
 
 ``audit_run weekly`` grades the period (compliance + anomaly), writes ONE idempotent
 ``SystemAudit(kind="weekly")`` row, and (when enabled + under budget) drafts the
-independent audit narrative. ``audit_run breach`` scans a day window and writes a
+independent audit narrative. ``audit_run breach`` scans the trailing week and writes a
 ``SystemAudit(kind="breach")`` row per hard breach (a cap exceeded, a disarm) it hasn't
 already recorded -- the "flags on the next run after the breach" path (design SS Cadence).
 
@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 from swing_screener.db.models import DisarmEvent, SystemAudit
 from swing_screener.db.session import get_engine
 from swing_screener.journal.audit_anomaly import anomaly_findings
-from swing_screener.journal.audit_author import draft_audit, template_audit
+from swing_screener.journal.audit_author import breach_narrative, draft_audit, template_audit
 from swing_screener.journal.audit_compliance import compliance_findings
 from swing_screener.pipeline.run import _migrate_with_retry, _resolve_db_url
 from swing_screener.settings import Settings, load_settings
@@ -43,6 +43,20 @@ log = logging.getLogger(__name__)
 # plan). notify.analysis._MODEL_PRICES carries a claude-haiku-4-5 row, so the audit
 # spend cap keeps metering. No env override by design; the escape hatch is this line.
 _MODEL = "claude-haiku-4-5"
+
+# The breach scan runs weekdays at 16:00 ET, so a today-only window permanently misses
+# anything recorded AFTER that day's run (late fills, post-close disarms) and EVERYTHING
+# on a weekend or holiday. There is no watermark to derive a tighter window from --
+# breach rows are written only when something fired, so a quiet stretch leaves no
+# "last scanned" marker -- so each run re-scans the trailing week and leans on the
+# per-breach idempotency keys (cap:{day}:{account}, disarm:{day}) to make the overlap
+# with prior runs a no-op.
+_BREACH_SCAN_LOOKBACK_DAYS = 7
+
+
+def _breach_scan_window(today: date) -> tuple[date, date]:
+    """The inclusive (day_from, day_to) window one breach-scan run covers."""
+    return today - timedelta(days=_BREACH_SCAN_LOOKBACK_DAYS), today
 
 
 def _collect(session: Session, *, settings: Settings, period_from: date,
@@ -147,27 +161,38 @@ def run_breach_scan(
         max_daily_loss=settings.max_daily_loss)
     for breach in comp.cap_breaches:
         day = date.fromisoformat(str(breach["date"]))
-        key = f"cap:{day.isoformat()}"
+        # breaches are graded per (day, account); the account belongs in the idempotency
+        # key or a second account's same-day breach would be silently swallowed.
+        key = f"cap:{day.isoformat()}:{breach['account']}"
         if _get_audit(session, kind="breach", period_from=day, period_to=day,
                       breach_key=key) is not None:
             continue
         written.append(_write_breach(session, day=day, breach_key=key, severity="alert",
                                      findings={"cap_breach": breach}, now=now))
 
-    # disarms (one breach row per disarm day)
-    disarm_days = {
-        d.date() for d in session.scalars(
-            select(DisarmEvent.created_at).where(
-                DisarmEvent.created_at >= datetime.combine(day_from, time.min),
-                DisarmEvent.created_at <= datetime.combine(day_to, time.max)))
-    }
-    for day in sorted(disarm_days):
+    # disarms (one breach row per disarm day, carrying that day's actual events so the
+    # narrative and findings_json state what happened, not a day with no detail)
+    disarms_by_day: dict[date, list[DisarmEvent]] = {}
+    for event in session.scalars(
+        select(DisarmEvent).where(
+            DisarmEvent.created_at >= datetime.combine(day_from, time.min),
+            DisarmEvent.created_at <= datetime.combine(day_to, time.max))):
+        disarms_by_day.setdefault(event.created_at.date(), []).append(event)
+    for day in sorted(disarms_by_day):
         key = f"disarm:{day.isoformat()}"
         if _get_audit(session, kind="breach", period_from=day, period_to=day,
                       breach_key=key) is not None:
             continue
+        findings = {
+            "disarm_day": day.isoformat(),
+            "disarms": [
+                {"at": e.created_at.isoformat(), "reason": e.reason,
+                 "orders_cancelled": e.orders_cancelled}
+                for e in sorted(disarms_by_day[day], key=lambda e: e.created_at)
+            ],
+        }
         written.append(_write_breach(session, day=day, breach_key=key, severity="alert",
-                                     findings={"disarm_day": day.isoformat()}, now=now))
+                                     findings=findings, now=now))
 
     if written:
         session.commit()
@@ -178,8 +203,7 @@ def _write_breach(session: Session, *, day: date, breach_key: str, severity: str
                   findings: dict, now: datetime) -> SystemAudit:
     row = SystemAudit(kind="breach", period_from=day, period_to=day, breach_key=breach_key,
                       findings_json=json.dumps(findings), severity=severity,
-                      narrative=template_audit({"compliance": {}, "anomaly": {}}),
-                      generated_at=now)
+                      narrative=breach_narrative(findings), generated_at=now)
     session.add(row)
     session.flush()  # assign an id without ending the batch txn
     return row
@@ -203,7 +227,7 @@ def main() -> None:
     parser.add_argument("--db", default=None)
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("weekly", help="grade the trailing week + write the weekly audit")
-    sub.add_parser("breach", help="scan today for hard breaches (caps, disarms)")
+    sub.add_parser("breach", help="scan the trailing week for hard breaches (caps, disarms)")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
 
@@ -220,8 +244,9 @@ def main() -> None:
                                period_to=today, now=now, client=client)
             log.info("audit weekly: severity=%s", audit.severity)
         else:
-            rows = run_breach_scan(session, settings=settings, day_from=today, day_to=today,
-                                   now=now)
+            day_from, day_to = _breach_scan_window(today)
+            rows = run_breach_scan(session, settings=settings, day_from=day_from,
+                                   day_to=day_to, now=now)
             log.info("audit breach: wrote=%d", len(rows))
 
 
