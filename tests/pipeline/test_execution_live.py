@@ -20,6 +20,7 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
+from swing_screener.db import guardrails_repo
 from swing_screener.db.models import ExecutionLog, PaperTrade
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.broker import BrokerOrder, BrokerOrderSpec, FakeBroker
@@ -188,10 +189,15 @@ def test_real_money_mode_not_live_is_rejected() -> None:
 
 
 # ---------------------------------------------------------------------------
-# the real-money guard: ALL three locks AND every cap -> submitted_live.
+# the real-money guard: ALL three locks AND every cap AND every mandatory
+# guardrails breaker (the Task 4 mandate) -> submitted_live.
 # ---------------------------------------------------------------------------
 def test_real_money_with_all_locks_and_caps_submits() -> None:
     with _session() as s:
+        # the guardrails MANDATE: real money also demands the three mandatory
+        # breakers set (guardrails_mandate_ok) -- the full arming floor.
+        guardrails_repo.edit_limits(s, source="test", max_daily_loss_usd=50.0,
+                                    max_trades_per_day=5, max_drawdown_usd=200.0)
         broker = FakeBroker(real_money=True)
         adapter = LiveAdapter(broker, settings=_live_settings(mode="live", allow=True),
                               gate_ready_fn=lambda _s: True)

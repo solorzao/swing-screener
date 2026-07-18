@@ -20,7 +20,7 @@ pluggable adapters behind a single :class:`ExecutionAdapter` protocol:
   real-money endpoint arms ONLY behind all three locks AND every cap; a paper broker
   bypasses that guard. See the class for the full safety contract.
 
-The load-bearing safety lives in two places, both INSIDE ``submit`` (never trusting
+The load-bearing safety lives in three places, all INSIDE ``submit`` (never trusting
 the caller):
 
 1. The hard-limit clamp (:func:`_limit_block`): before recording anything, ``submit``
@@ -37,6 +37,14 @@ the caller):
    ``rejected``) superseded by a counting write is UPGRADED in place, so a submit that
    ACTED after an earlier same-day clamp is never silently swallowed. One order per pick
    per run.
+3. The guardrails brake (:func:`_guardrail_block`, live adapter only -- the one
+   adapter with a venue): the ``agent_guardrails`` row (state + the four breakers) is
+   loaded FRESH on every submit and consulted UNCONDITIONALLY (paper host included),
+   BEFORE the real-money guard. An engaged brake or a breached breaker clamps to a
+   logged ``skipped`` row with a ``guardrail: ...`` detail -- non-counting, so the
+   idempotency key is never burned. The real-money MANDATE
+   (``guardrails_repo.guardrails_mandate_ok``) additionally refuses a real-money
+   dispatch while any mandatory breaker is unset (paper hosts stay exempt).
 
 PER-DAY-LOSS UNIT DECISION: ``Limits.max_daily_loss`` is interpreted as an **R
 threshold**, NOT a dollar amount. The design left $ vs R open; we choose R because the
@@ -64,6 +72,7 @@ from sqlalchemy.orm import Session
 
 from sqlalchemy import select
 
+from swing_screener.db import guardrails_repo
 from swing_screener.db.models import PaperTrade
 from swing_screener.db.repo import (
     add_execution_log,
@@ -190,6 +199,37 @@ def _limit_block(
                 f"per-day realized-loss breaker: {day_r:.2f}R "
                 f"<= -{limits.max_daily_loss:.2f}R"
             )
+    return None
+
+
+def _guardrail_block(
+    session: Session, g: guardrails_repo.GuardrailsState, *, run_date: date
+) -> str | None:
+    """Return a human reason if the guardrails brake refuses this submit, else None.
+
+    Mirrors ``_limit_block``: a pure READ + decide; the caller clamps (skip + log).
+    Consulted UNCONDITIONALLY (paper host included -- the Stage-0 drill must rehearse
+    every trip path), BEFORE the real-money guard. Each breaker is skipped when unset."""
+    if g.state != "ok":
+        detail = f": {g.trip_reason}" if g.trip_reason else ""
+        return f"brake engaged ({g.state}{detail})"
+    if g.max_trades_per_day is not None:
+        n = guardrails_repo.trades_today(session, run_date=run_date)
+        if n >= g.max_trades_per_day:
+            return f"max trades/day: {n} >= {g.max_trades_per_day}"
+    if g.max_daily_loss_usd is not None:
+        day_usd = guardrails_repo.realized_usd_on(session, run_date=run_date)
+        if day_usd <= -g.max_daily_loss_usd:
+            return f"max daily loss: ${day_usd:.2f} <= -${g.max_daily_loss_usd:.2f}"
+    if g.max_drawdown_usd is not None:
+        dd = guardrails_repo.live_drawdown_usd(
+            session, anchor_date=g.hwm_anchor_date, baseline_usd=g.hwm_baseline_usd)
+        if dd >= g.max_drawdown_usd:
+            return f"max drawdown: ${dd:.2f} >= ${g.max_drawdown_usd:.2f}"
+    if g.loss_streak_halt is not None:
+        s = guardrails_repo.live_loss_streak(session)
+        if s >= g.loss_streak_halt:
+            return f"loss streak: {s} >= {g.loss_streak_halt}"
     return None
 
 
@@ -416,11 +456,18 @@ class LiveAdapter:
        any broker call -- a re-submit can never place a venue order whose status write
        would be swallowed by the unique key (an untracked position the reconciler,
        which scans ``submitted_live`` rows only, would never materialize).
+    0.5. The GUARDRAILS BRAKE (``_guardrail_block``): the ``agent_guardrails`` state +
+       breakers, loaded FRESH per submit and consulted UNCONDITIONALLY (paper host
+       included -- the Stage-0 drill rehearses every trip path), BEFORE the real-money
+       guard. An engaged brake ('halted'/'tripped') or a breached breaker clamps to a
+       logged ``skipped`` row with a ``guardrail: ...`` detail -- non-counting, so the
+       key is never burned and a later submit (brake released) upgrades the row.
     1. The REAL-MONEY guard, consulted ONLY when ``broker.is_real_money()`` -- a paper broker
        (Alpaca paper) needs no locks and skips it entirely. For a real-money endpoint it
        demands all THREE arming locks (``can_arm_real_money``: mode=live AND allow_real_money
-       AND a ready gate) AND every hard cap set (``real_money_limits_ok``); either failing
-       logs a ``rejected_live`` row and refuses, placing no broker order.
+       AND a ready gate) AND every hard cap set (``real_money_limits_ok``) AND every
+       mandatory guardrails breaker set (``guardrails_repo.guardrails_mandate_ok``);
+       any failing logs a ``rejected_live`` row and refuses, placing no broker order.
     2. The hard-limit clamp (``_limit_block``): a breach logs a ``skipped`` row and refuses
        BEFORE any broker call -- the venue is never touched on a clamped order.
     3. A graceful broker boundary: an exception from ``submit_order`` is caught and logged as
@@ -465,6 +512,21 @@ class LiveAdapter:
                 broker_order_id=prior.broker_order_id,
             )
 
+        # 0.5 THE GUARDRAILS BRAKE -- unconditional (paper host included, so the drill
+        #     rehearses every trip path), BEFORE the real-money guard and the venue.
+        #     Loaded FRESH per submit (a raw column select -- the cockpit can HALT
+        #     mid-dispatch and this read must see it). A refusal is a clamp: a logged
+        #     'skipped' row with a 'guardrail: ...' detail (non-counting, upgradeable --
+        #     the key is never burned). The dispatch loop owns the trip RESPONSE
+        #     (sweep/email, Task 6); submit only refuses.
+        g = guardrails_repo.load_guardrails(session)
+        brake_reason = _guardrail_block(session, g, run_date=run_date)
+        if brake_reason is not None:
+            detail = f"guardrail: {brake_reason}"
+            self._log(session, intent, run_date=run_date, key=key,
+                      status="skipped", detail=detail[:512])
+            return OrderResult(status="skipped", account=LIVE_ACCOUNT, detail=detail)
+
         # 1. REAL-MONEY guard -- consulted ONLY for a real-money endpoint. A paper broker
         #    (is_real_money() False) needs no locks and skips this block entirely.
         if self._broker.is_real_money():
@@ -480,6 +542,17 @@ class LiveAdapter:
                 self._log(session, intent, run_date=run_date, key=key,
                           status="rejected_live", detail=reason2)
                 return OrderResult(status="rejected", account=LIVE_ACCOUNT, detail=reason2)
+            # The guardrails MANDATE: real money may not dispatch with an unset
+            # mandatory breaker (mirrors real_money_limits_ok's posture -- paper hosts
+            # stay exempt). Deliberately guardrails_mandate_ok(session), which re-loads
+            # the row internally, rather than reusing `g` from step 0.5: one extra cheap
+            # column select buys a maximally-fresh read at the arming decision, and
+            # keeps the mandate's single source of truth in guardrails_repo.
+            ok3, reason3 = guardrails_repo.guardrails_mandate_ok(session)
+            if not ok3:
+                self._log(session, intent, run_date=run_date, key=key,
+                          status="rejected_live", detail=reason3)
+                return OrderResult(status="rejected", account=LIVE_ACCOUNT, detail=reason3)
 
         # 2. The hard-limit clamp -- BEFORE any broker call, so a clamped order never reaches
         #    the venue. A breach logs a skipped row (audit) and refuses.
