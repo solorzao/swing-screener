@@ -509,6 +509,96 @@ export interface AnalysisList {
   worker: 'manual' | 'cloud (*/15min)'
 }
 
+/* ---------- Ticker Lab wire shapes (routers/lab.py) ---------- */
+
+export type LabTimeframe = '4h' | '1d' | '1wk' | '1mo'
+
+/** One bar: real OHLCV + the Heiken Ashi transform. Every number is a
+ * deterministic engine fact — plain and nullable (NaN serves as null), never a
+ * Stat. */
+export interface LabCandle {
+  t: string
+  o: number | null
+  h: number | null
+  l: number | null
+  c: number | null
+  ha_o: number | null
+  ha_h: number | null
+  ha_l: number | null
+  ha_c: number | null
+  v: number | null
+}
+
+/** One clustered swing-pivot level (price = cluster mean, touches = pivots merged). */
+export interface LabLevel {
+  price: number | null
+  touches: number
+}
+
+export interface LabFib {
+  high: number | null
+  low: number | null
+  /** Which extreme printed later: 'up' = an up-move being retraced. */
+  direction: 'up' | 'down'
+  levels: { ratio: number; price: number | null }[]
+}
+
+/** The full deterministic study for one (ticker, timeframe). EMA/MACD arrays
+ * align 1:1 with `candles`; warm-up bars are null (an unconverged EMA reads as
+ * absent, never a fabricated line — EMA200 can be ALL null on short frames). */
+export interface LabBarsPayload {
+  ticker: string
+  timeframe: LabTimeframe
+  as_of: string
+  bar_count: number
+  last_close: number | null
+  candles: LabCandle[]
+  emas: Record<'9' | '21' | '50' | '200', (number | null)[]>
+  macd: {
+    macd: (number | null)[]
+    signal: (number | null)[]
+    hist: (number | null)[]
+  }
+  levels: { support: LabLevel[]; resistance: LabLevel[] }
+  fib: LabFib | null
+}
+
+export interface LabAnalysisCreated {
+  id: number
+  ticker: string
+  status: AnalysisStatus
+  requested_at: string
+  model: string
+  reasoning: string
+}
+
+export interface LabAnalysisRow {
+  id: number
+  ticker: string
+  status: AnalysisStatus
+  /** Running past the in-process drain window. There is NO requeue pass — the
+   * cockpit almost certainly restarted mid-run; the honest copy is "request
+   * again", never a spinner. */
+  stalled: boolean
+  requested_at: string
+  started_at: string | null
+  finished_at: string | null
+  model: string
+  reasoning: string
+  /** True only when the model wrote the note; false = deterministic fallback. */
+  is_deep: boolean
+  /** The FULL markdown note — rendered inline, no PDF/blob. */
+  report: string
+  /** Whitelist-gated server-side (exception class names only). */
+  error: string | null
+  /** Approximate spend of this UNCAPPED call; null = no billed call captured. */
+  est_cost_usd: number | null
+}
+
+export interface LabAnalysisList {
+  analyses: LabAnalysisRow[]
+}
+
 /* ---------- Phase 3 wire shapes (routers/proposals.py) ---------- */
 
 /** The two concrete play types (store/decision path params) — the query-side
@@ -1117,6 +1207,34 @@ export const analysisPdfUrl = (requestId: number): string =>
 
 export const signalChartUrl = (signalId: number): string =>
   `/api/signals/${signalId}/chart`
+
+/* ---------- Ticker Lab fetchers (routers/lab.py) ---------- */
+
+/** The deterministic study for one (ticker, timeframe). An on-demand fetch: a
+ * cold ticker blocks server-side for a few seconds; repeats ride the per-day
+ * bar cache. A dead upstream is a 503 with a class-name-only detail. */
+export const getLabBars = (
+  ticker: string,
+  timeframe: LabTimeframe,
+): Promise<LabBarsPayload> =>
+  fetchJson<LabBarsPayload>(
+    `/api/lab/bars?ticker=${encodeURIComponent(ticker)}&timeframe=${timeframe}`,
+  )
+
+/** Queue the lab's Opus deep analysis (full four-timeframe study). The server
+ * stamps requested_at and starts the in-process drain immediately. */
+export const postLabAnalysis = (ticker: string): Promise<LabAnalysisCreated> =>
+  postAction<LabAnalysisCreated>('/api/lab/analysis', { ticker })
+
+export const getLabAnalyses = (
+  ticker?: string,
+  limit = 20,
+): Promise<LabAnalysisList> =>
+  fetchJson<LabAnalysisList>(
+    ticker === undefined
+      ? `/api/lab/analysis?limit=${limit}`
+      : `/api/lab/analysis?ticker=${encodeURIComponent(ticker)}&limit=${limit}`,
+  )
 
 export const getProposals = (): Promise<Proposals> =>
   fetchJson<Proposals>('/api/proposals')

@@ -26,9 +26,18 @@ def rsi(series: pd.Series, period: int = 14) -> pd.Series:
     return 100 - (100 / (1 + rs))
 
 
+def macd(series: pd.Series, fast: int = 12, slow: int = 26,
+         signal: int = 9) -> pd.DataFrame:
+    """Full MACD: columns ``macd`` (EMA_fast - EMA_slow), ``signal`` (EMA of macd)
+    and ``hist`` (macd - signal)."""
+    macd_line = ema(series, fast) - ema(series, slow)
+    signal_line = ema(macd_line, signal)
+    return pd.DataFrame(
+        {"macd": macd_line, "signal": signal_line, "hist": macd_line - signal_line}
+    )
+
+
 def macd_histogram(series: pd.Series, fast: int = 12, slow: int = 26,
                    signal: int = 9) -> pd.Series:
     """MACD histogram = (EMA_fast - EMA_slow) - signal-line, where signal = EMA(macd_line)."""
-    macd_line = ema(series, fast) - ema(series, slow)
-    signal_line = ema(macd_line, signal)
-    return macd_line - signal_line
+    return macd(series, fast, slow, signal)["hist"]

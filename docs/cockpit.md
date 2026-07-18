@@ -36,11 +36,11 @@ tab:
 
 ## The screens
 
-The cockpit is **fourteen screens**. Nine carry a digit and are jumped to with the
-number keys `1`–`9`; the five digitless screens ride masthead links AND a leader-key
+The cockpit is **fifteen screens**. Nine carry a digit and are jumped to with the
+number keys `1`–`9`; the six digitless screens ride masthead links AND a leader-key
 chord — press `g` then a letter: `g r` Reference, `g j` Journal, `g x` GEX Lab,
-`g a` System Audit, `g m` Metrics (a 600 ms window; ignored while typing in a form
-field). `cockpit-ui/src/lib/screens.ts` is the one source of screen-naming truth —
+`g a` System Audit, `g m` Metrics, `g t` Ticker Lab (a 600 ms window; ignored while
+typing in a form field). `cockpit-ui/src/lib/screens.ts` is the one source of screen-naming truth —
 the keydown map, the chord map, the masthead current-screen indicator and its
 digitless links, and every placeholder title render from it.
 
@@ -60,6 +60,7 @@ digitless links, and every placeholder title render from it.
 | `g x` | **GEX Lab** | the options lab: day plan, the 12-point checklist grader, the setup journal, lab stats, broker CSV import — screen 12 |
 | `g a` | **System Audit** | machine-conduct oversight: the weekly conduct reports, the immediate breach feed, and the human ACK — screen 13 |
 | `g m` | **Metrics** | the cross-book scoreboard — wins & P&L per book, with the one sanctioned real-money aggregate — screen 14 |
+| `g t` | **Ticker Lab** | the on-demand per-ticker study: any ticker, Heiken Ashi candles on 4h/1d/1wk/1mo with toggleable EMA 9/21/50/200, MACD, volume, swing-pivot S/R and Fibonacci levels (every number a deterministic engine fact), plus the **deep analysis** action — the full four-timeframe study + fundamentals/news sent to the Opus analyst at max effort, drained in-process and rendered inline — screen 15 |
 
 The masthead's current-screen indicator reads `<n> · <TITLE>` and clicking it (or
 pressing `1`) returns to Mission Control. Both the `1`–`9` keydown and the `g` chord
@@ -327,6 +328,8 @@ All GET unless noted. Each route's docstring in
 | `/api/ticker?limit=` | the Zone E event ticker — merged reverse-chron ExitEvent + ExecutionLog + EmailLog + AnalystCall + AnalysisRequest |
 | `/api/exits?reason=&book=&account=&limit=` | the Reference exit log, three facets filterable (Book=is_paper and Account are different axes) |
 | `/api/universe?search=`, `/api/emails?limit=` | the Reference universe (+ sector) and digest/email log |
+| `/api/lab/bars?ticker=&timeframe=` | the Ticker Lab study for one (ticker, 4h/1d/1wk/1mo): real + HA candles, EMA 9/21/50/200, MACD(12,26,9), volume, clustered swing-pivot S/R, Fibonacci retracement — an on-demand yfinance fetch (the gex posture: a dead upstream is a class-name-only 503), riding the per-day bar cache; 4h carries at most ~60 days |
+| `/api/lab/analysis?ticker=&limit=` | the Ticker Lab deep-analysis notes, newest first — the FULL markdown report inline (no PDF/blob), `stalled` after 10 min (no requeue pass: the honest copy is "request again"), `est_cost_usd` per note (the uncapped path's cost visibility) |
 | `/api/events` | the SSE wake channel (below) |
 
 **Reads — journal, oversight & lab screens**
@@ -357,6 +360,7 @@ guardrails in the family tables above)
 | `POST /api/trades` | log trade |
 | `POST /api/trades/{id}/close` | close trade |
 | `POST /api/analysis` | request deep analysis |
+| `POST /api/lab/analysis` | request a Ticker Lab deep analysis (Opus at max effort, drained by an in-process cockpit thread the moment it queues — works locally with no cloud worker; needs ANTHROPIC_API_KEY in the cockpit's environment) |
 | `POST /api/proposals/{play_type}/{name}/approve` | approve proposal (marks, never promotes) |
 | `POST /api/proposals/{play_type}/{name}/withdraw` | withdraw proposal |
 | `POST /api/disarm?dry_run=0\|1` | DISARM (the venue sweep) |
@@ -385,7 +389,8 @@ The token is a set of cheap max-watermarks re-read every 15 s server-side, cover
 inserts, the exit-event clock (a close is an UPDATE the trade-id watermark can't see,
 so `max(ExitEvent.id)` is watched separately), sent emails, market reports, the funnel
 snapshot, the analysis queue (id / finished_at / started_at / scored, so a claim and a
-requeue both register), execution logs, analyst calls (id + scored count, since
+requeue both register), the Ticker Lab queue (id / finished_at / started-count —
+the in-process drain claims and completes by UPDATE), execution logs, analyst calls (id + scored count, since
 scoring is an UPDATE), the journal's notes/tags/theses (append-only, so max ids
 suffice), the GEX lab (snapshots, setups, lab-trade opens, plus the `closed_at`
 settle clock — a settle is an UPDATE, like a close), coach reviews (id + narrative

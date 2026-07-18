@@ -348,6 +348,36 @@ class AnalysisRequest(Base):
     est_cost_usd: Mapped[float | None] = mapped_column(default=None)
 
 
+class LabAnalysis(Base):
+    """TICKER LAB -- one on-demand deep-analysis research note.
+
+    Unlike ``AnalysisRequest`` (512-char summary + PDF + email, drained by the
+    hourly cloud worker), the lab stores the FULL markdown report inline so the
+    cockpit renders it in place, and the queue is drained by an in-process
+    cockpit thread the moment the request is posted -- the lab is interactive
+    research, not a scheduled digest. ``status`` walks queued -> running ->
+    done/failed; ``error`` stores the exception CLASS name only (leak posture).
+    ``est_cost_usd`` is the APPROXIMATE spend estimate for this UNCAPPED
+    user-triggered path -- NULL when no billed call was captured, never a fake $0.
+    """
+
+    __tablename__ = "lab_analyses"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ticker: Mapped[str] = mapped_column(String(16), index=True)
+    requested_at: Mapped[datetime]
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+    started_at: Mapped[datetime | None] = mapped_column(default=None)
+    finished_at: Mapped[datetime | None] = mapped_column(default=None)
+    model: Mapped[str] = mapped_column(String(64), default="")
+    reasoning: Mapped[str] = mapped_column(String(16), default="")
+    # True only when the model actually wrote the note (False = deterministic fallback).
+    is_deep: Mapped[bool] = mapped_column(default=False)
+    report: Mapped[str] = mapped_column(Text, default="")
+    error: Mapped[str | None] = mapped_column(String(1024), default=None)
+    est_cost_usd: Mapped[float | None] = mapped_column(default=None)
+
+
 class CoachDraftRequest(Base):
     """Journal v2 -- queue row for the async Coach narrative draft of one on-close
     review. The synchronous cockpit close writes the JournalReview facts row and

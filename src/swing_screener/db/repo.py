@@ -16,6 +16,7 @@ from swing_screener.db.models import (
     EmailLog,
     ExecutionLog,
     ExitEvent,
+    LabAnalysis,
     PaperTrade,
     ReversalFunnel,
     Signal,
@@ -803,6 +804,59 @@ def fail_analysis_request(session: Session, request_id: int, *, error: str,
     req.status = "failed"
     req.error = error
     req.finished_at = finished_at
+    session.commit()
+
+
+def create_lab_analysis(session: Session, *, ticker: str, requested_at: datetime,
+                        model: str, reasoning: str) -> LabAnalysis:
+    row = LabAnalysis(ticker=ticker, requested_at=requested_at, model=model,
+                      reasoning=reasoning)
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def list_lab_analyses(session: Session, *, ticker: str | None = None,
+                      limit: int = 20) -> list[LabAnalysis]:
+    stmt = select(LabAnalysis)
+    if ticker is not None:
+        stmt = stmt.where(LabAnalysis.ticker == ticker)
+    stmt = stmt.order_by(LabAnalysis.requested_at.desc(),
+                         LabAnalysis.id.desc()).limit(limit)
+    return list(session.scalars(stmt))
+
+
+def get_lab_analysis(session: Session, analysis_id: int) -> LabAnalysis | None:
+    return session.get(LabAnalysis, analysis_id)
+
+
+def complete_lab_analysis(session: Session, analysis_id: int, *, report: str,
+                          is_deep: bool, finished_at: datetime,
+                          est_cost_usd: float | None = None) -> None:
+    # est_cost_usd: approximate billed spend of this UNCAPPED user-triggered call;
+    # None = no billed call captured (fallback path) -- never a fake $0.
+    row = session.get(LabAnalysis, analysis_id)
+    if row is None:
+        return
+    row.status = "done"
+    row.report = report
+    row.is_deep = is_deep
+    row.finished_at = finished_at
+    row.est_cost_usd = est_cost_usd
+    session.commit()
+
+
+def fail_lab_analysis(session: Session, analysis_id: int, *, error: str,
+                      finished_at: datetime,
+                      est_cost_usd: float | None = None) -> None:
+    row = session.get(LabAnalysis, analysis_id)
+    if row is None:
+        return
+    row.status = "failed"
+    row.error = error
+    row.finished_at = finished_at
+    row.est_cost_usd = est_cost_usd
     session.commit()
 
 

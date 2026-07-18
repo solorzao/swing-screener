@@ -216,9 +216,14 @@ def analyze_signal(
 # "none"/unknown sends no thinking at all. Thinking bills as OUTPUT, so this is the
 # main reasoning<->cost lever. NOTE: opus-4.8 rejects the older
 # thinking={"type":"enabled","budget_tokens":N} shape -- it wants adaptive + effort.
-_REASONING_EFFORT = {"low": "low", "medium": "medium", "high": "high"}
+_REASONING_EFFORT = {
+    "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max",
+}
 # Per-effort output cap (thinking + answer). Generous; effort, not this, sets depth.
-_REASONING_MAX_TOKENS = {"none": 2000, "low": 6000, "medium": 10000, "high": 16000}
+_REASONING_MAX_TOKENS = {
+    "none": 2000, "low": 6000, "medium": 10000, "high": 16000,
+    "xhigh": 24000, "max": 32000,
+}
 
 _DEEP_SYSTEM = (
     "You are an equity research assistant for a swing trader. You receive a price "
@@ -446,6 +451,10 @@ def _analyst_call(
         "system": system,
         "messages": [{"role": "user", "content": content}],
     }
+    if kwargs["max_tokens"] > 16000:
+        # xhigh/max effort can outlive the SDK's default window; an explicit
+        # timeout also suppresses its large-max_tokens non-streaming guard.
+        client = client.with_options(timeout=900.0)
     effort = _REASONING_EFFORT.get(reasoning)
     if effort is not None:  # opus-4.8+ adaptive thinking; "none"/unknown omits it
         kwargs["thinking"] = {"type": "adaptive"}
@@ -658,6 +667,100 @@ def analyze_ticker_deep(
             report.ticker, exc_info=True,
         )
         return _ticker_fallback(report, usage=usage)
+
+
+# --- Ticker Lab: the on-demand research analyst over the lab's level facts ------
+#
+# The TICKER LAB screen's deep analysis. Unlike the queue-drained ticker report
+# above, this receives the lab's full deterministic level study (HA state, EMA
+# 9/21/50/200, MACD, swing-pivot S/R, Fibonacci, volume -- per timeframe) as
+# text facts, no chart images, and runs at the effort the user asked for
+# ("Opus max" by default via Settings.lab_reasoning). Same posture as every
+# analyst here: facts are ground truth, deterministic fallback on any failure,
+# usage captured even when the call fails after billing.
+
+_LAB_SYSTEM = (
+    "You are an equity research analyst for a swing trader doing their own "
+    "research. You receive one ticker's DETERMINISTIC multi-timeframe technical "
+    "study computed by a rules engine over Heiken Ashi candles: per timeframe "
+    "(4h, daily, weekly, monthly) the last close, Heiken-Ashi candle state, EMA "
+    "9/21/50/200 values and stacking, MACD(12,26,9), volume, swing-pivot support/"
+    "resistance levels, and Fibonacci retracement levels. Treat every number as "
+    "ground truth: NEVER invent, recompute, or alter price levels. Use the "
+    "web_search tool for current news, sentiment, and sector context.\n\n"
+    "Write a thorough but readable research note that synthesises the "
+    "timeframes: overall trend alignment, where price sits relative to the EMAs "
+    "and levels, momentum (MACD) per timeframe, volume confirmation, the key "
+    "levels that would change the picture in either direction, and how the "
+    "external context supports or contradicts the technicals. Be balanced -- "
+    "name the bear case as clearly as the bull case. This is informational "
+    "analysis, NOT financial advice, and you must not predict outcomes.\n\n"
+    "Output ONLY the finished note, no preamble or process narration. Format as "
+    "markdown using ONLY: '##'/'###' headings, '-' bullet lists, **bold**, and "
+    "plain paragraphs. Do NOT use tables, numbered lists, or markdown links "
+    "(cite sources as plain 'title -- url' text). Start with a '## Read' "
+    "section giving the one-paragraph overall take, and end with a '## Levels "
+    "that matter' section listing the decisive prices."
+)
+
+
+@dataclass(frozen=True)
+class LabDeepAnalysis:
+    """One TICKER LAB deep-analysis result."""
+
+    report: str      # full markdown note (or the deterministic facts fallback)
+    is_deep: bool    # True only when the model actually produced the note
+    usage: Usage | None = None  # token spend; None only when no billed call happened
+
+
+def _lab_prompt(ticker: str, facts_text: str, context_text: str) -> str:
+    body = (
+        f"Ticker: {ticker}. Deterministic multi-timeframe technical study "
+        "(ground truth -- do not change any levels):\n\n"
+        f"{facts_text}"
+    )
+    if context_text:
+        body += f"\n\n{context_text}"
+    body += (
+        "\n\nUse web_search for current news, sentiment and sector context, then "
+        "write the research note."
+    )
+    return body
+
+
+def analyze_lab_deep(
+    ticker: str, facts_text: str, *, context_text: str = "",
+    client: anthropic.Anthropic | None = None, model: str = "claude-opus-4-8",
+    reasoning: str = "max", max_searches: int = 4, web_search: bool = True,
+) -> LabDeepAnalysis:
+    """ONE Opus call over the lab's deterministic level study. Falls back to
+    serving the facts verbatim on ANY failure so the request still completes;
+    a failure AFTER the API responded was still billed, so the fallback carries
+    the captured usage (the lab path is uncapped, like the on-demand report --
+    the persisted estimate is its cost visibility)."""
+    usage: Usage | None = None  # None only when no billed call happened
+    try:
+        content = [{"type": "text", "text": _lab_prompt(ticker, facts_text, context_text)}]
+        text, sources, usage = _analyst_call(
+            system=_LAB_SYSTEM, content=content,
+            client=client, model=model, reasoning=reasoning,
+            max_searches=max_searches, web_search=web_search,
+        )
+        report = text.strip() + (_format_sources(sources) if sources else "")
+        return LabDeepAnalysis(report=report, is_deep=True, usage=usage)
+    except Exception as exc:
+        if isinstance(exc, EmptyAnalysisError):
+            usage = exc.usage
+        log.warning(
+            "lab deep analysis failed for %s; serving deterministic facts",
+            ticker, exc_info=True,
+        )
+        report = (
+            "## Read\nThe model analysis is unavailable (the call failed); the "
+            "deterministic study below is served verbatim.\n\n"
+            f"```\n{facts_text}\n```"
+        )
+        return LabDeepAnalysis(report=report, is_deep=False, usage=usage)
 
 
 # --- Conviction nudge: the analyst MOVES the deterministic grade, bounded +-1 ---

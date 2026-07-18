@@ -40,7 +40,7 @@ class Settings:
     # Deep-analysis (Opus web-search analyst) -- all default to the cheap/off path.
     deep_analysis_enabled: bool
     analysis_model: str
-    analysis_reasoning: str  # one of none/low/medium/high (-> extended-thinking budget)
+    analysis_reasoning: str  # one of none/low/medium/high/xhigh/max (-> adaptive-thinking effort)
     deep_analysis_top_n: int
     deep_analysis_kinds: frozenset[str]
     analysis_max_searches: int
@@ -75,6 +75,11 @@ class Settings:
     # ready (see ``can_arm_real_money``). Both default safe: no broker, real money disallowed.
     broker: str
     allow_real_money: bool
+    # TICKER LAB deep analysis: reasoning effort for the lab's user-triggered Opus
+    # call. Defaults to "max" -- the lab exists for the user's own deep research,
+    # so it runs at full effort unless dialled down (SWING_LAB_REASONING). Lives in
+    # the defaulted tail so direct Settings(...) constructions stay valid.
+    lab_reasoning: str = "max"
     # Submit live entries as BRACKET orders (venue-held stop + target), so a filled
     # position stays protected even if the screener dies. Default ON; SWING_BRACKET_ORDERS
     # ="off" falls back to plain limit entries (reconcile-managed exits only).
@@ -88,7 +93,7 @@ class Settings:
 
 
 _TRUE = {"1", "true", "yes", "on"}
-_REASONING = {"none", "low", "medium", "high"}
+_REASONING = {"none", "low", "medium", "high", "xhigh", "max"}
 _EXECUTION_MODES = {"off", "manual", "paper", "live"}
 
 
@@ -153,8 +158,11 @@ def load_settings() -> Settings:
     """
     env = os.environ
     reasoning = env.get("SWING_ANALYSIS_REASONING", "high").strip().lower()
-    if reasoning not in _REASONING:  # invalid -> max reasoning rather than silently weaker
+    if reasoning not in _REASONING:  # invalid -> strong reasoning rather than silently weaker
         reasoning = "high"
+    lab_reasoning = env.get("SWING_LAB_REASONING", "max").strip().lower()
+    if lab_reasoning not in _REASONING:  # invalid -> the lab's full-effort default
+        lab_reasoning = "max"
     kinds_raw = env.get("SWING_DEEP_ANALYSIS_KINDS", "daily,weekly,monthly")
     kinds = frozenset(k.strip().lower() for k in kinds_raw.split(",") if k.strip())
     execution_mode = env.get("SWING_EXECUTION_MODE", "off").strip().lower()
@@ -179,6 +187,7 @@ def load_settings() -> Settings:
         deep_analysis_top_n=_int(env.get("SWING_DEEP_ANALYSIS_TOP_N"), 5),
         deep_analysis_kinds=kinds,
         analysis_max_searches=_int(env.get("SWING_ANALYSIS_MAX_SEARCHES"), 4),
+        lab_reasoning=lab_reasoning,
         deep_analysis_max_usd=_opt_float(env.get("SWING_DEEP_ANALYSIS_MAX_USD")),
         coach_enabled=(env.get("SWING_COACH_ENABLED", "").strip().lower() in _TRUE),
         coach_max_usd=_opt_float(env.get("SWING_COACH_MAX_USD")),
