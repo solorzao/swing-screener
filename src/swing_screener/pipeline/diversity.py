@@ -1,14 +1,36 @@
-"""Sector-diversity cap for the daily surface.
+"""Surface-selection helpers for the daily digest lists.
 
-Pure helper shared by the digest selector (``notify.select.daily_picks``) and the
-screen's chart picker (``pipeline.run._digest_chart_indices``) so the same picks are
-surfaced and charted. No I/O.
+Pure helpers shared by the digest selectors (``notify.select``) and the screen's
+chart pickers (``pipeline.run._digest_chart_indices`` / ``_reversal_chart_indices``)
+so the same picks are surfaced and charted: the sector-diversity cap and the
+per-ticker dedup. No I/O.
 """
 
 from collections.abc import Callable, Iterable
 from typing import TypeVar
 
 T = TypeVar("T")
+
+
+def first_per_ticker(rows: Iterable[T], ticker_of: Callable[[T], str]) -> list[T]:
+    """Keep only the FIRST row per ticker, preserving the input order.
+
+    Callers iterate in rank/score order, so the kept row is the ticker's BEST one.
+    Without this, one ticker firing on multiple timeframes (common in a strong
+    trend) fills multiple top-N slots -- and each surfaced slot is a billable Opus
+    deep/conviction call, so the same name was pitched (and billed) twice. Callers
+    over-fetch (no SQL LIMIT) and trim AFTER the dedup, so freed slots backfill
+    from below in rank order rather than shrinking the list. Shared with the chart
+    pickers so the chart set agrees with the digest about which TICKERS won slots."""
+    seen: set[str] = set()
+    out: list[T] = []
+    for row in rows:
+        ticker = ticker_of(row)
+        if ticker in seen:
+            continue
+        seen.add(ticker)
+        out.append(row)
+    return out
 
 
 def cap_by_sector(
