@@ -67,7 +67,9 @@ param acsSender string
 @description('Key Vault URL (e.g. https://vault.vault.azure.net/) -> KEY_VAULT_URL and the base for secret reference URIs.')
 param keyVaultUrl string
 
-@description('Key Vault secret NAMES (not values), bundled: { anthropic, gmailAddress, gmailPassword, digestTo }.')
+// Exactly the two secrets Key Vault ships (keyvault.bicep's secretNames output):
+// email sends via ACS with the managed identity, so there is no Gmail credential.
+@description('Key Vault secret NAMES (not values), bundled: { anthropic, digestTo }.')
 param secretNames object
 
 @description('Replica timeout (seconds) for the screen job.')
