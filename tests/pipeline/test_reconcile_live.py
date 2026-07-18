@@ -6,10 +6,12 @@ drives the whole lifecycle through the in-memory ``FakeBroker`` + an in-memory D
     LiveAdapter.submit -> reconcile_live (materialize from broker fill) -> reconcile_live
     (exit on a venue close)
 
-and pins down the four load-bearing properties:
+and pins down the five load-bearing properties:
 
 * the live PaperTrade is materialized from the BROKER's fill price (``filled_avg_price``),
   NOT the intent's limit price;
+* the materialized trade carries ``qty`` = the broker's ``filled_qty`` (venue truth, NOT the
+  ticket's requested shares) -- the share count realized-$ math multiplies by;
 * materialization is idempotent -- the ``submitted_live`` -> ``filled_live`` status flip on
   the ExecutionLog is the guard, so a re-poll never opens a second position;
 * the exit is reconciled from broker truth (the venue close removes the position) with a
@@ -165,6 +167,7 @@ def test_partial_fill_stamps_filled_qty_not_ticket_shares() -> None:
         reconcile_live(s, broker, today=TODAY)
 
         pt = s.query(PaperTrade).one()
+        assert pt.account == "live"
         assert pt.qty == 1                               # venue truth wins over the ticket
 
 

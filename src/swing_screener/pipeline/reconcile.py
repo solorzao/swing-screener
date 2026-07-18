@@ -99,7 +99,9 @@ def _materialize_fills(session: Session, broker: BrokerClient, *, today: date) -
             # below), and the log is flipped out of submitted_live. The remaining limitation
             # is only that the residual (unfilled) shares are NOT later reconciled if the
             # venue fills more -- harmless in practice, since whole-share Alpaca-paper fills
-            # are effectively atomic.
+            # are effectively atomic. Real-money endpoints partially fill for real -- a stale
+            # qty understates $ exposure/loss, so residual reconciliation must land before
+            # this books against a real-money endpoint.
             if order.filled_avg_price is None:
                 continue  # filled but no price yet -> re-poll next cycle, never guess.
             entry_price = order.filled_avg_price
@@ -149,8 +151,9 @@ def _materialized_trade(
     concrete entry + strictly-positive risk, ``status="open"``, ``hold_bars=0``, and the
     runner-state defaults (``remaining_frac=1.0``, ``partial_done=False``, ``high_water=entry``)
     seeded so the row is shaped like every other open trade. The levels come from the BROKER
-    (entry + ``qty``, the broker's filled share count -- what realized-$ math multiplies by)
-    + the deterministic ExecutionLog (``stop``/``target``/pick keys) -- never recomputed."""
+    (entry) + the deterministic ExecutionLog (``stop``/``target``/pick keys), and the SIZE
+    (``qty``) is the broker's filled share count -- what realized-$ math multiplies by.
+    Never recomputed."""
     return PaperTrade(
         account=LIVE_ACCOUNT,
         arm=BASELINE,
