@@ -136,6 +136,39 @@ def test_partial_fill_materializes_from_broker_price() -> None:
 
 
 # ---------------------------------------------------------------------------
+# the materialized live trade carries qty = the broker's filled_qty -- the share count
+# the realized-$ math multiplies by downstream.
+# ---------------------------------------------------------------------------
+def test_materialized_live_trade_carries_qty() -> None:
+    with _session() as s:
+        broker = FakeBroker(real_money=False)
+        oid = _submit(s, broker, _intent(shares=3))
+        broker.fill(oid, price=99.5, qty=3)
+
+        reconcile_live(s, broker, today=TODAY)
+
+        pt = s.query(PaperTrade).one()
+        assert pt.account == "live"
+        assert pt.qty == 3
+
+
+# ---------------------------------------------------------------------------
+# a partial fill stamps the BROKER's filled_qty, NOT the ticket's requested shares --
+# a 1-of-3 fill booked as qty=3 would triple the reported $ P&L.
+# ---------------------------------------------------------------------------
+def test_partial_fill_stamps_filled_qty_not_ticket_shares() -> None:
+    with _session() as s:
+        broker = FakeBroker(real_money=False)
+        oid = _submit(s, broker, _intent(shares=3))
+        broker.partially_fill(oid, price=100.25, qty=1)  # 1 of the 3 requested shares
+
+        reconcile_live(s, broker, today=TODAY)
+
+        pt = s.query(PaperTrade).one()
+        assert pt.qty == 1                               # venue truth wins over the ticket
+
+
+# ---------------------------------------------------------------------------
 # a venue close -> the live trade is closed at the BROKER's exit price with realized_r
 # from broker prices + an ExitEvent(account="live", is_paper=False); a re-poll is a no-op.
 # ---------------------------------------------------------------------------
