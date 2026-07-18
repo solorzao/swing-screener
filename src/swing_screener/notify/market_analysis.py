@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import anthropic
 
 from swing_screener.notify.analysis import (
+    EmptyAnalysisError,
     Usage,
     _analyst_call,
     _format_sources,
@@ -152,7 +153,11 @@ def analyze_market_deep(
     web_search: bool = True,
 ) -> MarketAnalysis:
     """Opus macro analyst: weighs the deterministic market facts, web-searches the macro context,
-    and writes the weekly read. Falls back to the deterministic facts report on ANY failure."""
+    and writes the weekly read. Falls back to the deterministic facts report on ANY failure.
+    A failure AFTER the API responded was still BILLED, so the fallback carries the
+    captured usage and market_run persists a real est_cost_usd (E3b symmetry with the
+    other three analysts -- never a dishonest NULL for spent money)."""
+    usage: Usage | None = None  # None only when no billed call happened
     try:
         text, sources, usage = _analyst_call(
             system=_MARKET_SYSTEM,
@@ -164,7 +169,11 @@ def analyze_market_deep(
         report = text.strip() + (_format_sources(sources) if sources else "")
         return MarketAnalysis(core=_core_line(text), report=report, is_deep=True,
                               usage=usage)
-    except Exception:
+    except Exception as exc:
+        # EmptyAnalysisError carries the billed usage; any other post-response
+        # failure left it in `usage` via the unpack above; a failed call -> None.
+        if isinstance(exc, EmptyAnalysisError):
+            usage = exc.usage
         log.warning("market deep analysis failed; using deterministic fallback", exc_info=True)
         det = _deterministic_report(facts)
-        return MarketAnalysis(core=_core_line(det), report=det, is_deep=False)
+        return MarketAnalysis(core=_core_line(det), report=det, is_deep=False, usage=usage)

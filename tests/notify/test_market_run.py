@@ -152,6 +152,27 @@ def test_est_cost_usd_is_persisted_on_the_llm_path(tmp_path, monkeypatch):
         eng.dispose()
 
 
+def test_billed_but_empty_llm_reply_still_persists_est_cost(tmp_path, monkeypatch):
+    """E3b symmetry: an empty LLM reply was still BILLED -- the deterministic fallback
+    row (is_deep False) must carry the captured cost, never a dishonest NULL."""
+    monkeypatch.delenv("SWING_MARKET_REPORT", raising=False)
+    db = f"sqlite:///{tmp_path / 'm.db'}"
+    client = _FakeClient("   ", usage=_Usage())
+    facts = run_market_report(db_url=db, to="me@example.com",
+                              fetch=_fake_fetch({"SPY": _rising()}),
+                              smtp_send=lambda **kw: None, client=client,
+                              migrate_fn=lambda _u: None, cfg=CFG)
+    assert facts is not None
+    eng = get_engine(db)
+    try:
+        with Session(eng) as s:
+            row = s.scalars(select(MarketReport)).one()
+        assert row.is_deep is False                      # the reply was unusable
+        assert row.est_cost_usd is not None and row.est_cost_usd > 0   # but billed
+    finally:
+        eng.dispose()
+
+
 def test_run_market_report_is_idempotent_per_run_date(tmp_path):
     """The Sunday UTC cron pair can double-fire (DST) and a crashed run retries: a second
     run for the same as-of date must not re-analyze, re-email, or insert a second row
