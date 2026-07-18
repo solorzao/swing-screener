@@ -42,6 +42,48 @@ def test_daily_top_n_is_overall_rank_across_timeframes():
     assert [p.ticker for p in picks] == ["AMD", "AEP", "MSFT", "A", "AAPL"]
 
 
+def test_daily_picks_dedup_one_ticker_per_list():
+    """E4: one ticker firing on multiple timeframes (common in a strong trend) must
+    fill ONE top-5 slot -- its best-ranked row -- not several (each surfaced slot is
+    a billable Opus deep/conviction call). The freed slots backfill from below in
+    rank order, so the list still carries 5 DISTINCT names."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add_all([
+            _sig("AMD", "1d", 1), _sig("AMD", "1wk", 2),  # same name, two timeframes
+            _sig("AEP", "1d", 3), _sig("MSFT", "1d", 4), _sig("A", "1d", 5),
+            _sig("AAPL", "1d", 6), _sig("ABBV", "1d", 7),
+        ])
+        s.commit()
+        picks = sel.daily_picks(s, RUN, top_n=5)
+    # 5 distinct tickers: AMD once (best-ranked row first), ABBV backfilled from below
+    assert [p.ticker for p in picks] == ["AMD", "AEP", "MSFT", "A", "AAPL"]
+    assert picks[0].timeframe == "1d" and picks[0].rank == 1  # the dup's BEST row won
+
+
+def test_daily_picks_dedup_composes_with_sector_cap():
+    """The dedup applies BEFORE the sector cap, so a duplicate row never consumes a
+    sector slot (nor a list slot) on the capped branch either."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add_all([
+            _sig("AAPL", "1d", 1), _sig("AAPL", "1wk", 2),  # dup inside a capped sector
+            _sig("MSFT", "1d", 3), _sig("NVDA", "1d", 4), _sig("JPM", "1d", 5),
+        ])
+        s.add_all([
+            Universe(ticker="AAPL", sector="Information Technology"),
+            Universe(ticker="MSFT", sector="Information Technology"),
+            Universe(ticker="NVDA", sector="Information Technology"),
+            Universe(ticker="JPM", sector="Financials"),
+        ])
+        s.commit()
+        picks = sel.daily_picks(s, RUN, top_n=3, max_per_sector=2)
+    # AAPL once (not twice against the Tech cap), MSFT fills Tech's 2nd slot,
+    # NVDA capped out, JPM backfills -- rank order preserved throughout.
+    assert [p.ticker for p in picks] == ["AAPL", "MSFT", "JPM"]
+    assert picks[0].rank == 1
+
+
 def test_daily_picks_caps_per_sector():
     """With a sector cap, no more than max_per_sector picks share a sector; lower-ranked
     picks from other sectors are promoted to fill the list."""
@@ -118,8 +160,9 @@ def test_manual_close_never_emails():
         assert sel.pending_exit_alerts(s, RUN) == []
 
 
-def _rev(ticker, rank, strength="early", first_seen=None, conviction_tier="base"):
-    return Signal(run_date=RUN, ticker=ticker, timeframe="1d", horizon="medium",
+def _rev(ticker, rank, strength="early", first_seen=None, conviction_tier="base",
+         timeframe="1d"):
+    return Signal(run_date=RUN, ticker=ticker, timeframe=timeframe, horizon="medium",
                   play_type="reversal", strength=strength, conviction_tier=conviction_tier,
                   score=1.0 / rank, rank=rank,
                   trigger_close=50.0, atr=2.0, rsi=22.0, entry_floor=50.0, entry_ceiling=52.0,
@@ -207,6 +250,23 @@ def test_reversal_filters_compose_instead_of_premium_overriding():
         s.commit()
         both = sel.reversal_picks(s, RUN, premium_only=True, confirmed_only=True)
         assert [p.ticker for p in both] == ["BBB"]  # premium AND confirmed
+
+
+def test_reversal_picks_dedup_one_ticker_per_pool():
+    """E4, reversal side: the ``REVERSAL_POOL_N`` pool feeds the sector-cap backfill,
+    so a ticker firing reversals on two timeframes would hold two pool (and possibly
+    two top-5) slots. Keep only its best-ranked row; backfill from below."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add_all([
+            _rev("GME", 1), _rev("GME", 2, timeframe="1wk"),  # same name, two TFs
+            _rev("AMC", 3), _rev("BBBY", 4),
+        ])
+        s.commit()
+        picks = sel.reversal_picks(s, RUN, top_n=2)
+    # GME once (its rank-1 1d row), AMC backfilled into the freed slot
+    assert [p.ticker for p in picks] == ["GME", "AMC"]
+    assert picks[0].timeframe == "1d" and picks[0].rank == 1
 
 
 def test_cap_signals_by_sector_caps_and_backfills():

@@ -4,13 +4,37 @@ The digest orchestrator uses these to pick which signals appear in each
 cadence (daily / weekly / monthly) and which exit alerts to send.
 """
 
+from collections.abc import Callable, Iterable
 from datetime import date, timedelta
+from typing import TypeVar
 
 from sqlalchemy import ColumnElement, func, or_, select
 from sqlalchemy.orm import Session
 
 from swing_screener.db.models import ExitEvent, Signal, Universe
 from swing_screener.pipeline.diversity import cap_by_sector
+
+_T = TypeVar("_T")
+
+
+def _first_per_ticker(rows: Iterable[_T], ticker_of: Callable[[_T], str]) -> list[_T]:
+    """Keep only the FIRST row per ticker, preserving the input order.
+
+    The pickers iterate in rank order, so the kept row is the ticker's BEST-ranked
+    one. Without this, one ticker firing on multiple timeframes (common in a strong
+    trend) fills multiple top-N slots -- and each surfaced slot is a billable Opus
+    deep/conviction call, so the same name was pitched (and billed) twice. Callers
+    over-fetch (no SQL LIMIT) and trim AFTER the dedup, so freed slots backfill
+    from below in rank order rather than shrinking the list."""
+    seen: set[str] = set()
+    out: list[_T] = []
+    for row in rows:
+        ticker = ticker_of(row)
+        if ticker in seen:
+            continue
+        seen.add(ticker)
+        out.append(row)
+    return out
 
 
 def _fresh_enough(session: Session, run_date: date,
@@ -48,6 +72,10 @@ def daily_picks(session: Session, run_date: date, *, top_n: int = 5,
     reversal_picks is the separate oversold-bounce list. ``max_age_days`` applies the
     staleness cooldown (see ``_fresh_enough``).
 
+    One slot per TICKER: a name firing on several timeframes keeps only its
+    best-ranked row (``_first_per_ticker``), the rest backfill from below -- one
+    hot ticker can't fill multiple slots (each slot bills an Opus call).
+
     ``max_per_sector`` (when set) caps how many picks may share a GICS sector (joined
     from ``Universe.sector``), promoting lower-ranked picks from other sectors so one hot
     sector can't fill the list. Picks whose ticker has no sector are never capped
@@ -56,17 +84,21 @@ def daily_picks(session: Session, run_date: date, *, top_n: int = 5,
     where = (Signal.run_date == run_date, Signal.play_type == "continuation",
              *_fresh_enough(session, run_date, max_age_days))
     if max_per_sector is None:
-        stmt = select(Signal).where(*where).order_by(Signal.rank).limit(top_n)
-        return list(session.scalars(stmt))
+        # No SQL LIMIT: the per-ticker dedup may need to reach past top_n to refill
+        # the freed slots (backfill from below, rank order preserved).
+        stmt = select(Signal).where(*where).order_by(Signal.rank)
+        deduped = _first_per_ticker(session.scalars(stmt), lambda s: s.ticker)
+        return deduped[:top_n]
     # Join each candidate to its sector and cap in rank order (no SQL LIMIT: the cap may
-    # need to reach past top_n to fill the list once a sector saturates).
+    # need to reach past top_n to fill the list once a sector saturates). Dedup BEFORE
+    # the cap so a duplicate row never consumes a sector slot.
     joined = (
         select(Signal, Universe.sector)
         .join(Universe, Universe.ticker == Signal.ticker, isouter=True)
         .where(*where)
         .order_by(Signal.rank)
     )
-    rows = session.execute(joined).all()
+    rows = _first_per_ticker(session.execute(joined).all(), lambda r: r[0].ticker)
     capped = cap_by_sector(rows, lambda r: r[1], max_per_sector=max_per_sector, limit=top_n)
     return [r[0] for r in capped]
 
@@ -91,15 +123,20 @@ def reversal_picks(session: Session, run_date: date, *, top_n: int = 5,
     The two COMPOSE (AND) when both are set -- premium used to silently override
     confirmed_only via an elif, which is how the 2026-06-28 premium-only regression blanked
     the digest. Either way the filtered-out reversals are still stored/shadow-tracked, just
-    hidden from the digest (the learning loop is preserved)."""
+    hidden from the digest (the learning loop is preserved).
+
+    One slot per TICKER (``_first_per_ticker``, same rule as ``daily_picks``): the
+    ``REVERSAL_POOL_N`` pool feeds the sector-cap backfill, so a duplicate would
+    otherwise hold multiple pool -- and possibly top-5 -- slots."""
     where = [Signal.run_date == run_date, Signal.play_type == "reversal",
              *_fresh_enough(session, run_date, max_age_days)]
     if premium_only:
         where.append(Signal.conviction_tier == "premium")
     if confirmed_only:
         where.append(Signal.strength == "confirmed")
-    stmt = select(Signal).where(*where).order_by(Signal.rank).limit(top_n)
-    return list(session.scalars(stmt))
+    # No SQL LIMIT: the dedup may need to reach past top_n to refill freed slots.
+    stmt = select(Signal).where(*where).order_by(Signal.rank)
+    return _first_per_ticker(session.scalars(stmt), lambda s: s.ticker)[:top_n]
 
 
 def cap_signals_by_sector(session: Session, signals: list[Signal], *,
