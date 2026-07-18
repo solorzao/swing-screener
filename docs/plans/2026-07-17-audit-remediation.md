@@ -127,7 +127,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 - [ ] L11 `option_review_facts` NOTE annotation (no delete)
 
 **Phase M — `chore/replay-and-test-structure`**
-- [ ] M1 shared `load_replay_corpus` across the 18 replay scripts (exclusion set decided + documented)
+- [x] M1 shared `load_replay_corpus` across the 18 replay scripts (exclusion set decided + documented)
 - [ ] M2 `tests/cockpit/test_api.py` split per router (moves only)
 - [ ] M3 reflect.py drift pair
 - [ ] M4 notify low items (blob logging / dedup key / side-aware instruction / ACS guard / single autonomy_gate)

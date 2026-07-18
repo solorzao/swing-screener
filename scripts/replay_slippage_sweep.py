@@ -10,18 +10,13 @@ import argparse
 import logging
 from pathlib import Path
 
-import pandas as pd
-
+from _replay_common import load_replay_corpus
 from swing_screener.analytics.performance import breakdown
 from swing_screener.config import StrategyConfig
-from swing_screener.pipeline.replay import load_cached_daily, replay_book
+from swing_screener.pipeline.replay import replay_book
 from swing_screener.pipeline.variants import DEFAULT_VARIANT
 
 log = logging.getLogger(__name__)
-
-
-def _unique_tickers(cache_dir: Path) -> list[str]:
-    return sorted({p.name.split("_")[0] for p in (cache_dir / "1d").glob("*.parquet")})
 
 
 def main() -> None:
@@ -33,13 +28,7 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    all_t = _unique_tickers(args.cache_dir)
-    tickers = all_t[: args.limit] if args.limit else all_t
-    frames: dict[str, pd.DataFrame] = {}
-    for t in tickers:
-        df = load_cached_daily(t, args.cache_dir)
-        if df is not None and len(df) > 60:
-            frames[t] = df
+    frames = load_replay_corpus(args.cache_dir, limit=args.limit)
     levels = [float(x) for x in args.slippage.split(",") if x.strip()]
     log.info("sweeping %d tickers x %d slippage levels (reversal+no_flip) ...",
              len(frames), len(levels))
