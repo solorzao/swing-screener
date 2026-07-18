@@ -114,8 +114,12 @@ param deepAnalysisEnabled string = '1'
 @description('Model id for the analysis call.')
 param analysisModel string = 'claude-opus-4-8'
 
+// Extended thinking bills as OUTPUT tokens at the opus $25/MTok rate, making the
+// thinking budget the digest's dominant output cost -- 'medium' halves that term vs
+// 'high' (2026-07-17 cost plan). Template default MUST match the intended prod state,
+// and 'medium' IS the intended prod state as of that plan.
 @description('Reasoning effort -> extended-thinking budget: none/low/medium/high.')
-param analysisReasoning string = 'high'
+param analysisReasoning string = 'medium'
 
 @description('How many top picks per digest get the deep treatment.')
 param deepAnalysisTopN string = '5'

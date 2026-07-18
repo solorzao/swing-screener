@@ -72,7 +72,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 - [x] E3b billed-but-failed usage reaches the spend accumulator
 - [x] E3c `analyze_ticker_deep` usage capture + `analysis_requests.est_cost_usd` migration
 - [x] E4 `daily_picks` per-ticker dedup (+ cockpit picks mirror)
-- [ ] E5 bicep reasoning default `medium` + coach/audit on `claude-haiku-4-5` (single model constant per worker)
+- [x] E5 bicep reasoning default `medium` + coach/audit on `claude-haiku-4-5` (single model constant per worker)
 - [ ] E6 Market Weather env switch + spend visibility
 - [ ] E-verify (post-deploy, ~1 week) `analyst_calls.input_tokens` well below the 400k/run baseline
 
