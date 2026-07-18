@@ -357,13 +357,16 @@ _LIMIT_COUNTING_STATUSES = ("recorded", "filled_paper", "submitted_live", "fille
 # the fields refreshed when a non-counting row is upgraded by a later COUNTING write on
 # the same idempotency key (see add_execution_log): the order that ACTUALLY went out is
 # the record of truth, and its spec can differ from the clamped attempt's (the key hashes
-# the intent identity -- ticker/timeframe/play_type/run/side -- not its levels).
-# ``broker_order_id`` / ``broker_status`` MUST land: the reconciler refuses a
-# submitted_live row without an order id, and ``latest_recorded_stop`` reads ``stop``
-# off submitted_live rows for the disarm restore.
+# the intent identity -- ticker/timeframe/play_type/run/side -- not its levels, and not
+# the adapter). ``broker_order_id`` / ``broker_status`` MUST land: the reconciler refuses
+# a submitted_live row without an order id, and ``latest_recorded_stop`` reads ``stop``
+# off submitted_live rows for the disarm restore. ``account`` / ``mode`` MUST land too:
+# a cross-mode collision (paper clamp, then a live re-submit on the same key) must
+# re-home the row under the adapter that acted, or the account-scoped limit sums
+# (``execution_logs_for_day``) count it against the wrong book all day.
 _UPGRADE_REFRESH_FIELDS = (
-    "detail", "limit_price", "shares", "stop", "target", "risk_dollars", "notional",
-    "broker", "broker_order_id", "broker_status",
+    "account", "mode", "detail", "limit_price", "shares", "stop", "target",
+    "risk_dollars", "notional", "broker", "broker_order_id", "broker_status",
 )
 
 

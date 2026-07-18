@@ -107,9 +107,14 @@ LIVE_ACCOUNT = "live"
 class OrderResult:
     """The outcome of one adapter ``submit``: the status + the audit detail.
 
-    ``status`` is one of ``recorded`` / ``filled_paper`` / ``skipped`` / ``rejected``.
-    ``trade_id`` / ``broker_order_id`` stay None for the manual + off adapters (no
-    position opens, no broker is called); a later paper/live adapter fills them in."""
+    ``status`` is the adapter's outcome (``recorded`` / ``filled_paper`` / ``skipped``
+    / ``rejected`` / ``submitted_live``) -- EXCEPT on an idempotent short-circuit,
+    where the existing COUNTING log row's status is passed through verbatim, which can
+    be ANOTHER adapter's counting status when the execution mode switched intra-day
+    (e.g. the paper adapter handing back ``recorded`` / ``submitted_live`` for a key
+    the manual/live adapter burned). ``trade_id`` / ``broker_order_id`` stay None for
+    the manual + off adapters (no position opens, no broker is called); a later
+    paper/live adapter fills them in."""
 
     status: str
     account: str
@@ -209,7 +214,10 @@ class ManualAdapter:
     Money never moves: no paper position opens, no broker is called -- a recorded row in
     ``execution_logs`` is the whole effect. ``submit`` enforces the hard limits FIRST
     (in code, from the passed ``limits``), clamping a breach to a logged ``skipped`` row,
-    and is idempotent per ``(pick, run, side)`` via the unique ``idempotency_key``."""
+    and is idempotent per ``(pick, run, side)`` via the unique ``idempotency_key``. The
+    load-before-act guard the paper/live adapters run is DELIBERATELY absent here: the
+    log write is this adapter's ONLY side effect, so no action can outrun its own record
+    -- the unique key (plus ``add_execution_log``'s upgrade path) is the whole guard."""
 
     name = "manual"
 
