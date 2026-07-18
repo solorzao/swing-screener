@@ -344,6 +344,9 @@ def analyst_call_freshness(
 # (working, not yet filled) / ``filled_live`` all reserve it. ``skipped`` / ``rejected`` and
 # the live ``canceled`` / ``rejected_live`` never reserved notional, so they don't count.
 _LIMIT_COUNTING_STATUSES = ("recorded", "filled_paper", "submitted_live", "filled_live")
+# public: the auditor's compliance grader must grade with the SAME statuses the limit
+# engine counts (a "skipped" clamp row carries the blocked order's full, never-reserved size).
+LIMIT_COUNTING_STATUSES = _LIMIT_COUNTING_STATUSES
 
 
 def add_execution_log(session: Session, **fields: object) -> ExecutionLog:

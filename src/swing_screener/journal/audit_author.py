@@ -43,6 +43,7 @@ def template_audit(findings: dict) -> str:
     bits = [
         f"{breaches} cap breach(es)",
         f"reject rate {comp.get('reject_rate')}",
+        f"{comp.get('n_clamps', 0)} clamp(s)",
         f"{comp.get('n_disarms', 0)} disarm(s)",
         f"{anom.get('drought_days', 0)} drought day(s)",
         f"{anom.get('orphan_exit_events', 0)} orphan exit(s)",

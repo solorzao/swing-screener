@@ -61,7 +61,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 - [ ] C3 NaN fundamentals rendered into analyst prompts
 
 **Phase D — `fix/auditor-compliance-math`**
-- [ ] D1 cap sums filtered to counting statuses, per account, `n_clamps` surfaced
+- [x] D1 cap sums filtered to counting statuses, per account, `n_clamps` surfaced
 - [ ] D2 `max_daily_loss` graded in realized R
 - [ ] D3 breach-scan window / empty-narrative rows / `would_surface_leaks` overflow
 

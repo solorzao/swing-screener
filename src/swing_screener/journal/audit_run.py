@@ -139,7 +139,9 @@ def run_breach_scan(
         max_daily_loss=settings.max_daily_loss)
     for breach in comp.cap_breaches:
         day = date.fromisoformat(str(breach["date"]))
-        key = f"cap:{day.isoformat()}"
+        # breaches are graded per (day, account); the account belongs in the idempotency
+        # key or a second account's same-day breach would be silently swallowed.
+        key = f"cap:{day.isoformat()}:{breach['account']}"
         if _get_audit(session, kind="breach", period_from=day, period_to=day,
                       breach_key=key) is not None:
             continue

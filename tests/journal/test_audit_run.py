@@ -126,7 +126,7 @@ def test_breach_scan_writes_cap_and_disarm_breaches_idempotently(monkeypatch):
         rows = run_breach_scan(s, settings=s_, day_from=date(2026, 7, 8),
                                day_to=date(2026, 7, 8), now=_NOW)
         keys = {r.breach_key for r in rows}
-        assert keys == {"cap:2026-07-08", "disarm:2026-07-08"}
+        assert keys == {"cap:2026-07-08:paper", "disarm:2026-07-08"}
         # re-run: nothing new (idempotent)
         again = run_breach_scan(s, settings=s_, day_from=date(2026, 7, 8),
                                 day_to=date(2026, 7, 8), now=_NOW)
