@@ -762,6 +762,9 @@ def get_analysis_request(session: Session, request_id: int) -> AnalysisRequest |
 def claim_queued_requests(session: Session, *, now: datetime,
                           limit: int = 10) -> list[AnalysisRequest]:
     """Atomically flip queued->running and return the claimed rows."""
+    # DATETIME on SQL Server rounds to 1/300s; whole seconds round-trip exactly,
+    # so the read-back equality below works on every backend (2026-07-17 audit).
+    now = now.replace(microsecond=0)
     ids = list(session.scalars(
         select(AnalysisRequest.id).where(AnalysisRequest.status == "queued")
         .order_by(AnalysisRequest.requested_at).limit(limit)))
@@ -774,6 +777,8 @@ def claim_queued_requests(session: Session, *, now: datetime,
     # Self-identifying read-back: only return rows THIS call stamped with `now`.
     # Safe under concurrent replicas -- each stamps its own `now`, so the loser of a
     # race re-reads zero of the winner's rows instead of double-processing them.
+    # Holds only for claims in DIFFERENT whole seconds; same-second claims collide
+    # (accepted 1-second window -- these are single-replica scheduled jobs).
     return list(session.scalars(
         select(AnalysisRequest).where(AnalysisRequest.id.in_(ids),
                                       AnalysisRequest.status == "running",
@@ -831,7 +836,11 @@ def create_coach_draft_request(session: Session, *, review_id: int,
 def claim_queued_coach_drafts(session: Session, *, now: datetime,
                               limit: int = 10) -> list[CoachDraftRequest]:
     """Atomically flip queued->running and return the claimed rows (self-identifying
-    read-back by ``started_at == now`` -- race-safe across concurrent workers)."""
+    read-back by ``started_at == now`` -- race-safe across workers claiming in
+    different whole seconds; same-second claims collide, an accepted 1-second window)."""
+    # DATETIME on SQL Server rounds to 1/300s; whole seconds round-trip exactly,
+    # so the read-back equality below works on every backend (2026-07-17 audit).
+    now = now.replace(microsecond=0)
     ids = list(session.scalars(
         select(CoachDraftRequest.id).where(CoachDraftRequest.status == "queued")
         .order_by(CoachDraftRequest.requested_at).limit(limit)))
