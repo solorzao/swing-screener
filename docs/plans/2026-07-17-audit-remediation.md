@@ -82,7 +82,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 **Phase G — `fix/infra-cd-hardening`**
 - [x] G1 `notify.run` `_resolve_db_url` + mssql-gated migrate
 - [x] G2 `market_run` mssql-gated migrate
-- [ ] G3 `imageTag` default `latest` (3 files)
+- [x] G3 `imageTag` default `latest` (3 files)
 - [ ] G4 CD single-alembic-head guard
 - [ ] G5 CI push-trigger filter
 - [ ] G6 SQL token out of `GITHUB_ENV`

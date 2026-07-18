@@ -41,8 +41,12 @@ param acrLoginServer string
 @description('Image repository name within the registry.')
 param imageRepository string = 'swing-screener'
 
+// Default 'latest' -- CD pushes :latest alongside every immutable :<sha> tag. A
+// re-provision that omits imageTag must land on the current code, not roll all
+// ten jobs back to the months-old bootstrap image until the next main push
+// (same template-default-must-match-prod lesson as deepAnalysisEnabled below).
 @description('Image tag to run.')
-param imageTag string = 'bootstrap'
+param imageTag string = 'latest'
 
 // --- Plain (non-secret) environment ---
 @description('mssql SQLAlchemy URL for SWING_DB_URL (Entra MSI auth, no password).')

@@ -27,8 +27,12 @@ param namePrefix string = 'swing'
 @description('Resource group name. Defaults to rg-<prefix>.')
 param resourceGroupName string = 'rg-${namePrefix}'
 
-@description('Image tag to deploy (e.g. "bootstrap").')
-param imageTag string = 'bootstrap'
+// Default 'latest' -- CD pushes :latest alongside every immutable :<sha> tag, so a
+// re-provision omitting imageTag lands on the current code instead of rolling the
+// jobs back to the months-old bootstrap image (the deepAnalysisEnabled lesson:
+// template defaults must match the intended prod state).
+@description('Image tag to deploy (e.g. "latest" or an immutable git sha).')
+param imageTag string = 'latest'
 
 @description('AAD admin display name / login for the SQL server.')
 param sqlAadAdminLogin string
