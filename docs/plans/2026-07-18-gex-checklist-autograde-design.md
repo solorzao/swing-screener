@@ -50,7 +50,10 @@ support only — the journaled grade still comes from the full 12 via the existi
 - **UI (`GexLabScreen.tsx`)**: `play_type` segmented control; **Auto-grade** button
   beside the live grade chip; machine boxes pre-filled with a distinct glyph; verdict
   line + per-item facts + the two hints; the 4 human boxes untouched. "Grade &
-  journal setup" posts as today plus the machine payload.
+  journal setup" posts as today plus the machine payload. Stale-provenance guard:
+  editing ANY of the three graded inputs (underlying / direction / play_type) after
+  an autograde clears the stored autograde state entirely (verdict, glyphs, JSON) —
+  provenance graded for a different ticket must never be journaled.
 - **Persistence:** nullable `option_setups.autograde_json` (per-item verdicts, facts,
   threshold values at decision time) — the provenance facet for later
   machine-vs-human discipline stats. The 12 `chk_*` booleans stay the submitted

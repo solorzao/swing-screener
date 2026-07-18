@@ -505,7 +505,8 @@ function machineVerdict(
   res: GexAutogradeResponse,
 ): { tone: 'yes' | 'no' | 'incomplete'; text: string } {
   if (res.machine_verdict === 'yes') {
-    return { tone: 'yes', text: 'machine: 8/8 — YES, pending your confirms' }
+    const n = res.items.length
+    return { tone: 'yes', text: `machine: ${n}/${n} — YES, pending your confirms` }
   }
   if (res.machine_verdict === 'no') {
     const fails = res.items.filter((it) => it.state === 'fail').map((it) => it.fact)
@@ -539,8 +540,9 @@ function GraderPanel({ onAction }: { onAction: () => void }) {
   const [autoResult, setAutoResult] = useState<GexAutogradeResponse | null>(null)
   const [machineKeys, setMachineKeys] = useState<Set<keyof GexChecklist>>(new Set())
 
-  // Editing underlying/direction after a grade must drop the stale provenance
-  // entirely — it belongs to a different ticket and must never be journaled.
+  // Editing any of the three graded inputs (underlying/direction/play_type)
+  // after a grade must drop the stale provenance entirely — it belongs to a
+  // different ticket and must never be journaled.
   const clearAutograde = () => {
     setAutoResult(null)
     setMachineKeys((m) => (m.size === 0 ? m : new Set()))
@@ -721,7 +723,10 @@ function GraderPanel({ onAction }: { onAction: () => void }) {
               title="play type"
               options={PLAY_TYPE_OPTIONS}
               value={playType}
-              onChange={setPlayType}
+              onChange={(p) => {
+                setPlayType(p)
+                clearAutograde()
+              }}
             />
           </span>
           <div className="gex-bracket">
@@ -848,7 +853,7 @@ function GraderPanel({ onAction }: { onAction: () => void }) {
                         <div className={`gex-fact gex-fact-${mi.state}`}>{mi.fact}</div>
                       )}
                       {hint !== null && (
-                        <div className="gex-fact gex-hint">
+                        <div className="gex-fact">
                           <span className="gex-hint-tag">hint</span>
                           {hint}
                         </div>
