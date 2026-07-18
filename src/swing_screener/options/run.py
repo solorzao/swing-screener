@@ -23,6 +23,7 @@ from swing_screener.options import broker_import
 from swing_screener.options.chain import (
     ChainSnapshot,
     LiquidityReport,
+    _now_eastern,
     assess_liquidity,
     snapshot_chain,
 )
@@ -33,6 +34,8 @@ from swing_screener.options.settle import SettleResult, settle_open_trades
 from swing_screener.settings import load_settings
 
 log = logging.getLogger(__name__)
+
+_MARKET_CLOSE_HOUR = 16  # 4pm ET; half-days share settle.py's market-calendar TODO
 
 Snapshotter = Callable[[str, GexConfig], ChainSnapshot]
 DailyBars = Callable[[str], pd.DataFrame]
@@ -106,7 +109,11 @@ def run_analyze(
 def run_settle(
     session: Session, *, cfg: GexConfig, bars_fetcher: BarsFetcher | None = None,
 ) -> SettleResult:
-    """Settle every open options-lab trade against its underlying's completed 5m bars."""
+    """Settle every open options-lab trade against its underlying's completed 5m bars.
+
+    Untouched trades whose frame lacks a complete session stay open (see
+    ``settle_open_trades`` -- the eod_flat fallback is gated on session
+    completeness, so an intraday sweep can never flatten at a mid-session price)."""
     fetch = bars_fetcher or _default_5m
     underlyings = list(session.scalars(
         select(OptionPaperTrade.underlying)
@@ -187,7 +194,10 @@ def main() -> None:
     parser.add_argument("--cache-dir", type=Path, default=settings.cache_dir)
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("plan", help="build the morning GEX map + day plan for the watchlist")
-    sub.add_parser("settle", help="settle open lab trades from completed 5m bars")
+    p_st = sub.add_parser("settle", help="settle open lab trades from completed 5m bars")
+    p_st.add_argument("--force", action="store_true",
+                      help="run before the 16:00 ET close (intraday stop/target exits "
+                           "settle; untouched trades stay open on incomplete sessions)")
     p_an = sub.add_parser("analyze", help="ad-hoc GEX map for any optionable ticker")
     p_an.add_argument("ticker")
     p_an.add_argument("--save", action="store_true", help="persist the snapshot")
@@ -205,8 +215,17 @@ def main() -> None:
             for p in run_plan(session, cfg=cfg):
                 log.info("%s: bias=%s regime=%s -> %s", p.underlying, p.bias, p.regime, p.call)
         elif args.cmd == "settle":
+            now = _now_eastern()
+            if now.hour < _MARKET_CLOSE_HOUR and not args.force:
+                raise SystemExit(
+                    f"refusing to settle at {now:%H:%M} ET, before the 16:00 close: "
+                    "an intraday run pins the day-keyed 5m cache on a partial session; "
+                    "pass --force to sweep intraday stop/target exits anyway "
+                    "(untouched trades stay open either way)"
+                )
             res = run_settle(session, cfg=cfg)
-            log.info("settled=%d skipped_no_bars=%d", res.settled, res.skipped_no_bars)
+            log.info("settled=%d skipped_no_bars=%d skipped_incomplete_session=%d",
+                     res.settled, res.skipped_no_bars, res.skipped_incomplete_session)
         elif args.cmd == "analyze":
             levels, liq = run_analyze(args.ticker, cfg=cfg, save=args.save, session=session)
             _print_levels(args.ticker, levels, liq)

@@ -1,11 +1,14 @@
+import sys
 from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
+import pytest
 from sqlalchemy.orm import Session
 
 from swing_screener.db.models import GexSnapshot, OptionPaperTrade
 from swing_screener.db.session import get_engine
+from swing_screener.options import run as run_mod
 from swing_screener.options.chain import ChainSnapshot
 from swing_screener.options.config import GexConfig
 from swing_screener.options.run import run_analyze, run_import, run_plan
@@ -67,3 +70,34 @@ def test_run_import_without_tag_all_commits_nothing() -> None:
         out = run_import(s, _FIXTURE, tag_all=None)
         assert s.query(OptionPaperTrade).count() == 0
         assert "review" in out.lower()
+
+
+def _settle_argv(monkeypatch, *extra: str) -> None:
+    monkeypatch.delenv("KEY_VAULT_URL", raising=False)
+    monkeypatch.delenv("SWING_REQUIRE_DB", raising=False)
+    monkeypatch.setattr(sys, "argv",
+                        ["gex", "--db", "sqlite:///:memory:", "settle", *extra])
+
+
+def test_settle_cli_refuses_before_close_without_force(monkeypatch) -> None:
+    """An intraday `settle` run would eod_flat-flatten trades at a partial-session
+    price AND pin the day-keyed 5m cache on the partial session -- refuse it
+    outright before 16:00 ET (2026-07-17 audit, H2)."""
+    monkeypatch.setattr(run_mod, "_now_eastern", lambda: datetime(2026, 7, 13, 13, 0))
+    _settle_argv(monkeypatch)
+    with pytest.raises(SystemExit) as excinfo:
+        run_mod.main()
+    msg = str(excinfo.value)
+    assert "16:00" in msg and "--force" in msg
+
+
+def test_settle_cli_force_overrides_pre_close_refusal(monkeypatch) -> None:
+    monkeypatch.setattr(run_mod, "_now_eastern", lambda: datetime(2026, 7, 13, 13, 0))
+    _settle_argv(monkeypatch, "--force")
+    run_mod.main()  # proceeds (empty book settles nothing); no SystemExit
+
+
+def test_settle_cli_proceeds_after_close(monkeypatch) -> None:
+    monkeypatch.setattr(run_mod, "_now_eastern", lambda: datetime(2026, 7, 13, 16, 5))
+    _settle_argv(monkeypatch)
+    run_mod.main()  # post-close runs never need --force
