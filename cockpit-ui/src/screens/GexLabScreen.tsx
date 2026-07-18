@@ -1091,6 +1091,10 @@ function ImportPanel({ onAction }: { onAction: () => void }) {
   const onFile = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (file === undefined) return
+    // Reset the input NOW (the File object stays readable): a same-file
+    // re-select must fire change again, or a failed parse/commit could never
+    // be retried without picking a different file first.
+    e.target.value = ''
     setFileName(file.name)
     const reader = new FileReader()
     reader.onload = () => {
