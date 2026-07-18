@@ -242,6 +242,81 @@ def test_migration_enforces_system_audit_identity_unique(tmp_path, monkeypatch):
         con.close()
 
 
+def test_migration_creates_hot_path_indexes(tmp_path, monkeypatch):
+    # Perf: the three hot-path indexes (2026-07-17 audit, I1). signals.run_date
+    # backs latest_run_date / latest_signals / delete_signals_for / prior_first_seen
+    # (the cockpit picks poll full-scanned a forever-growing table without it);
+    # (status, account) backs the open/pending/closed loaders plus the pre-trade
+    # cap gate and per-day-loss breaker; exit_events.created_date backs the hourly
+    # exit-checker dedup and the reference-screen sort.
+    db = tmp_path / "hp.db"
+    url = f"sqlite:///{db}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    command.upgrade(_config(url), "head")
+
+    con = sqlite3.connect(db)
+    try:
+        indexes = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+        composite_cols = [
+            r[2] for r in con.execute("PRAGMA index_info('ix_paper_trades_status_account')")
+        ]
+    finally:
+        con.close()
+
+    assert {"ix_signals_run_date", "ix_paper_trades_status_account",
+            "ix_exit_events_created_date"} <= indexes
+    # column order matters: every gate query filters status by equality first,
+    # account by equality/inequality second (or not at all), so status leads.
+    assert composite_cols == ["status", "account"]
+
+
+def test_migration_makes_import_key_unique_index_filtered(tmp_path, monkeypatch):
+    # option_paper_trades.import_key is NULLABLE (paper trades skip it) but its
+    # unique index was created PLAIN (f2a9c4e7b1d8). On SQL Server a plain unique
+    # index admits only ONE NULL row -- the second key-less paper trade would be
+    # rejected. The fix recreates it as a FILTERED unique index (WHERE import_key
+    # IS NOT NULL).
+    #
+    # sqlite-vs-mssql proof boundary: sqlite's plain UNIQUE index already allows
+    # multiple NULLs, so the two-NULLs insert below cannot distinguish the broken
+    # mssql schema from the fixed one on sqlite. What sqlite CAN prove is (a) the
+    # index carries the partial WHERE clause (PRAGMA index_list partial flag --
+    # this is the assertion that fails against the pre-fix plain index) and
+    # (b) duplicate non-NULL keys are still rejected (import idempotency intact).
+    # The single-NULL mssql semantics itself is only exercised on a real SQL
+    # Server; the mssql_where rendering is pinned by the migration + model.
+    db = tmp_path / "ik.db"
+    url = f"sqlite:///{db}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    command.upgrade(_config(url), "head")
+
+    con = sqlite3.connect(db)
+    try:
+        idx = {
+            r[1]: r for r in con.execute("PRAGMA index_list('option_paper_trades')")
+        }
+        assert "uq_option_paper_trades_import_key" in idx
+        assert idx["uq_option_paper_trades_import_key"][2] == 1  # unique
+        assert idx["uq_option_paper_trades_import_key"][4] == 1  # partial (filtered)
+
+        # two key-less rows coexist (the mssql failure mode this fix targets)...
+        con.execute("INSERT INTO option_paper_trades (underlying) VALUES ('SPY')")
+        con.execute("INSERT INTO option_paper_trades (underlying) VALUES ('QQQ')")
+        con.commit()
+        # ...while a duplicate non-NULL key is still rejected (import idempotency).
+        con.execute(
+            "INSERT INTO option_paper_trades (underlying, import_key) VALUES ('SPY', 'k1')"
+        )
+        con.commit()
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute(
+                "INSERT INTO option_paper_trades (underlying, import_key) VALUES ('SPY', 'k1')"
+            )
+            con.commit()
+    finally:
+        con.close()
+
+
 def test_migration_enforces_email_log_dedup(tmp_path, monkeypatch):
     db = tmp_path / "u.db"
     url = f"sqlite:///{db}"
