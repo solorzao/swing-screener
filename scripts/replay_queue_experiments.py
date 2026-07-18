@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from _replay_common import load_replay_corpus, unique_tickers
 from swing_screener.analytics.performance import breakdown
 from swing_screener.config import StrategyConfig
 from swing_screener.pipeline.replay import (
@@ -42,11 +43,6 @@ _DUMP_COLS = ("ticker", "variant", "play_type", "strength", "conviction_tier",
               "rank", "mtf_aligned", "timeframe", "entry_date", "opened_date", "exit_date",
               "exit_reason", "realized_r", "hold_bars", "entry_price", "stop", "target",
               "risk", "low_water", "high_water", "market_trend", "market_vol", "vix_bucket")
-
-
-def _unique_tickers(cache_dir: Path) -> list[str]:
-    return sorted({p.name.split("_")[0] for p in (cache_dir / "1d").glob("*.parquet")}
-                  - {"^VIX", "SPY"})
 
 
 def walks_for(base: StrategyConfig) -> dict[str, dict[str, StrategyConfig]]:
@@ -88,7 +84,7 @@ def main() -> None:
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    tickers = _unique_tickers(args.cache_dir)
+    tickers = unique_tickers(args.cache_dir)
     if args.limit:
         tickers = tickers[: args.limit]
     shard_tag = ""
@@ -97,11 +93,7 @@ def main() -> None:
         tickers = tickers[i::n]
         shard_tag = f"_s{i}"
 
-    frames: dict[str, pd.DataFrame] = {}
-    for t in tickers:
-        df = load_cached_daily(t, args.cache_dir, args.as_of)
-        if df is not None and len(df) > 60:
-            frames[t] = df
+    frames = load_replay_corpus(args.cache_dir, tickers=tickers, as_of=args.as_of)
     spy = load_cached_daily("SPY", args.cache_dir, args.as_of)
     vix = load_cached_daily("^VIX", args.cache_dir, args.as_of)
     if not shard_tag:

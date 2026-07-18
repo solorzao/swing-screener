@@ -143,8 +143,14 @@ def _exit_already_sent(session: Session, run_date: date, alert_key: str) -> bool
 
 
 def _emit_pending_exit_alert(session: Session, run_date: date, recipient: str,
-                             smtp_send: SmtpSend) -> bool:
+                             smtp_send: SmtpSend,
+                             alerts: list[ExitEvent] | None = None) -> bool:
     """Send a standalone exit-alert email if real exit events are pending today.
+
+    ``alerts`` lets a caller that already queried ``pending_exit_alerts`` (the
+    digest builds its alert lines from the same set) thread the list through
+    instead of re-querying; None keeps the self-querying behavior for the exit
+    run path.
 
     Exit alerts are urgent and tracked independently of the digest, keyed on the
     SET of pending exit events (see ``_exit_alert_key``) rather than the calendar
@@ -161,7 +167,8 @@ def _emit_pending_exit_alert(session: Session, run_date: date, recipient: str,
     no-op; the ``IntegrityError`` catch only guards the rare concurrent-replica
     race (which may double-send -- accepted).
     """
-    alerts = sel.pending_exit_alerts(session, run_date)
+    if alerts is None:
+        alerts = sel.pending_exit_alerts(session, run_date)
     if not alerts:
         return False
     key = _exit_alert_key(alerts)
@@ -452,7 +459,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # the ALERTS feed (urgent, actionable), not a daily closes ledger -- a future
         # "today's closes" section must add its own query, never widen this one.
         alerts = sel.pending_exit_alerts(session, run_date)
-        _emit_pending_exit_alert(session, run_date, recipient, send)
+        _emit_pending_exit_alert(session, run_date, recipient, send, alerts=alerts)
 
         # Staleness cooldown: drop picks whose setup has been on the list too long so the
         # same play isn't re-pitched daily (legacy NULL-first_seen rows always pass).
@@ -768,12 +775,13 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # ran the analyst, so the gate's read-only SELECTs over scored calls + the verdicts
         # sidecars are free). It NEVER writes -- the gate is a pure SELECT (North Star #1) --
         # and a non-deep digest passes None, so the body is byte-for-byte unchanged there.
-        # Recomputed here (AFTER scoring) so the countdown reflects this run's freshly-scored
+        # Computed here (AFTER scoring) so the countdown reflects this run's freshly-scored
         # calls -- distinct from the pre-build snapshot that sets the earned nudge bound, which
-        # is the track record EARNED before this run's picks were graded.
-        autonomy_status = (
-            gate_status_line(autonomy_gate(session, edge_dir=edge_dir)) if deep_on else None
-        )
+        # is the track record EARNED before this run's picks were graded. ONE post-scoring
+        # read feeds both this footer and the health line below (they were separate,
+        # identical-state recomputes -- 2026-07-17 audit M4e).
+        post_gate = autonomy_gate(session, edge_dir=edge_dir)
+        autonomy_status = gate_status_line(post_gate) if deep_on else None
         # The insight-OFF state rides the footer into the EMAIL (deep path only -- the
         # note is meaningless when the analyst isn't running): the reader sees "insight
         # engine OFF" instead of inferring it, weeks later, from an empty calibration.
@@ -791,7 +799,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
             latest_run_date=repo.latest_run_date(session),
             today=date.today(),
             execution_mode=exec_mode,
-            gate_ready=autonomy_gate(session, edge_dir=edge_dir).ready,
+            gate_ready=post_gate.ready,  # the shared post-scoring read above
         )
         body = compose_digest_body(kind, run_date, digest_picks, alert_lines,
                                    has_pdf=pdf_attached, reversal_picks=reversal_digest,

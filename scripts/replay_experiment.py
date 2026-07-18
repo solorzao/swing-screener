@@ -16,13 +16,11 @@ from collections import defaultdict
 from dataclasses import replace
 from pathlib import Path
 
-import pandas as pd
-
+from _replay_common import load_replay_corpus
 from swing_screener.analytics.performance import breakdown
 from swing_screener.config import StrategyConfig
 from swing_screener.db.models import PaperTrade
 from swing_screener.pipeline.replay import (
-    load_cached_daily,
     format_leaderboard,
     replay_book,
 )
@@ -38,12 +36,6 @@ def build_experiment_variants(base: StrategyConfig) -> dict[str, StrategyConfig]
         "band_touch": replace(base, require_band_touch=True),
         "outside_bar_band": replace(base, trigger_kind="outside_bar", require_band_touch=True),
     }
-
-
-def _unique_tickers(cache_dir: Path) -> list[str]:
-    """Distinct tickers present as <cache>/1d/<T>_<date>.parquet, sorted."""
-    names = {p.name.split("_")[0] for p in (cache_dir / "1d").glob("*.parquet")}
-    return sorted(names)
 
 
 def _exit_mix(trades: list[PaperTrade]) -> dict[str, dict[str, list[float]]]:
@@ -62,16 +54,7 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    tickers = _unique_tickers(args.cache_dir)
-    if args.limit:
-        tickers = tickers[: args.limit]
-    log.info("loading %d tickers from %s/1d ...", len(tickers), args.cache_dir)
-
-    frames: dict[str, pd.DataFrame] = {}
-    for t in tickers:
-        df = load_cached_daily(t, args.cache_dir)
-        if df is not None and len(df) > 60:
-            frames[t] = df
+    frames = load_replay_corpus(args.cache_dir, limit=args.limit)
     log.info("replaying %d tickers x 4 variants over daily history ...", len(frames))
 
     base = StrategyConfig()

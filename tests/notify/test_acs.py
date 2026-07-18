@@ -70,3 +70,16 @@ def test_send_email_acs_omits_or_empties_attachments_when_none():
         endpoint="https://res.communication.azure.com", client=client,
     )
     assert client.message.get("attachments", []) == []
+
+
+def test_send_email_acs_refuses_an_empty_sender():
+    """Belt-and-braces at the send seam: an empty senderAddress is a config bug,
+    never a message worth submitting (2026-07-17 audit M4d)."""
+    import pytest
+
+    client = _FakeEmailClient()
+    with pytest.raises(ValueError, match="sender"):
+        acs.send_email_acs(
+            to="me@example.com", subject="S", text="t", html=None,
+            attachments=[], sender="", endpoint="https://res.example", client=client)
+    assert client.message is None  # nothing was submitted

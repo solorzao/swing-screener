@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, cast
 
 import pandas as pd
 
+from _replay_common import load_replay_corpus, unique_tickers
 from swing_screener.analytics.performance import breakdown
 
 if TYPE_CHECKING:
@@ -51,11 +52,6 @@ class _Row:
 
     def __getattr__(self, _: str) -> None:
         return None
-
-
-def _unique_tickers(cache_dir: Path) -> list[str]:
-    return sorted({p.name.split("_")[0] for p in (cache_dir / "1d").glob("*.parquet")}
-                  - {"^VIX", "SPY"})
 
 
 def _variants(base: StrategyConfig) -> dict[str, StrategyConfig]:
@@ -110,7 +106,7 @@ def main() -> None:
         _aggregate(args.aggregate)
         return
 
-    tickers = _unique_tickers(args.cache_dir)
+    tickers = unique_tickers(args.cache_dir)
     shard_i = None
     if args.shard:
         shard_i, shard_n = (int(x) for x in args.shard.split("/"))
@@ -118,11 +114,7 @@ def main() -> None:
     elif args.limit:
         tickers = tickers[: args.limit]
 
-    frames: dict[str, pd.DataFrame] = {}
-    for t in tickers:
-        df = load_cached_daily(t, args.cache_dir, args.as_of)
-        if df is not None and len(df) > 60:
-            frames[t] = df
+    frames = load_replay_corpus(args.cache_dir, tickers=tickers, as_of=args.as_of)
     spy = load_cached_daily("SPY", args.cache_dir, args.as_of)
     vix = load_cached_daily("^VIX", args.cache_dir, args.as_of)
     if args.as_of and (shard_i in (0, None)):

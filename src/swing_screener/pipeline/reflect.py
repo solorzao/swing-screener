@@ -1048,8 +1048,10 @@ def draft_variants(
 # workflow PRs the edge/*.md diff for a human to merge.
 # ===========================================================================
 
-# New closed FORWARD trades (per play type) required to re-arm a reflection. Tied to the
-# leaderboard's trust floor so a reflection never fires on a sample too thin to grade.
+# New closed FORWARD trades (per play type) required to re-arm a reflection -- counted on
+# the FULL baseline/default book (see due_play_types: the graded gold facet is thinner).
+# Tied to the leaderboard's trust floor so a reflection never fires before the book has
+# grown by a meaningful batch.
 _REFLECT_TRIGGER_N = MIN_LEADERBOARD_N
 # Fixed a-priori microstructure haircut applied to the screened (replay) tier so its
 # expectancy is net-of-cost like the forward book's. NOT swept -- a sweep here would turn the
@@ -1111,8 +1113,18 @@ def due_play_types(session: Session, edge_dir: Path = _EDGE_DIR) -> list[str]:
 
     For each play type, read the counter the edge file's frontmatter recorded at the last
     reflection (``parse_state``; 0 when the file is missing) and the CURRENT count of closed
-    FORWARD trades at (arm=BASELINE, variant=DEFAULT_VARIANT) -- the exact facet the grader
-    grades. A play type is due iff ``current - last >= _REFLECT_TRIGGER_N``.
+    FORWARD trades at (arm=BASELINE, variant=DEFAULT_VARIANT). A play type is due iff
+    ``current - last >= _REFLECT_TRIGGER_N``.
+
+    Deliberate facet mismatch with the grader: this counts the FULL baseline/default
+    forward book, while ``run_reflection`` grades only its ``would_surface`` GOLD slice
+    (North Star #7). The full count is the re-arm ACTIVITY clock, not the graded sample
+    size -- and it must stay full-book: the frontmatter counters in every shipped edge
+    file are full-book (``n_closed_now=len(forward)``), so a gold-denominated ``current``
+    would go negative against them and stall re-arming for months, and the gold slice
+    accrues far more slowly (15 of 709 on 2026-07-12), so a gold trigger would also cut
+    reflection cadence by an order of magnitude. Changing the trigger facet is a product
+    decision, not a drift fix (2026-07-17 audit M3).
     """
     due: list[str] = []
     for pt in PLAY_TYPES:
@@ -1254,6 +1266,9 @@ def run_reflection(
 
         prior_text = _edge_text(edge_dir, pt)
         thesis = _thesis_for(prior_text, pt)
+        # n_closed_now stamps the FULL-book count -- the SAME facet due_play_types
+        # measures on its side of the re-arm delta; stamping the gold slice here
+        # would break that delta against every already-shipped edge file.
         content = author_edge_file(
             pt, thesis, verdicts, prior_text,
             n_closed_now=len(forward), last_reflected=today, client=client,
@@ -1331,7 +1346,13 @@ def main() -> None:
         replay_frames = fetch_daily(tickers, args.cache_dir)
         spy_daily = fetch_bars("SPY", "1d", cache_dir=args.cache_dir)
     if not replay_frames:
-        log.warning("no replay data fetched for %s; screened tier will be empty", tickers)
+        # Honest about what happens next: run_reflection REFUSES to grade a DUE play
+        # type against an empty corpus (raises, writes nothing) -- it no longer
+        # degrades to an empty screened tier. With nothing due it is a clean no-op.
+        log.warning(
+            "no replay data fetched for %s; run_reflection will refuse to grade any "
+            "due play type against an empty corpus (clean no-op if nothing is due)",
+            tickers)
     # The stamp is computed in BOTH modes, AFTER loading: --as-of changes what is LOADED;
     # the stamp resolves from the CACHE. Pinned, that is exactly what was graded (loading
     # and stamping both read cached_daily_file(as_of)). Unpinned it can overclaim:

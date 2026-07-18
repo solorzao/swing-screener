@@ -235,3 +235,30 @@ def test_email_logged_for_dedup(settings, _patch_fetch, _patch_analyze):
             if e.kind == "ondemand" and e.alert_key == str(req.id)
         ]
     assert len(logs) == 1
+
+
+def test_email_dedup_survives_a_cross_midnight_retry(settings, _patch_fetch, _patch_analyze):
+    """The idempotency key rides the REQUEST's date, not the worker's today: a row
+    that crashed after its email (stuck 'running', requeued) and retried past
+    midnight must NOT email twice (2026-07-17 audit M4b)."""
+    engine = get_engine(settings.db_url)
+    sender = _FakeSender()
+    with Session(engine) as s:
+        req = repo.create_analysis_request(
+            s, ticker="AAPL", requested_at=datetime(2026, 6, 16, 23, 50))
+        ondemand.process_pending(
+            s, settings=settings, now=datetime(2026, 6, 16, 23, 55),
+            today=date(2026, 6, 16), sender=sender)
+        assert len(sender.calls) == 1
+        # Simulate the crash window: the email committed but complete_analysis_request
+        # never ran -- the row is requeued for the next pass.
+        row = repo.get_analysis_request(s, req.id)
+        row.status = "queued"
+        row.started_at = None
+        row.finished_at = None
+        s.commit()
+        # The retry lands after midnight.
+        ondemand.process_pending(
+            s, settings=settings, now=datetime(2026, 6, 17, 0, 10),
+            today=date(2026, 6, 17), sender=sender)
+    assert len(sender.calls) == 1  # deduped on the request's own date, not today

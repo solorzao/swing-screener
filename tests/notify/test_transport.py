@@ -37,3 +37,15 @@ def test_resolve_sender_returns_acs_bound_callable_when_configured(monkeypatch, 
     # ... with the configured sender + endpoint bound in.
     assert kw["sender"] == "bot@acs.example.net"
     assert kw["endpoint"] == "https://res.communication.azure.com"
+
+
+def test_resolve_sender_fails_loudly_when_acs_sender_unset(monkeypatch):
+    """SWING_ACS_ENDPOINT without SWING_ACS_SENDER used to bind an EMPTY
+    senderAddress and fail downstream on every send -- construction must refuse
+    with a message naming the missing env (2026-07-17 audit M4d)."""
+    import pytest
+
+    monkeypatch.setenv("SWING_ACS_ENDPOINT", "https://res.communication.azure.com")
+    monkeypatch.delenv("SWING_ACS_SENDER", raising=False)
+    with pytest.raises(RuntimeError, match="SWING_ACS_SENDER"):
+        transport.resolve_sender()
