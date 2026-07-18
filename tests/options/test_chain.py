@@ -2,7 +2,12 @@ from datetime import date
 
 import pandas as pd
 
-from swing_screener.options.chain import ChainSnapshot, assess_liquidity, snapshot_chain
+from swing_screener.options.chain import (
+    ChainSnapshot,
+    _spot_from_ticker,
+    assess_liquidity,
+    snapshot_chain,
+)
 from swing_screener.options.config import GexConfig
 
 
@@ -21,6 +26,29 @@ def test_snapshot_chain_uses_seam() -> None:
     assert isinstance(snap, ChainSnapshot)
     assert snap.spot == 100.0
     assert list(snap.frame.columns) == ["expiry", "strike", "right", "open_interest", "iv"]
+
+
+def test_spot_nan_fast_info_falls_back_to_daily_close() -> None:
+    # yfinance fast_info can surface NaN for lastPrice; NaN is truthy, so it used
+    # to sail past the None check and become the GEX map's spot. A non-finite
+    # fast_info price must count as missing so the daily-close fallback engages.
+    class _NanTicker:
+        fast_info = {"lastPrice": float("nan")}
+
+        def history(self, period: str = "1d") -> pd.DataFrame:
+            return pd.DataFrame({"Close": [123.45]})
+
+    assert _spot_from_ticker(_NanTicker()) == 123.45  # type: ignore[arg-type]
+
+
+def test_spot_finite_fast_info_used_directly() -> None:
+    class _LiveTicker:
+        fast_info = {"lastPrice": 101.5}
+
+        def history(self, period: str = "1d") -> pd.DataFrame:
+            raise AssertionError("fallback must not fire when fast_info is finite")
+
+    assert _spot_from_ticker(_LiveTicker()) == 101.5  # type: ignore[arg-type]
 
 
 def test_liquidity_guard_flags_thin_chain() -> None:

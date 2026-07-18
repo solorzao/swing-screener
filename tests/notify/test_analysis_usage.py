@@ -11,6 +11,10 @@ No network: a recording fake client returns a canned response with a ``usage``
 attribute; a boom client proves the None-usage fallback.
 """
 
+import logging
+
+import pytest
+
 from swing_screener.notify.analysis import (
     ConvictionResult,
     SignalAnalysis,
@@ -135,8 +139,11 @@ def test_conviction_counts_web_searches_and_adds_their_cost():
     assert abs(out.usage.est_cost_usd - 0.0475) < 1e-9
 
 
-def test_conviction_unknown_model_costs_tokens_at_zero_but_still_captures():
-    # An unpriced model still captures tokens; only the token cost term is 0.
+def test_conviction_unknown_model_prices_at_most_expensive_known_rates():
+    # FAIL-SAFE: an unpriced model must NOT collapse the token term to $0 -- the
+    # spend cap would silently no-op on an unnoticed model swap, exactly the
+    # failure it exists to catch. Unknown models charge the MOST EXPENSIVE known
+    # rates so the cap overcounts rather than fails open.
     resp = _Resp(
         [_TextBlock("CONVICTION: medium\nREASON: agree\nok")],
         usage=_Usage(input_tokens=1000, output_tokens=500, web_search_requests=2),
@@ -147,8 +154,46 @@ def test_conviction_unknown_model_costs_tokens_at_zero_but_still_captures():
     )
     assert out.usage is not None
     assert out.usage.input_tokens == 1000
-    # token term unpriced (0) but the 2 web searches still cost 2 * $0.01.
-    assert abs(out.usage.est_cost_usd - 0.02) < 1e-9
+    # tokens at the most expensive known rates (claude-fable-5, $10/$50 per MTok):
+    # 1000/1e6*10 + 500/1e6*50 == 0.01 + 0.025, + 2 web searches * $0.01 == 0.055.
+    assert abs(out.usage.est_cost_usd - 0.055) < 1e-9
+
+
+def test_unknown_model_warns_once_per_process_per_model(caplog):
+    resp = _Resp(
+        [_TextBlock("CONVICTION: medium\nREASON: agree\nok")],
+        usage=_Usage(input_tokens=1000, output_tokens=500),
+    )
+    with caplog.at_level(logging.WARNING, logger="swing_screener.notify.analysis"):
+        for _ in range(2):  # two calls, ONE warning -- once per process per model id
+            analyze_conviction(
+                _facts(), baseline="medium", playbook_text=_PLAYBOOK,
+                client=_RecordingClient(resp), model="never-priced-model-e3a",
+            )
+    warnings = [r for r in caplog.records if "no price entry" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "never-priced-model-e3a" in warnings[0].getMessage()
+
+
+@pytest.mark.parametrize("model,in_price,out_price", [
+    ("claude-fable-5", 10.0, 50.0),
+    ("claude-sonnet-5", 3.0, 15.0),
+    ("claude-opus-4-6", 5.0, 25.0),
+    ("claude-haiku-4-5", 1.0, 5.0),  # E5 points the coach here -- row must exist
+])
+def test_new_model_ids_price_correctly(model, in_price, out_price):
+    assert _MODEL_PRICES[model] == (in_price, out_price)
+    resp = _Resp(
+        [_TextBlock("CONVICTION: medium\nREASON: agree\nok")],
+        usage=_Usage(input_tokens=1_000_000, output_tokens=1_000_000),
+    )
+    out = analyze_conviction(
+        _facts(), baseline="medium", playbook_text=_PLAYBOOK,
+        client=_RecordingClient(resp), model=model,
+    )
+    assert out.usage is not None
+    # 1 MTok in + 1 MTok out prices to exactly in_price + out_price dollars.
+    assert abs(out.usage.est_cost_usd - (in_price + out_price)) < 1e-9
 
 
 def test_conviction_missing_usage_attr_is_guarded_to_none():
@@ -205,3 +250,38 @@ def test_signal_deep_fallback_leaves_usage_none():
     out = analyze_signal_deep(_facts(), client=_BoomClient())
     assert out.is_deep is False
     assert out.usage is None
+
+
+# ---------------------------------------------------------------------------
+# Billed-but-failed calls (E3b): the fallback result still carries the usage,
+# so the run-level spend ceiling charges the call instead of failing open.
+# ---------------------------------------------------------------------------
+def test_signal_deep_billed_but_empty_reply_attaches_usage_to_fallback():
+    # The API call was BILLED (usage present) but returned no usable text: the
+    # deterministic fallback must still carry that usage.
+    resp = _Resp(
+        [_TextBlock("")],
+        usage=_Usage(input_tokens=80_000, output_tokens=0, web_search_requests=2),
+    )
+    out = analyze_signal_deep(_facts(), client=_RecordingClient(resp), model="claude-opus-4-8")
+    assert out.is_deep is False  # still the deterministic fallback
+    assert "ATR of 4.0% of price" in out.rationale
+    assert out.usage is not None
+    assert out.usage.input_tokens == 80_000
+    # 80_000/1e6*$5 + 2 searches * $0.01 == 0.40 + 0.02
+    assert abs(out.usage.est_cost_usd - 0.42) < 1e-9
+
+
+def test_conviction_billed_but_empty_reply_attaches_usage_to_fallback():
+    resp = _Resp(
+        [_TextBlock("")],
+        usage=_Usage(input_tokens=80_000, output_tokens=0),
+    )
+    out = analyze_conviction(
+        _facts(), baseline="medium", playbook_text=_PLAYBOOK,
+        client=_RecordingClient(resp), model="claude-opus-4-8",
+    )
+    assert out.is_deep is False
+    assert out.conviction == "medium"  # fallback keeps the baseline
+    assert out.usage is not None
+    assert abs(out.usage.est_cost_usd - 0.40) < 1e-9

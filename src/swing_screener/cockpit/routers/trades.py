@@ -401,7 +401,15 @@ def build_trades_router(
         else:
             notional_used = sum(e.notional for e in execution_logs_for_day(
                 session, run_date=run_d, account=account))
-            loss_used = realized_r_on(session, run_date=run_d, account=account)
+            if mode == "off":
+                # HONESTY (the same 2026-07 rule as `concurrent` below): with
+                # execution off no adapter enforces the loss cap and OFF_ACCOUNT
+                # is the research LABEL -- realized_r_on over it sums the
+                # invisible shadow grid's closes as 'loss used'. There is no
+                # enforced book to sum, so the gauge reads an honest 0.
+                loss_used = 0.0
+            else:
+                loss_used = realized_r_on(session, run_date=run_d, account=account)
         if mode == "off":
             # HONESTY (2026-07 usability finding): with execution off no adapter
             # enforces a cap and OFF_ACCOUNT is the research LABEL -- counting

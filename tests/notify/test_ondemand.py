@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from swing_screener.db import repo
 from swing_screener.db.session import get_engine
 from swing_screener.notify import ondemand
+from swing_screener.notify.analysis import TickerAnalysis, Usage
 from swing_screener.settings import load_settings
 
 
@@ -68,10 +69,16 @@ def _patch_fetch(monkeypatch, bars):
 
 @pytest.fixture
 def _patch_analyze(monkeypatch):
-    """Keep the worker test focused: stub the Opus call to a canned tuple."""
+    """Keep the worker test focused: stub the Opus call to a canned TickerAnalysis.
+
+    Carries a Usage (1000 in / 500 out at opus-4-8 list price = $0.0175) so the
+    est_cost persistence tests can assert the exact figure."""
     monkeypatch.setattr(
         ondemand, "analyze_ticker_deep",
-        lambda report, **kw: ("S", "1d: up", True),
+        lambda report, **kw: TickerAnalysis(
+            summary="S", analysis_text="1d: up", is_deep=True,
+            usage=Usage(input_tokens=1000, output_tokens=500, web_searches=0,
+                        est_cost_usd=0.0175)),
     )
 
 
@@ -94,6 +101,42 @@ def test_process_pending_completes_and_emails(settings, _patch_fetch, _patch_ana
     assert call["to"] == "trader@example.com"
     assert len(call["attachments"]) == 1
     assert str(call["attachments"][0]).endswith(".pdf")
+
+
+def test_process_pending_persists_est_cost(settings, _patch_fetch, _patch_analyze):
+    """E3c: the on-demand path is UNCAPPED (4 chart images + web search per request,
+    crash-requeue can re-bill) -- the completed row must carry the call's estimated
+    spend so the cost is at least visible."""
+    engine = get_engine(settings.db_url)
+    with Session(engine) as s:
+        req = repo.create_analysis_request(
+            s, ticker="AAPL", requested_at=datetime(2026, 6, 16, 9, 0))
+        ondemand.process_pending(
+            s, settings=settings, now=datetime(2026, 6, 16, 12, 0),
+            today=date(2026, 6, 16), sender=_FakeSender())
+        done = repo.get_analysis_request(s, req.id)
+        assert done.status == "done"
+        assert done.est_cost_usd == pytest.approx(0.0175)
+
+
+def test_process_pending_est_cost_null_on_fallback(settings, _patch_fetch, monkeypatch):
+    """A deterministic-fallback analysis (usage None: no billed call captured)
+    leaves est_cost_usd NULL -- an honest 'unknown', never a fake $0."""
+    monkeypatch.setattr(
+        ondemand, "analyze_ticker_deep",
+        lambda report, **kw: TickerAnalysis(
+            summary="S", analysis_text="1d: up", is_deep=False, usage=None),
+    )
+    engine = get_engine(settings.db_url)
+    with Session(engine) as s:
+        req = repo.create_analysis_request(
+            s, ticker="AAPL", requested_at=datetime(2026, 6, 16, 9, 0))
+        ondemand.process_pending(
+            s, settings=settings, now=datetime(2026, 6, 16, 12, 0),
+            today=date(2026, 6, 16), sender=_FakeSender())
+        done = repo.get_analysis_request(s, req.id)
+        assert done.status == "done"
+        assert done.est_cost_usd is None
 
 
 def test_process_pending_is_idempotent(settings, _patch_fetch, _patch_analyze):

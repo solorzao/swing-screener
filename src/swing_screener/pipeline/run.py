@@ -31,7 +31,7 @@ from swing_screener.pipeline.analyze import (
     build_frames,
 )
 from swing_screener.pipeline.arms import BASELINE, build_arms
-from swing_screener.pipeline.diversity import cap_by_sector
+from swing_screener.pipeline.diversity import cap_by_sector, first_per_ticker
 from swing_screener.pipeline.broker import BrokerClient
 from swing_screener.pipeline.broker_alpaca import build_broker
 from swing_screener.pipeline.reconcile import reconcile_live
@@ -200,17 +200,29 @@ def _digest_chart_indices(
     descending, so a timeframe's first ``top_n`` entries are exactly its picks.
     Kept in sync with notify.select, whose pickers all default to top_n=5.
 
+    The daily slice is chosen TICKER-wise, mirroring daily_picks' per-ticker dedup:
+    first (best-scored) row per ticker, then the sector cap / prefix picks ``depth``
+    DISTINCT tickers. Walking raw rows instead let one name's multi-timeframe dups
+    consume chart (and sector) slots the digest no longer gives them -- the pick the
+    digest promoted into the freed slot shipped chartless (its Opus call ran with
+    no vision input).
+
     When ``max_per_sector``/``sector_of`` are given the daily slice mirrors
     notify.select.daily_picks' sector cap, so a pick promoted into the daily list by
     the cap is charted (and one capped far OUT isn't needlessly rendered).
     """
     depth = top_n + _CHART_MARGIN
+    deduped = first_per_ticker(list(enumerate(results)), lambda p: p[1].ticker)
     if max_per_sector is not None and sector_of is not None:
-        capped = cap_by_sector(list(enumerate(results)), lambda p: sector_of(p[1]),
+        chosen = cap_by_sector(deduped, lambda p: sector_of(p[1]),
                                max_per_sector=max_per_sector, limit=depth)
-        idx = {i for i, _ in capped}
     else:
-        idx = set(range(min(depth, len(results))))  # global top-N (daily digest)
+        chosen = deduped[:depth]  # global top-N DISTINCT tickers (daily digest)
+    # Chart EVERY row of a chosen ticker (<=4, one per timeframe), not just the row
+    # that won the slot: a digest-time cooldown drop of the ticker's best row
+    # promotes its other-timeframe row, which a row-wise dedup would leave unrendered.
+    tickers = {p[1].ticker for p in chosen}
+    idx = {i for i, r in enumerate(results) if r.ticker in tickers}
     for tf in _DIGEST_TIMEFRAMES:
         tf_indices = [i for i, r in enumerate(results) if r.timeframe == tf]
         idx.update(tf_indices[:depth])
@@ -289,9 +301,23 @@ def _reversal_chart_indices(results: list[SignalResult], cfg: StrategyConfig, *,
     (2026-07-03 diagnosis: 4 of the 5 Jul-1 picks had no chart). Chart the digest-
     ELIGIBLE pool first, then top up with the best remaining signals to at least
     ``top_n`` so the dashboard still shows the leading raw signals when few are eligible.
+
+    The pool is counted in DISTINCT tickers, mirroring reversal_picks' per-ticker
+    dedup: the digest pool holds ONE slot per ticker and reaches past raw index
+    ``pool_n`` when dups sit inside it, so the charted pool is the eligible rows of
+    the first ``pool_n`` distinct tickers -- every row of an admitted ticker charts
+    (a digest-time cooldown drop of its best row promotes the other-timeframe one).
     """
     eligible = [i for i, r in enumerate(results) if _passes_reversal_surface(r, cfg)]
-    idx = eligible[:pool_n]
+    pool_tickers: set[str] = set()
+    idx: list[int] = []
+    for i in eligible:
+        ticker = results[i].ticker
+        if ticker not in pool_tickers:
+            if len(pool_tickers) >= pool_n:
+                continue  # past the pool's ticker budget (admitted names still chart)
+            pool_tickers.add(ticker)
+        idx.append(i)
     if len(idx) < top_n:
         chosen = set(idx)
         idx += [i for i in range(len(results)) if i not in chosen][: top_n - len(idx)]

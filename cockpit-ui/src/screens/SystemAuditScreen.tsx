@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import {
+  ApiError,
   POLL_MS,
   getAuditBreaches,
   getAuditReports,
@@ -64,16 +65,37 @@ function AuditRow({ a, onAck }: { a: AuditReport; onAck: (id: number) => void })
   )
 }
 
+/** The ack rejection → one human line (the NotebookPanel error idiom): the
+ * server's safe detail on an ApiError, honest-uncertain when unreachable. A
+ * swallowed failure here looked exactly like success (the row just stayed). */
+function ackErrorText(err: unknown): string {
+  return err instanceof ApiError
+    ? err.message
+    : 'backend unreachable — the acknowledge may not have landed'
+}
+
 function BreachesPanel({ wake }: { wake: number }) {
   const [bump, setBump] = useState(0)
+  const [ackError, setAckError] = useState<string | null>(null)
   const breaches = usePolling(() => getAuditBreaches(), POLL_MS, wake + bump)
-  const ack = (id: number) => postAuditAck(id).then(() => setBump((b) => b + 1), () => {})
+  const ack = (id: number) => {
+    setAckError(null)
+    postAuditAck(id).then(
+      () => setBump((b) => b + 1),
+      (err: unknown) => setAckError(ackErrorText(err)),
+    )
+  }
   return (
     <section className="panel">
       <div className="panel-head">
         <HelpTerm term="BREACH">BREACHES</HelpTerm>
         <span className="panel-caption">immediate hard breaches (caps, <HelpTerm term="DISARM">disarms</HelpTerm>) — flagged on the next run</span>
       </div>
+      {ackError !== null && (
+        <div className="gex-err" role="alert">
+          {ackError}
+        </div>
+      )}
       <PanelBody polled={breaches} noun="breaches">
         {(rows: AuditReport[]) =>
           rows.length === 0 ? (
@@ -93,14 +115,26 @@ function BreachesPanel({ wake }: { wake: number }) {
 
 function ReportsPanel({ wake }: { wake: number }) {
   const [bump, setBump] = useState(0)
+  const [ackError, setAckError] = useState<string | null>(null)
   const reports = usePolling(() => getAuditReports(), POLL_MS, wake + bump)
-  const ack = (id: number) => postAuditAck(id).then(() => setBump((b) => b + 1), () => {})
+  const ack = (id: number) => {
+    setAckError(null)
+    postAuditAck(id).then(
+      () => setBump((b) => b + 1),
+      (err: unknown) => setAckError(ackErrorText(err)),
+    )
+  }
   return (
     <section className="panel">
       <div className="panel-head">
         <HelpTerm term="weekly conduct">WEEKLY CONDUCT</HelpTerm>
         <span className="panel-caption">the <HelpTerm term="auditor">auditor</HelpTerm>'s weekly sweep — did the agents follow their own rules</span>
       </div>
+      {ackError !== null && (
+        <div className="gex-err" role="alert">
+          {ackError}
+        </div>
+      )}
       <PanelBody polled={reports} noun="reports">
         {(rows: AuditReport[]) =>
           rows.length === 0 ? (

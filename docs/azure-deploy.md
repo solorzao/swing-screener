@@ -97,10 +97,17 @@ CREATE USER [<uami-name>] FROM EXTERNAL PROVIDER;
 ALTER ROLE db_datareader ADD MEMBER [<uami-name>];
 ALTER ROLE db_datawriter ADD MEMBER [<uami-name>];
 ALTER ROLE db_ddladmin  ADD MEMBER [<uami-name>];   -- Alembic issues CREATE/ALTER TABLE
--- your own Entra user, so the LOCAL cockpit can read:
+-- your own Entra user -- the LOCAL cockpit's principal. The cockpit READS and
+-- WRITES (DISARM events, manual closes, journal notes/tags, coach edits, audit
+-- ACKs), so it needs db_datawriter too. No ddladmin: schema stays Alembic/UAMI-owned.
 CREATE USER [<your-entra-upn>] FROM EXTERNAL PROVIDER;
 ALTER ROLE db_datareader ADD MEMBER [<your-entra-upn>];
+ALTER ROLE db_datawriter ADD MEMBER [<your-entra-upn>];
 ```
+
+> **Existing deployments:** the cockpit user was originally granted read-only. Run the
+> `db_datawriter` line above once as the Entra admin, or every cockpit action that
+> writes (DISARM, close, journal, ACK) fails with a SQL permission error.
 
 Then grant your human identity **Storage Blob Data Reader** so the local cockpit can
 download charts:
@@ -235,10 +242,10 @@ the `analysis_requests` table is created by `alembic upgrade head` on the job's 
 > the feature does **not** create them: CD (`cd.yml`) only *updates existing* jobs and
 > silently **skips** ones that don't exist yet, so they must be **provisioned by re-running
 > Step 1** (`az deployment sub create`). Two gotchas:
-> - **Pass a current `imageTag`** (`latest` or the CD-built `<git-sha>`), never the Bicep
->   default `bootstrap` — that pre-Journal-v2 image lacks the `journal.coach_run` /
->   `journal.audit_run` modules (the new jobs would crash) **and** re-pinning it would
->   regress the seven live jobs back to `:bootstrap`.
+> - **`imageTag` now defaults to `latest`** (2026-07 hardening; older checkouts defaulted
+>   to the pre-Journal-v2 `bootstrap` image, and omitting the param silently rolled every
+>   job back to it). Omitting `imageTag` is now safe — CD pushes `:latest` alongside each
+>   `<git-sha>` — but passing the current sha still gives an immutable pin.
 > - **Add the three job names to CD's repoint loop** (`cd.yml`, the `for job in …` list)
 >   or, once provisioned, they freeze on the provision-time image and never receive later
 >   code — silent drift, no error.

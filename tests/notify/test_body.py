@@ -204,3 +204,17 @@ def test_ticker_report_body_html_lists_timeframes():
     assert "AMD" in c.html
     assert "1d" in c.html and "1wk" in c.html
     assert "Full report attached" in c.html
+
+
+def test_ticker_report_body_never_renders_nan_rsi():
+    # Short frames leave the last RSI NaN (e.g. the 1mo timeframe of a young
+    # listing) -- the email must show 'n/a', never a literal 'nan'.
+    from dataclasses import replace
+
+    from swing_screener.notify.body import compose_ticker_report_body
+
+    report = _report()
+    reads = [replace(report.reads[0], rsi=float("nan"))]
+    c = compose_ticker_report_body(replace(report, reads=reads))
+    assert "nan" not in c.text.lower() and "nan" not in c.html.lower()
+    assert "RSI n/a" in c.text and "RSI n/a" in c.html

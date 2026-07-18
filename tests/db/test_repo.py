@@ -236,6 +236,55 @@ def test_claim_queued_is_atomic_and_idempotent():
         assert repo.claim_queued_requests(s, now=now) == []
 
 
+def test_claim_stamps_microsecond_free_token():
+    """The claim must truncate its token to whole seconds BEFORE stamping.
+
+    Callers pass full-precision ``datetime.now(UTC)``; SQL Server's DATETIME stores
+    at 1/300s ticks (rounded), so a microsecond-bearing stamp never equals the
+    full-precision bind parameter in the ``started_at == now`` read-back -- the
+    claim returns [] on Azure SQL and rows stall 'running' forever. Whole seconds
+    are exactly representable in DATETIME, so microsecond-free STORAGE is the
+    portable property that makes the equality hold on every backend. (SQLite
+    round-trips microseconds exactly, which is why it cannot catch the rounding
+    itself -- so we pin the stored value instead.)
+    """
+    from datetime import datetime
+    engine = get_engine("sqlite:///:memory:")
+    now = datetime(2026, 7, 17, 12, 0, 0, 123456)
+    with Session(engine) as s:
+        req = repo.create_analysis_request(s, ticker="AMD",
+                                           requested_at=datetime(2026, 7, 17, 9, 0))
+        req_id = req.id
+        claimed = repo.claim_queued_requests(s, now=now)
+        assert [r.ticker for r in claimed] == ["AMD"]
+        assert claimed[0].started_at.microsecond == 0
+    # Fresh session (not the identity-mapped object above): what actually got STORED
+    # is microsecond-free, so DATETIME rounding is a no-op.
+    with Session(engine) as s2:
+        stored = repo.get_analysis_request(s2, req_id)
+        assert stored is not None
+        assert stored.started_at == datetime(2026, 7, 17, 12, 0, 0)
+
+
+def test_sequential_claims_keep_their_own_rows():
+    """Race-safety survives truncation: each claim stamps its own whole-second token
+    and only reads back rows carrying THAT token, so two workers claiming at
+    different times never return each other's rows."""
+    from datetime import datetime
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        repo.create_analysis_request(s, ticker="AMD",
+                                     requested_at=datetime(2026, 7, 17, 9, 0))
+        repo.create_analysis_request(s, ticker="NVDA",
+                                     requested_at=datetime(2026, 7, 17, 10, 0))
+        first = repo.claim_queued_requests(s, now=datetime(2026, 7, 17, 12, 0, 0), limit=1)
+        second = repo.claim_queued_requests(s, now=datetime(2026, 7, 17, 12, 0, 1), limit=1)
+        assert [r.ticker for r in first] == ["AMD"]
+        assert [r.ticker for r in second] == ["NVDA"]
+        assert first[0].started_at == datetime(2026, 7, 17, 12, 0, 0)
+        assert second[0].started_at == datetime(2026, 7, 17, 12, 0, 1)
+
+
 def test_requeue_stale_running():
     from datetime import datetime
     engine = get_engine("sqlite:///:memory:")

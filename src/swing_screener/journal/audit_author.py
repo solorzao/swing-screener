@@ -43,6 +43,7 @@ def template_audit(findings: dict) -> str:
     bits = [
         f"{breaches} cap breach(es)",
         f"reject rate {comp.get('reject_rate')}",
+        f"{comp.get('n_clamps', 0)} clamp(s)",
         f"{comp.get('n_disarms', 0)} disarm(s)",
         f"{anom.get('drought_days', 0)} drought day(s)",
         f"{anom.get('orphan_exit_events', 0)} orphan exit(s)",
@@ -50,14 +51,47 @@ def template_audit(findings: dict) -> str:
     return "System conduct audit: " + "; ".join(bits) + "."
 
 
+def breach_narrative(findings: dict) -> str:
+    """Deterministic narrative for ONE breach row -- states what actually fired.
+    (``template_audit`` narrates a period scorecard; rendered over a single breach's
+    findings it reads "0 cap breach(es)" on an ALERT row.) No LLM: breach rows are
+    urgent, deterministic artifacts."""
+    breach = findings.get("cap_breach")
+    if isinstance(breach, dict):
+        parts: list[str] = []
+        notional, cap = breach.get("notional"), breach.get("notional_cap")
+        if isinstance(notional, int | float) and isinstance(cap, int | float) and notional > cap:
+            parts.append(f"notional {notional:.0f} vs cap {cap:.0f}")
+        day_r, loss_cap = breach.get("day_r"), breach.get("loss_cap_r")
+        if (isinstance(day_r, int | float) and isinstance(loss_cap, int | float)
+                and day_r <= -loss_cap):
+            parts.append(f"day_r {day_r:.2f} vs loss cap -{loss_cap:.2f}")
+        detail = "; ".join(parts) or "cap exceeded"
+        return f"Cap breach {breach.get('account')} {breach.get('date')}: {detail}."
+    disarms = findings.get("disarms")
+    if isinstance(disarms, list) and disarms:
+        bits = [
+            f"at {d.get('at')}: {d.get('reason') or 'no reason recorded'}"
+            f" ({d.get('orders_cancelled') or 0} order(s) cancelled)"
+            for d in disarms
+        ]
+        return f"Disarm {findings.get('disarm_day')}: " + "; ".join(bits) + "."
+    return "Hard breach recorded; see findings."
+
+
 def draft_audit(
     findings: dict,
     *,
     client: anthropic.Anthropic | None = None,
-    model: str = "claude-opus-4-8",
+    model: str,
 ) -> DraftResult:
     """Draft the audit narrative over ``findings``. Degrades to a deterministic template
-    on ANY failure (usage None on that path)."""
+    on ANY failure (usage None on that path).
+
+    ``model`` is REQUIRED, no default: ``audit_run._MODEL`` is the single authoritative
+    model id, passed here AND stamped on the SystemAudit row, so the provenance stamp
+    always matches the model actually called (a default here duplicated that constant --
+    a stamp/call mismatch hazard flagged by the 2026-07-17 audit)."""
     try:
         from swing_screener.notify.analysis import _capture_usage  # noqa: PLC0415
 

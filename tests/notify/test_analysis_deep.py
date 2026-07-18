@@ -92,7 +92,8 @@ def test_deep_analysis_builds_image_tool_thinking_and_parses_citations():
     assert kw["output_config"] == {"effort": "high"}
     assert kw["max_tokens"] == 16000
     tool = kw["tools"][0]
-    assert tool["type"] == "web_search_20250305"
+    # 20260209 = dynamic filtering: search-result tokens are pruned BEFORE billing
+    assert tool["type"] == "web_search_20260209"
     assert tool["name"] == "web_search" and tool["max_uses"] == 3
     content = kw["messages"][0]["content"]
     assert content[0]["type"] == "image"  # image FIRST (best practice)
@@ -169,3 +170,78 @@ def test_deep_analysis_retries_without_reasoning_on_model_rejection():
     assert len(client.calls) == 2
     assert "thinking" in client.calls[0] and "output_config" in client.calls[0]
     assert "thinking" not in client.calls[1] and "output_config" not in client.calls[1]
+
+
+class _LegacyToolClient:
+    """Rejects the web_search_20260209 tool type, succeeds once it's downgraded."""
+
+    def __init__(self, resp):
+        self._resp = resp
+        self.calls = []
+
+    @property
+    def messages(self):
+        outer = self
+
+        class _M:
+            def create(self, **kw):
+                outer.calls.append(kw)
+                if any(t.get("type") == "web_search_20260209" for t in kw.get("tools", [])):
+                    raise _bad_request(
+                        "tools.0: `web_search_20260209` is not supported for this model"
+                    )
+                return outer._resp
+
+        return _M()
+
+
+def test_deep_analysis_retries_with_legacy_web_search_on_tool_rejection():
+    # An older SWING_ANALYSIS_MODEL that rejects the 20260209 tool must NOT drop to
+    # the deterministic narrator -- we retry with the legacy 20250305 tool type and
+    # still get a real model analysis.
+    client = _LegacyToolClient(_Resp([_TextBlock("CORE: ok\n\nreal model body")]))
+    out = analyze_signal_deep(_facts(), client=client)
+
+    assert "real model body" in out.rationale  # succeeded on the retry, not a fallback
+    assert out.is_deep is True
+    assert len(client.calls) == 2
+    assert client.calls[0]["tools"][0]["type"] == "web_search_20260209"
+    assert client.calls[1]["tools"][0]["type"] == "web_search_20250305"
+    assert client.calls[1]["tools"][0]["max_uses"] == 4  # rest of the tool config kept
+
+
+class _DoubleRejectClient:
+    """An old model that rejects BOTH the reasoning shape and the 20260209 tool:
+    call 1 trips the thinking degrade, call 2 trips the web-search degrade, call 3
+    succeeds -- one API call may need both retries in sequence."""
+
+    def __init__(self, resp):
+        self._resp = resp
+        self.calls = []
+
+    @property
+    def messages(self):
+        outer = self
+
+        class _M:
+            def create(self, **kw):
+                outer.calls.append(kw)
+                if "thinking" in kw:
+                    raise _bad_request('"thinking.type.enabled" is not supported for this model')
+                if any(t.get("type") == "web_search_20260209" for t in kw.get("tools", [])):
+                    raise _bad_request(
+                        "tools.0: `web_search_20260209` is not supported for this model"
+                    )
+                return outer._resp
+
+        return _M()
+
+
+def test_deep_analysis_survives_both_thinking_and_tool_rejection():
+    client = _DoubleRejectClient(_Resp([_TextBlock("CORE: ok\n\nreal model body")]))
+    out = analyze_signal_deep(_facts(), client=client, reasoning="high")
+
+    assert "real model body" in out.rationale  # both degrades applied, still a real analysis
+    assert len(client.calls) == 3
+    assert "thinking" not in client.calls[2]
+    assert client.calls[2]["tools"][0]["type"] == "web_search_20250305"

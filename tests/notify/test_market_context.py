@@ -59,6 +59,39 @@ def test_get_fundamentals_never_raises_on_fetch_error():
     assert f.ok is False and f.sector is None  # degrades, no exception
 
 
+# Yahoo pads missing fundamentals with NaN as readily as None (PR #104's class).
+# A mix of NaN, inf, None, and absent keys -- every one must get the same
+# missing-value treatment so no literal 'nan' can reach the analyst prompt.
+_NAN = float("nan")
+_NAN_INFO = {
+    "sector": "Technology", "industry": "Consumer Electronics",
+    "marketCap": _NAN, "trailingPE": _NAN, "forwardPE": None,
+    "profitMargins": _NAN, "revenueGrowth": _NAN,  # grossMargins/earningsGrowth absent
+    "debtToEquity": _NAN, "returnOnEquity": _NAN,
+    "recommendationKey": "buy", "recommendationMean": _NAN,
+    "numberOfAnalystOpinions": _NAN, "targetMeanPrice": _NAN,
+    "targetLowPrice": _NAN, "targetHighPrice": float("inf"),
+    "fiftyTwoWeekLow": _NAN, "fiftyTwoWeekHigh": _NAN,
+}
+
+
+def test_get_fundamentals_treats_non_finite_as_missing():
+    f = get_fundamentals("AAPL", fetch=lambda t: dict(_NAN_INFO))
+    assert f.market_cap is None and f.trailing_pe is None and f.forward_pe is None
+    assert f.profit_margin_pct is None and f.gross_margin_pct is None
+    assert f.debt_to_equity is None and f.return_on_equity_pct is None
+    assert f.recommendation_mean is None and f.num_analysts is None
+    assert f.target_mean_price is None and f.target_high_price is None  # inf too
+    assert f.week52_low is None and f.week52_high is None
+
+
+def test_context_block_never_renders_nan_fundamentals():
+    f = get_fundamentals("AAPL", fetch=lambda t: dict(_NAN_INFO))
+    block = context_block(f, [])
+    assert "nan" not in block.lower() and "inf" not in block.lower()
+    assert "Technology" in block  # the usable fields still render
+
+
 # Current (nested) yfinance news schema: item = {id, content: {...}}.
 _NEWS = [
     {"id": "1", "content": {

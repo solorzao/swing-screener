@@ -59,6 +59,18 @@ export function fmtClock(iso: string): string {
   return isNaN(d.getTime()) ? iso : d.toLocaleTimeString('en-US', { hour12: false })
 }
 
+/** Today in the LOCAL calendar as YYYY-MM-DD — the day date-scoped forms and
+ * filters default to. LOCAL deliberately: the cockpit runs beside its server,
+ * so the client's local day matches the server-naive day the journals filter
+ * on. Consolidates three identical per-screen copies (Journal notebook /
+ * GEX lab / CloseTradeForm). */
+export function localTodayIso(): string {
+  const d = new Date()
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${d.getFullYear()}-${mm}-${dd}`
+}
+
 /** The null gate: `fmt(v)` for a real number, an em dash for null (not-measured
  * / absent) — never a fabricated 0. Every nullable money/R/percent cell on the
  * trade screens routes through here. */
