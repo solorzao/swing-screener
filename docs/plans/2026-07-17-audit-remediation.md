@@ -47,23 +47,23 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 ### Progress Ledger
 
 **Phase A — `fix/live-money-safety`**
-- [ ] A1 account-scoped same-day delete + regression tests
-- [ ] A2 ExecutionLog idempotency status upgrade + adapter load-before-act guards
-- [ ] A3 paginated `list_open_orders`
+- [x] A1 account-scoped same-day delete + regression tests
+- [x] A2 ExecutionLog idempotency status upgrade + adapter load-before-act guards
+- [x] A3 paginated `list_open_orders`
 
 **Phase B — `fix/queue-claim-datetime`**
-- [ ] B1 whole-second claim tokens in both claim functions
+- [x] B1 whole-second claim tokens in both claim functions
 - [ ] B1-verify (post-deploy) one on-demand request processes end-to-end in prod
 
 **Phase C — `fix/nan-hardening`**
-- [ ] C1 `_download` dropna + HA recovery test
-- [ ] C2 NaN guards: detect ATR truthiness / `latest_close` / `avg_dollar_volume` / `_spot_from_ticker`
-- [ ] C3 NaN fundamentals rendered into analyst prompts
+- [x] C1 `_download` dropna + HA recovery test
+- [x] C2 NaN guards: detect ATR truthiness / `latest_close` / `avg_dollar_volume` / `_spot_from_ticker` (+ reversal detector, found in review — dcd88ab)
+- [x] C3 NaN fundamentals rendered into analyst prompts
 
 **Phase D — `fix/auditor-compliance-math`**
-- [ ] D1 cap sums filtered to counting statuses, per account, `n_clamps` surfaced
-- [ ] D2 `max_daily_loss` graded in realized R
-- [ ] D3 breach-scan window / empty-narrative rows / `would_surface_leaks` overflow
+- [x] D1 cap sums filtered to counting statuses, per account, `n_clamps` surfaced
+- [x] D2 `max_daily_loss` graded in realized R
+- [x] D3 breach-scan window / empty-narrative rows / `would_surface_leaks` overflow
 
 **Phase E — `feat/analyst-cost-optimization`** (strict order E1 → E6)
 - [x] E1 `_analyst_call` consolidation (behavior-preserving; both analysis test suites green unchanged)

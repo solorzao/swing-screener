@@ -93,7 +93,16 @@ def delete_signals_for(session: Session, run_date: date) -> None:
 
 
 def delete_paper_trades_opened_on(session: Session, opened_date: date) -> None:
-    session.execute(delete(PaperTrade).where(PaperTrade.opened_date == opened_date))
+    """Delete ONLY the research shadow grid's same-day rows (re-run idempotency).
+
+    Live/paper/manual rows are NOT re-created by a screen re-run (their
+    ExecutionLog is already terminal), so deleting them permanently loses real
+    positions -- the 2026-07-17 audit's critical finding.
+    """
+    session.execute(delete(PaperTrade).where(
+        PaperTrade.opened_date == opened_date,
+        PaperTrade.account == "research",
+    ))
     session.commit()
 
 
@@ -344,6 +353,24 @@ def analyst_call_freshness(
 # (working, not yet filled) / ``filled_live`` all reserve it. ``skipped`` / ``rejected`` and
 # the live ``canceled`` / ``rejected_live`` never reserved notional, so they don't count.
 _LIMIT_COUNTING_STATUSES = ("recorded", "filled_paper", "submitted_live", "filled_live")
+# public: the auditor's compliance grader must grade with the SAME statuses the limit
+# engine counts (a "skipped" clamp row carries the blocked order's full, never-reserved size).
+LIMIT_COUNTING_STATUSES = _LIMIT_COUNTING_STATUSES
+
+# the fields refreshed when a non-counting row is upgraded by a later COUNTING write on
+# the same idempotency key (see add_execution_log): the order that ACTUALLY went out is
+# the record of truth, and its spec can differ from the clamped attempt's (the key hashes
+# the intent identity -- ticker/timeframe/play_type/run/side -- not its levels, and not
+# the adapter). ``broker_order_id`` / ``broker_status`` MUST land: the reconciler refuses
+# a submitted_live row without an order id, and ``latest_recorded_stop`` reads ``stop``
+# off submitted_live rows for the disarm restore. ``account`` / ``mode`` MUST land too:
+# a cross-mode collision (paper clamp, then a live re-submit on the same key) must
+# re-home the row under the adapter that acted, or the account-scoped limit sums
+# (``execution_logs_for_day``) count it against the wrong book all day.
+_UPGRADE_REFRESH_FIELDS = (
+    "account", "mode", "detail", "limit_price", "shares", "stop", "target",
+    "risk_dollars", "notional", "broker", "broker_order_id", "broker_status",
+)
 
 
 def add_execution_log(session: Session, **fields: object) -> ExecutionLog:
@@ -352,8 +379,13 @@ def add_execution_log(session: Session, **fields: object) -> ExecutionLog:
     The Phase 3 idempotency guard: every adapter call carries an ``idempotency_key``
     unique per intent x run, so a force-resent or hourly-digest re-run that tries to log
     the SAME order hits the unique constraint. On that ``IntegrityError`` we roll back and
-    return the EXISTING row for that key -- a no-op that hands back the first record rather
-    than double-submitting. add -> commit -> refresh on the happy path.
+    return the EXISTING row for that key -- with ONE exception: a NON-counting row
+    (``skipped`` / ``rejected`` / ``rejected_live`` / ``canceled``) superseded by a
+    COUNTING write is UPGRADED in place (status + the per-outcome fields), because the
+    second submit really acted (the clamp that skipped the first attempt no longer held)
+    and swallowing its record would leave a real order invisible to the reconciler and
+    the no-double-open guard. A counting status is NEVER downgraded. add -> commit ->
+    refresh on the happy path.
     """
     row = ExecutionLog(**fields)
     session.add(row)
@@ -365,8 +397,43 @@ def add_execution_log(session: Session, **fields: object) -> ExecutionLog:
         existing = session.scalars(
             select(ExecutionLog).where(ExecutionLog.idempotency_key == key)
         ).one()
+        new_status = str(fields.get("status", ""))
+        if (
+            existing.status not in _LIMIT_COUNTING_STATUSES
+            and new_status in _LIMIT_COUNTING_STATUSES
+        ):
+            # A non-counting record (skipped/rejected) is being superseded by a real
+            # submission on the same key: record the truth, loudly. The refreshed fields
+            # carry the order that actually went out -- broker_order_id above all, or the
+            # reconciler would skip the upgraded submitted_live row.
+            log.warning(
+                "execution log %s upgraded %s -> %s on idempotency-key reuse",
+                key, existing.status, new_status,
+            )
+            existing.status = new_status
+            for name in _UPGRADE_REFRESH_FIELDS:
+                if name in fields:
+                    setattr(existing, name, fields[name])
+            session.commit()
         return existing
     session.refresh(row)
+    return row
+
+
+def counting_execution_log(session: Session, idempotency_key: str) -> ExecutionLog | None:
+    """The ExecutionLog row for ``idempotency_key``, IF it is in a limit-counting status.
+
+    The adapters' load-BEFORE-act guard: a counting row (``recorded`` / ``filled_paper``
+    / ``submitted_live`` / ``filled_live``) means this intent x run already acted, so a
+    re-submit must short-circuit before touching the venue / opening a position -- its
+    own status write would collapse into this row (unique key) and the new side effect
+    would go unrecorded. None when there is no row for the key or the row is
+    non-counting (superseding those is ``add_execution_log``'s upgrade path)."""
+    row = session.scalars(
+        select(ExecutionLog).where(ExecutionLog.idempotency_key == idempotency_key)
+    ).first()
+    if row is None or row.status not in _LIMIT_COUNTING_STATUSES:
+        return None
     return row
 
 
@@ -698,6 +765,9 @@ def get_analysis_request(session: Session, request_id: int) -> AnalysisRequest |
 def claim_queued_requests(session: Session, *, now: datetime,
                           limit: int = 10) -> list[AnalysisRequest]:
     """Atomically flip queued->running and return the claimed rows."""
+    # DATETIME on SQL Server rounds to 1/300s; whole seconds round-trip exactly,
+    # so the read-back equality below works on every backend (2026-07-17 audit).
+    now = now.replace(microsecond=0)
     ids = list(session.scalars(
         select(AnalysisRequest.id).where(AnalysisRequest.status == "queued")
         .order_by(AnalysisRequest.requested_at).limit(limit)))
@@ -710,6 +780,8 @@ def claim_queued_requests(session: Session, *, now: datetime,
     # Self-identifying read-back: only return rows THIS call stamped with `now`.
     # Safe under concurrent replicas -- each stamps its own `now`, so the loser of a
     # race re-reads zero of the winner's rows instead of double-processing them.
+    # Holds only for claims in DIFFERENT whole seconds; same-second claims collide
+    # (accepted 1-second window -- these are single-replica scheduled jobs).
     return list(session.scalars(
         select(AnalysisRequest).where(AnalysisRequest.id.in_(ids),
                                       AnalysisRequest.status == "running",
@@ -771,7 +843,11 @@ def create_coach_draft_request(session: Session, *, review_id: int,
 def claim_queued_coach_drafts(session: Session, *, now: datetime,
                               limit: int = 10) -> list[CoachDraftRequest]:
     """Atomically flip queued->running and return the claimed rows (self-identifying
-    read-back by ``started_at == now`` -- race-safe across concurrent workers)."""
+    read-back by ``started_at == now`` -- race-safe across workers claiming in
+    different whole seconds; same-second claims collide, an accepted 1-second window)."""
+    # DATETIME on SQL Server rounds to 1/300s; whole seconds round-trip exactly,
+    # so the read-back equality below works on every backend (2026-07-17 audit).
+    now = now.replace(microsecond=0)
     ids = list(session.scalars(
         select(CoachDraftRequest.id).where(CoachDraftRequest.status == "queued")
         .order_by(CoachDraftRequest.requested_at).limit(limit)))

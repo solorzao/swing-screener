@@ -193,6 +193,18 @@ def test_cont_confirm_window_fires_exactly_once(bars):
     assert detect_last_bar(frame, replace(StrategyConfig(), cont_confirm_window=3)) is None
 
 
+def test_cont_confirm_window_nan_atr_on_confirmation_bar_never_fires(bars):
+    # the recursion validates the FLIP bar, but atr/rsi are read from TODAY's bar:
+    # a NaN there used to ship a context with atr=NaN (NaN is truthy, so the
+    # `if atr` extension fallback never engaged). NaN indicator -> no signal.
+    from dataclasses import replace
+
+    df, _ = _flip_then_pause_then_breakout(bars)
+    frame = build_frame(df, StrategyConfig()).copy()
+    frame.iloc[-1, frame.columns.get_loc("atr")] = float("nan")
+    assert detect_last_bar(frame, replace(StrategyConfig(), cont_confirm_window=2)) is None
+
+
 def test_cont_confirm_window_never_fires_on_the_flip_bar_itself(bars):
     from dataclasses import replace
 

@@ -8,6 +8,7 @@ Pure functions only — no I/O. The composer takes already-prepared picks and
 alerts and renders them into an :class:`EmailContent`.
 """
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -275,6 +276,12 @@ def compose_digest_body(
     return EmailContent(subject=subject, text=text, html=html)
 
 
+def _fmt_rsi(x: float) -> str:
+    """RSI as an integer, or 'n/a' when a short frame left it NaN -- the email
+    must never print a literal 'nan' (PR #104's class at the rendering layer)."""
+    return f"{x:.0f}" if math.isfinite(x) else "n/a"
+
+
 def compose_ticker_report_body(report: "TickerReport") -> EmailContent:
     """Render an on-demand single-ticker report into subject, plain-text, and HTML.
 
@@ -289,13 +296,13 @@ def compose_ticker_report_body(report: "TickerReport") -> EmailContent:
     # --- plain text ---
     lines: list[str] = [report.summary, ""]
     for r in report.reads:
-        lines.append(f"{r.timeframe}: {r.ha_trend}, RSI {r.rsi:.0f}")
+        lines.append(f"{r.timeframe}: {r.ha_trend}, RSI {_fmt_rsi(r.rsi)}")
     lines += ["", "Full report attached (PDF)."]
     text = "\n".join(lines)
 
     # --- html ---
     items = "".join(
-        f"<li>{escape(r.timeframe)}: {escape(r.ha_trend)}, RSI {r.rsi:.0f}</li>"
+        f"<li>{escape(r.timeframe)}: {escape(r.ha_trend)}, RSI {_fmt_rsi(r.rsi)}</li>"
         for r in report.reads
     )
     label = f"{report.ticker} - {report.name}" if report.name else report.ticker

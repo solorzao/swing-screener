@@ -177,6 +177,46 @@ def test_duplicate_submit_does_not_open_second_position() -> None:
 
 
 # ---------------------------------------------------------------------------
+# skip-then-fill on the SAME run_date: the freed limit lets the second submit
+# open the position, and the log row must be UPGRADED skipped -> filled_paper
+# (never swallowed) or the no-double-open guard misses. A THIRD submit --
+# UNLIMITED, so only the guard stands between it and a duplicate -- must
+# short-circuit without opening a second position.
+# ---------------------------------------------------------------------------
+def test_skip_then_fill_then_third_submit_short_circuits() -> None:
+    with _session() as s:
+        # an open paper position AT a max_concurrent cap of 1 -> the FIRST submit is clamped.
+        blocker = PaperTrade(ticker="X", timeframe="1d", horizon="medium", account="paper",
+                             signal_score=0.5, rank=1, fill_status="filled", status="open",
+                             stop=9.0, target=12.0, risk=1.0)
+        s.add(blocker)
+        s.commit()
+        limits = Limits(max_daily_notional=None, max_daily_loss=None, max_concurrent=1)
+        adapter = PaperAdapter()
+
+        first = adapter.submit(_intent(), session=s, run_date=RUN, limits=limits)
+        assert first.status == "skipped"
+
+        # the cap frees intra-day (the blocking position closes) -> the re-submit ACTS:
+        # one AMD position opens and the single log row upgrades skipped -> filled_paper.
+        blocker.status = "closed"
+        s.commit()
+        second = adapter.submit(_intent(), session=s, run_date=RUN, limits=limits)
+        assert second.status == "filled_paper"
+        assert s.query(PaperTrade).filter_by(ticker="AMD").count() == 1
+        row = s.query(ExecutionLog).one()
+        assert row.status == "filled_paper"
+
+        # the THIRD submit (no caps in the way) short-circuits on the counting row:
+        # NO duplicate position, the prior fill is handed back.
+        third = adapter.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
+        assert third.status == "filled_paper"
+        assert third.trade_id == second.trade_id
+        assert s.query(PaperTrade).filter_by(ticker="AMD").count() == 1
+        assert s.query(ExecutionLog).count() == 1
+
+
+# ---------------------------------------------------------------------------
 # a blocked limit opens nothing (reuse a cap from Task 4).
 # ---------------------------------------------------------------------------
 def test_blocked_limit_opens_nothing() -> None:

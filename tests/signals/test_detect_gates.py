@@ -159,6 +159,53 @@ def test_pocket_pivot_gate(bars):
                       StrategyConfig(require_pocket_pivot=True), bars)
 
 
+# --- NaN fail-safe (2026-07 audit) --------------------------------------------
+# NaN is truthy in Python and every NaN comparison is False, so a NaN indicator
+# used to sail past the `and atr`-style truthiness guards and then silently
+# NO-OP the gate it should have armed. A NaN indicator must mean the gate
+# rejects (or the signal doesn't fire) -- never a silent pass. The frame is
+# enriched first, then a single column is poisoned: detect is pure and reads
+# columns only, so this models a poisoned cached frame exactly.
+
+def _poison(frame, col, at=-1):
+    out = frame.copy()
+    out.iloc[at, out.columns.get_loc(col)] = float("nan")
+    return out
+
+
+def test_nan_atr_never_fires_even_with_gates_off(bars):
+    # pre-guard: returned a context carrying atr=NaN (NaN stops/targets downstream)
+    frame = _poison(build_frame(bars(_std_rows()), StrategyConfig()), "atr")
+    assert detect_last_bar(frame, StrategyConfig()) is None
+
+
+def test_nan_atr_defeats_the_ema_separation_gate(bars):
+    # any FINITE atr would face the impossible threshold; NaN used to no-op it
+    frame = _poison(build_frame(bars(_std_rows()), StrategyConfig()), "atr")
+    assert detect_last_bar(frame, StrategyConfig(min_ema_sep_atr=100.0)) is None
+
+
+def test_nan_rsi_defeats_the_rsi_floor_gate(bars):
+    # fixture rsi ~83.7 < 99 would reject; NaN < 99 is False, so it used to fire
+    frame = _poison(build_frame(bars(_std_rows()), StrategyConfig()), "rsi")
+    assert detect_last_bar(frame, StrategyConfig(rsi_min_trigger=99.0)) is None
+
+
+def test_nan_trigger_volume_defeats_the_vol_thrust_gate(bars):
+    # NaN volume rows are deliberately KEPT at the download seam (index tickers),
+    # so a NaN trigger volume is reachable: rvol=NaN < min is False -> silent pass
+    frame = _poison(build_frame(bars(_std_rows()), StrategyConfig()), "volume")
+    assert detect_last_bar(frame, StrategyConfig(vol_thrust_min=4.0)) is None
+
+
+def test_nan_pullback_volume_defeats_the_dryup_gate(bars):
+    # the dry 0.4x pullback passes the gate; poisoning ONE pullback bar's volume
+    # makes dryup=NaN, and NaN > max is False -> the gate used to silently pass
+    assert _fires(_dryup_rows(400_000), StrategyConfig(pullback_vol_dryup_max=0.9), bars)
+    frame = _poison(build_frame(bars(_dryup_rows(400_000)), StrategyConfig()), "volume", at=-2)
+    assert detect_last_bar(frame, StrategyConfig(pullback_vol_dryup_max=0.9)) is None
+
+
 def test_vol_thrust_denominator_excl_pullback_is_the_stricter_read(bars):
     """The legacy thrust baseline INCLUDES the pullback's own dried-up volume, flattering
     the ratio; the excl variant measures the window BEFORE the pullback (matching the

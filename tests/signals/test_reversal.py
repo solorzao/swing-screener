@@ -117,6 +117,53 @@ def test_two_bar_dip_is_not_a_reversal():
     assert detect_reversal(_frame(_shallow_dip_rows()), CFG) is None  # red-run gate rejects it
 
 
+# --- NaN fail-safe (2026-07 audit; extends the detect.py guard to the confirmed
+# edge path). NaN is truthy and every NaN comparison is False, so a NaN
+# indicator sailed through the HA gates -- which never validate atr/rsi -- and
+# shipped NaN into the context. The frame is enriched first, then one column is
+# poisoned: detect_reversal is pure and reads columns only.
+
+def _poison(frame, col, at=-1):
+    out = frame.copy()
+    out.iloc[at, out.columns.get_loc(col)] = float("nan")
+    return out
+
+
+def test_nan_atr_never_produces_a_reversal():
+    # pre-guard this returned a live context with atr=nan, and
+    # compute_reversal_zone then built stop = low - buffer*NaN = NaN whose
+    # risk <= 0 rejection is itself NaN-defeated -> an EntryZone with NaN
+    # stop/risk. No context at all -> nothing can hand the zone math a NaN atr.
+    frame = _poison(_frame(_reversal_rows()), "atr")
+    assert detect_reversal(frame, CFG) is None
+
+
+def test_nan_rsi_never_produces_a_reversal():
+    # RSI is deliberately scoring-only here, so nothing gated it: ctx.rsi went
+    # NaN and score_reversal's _clip01(NaN) silently grades as FULL credit
+    frame = _poison(_frame(_reversal_rows()), "rsi")
+    assert detect_reversal(frame, CFG) is None
+
+
+def test_nan_ema_slow_defeats_the_beaten_down_gate():
+    # reversal_low >= NaN is False, so the beaten-down gate PASSED and shipped
+    # ema_slow=NaN into the context (the reclaim-resistance level)
+    frame = _poison(_frame(_reversal_rows()), "ema_slow")
+    assert detect_reversal(frame, CFG) is None
+
+
+def test_nan_flip_volume_reads_as_neutral_ratio():
+    # NaN volume rows are deliberately KEPT at the download seam (index
+    # tickers), so a NaN flip volume is reachable: vol_ratio=NaN defeated BOTH
+    # A/B rvol gates and full-credited the score's volume term. Missing volume
+    # now reads as the same neutral 1.0 as a missing baseline.
+    frame = _poison(_frame(_reversal_rows()), "volume")
+    ctx = detect_reversal(frame, CFG)
+    assert ctx is not None and ctx.volume_ratio == 1.0
+    # and an enabled min-rvol gate now honestly rejects the neutral reading
+    assert detect_reversal(frame, replace(CFG, reversal_min_flip_rvol=1.2)) is None
+
+
 def test_reversal_conviction_tier():
     from swing_screener.signals.reversal import reversal_conviction_tier as tier
     assert tier(1.5, True, "early", CFG) == "premium"       # high-vol AND spring

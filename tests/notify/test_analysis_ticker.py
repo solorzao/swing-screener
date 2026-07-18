@@ -150,3 +150,23 @@ def test_analyze_ticker_deep_empty_reply_keeps_billed_usage():
     assert "1d:" in out.analysis_text
     assert out.usage is not None  # ...but the billed spend is NOT dropped
     assert out.usage.input_tokens == 800
+
+
+def test_ticker_prompt_and_fallback_never_render_nan():
+    # Short frames leave the last RSI/ATR NaN (e.g. the 1mo timeframe of a young
+    # listing) -- the analyst must read 'n/a', never a literal 'nan' fact.
+    # (Ported to the TickerAnalysis return shape at the C3/E3c merge.)
+    nan = float("nan")
+    reads = [TimeframeRead(timeframe="1mo", ha_trend="bullish", ema_aligned=True,
+                           rsi=nan, atr_pct=nan)]
+    client = _FakeClient(text=_CANNED)
+    analyze_ticker_deep(_report(reads=reads), client=client, web_search=False)
+    prompt = client.kwargs["messages"][0]["content"][-1]["text"]
+    assert "nan" not in prompt.lower()
+    assert "RSI n/a" in prompt and "ATR n/a" in prompt
+
+    out = analyze_ticker_deep(
+        _report(reads=reads), client=_FakeClient(exc=RuntimeError("boom")))
+    assert out.is_deep is False
+    assert "nan" not in out.analysis_text.lower()
+    assert "RSI n/a" in out.analysis_text
