@@ -309,7 +309,10 @@ def _log_cooldown_drops(session: Session, kind: str, run_date: date,
     the would-have-surfaced picks missing from the sent list. A fresh pick in the
     unfiltered top-N always makes the filtered top-N too (dropping stale rows only moves
     it up in rank order), so the difference is exactly the cooldown's drops -- stale
-    candidates below the top-N that would never have surfaced are not counted.
+    candidates below the top-N that would never have surfaced are not counted. That
+    set-comparison argument assumes ranks are unique within a run (the orchestrator
+    assigns them globally), so ``ORDER BY rank`` is a total order and both queries walk
+    the same deterministic candidate sequence.
     """
     if max_age is None or kind not in _COOLDOWN_RUNS:
         return
@@ -317,7 +320,7 @@ def _log_cooldown_drops(session: Session, kind: str, run_date: date,
     kept = {s.id for s in picks}
     n_dropped = sum(1 for s in would_surface if s.id not in kept)
     if n_dropped:
-        log.info("cooldown dropped %d picks for %s digest", n_dropped, kind)
+        log.info("cooldown dropped %d pick(s) for %s digest", n_dropped, kind)
 
 
 def _already_sent(session: Session, kind: str, run_date: date) -> bool:

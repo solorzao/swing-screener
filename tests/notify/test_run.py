@@ -1,6 +1,7 @@
 import logging
 from datetime import UTC, date, datetime
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -255,23 +256,29 @@ def _sig_on(run_date, ticker, tf, rank, first_seen=None):
                   first_seen_date=first_seen)
 
 
-def test_weekly_digest_keeps_setups_older_than_the_daily_cooldown(tmp_path, caplog):
-    """Per-kind cooldown horizon: a 1wk setup first seen 4 daily runs ago is still fresh
-    on the WEEKLY cadence (weekly setups persist across many daily screens by nature --
-    first_seen_date inherits the streak start), so it must appear in the weekly digest
-    even though the daily cooldown (1 run) drops it from the daily. Under the old shared
-    horizon the weekly digest showed only setups born in the last ~2 daily screens, so a
-    cooldown-blanked weekly was indistinguishable from a quiet market."""
-    url = f"sqlite:///{tmp_path / 'wk.sqlite'}"
+@pytest.mark.parametrize("kind,tf", [("weekly", "1wk"), ("monthly", "1mo")])
+def test_slow_cadence_digest_keeps_setups_older_than_the_daily_cooldown(
+        tmp_path, caplog, kind, tf):
+    """Per-kind cooldown horizon: a 1wk/1mo setup first seen 4 daily runs ago is still
+    fresh on its OWN cadence (slow-timeframe setups persist across many daily screens by
+    nature -- first_seen_date inherits the streak start), so it must appear in the
+    weekly/monthly digest even though the daily cooldown (1 run) drops it from the
+    daily. Under the old shared horizon those digests showed only setups born in the
+    last ~2 daily screens, so a cooldown-blanked one was indistinguishable from a quiet
+    market. The monthly leg also exercises the _COOLDOWN_RUNS["monthly"] lookup on the
+    real send path (a misspelled key would KeyError only in the monthly prod job) and
+    the fewer-runs-than-horizon fallback: 5 stored runs < the 21-run monthly window, so
+    the cutoff falls back to the oldest run available and the old pick is kept."""
+    url = f"sqlite:///{tmp_path / 'slow.sqlite'}"
     engine = get_engine(url)
     with Session(engine) as s:
         # Establish the run calendar the run-denominated cooldown walks back over.
         for d in (date(2026, 6, 9), date(2026, 6, 10), date(2026, 6, 11), date(2026, 6, 12)):
             s.add(_sig_on(d, "FILL", "1d", 9))
         # Streak started 4 daily runs back (june 10); re-detected on today's run.
-        s.add(_sig_on(RUN, "NVDA", "1wk", 1, first_seen=date(2026, 6, 10)))
+        s.add(_sig_on(RUN, "NVDA", tf, 1, first_seen=date(2026, 6, 10)))
         # Born today: fresh on every cadence.
-        s.add(_sig_on(RUN, "MSFT", "1wk", 2, first_seen=RUN))
+        s.add(_sig_on(RUN, "MSFT", tf, 2, first_seen=RUN))
         s.commit()
 
     sent = []
@@ -280,15 +287,15 @@ def test_weekly_digest_keeps_setups_older_than_the_daily_cooldown(tmp_path, capl
 
     with caplog.at_level(logging.INFO, logger="swing_screener.notify.run"):
         daily = run.send_digest(kind="daily", **kw)
-        weekly = run.send_digest(kind="weekly", **kw)
+        slow = run.send_digest(kind=kind, **kw)
 
     # Daily (cooldown = 1 run): only the fresh setup survives.
     assert daily.n_picks == 1
     assert "MSFT" in sent[0]["text"] and "NVDA" not in sent[0]["text"]
-    # Weekly (5-run horizon ~ one trading week): the 4-runs-old setup still surfaces.
-    assert weekly.n_picks == 2
+    # Own cadence (weekly 5-run / monthly 21-run horizon): the 4-runs-old setup surfaces.
+    assert slow.n_picks == 2
     assert "NVDA" in sent[1]["text"] and "MSFT" in sent[1]["text"]
-    # Nothing outlived the weekly horizon, so no drop line fires.
+    # Nothing outlived the cadence's horizon, so no drop line fires.
     assert [r for r in caplog.records if "cooldown dropped" in r.getMessage()] == []
 
 
@@ -317,7 +324,7 @@ def test_weekly_cooldown_drop_is_logged_with_true_count(tmp_path, caplog):
     assert res.n_picks == 1
     assert "MSFT" in sent[0]["text"] and "AAPL" not in sent[0]["text"]
     drops = [r.getMessage() for r in caplog.records if "cooldown dropped" in r.getMessage()]
-    assert drops == ["cooldown dropped 1 picks for weekly digest"]
+    assert drops == ["cooldown dropped 1 pick(s) for weekly digest"]
 
 
 def test_bounded_overflow_never_cuts_mid_ticker():
