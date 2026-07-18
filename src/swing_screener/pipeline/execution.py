@@ -209,7 +209,13 @@ def _guardrail_block(
 
     Mirrors ``_limit_block``: a pure READ + decide; the caller clamps (skip + log).
     Consulted UNCONDITIONALLY (paper host included -- the Stage-0 drill must rehearse
-    every trip path), BEFORE the real-money guard. Each breaker is skipped when unset."""
+    every trip path), BEFORE the real-money guard. Each breaker is skipped when unset.
+
+    LEAK CONTRACT (binding on Task 6's trip callers): the state refusal echoes
+    ``trip_reason`` VERBATIM into cockpit-visible ``ExecutionLog.detail``, so trip
+    reasons must always be internally formatted breaker strings -- never built from
+    exception text, which would bypass ``broker_error_detail``'s class-name-only
+    posture."""
     if g.state != "ok":
         detail = f": {g.trip_reason}" if g.trip_reason else ""
         return f"brake engaged ({g.state}{detail})"
@@ -459,9 +465,10 @@ class LiveAdapter:
     0.5. The GUARDRAILS BRAKE (``_guardrail_block``): the ``agent_guardrails`` state +
        breakers, loaded FRESH per submit and consulted UNCONDITIONALLY (paper host
        included -- the Stage-0 drill rehearses every trip path), BEFORE the real-money
-       guard. An engaged brake ('halted'/'tripped') or a breached breaker clamps to a
-       logged ``skipped`` row with a ``guardrail: ...`` detail -- non-counting, so the
-       key is never burned and a later submit (brake released) upgrades the row.
+       guard. An engaged brake (any non-'ok' state -- fail-safe on unknown states) or
+       a breached breaker clamps to a logged ``skipped`` row with a ``guardrail: ...``
+       detail -- non-counting, so the key is never burned and a later submit (brake
+       released) upgrades the row.
     1. The REAL-MONEY guard, consulted ONLY when ``broker.is_real_money()`` -- a paper broker
        (Alpaca paper) needs no locks and skips it entirely. For a real-money endpoint it
        demands all THREE arming locks (``can_arm_real_money``: mode=live AND allow_real_money

@@ -162,6 +162,24 @@ def test_trades_per_day_breaker_blocks_at_cap() -> None:
         assert skipped.ticker == "AMD"
 
 
+def test_set_but_unbreached_breaker_lets_submit_through() -> None:
+    # a SET breaker below its cap must NOT block -- pins against an
+    # over-blocking regression (e.g. n >= cap - 1), which every all-unset
+    # pass-path test would miss.
+    with _session() as s:
+        _seed_counting_live_log(s, ticker="NVDA", key="k-1")
+        _seed_counting_live_log(s, ticker="MSFT", key="k-2")
+        gr.edit_limits(s, source="test", max_trades_per_day=5)   # 2 < 5: headroom
+        broker = FakeBroker(real_money=False)
+        adapter = LiveAdapter(broker, settings=_live_settings(),
+                              gate_ready_fn=lambda _s: True)
+        result = adapter.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
+
+        assert result.status == "submitted_live"
+        assert result.broker_order_id is not None
+        assert len(broker.submitted_specs) == 1        # the order reached the venue
+
+
 def test_daily_loss_usd_breaker() -> None:
     with _session() as s:
         # (44 - 50) * 10 = -$60 realized today, against a $50 cap.
