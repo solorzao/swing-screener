@@ -306,10 +306,19 @@ def _format_sources(sources: list[tuple[str, str]]) -> str:
 # This is an APPROXIMATE estimate -- it ignores prompt-cache discounts and image
 # tokens -- used only for cost visibility and the Task-2 safety cap, never billing.
 _MODEL_PRICES: dict[str, tuple[float, float]] = {
+    "claude-fable-5": (10.0, 50.0),
     "claude-opus-4-8": (5.0, 25.0),
     "claude-opus-4-7": (5.0, 25.0),
+    "claude-opus-4-6": (5.0, 25.0),
+    "claude-sonnet-5": (3.0, 15.0),
     "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-haiku-4-5": (1.0, 5.0),  # E5 points the coach/auditor here
 }
+# FAIL-SAFE for a model with no row above: charge the MOST EXPENSIVE known rates so
+# the spend cap OVERCOUNTS rather than silently no-ops -- an unnoticed swap to an
+# unpriced (possibly pricier) model is exactly the failure the cap exists to catch.
+_FALLBACK_PRICES = max(_MODEL_PRICES.values())
+_UNPRICED_MODELS_WARNED: set[str] = set()  # warn once per process per model id
 # Web search list price: $10 per 1,000 searches == $0.01 per search (Anthropic docs,
 # web-search tool "Usage and pricing"). Also approximate.
 _WEB_SEARCH_COST_USD = 0.01
@@ -331,8 +340,8 @@ def _capture_usage(resp: object, model: str) -> Usage | None:
 
     GUARDED: a response with no ``usage`` (or ``usage is None``) returns None so the
     capture never crashes the analyst. ``est_cost_usd`` is the approximate list-price
-    estimate (unknown model -> token term 0); web searches always add their per-call
-    cost so a search-heavy unpriced model still shows nonzero spend.
+    estimate; an unknown model prices at ``_FALLBACK_PRICES`` (fail-safe: the spend
+    cap overcounts rather than no-ops) with a once-per-process warning per model id.
     """
     usage = getattr(resp, "usage", None)
     if usage is None:
@@ -340,7 +349,16 @@ def _capture_usage(resp: object, model: str) -> Usage | None:
     in_tok = getattr(usage, "input_tokens", None) or 0
     out_tok = getattr(usage, "output_tokens", None) or 0
     searches = _count_web_searches(usage)
-    in_price, out_price = _MODEL_PRICES.get(model, (0.0, 0.0))
+    prices = _MODEL_PRICES.get(model)
+    if prices is None:
+        if model not in _UNPRICED_MODELS_WARNED:
+            _UNPRICED_MODELS_WARNED.add(model)
+            log.warning(
+                "model %s has no price entry; charging the most expensive known "
+                "rates so the spend cap fails safe", model,
+            )
+        prices = _FALLBACK_PRICES
+    in_price, out_price = prices
     est = (
         in_tok / 1_000_000 * in_price
         + out_tok / 1_000_000 * out_price

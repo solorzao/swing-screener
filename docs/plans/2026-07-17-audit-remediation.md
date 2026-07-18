@@ -68,7 +68,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 **Phase E — `feat/analyst-cost-optimization`** (strict order E1 → E6)
 - [x] E1 `_analyst_call` consolidation (behavior-preserving; both analysis test suites green unchanged)
 - [x] E2 `web_search_20260209` + legacy-retry in `_create_message`
-- [ ] E3a `_MODEL_PRICES` additions + unknown-model fail-safe warning
+- [x] E3a `_MODEL_PRICES` additions + unknown-model fail-safe warning
 - [ ] E3b billed-but-failed usage reaches the spend accumulator
 - [ ] E3c `analyze_ticker_deep` usage capture + `analysis_requests.est_cost_usd` migration
 - [ ] E4 `daily_picks` per-ticker dedup (+ cockpit picks mirror)
