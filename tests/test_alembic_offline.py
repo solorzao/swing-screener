@@ -348,7 +348,11 @@ def test_migration_option_setup_columns_reversible(tmp_path, monkeypatch):
     monkeypatch.setenv("SWING_DB_URL", url)
     cfg = _config(url)
     command.upgrade(cfg, "head")
-    command.downgrade(cfg, "-1")
+    # Downgrade to the revision BELOW the option_setup migration by id, not "-1":
+    # relative steps break the moment a later migration tops the chain (the lab
+    # migration c1d7f3e9a5b2 did exactly that) -- the target is this migration's
+    # own down_revision, so the test keeps reversing THIS migration forever.
+    command.downgrade(cfg, "b4e9f2c7a3d1")
 
     con = sqlite3.connect(db)
     try:

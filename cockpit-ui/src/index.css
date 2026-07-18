@@ -6097,3 +6097,279 @@ a.needs-hand-link:hover {
   color: var(--faint);
   font-size: 11px;
 }
+
+/* ---------- TICKER LAB (TickerLabScreen + LabChart) ----------
+   The on-demand study screen. Chart posture mirrors .gpc-*: hand-rolled SVG,
+   viewBox coordinate space stretched by CSS, colors from tokens only (EMA
+   strokes are color-mix derivations of the palette, the lamp-token precedent).
+   Candles: HA green/red; selection/toggle-on stays blue-tinted (never green —
+   the chips' ON state is a selection, the candle colors are semantics). */
+
+.lab-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 12px 4px;
+  flex-wrap: wrap;
+}
+
+.lab-in {
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  color: var(--txt);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  padding: 5px 8px;
+  width: 160px;
+  text-transform: uppercase;
+}
+
+.lab-in:focus {
+  outline: 1px solid var(--blue);
+  outline-offset: 0;
+}
+
+.lab-study {
+  background: color-mix(in srgb, var(--blue) 18%, var(--panel2));
+  border: 1px solid color-mix(in srgb, var(--blue) 45%, var(--line2));
+  border-radius: 3px;
+  color: var(--txt);
+  font-size: 11.5px;
+  letter-spacing: 0.05em;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+
+.lab-study:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.lab-current {
+  color: var(--dim);
+  font-size: 11.5px;
+}
+
+.lab-togs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 6px 12px 2px;
+}
+
+.lab-tog {
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  color: var(--dim);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  padding: 3px 8px 3px 18px;
+  cursor: pointer;
+  position: relative;
+}
+
+.lab-tog::before {
+  content: '';
+  position: absolute;
+  left: 7px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.9;
+}
+
+.lab-tog-on {
+  border-color: color-mix(in srgb, var(--blue) 55%, var(--line2));
+  background: color-mix(in srgb, var(--blue) 14%, var(--panel2));
+  color: var(--txt);
+}
+
+.lab-tog:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Series colors ride the chip's ::before dot AND the matching SVG classes. */
+.lab-tog-e9 { color: var(--blue); }
+.lab-tog-e21 { color: var(--amber); }
+.lab-tog-e50 { color: color-mix(in srgb, var(--txt) 80%, var(--blue)); }
+.lab-tog-e200 { color: color-mix(in srgb, var(--red) 60%, var(--txt)); }
+.lab-tog-macd { color: var(--blue); }
+.lab-tog-vol { color: var(--dim); }
+.lab-tog-sr { color: var(--red); }
+.lab-tog-fib { color: var(--faint); }
+
+.lab-tog-on.lab-tog-e9 { color: var(--blue); }
+.lab-tog-on.lab-tog-e21 { color: var(--amber); }
+
+.lab-meta {
+  color: var(--faint);
+  font-size: 11px;
+  padding: 2px 12px 6px;
+}
+
+.lab-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+  padding: 0 8px 8px;
+  box-sizing: border-box;
+}
+
+.lab-frame {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.lab-grid {
+  stroke: var(--line);
+  stroke-width: 0.5;
+  stroke-dasharray: 1 4;
+}
+
+.lab-tick {
+  fill: var(--faint);
+  font-size: 9px;
+  font-family: var(--mono);
+}
+
+.lab-pane-lab {
+  fill: var(--faint);
+  font-size: 9px;
+  font-family: var(--mono);
+  letter-spacing: 0.08em;
+}
+
+.lab-candle-up .lab-body { fill: var(--green); }
+.lab-candle-up .lab-wick { stroke: var(--green); stroke-width: 1; }
+.lab-candle-down .lab-body { fill: var(--red); }
+.lab-candle-down .lab-wick { stroke: var(--red); stroke-width: 1; }
+
+.lab-ema {
+  fill: none;
+  stroke-width: 1.4;
+}
+
+.lab-ema9 { stroke: var(--blue); }
+.lab-ema21 { stroke: var(--amber); }
+.lab-ema50 { stroke: color-mix(in srgb, var(--txt) 80%, var(--blue)); }
+.lab-ema200 { stroke: color-mix(in srgb, var(--red) 60%, var(--txt)); }
+
+.lab-lvl {
+  stroke-width: 1;
+  stroke-dasharray: 5 3;
+}
+
+.lab-lvl-lab {
+  font-size: 9px;
+  font-family: var(--mono);
+}
+
+.lab-lvl-res { stroke: var(--red); fill: var(--red); }
+.lab-lvl-sup { stroke: var(--green); fill: var(--green); }
+.lab-lvl-fib { stroke: var(--faint); fill: var(--faint); stroke-dasharray: 2 4; }
+.lab-lvl-close { stroke: var(--txt); fill: var(--txt); stroke-dasharray: 2 3; }
+
+.lab-vol-up { fill: color-mix(in srgb, var(--green) 40%, transparent); }
+.lab-vol-down { fill: color-mix(in srgb, var(--red) 40%, transparent); }
+
+.lab-hist-pos { fill: color-mix(in srgb, var(--green) 55%, transparent); }
+.lab-hist-neg { fill: color-mix(in srgb, var(--red) 55%, transparent); }
+
+.lab-macd-line {
+  fill: none;
+  stroke: var(--blue);
+  stroke-width: 1.2;
+}
+
+.lab-macd-signal {
+  fill: none;
+  stroke: var(--amber);
+  stroke-width: 1.2;
+}
+
+/* ----- deep-analysis panel ----- */
+
+.lab-an-form {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 12px 4px;
+  flex-wrap: wrap;
+}
+
+.lab-an-submit {
+  background: color-mix(in srgb, var(--blue) 18%, var(--panel2));
+  border: 1px solid color-mix(in srgb, var(--blue) 45%, var(--line2));
+  border-radius: 3px;
+  color: var(--txt);
+  font-size: 11.5px;
+  letter-spacing: 0.05em;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+
+.lab-an-submit:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.lab-an-note {
+  color: var(--faint);
+  font-size: 10.5px;
+}
+
+.lab-an-list {
+  display: grid;
+  gap: 10px;
+  padding: 6px 12px 10px;
+}
+
+.lab-an-row {
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  background: var(--panel2);
+  padding: 8px 10px;
+}
+
+.lab-an-head {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.lab-an-ticker {
+  color: var(--txt);
+  font-size: 12.5px;
+}
+
+.lab-an-id {
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.lab-an-times {
+  color: var(--dim);
+  font-size: 10.5px;
+}
+
+.lab-an-report {
+  margin-top: 8px;
+  border-top: 1px dashed var(--line2);
+  padding-top: 8px;
+  font-size: 12.5px;
+  color: var(--txt);
+}
+
+.lab-an-fallback {
+  color: var(--amber);
+  font-size: 11px;
+  margin-bottom: 6px;
+}

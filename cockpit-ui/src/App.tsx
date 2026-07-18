@@ -32,6 +32,7 @@ import { ReferenceScreen } from './screens/ReferenceScreen'
 import { SafetyScreen } from './screens/SafetyScreen'
 import { SystemAuditScreen } from './screens/SystemAuditScreen'
 import { SystemsScreen } from './screens/SystemsScreen'
+import { TickerLabScreen } from './screens/TickerLabScreen'
 import { WeatherScreen } from './screens/WeatherScreen'
 
 /** The last analysis id the user has SEEN (localStorage; scope decision 14 —
@@ -307,6 +308,8 @@ export default function App() {
             <SystemAuditScreen wake={wake} />
           ) : screen === 'metrics' ? (
             <MetricsScreen wake={wake} />
+          ) : screen === 'tickerlab' ? (
+            <TickerLabScreen wake={wake} />
           ) : (
             // Unreachable: every ScreenId has an explicit branch above. The
             // placeholder survives as the defensive default so a future ScreenId

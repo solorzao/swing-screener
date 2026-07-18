@@ -29,6 +29,7 @@ from swing_screener.db.models import (
     JournalThesis,
     JournalTradeTag,
     GexSnapshot,
+    LabAnalysis,
     SystemAudit,
     MarketReport,
     OptionPaperTrade,
@@ -188,6 +189,21 @@ def _change_token(engine: Engine, edge_dir: Path) -> dict[str, str]:
             "execution": _watermark(
                 session.scalar(select(func.max(ExecutionLog.id)))
             ),
+            # TICKER LAB deep analyses: the in-process drain claims (started_at
+            # UPDATE) and completes (finished_at UPDATE) without new ids, so both
+            # ride beside max(id) -- the analysis-queue idiom. The acting window
+            # also gets the action-nonce bump; this covers every OTHER window and
+            # a second cockpit process on the same DB.
+            "lab": "|".join((
+                _watermark(session.scalar(select(func.max(LabAnalysis.id)))),
+                _watermark(
+                    session.scalar(select(func.max(LabAnalysis.finished_at)))
+                ),
+                _watermark(session.scalar(
+                    select(func.count(LabAnalysis.id))
+                    .where(LabAnalysis.started_at.is_not(None))
+                )),
+            )),
             "analyst": "|".join((
                 _watermark(session.scalar(select(func.max(AnalystCall.id)))),
                 _watermark(session.scalar(

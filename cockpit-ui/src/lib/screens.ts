@@ -3,8 +3,8 @@
    There is deliberately NO router: StaticFiles(html=True) is not an SPA
    fallback (a deep link would 404) and pywebview loads the root URL once —
    screens are App STATE. The nine design-numbered screens ride the 1-9 keys;
-   the five digitless screens (Reference, Journal, GEX Lab, System Audit,
-   Metrics) ride registry-rendered masthead links AND the `g`-leader chord:
+   the six digitless screens (Reference, Journal, GEX Lab, System Audit,
+   Metrics, Ticker Lab) ride registry-rendered masthead links AND the `g`-leader chord:
    press `g`, then the screen's chord letter (600 ms window, bails in typing
    contexts exactly like the digits).
 
@@ -28,6 +28,7 @@ export type ScreenId =
   | 'gexlab'
   | 'systemaudit'
   | 'metrics'
+  | 'tickerlab'
 
 export interface ScreenDef {
   id: ScreenId
@@ -57,6 +58,7 @@ export const SCREENS: ScreenDef[] = [
   { id: 'gexlab', digit: null, chord: 'x', title: 'GEX LAB' },
   { id: 'systemaudit', digit: null, chord: 'a', title: 'SYSTEM AUDIT' },
   { id: 'metrics', digit: null, chord: 'm', title: 'METRICS' },
+  { id: 'tickerlab', digit: null, chord: 't', title: 'TICKER LAB' },
 ]
 
 /** The g-leader itself — one place, so App's keydown and the masthead hint
