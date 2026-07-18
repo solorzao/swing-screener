@@ -7,7 +7,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from swing_screener.config import StrategyConfig
-from swing_screener.db import repo
 from swing_screener.db.models import PaperTrade, Signal
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline import run
@@ -115,6 +114,13 @@ def _write_universe(tmp_path, tickers):
     return p
 
 
+def _signals_for(session, run_date):
+    """One run's signals, rank-ascending (direct query; the repo read-back wrapper
+    was deleted as dead -- 2026-07-17 audit L2)."""
+    return list(session.scalars(
+        select(Signal).where(Signal.run_date == run_date).order_by(Signal.rank)))
+
+
 def test_run_persists_ranked_signals_and_writes_charts(tmp_path, bars, monkeypatch):
     def fake_fetch(ticker, *, cache_dir, today, cfg):
         return {"1d": _firing(bars)} if ticker == "AAPL" else {}
@@ -128,7 +134,7 @@ def test_run_persists_ranked_signals_and_writes_charts(tmp_path, bars, monkeypat
     )
     assert res.n_signals >= 1
     with Session(get_engine(db)) as s:
-        sigs = repo.latest_signals(s, date(2024, 4, 1))
+        sigs = _signals_for(s, date(2024, 4, 1))
         assert any(x.ticker == "AAPL" for x in sigs)
         assert sigs[0].rank == 1
     assert list((tmp_path / "charts").glob("AAPL_1d_*.png"))  # chart written
@@ -231,8 +237,8 @@ def test_run_stamps_extension_and_inherits_first_seen_across_runs(tmp_path, bars
     run.run_screen(today=date(2024, 4, 2), **kw)  # same setup fires again next run
 
     with Session(get_engine(db)) as s:
-        d1 = next(x for x in repo.latest_signals(s, date(2024, 4, 1)) if x.ticker == "AAPL")
-        d2 = next(x for x in repo.latest_signals(s, date(2024, 4, 2)) if x.ticker == "AAPL")
+        d1 = next(x for x in _signals_for(s, date(2024, 4, 1)) if x.ticker == "AAPL")
+        d2 = next(x for x in _signals_for(s, date(2024, 4, 2)) if x.ticker == "AAPL")
     assert d1.first_seen_date == date(2024, 4, 1)            # fresh on the first run
     assert d2.first_seen_date == date(2024, 4, 1)            # streak start carried forward
     assert d1.extension_atr is not None and d1.extension_atr > 0  # freshness metric persisted

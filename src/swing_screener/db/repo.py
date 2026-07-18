@@ -36,11 +36,6 @@ def save_signals(session: Session, signals: Sequence[Signal]) -> None:
     session.commit()
 
 
-def latest_signals(session: Session, run_date: date) -> list[Signal]:
-    stmt = select(Signal).where(Signal.run_date == run_date).order_by(Signal.rank)
-    return list(session.scalars(stmt))
-
-
 def latest_run_date(session: Session) -> date | None:
     """The most recent run_date present in the signals table, or None if empty."""
     stmt = select(Signal.run_date).order_by(Signal.run_date.desc()).limit(1)

@@ -10,10 +10,11 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from swing_screener.config import StrategyConfig
-from swing_screener.db import repo
+from swing_screener.db.models import Signal
 from swing_screener.db.session import get_engine
 from swing_screener.notify import pdf as pdf_mod
 from swing_screener.notify.pdf import PdfPick, build_digest_pdf
@@ -28,6 +29,13 @@ _NO_EXT_GATE = StrategyConfig(max_extension_atr=0.0)
 _PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 )
+
+
+def _signals_for(session, run_date):
+    """One run's signals, rank-ascending (direct query; the repo read-back wrapper
+    was deleted as dead -- 2026-07-17 audit L2)."""
+    return list(session.scalars(
+        select(Signal).where(Signal.run_date == run_date).order_by(Signal.rank)))
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +115,7 @@ def test_pipeline_blob_enabled_sets_key_and_uploads(tmp_path, bars, monkeypatch)
 
     expected_key = f"{today:%Y%m%d}/AAPL_1d_{today:%Y%m%d}.png"
     with Session(get_engine(db)) as s:
-        sigs = repo.latest_signals(s, today)
+        sigs = _signals_for(s, today)
         charted = [x for x in sigs if x.chart_path is not None]
         assert charted, "expected at least one charted signal"
         aapl = next(x for x in charted if x.ticker == "AAPL")
@@ -150,7 +158,7 @@ def test_pipeline_blob_disabled_keeps_local_path(tmp_path, bars, monkeypatch):
 
     expected_local = str(tmp_path / "charts" / f"AAPL_1d_{today:%Y%m%d}.png")
     with Session(get_engine(db)) as s:
-        sigs = repo.latest_signals(s, today)
+        sigs = _signals_for(s, today)
         aapl = next(x for x in sigs if x.ticker == "AAPL" and x.chart_path)
         assert aapl.chart_path == expected_local
     assert calls == []  # upload never called when disabled

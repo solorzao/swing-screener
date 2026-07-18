@@ -65,7 +65,7 @@ first, so a retry won't double-count.
 ## Inspecting results
 
 ```powershell
-.\.venv\Scripts\python -c "from sqlalchemy.orm import Session; from swing_screener.db.session import get_engine; from swing_screener.db import repo; from datetime import date; s=Session(get_engine('sqlite:///local.db')); rows=repo.latest_signals(s, date.today()); print(len(rows), 'signals'); [print(r.rank, r.ticker, r.timeframe, round(r.score,3), r.quality_tier, r.volatility_tier) for r in rows[:10]]"
+.\.venv\Scripts\python -c "from sqlalchemy import select; from sqlalchemy.orm import Session; from swing_screener.db.session import get_engine; from swing_screener.db.models import Signal; from datetime import date; s=Session(get_engine('sqlite:///local.db')); rows=list(s.scalars(select(Signal).where(Signal.run_date == date.today()).order_by(Signal.rank))); print(len(rows), 'signals'); [print(r.rank, r.ticker, r.timeframe, round(r.score,3), r.quality_tier, r.volatility_tier) for r in rows[:10]]"
 ```
 
 Charts land in `.charts/<TICKER>_<TF>_<YYYYMMDD>.png`. Both the DB and these dirs
