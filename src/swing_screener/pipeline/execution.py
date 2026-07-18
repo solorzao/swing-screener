@@ -220,28 +220,17 @@ def _guardrail_block(
     ``trip_reason`` VERBATIM into cockpit-visible ``ExecutionLog.detail``, so trip
     reasons must always be internally formatted breaker strings -- never built from
     exception text, which would bypass ``broker_error_detail``'s class-name-only
-    posture."""
+    posture.
+
+    The four per-breaker checks live in ``guardrails_repo.breached_breaker`` --
+    shared with the dispatch loop's trip evaluation
+    (``pipeline.guardrails.evaluate_breakers``), so "breached" has exactly one
+    definition; this wrapper adds only the state refusal the submit clamp needs."""
     if g.state != "ok":
         detail = f": {g.trip_reason}" if g.trip_reason else ""
         return f"brake engaged ({g.state}{detail})"
-    if g.max_trades_per_day is not None:
-        n = guardrails_repo.trades_today(session, run_date=run_date)
-        if n >= g.max_trades_per_day:
-            return f"max trades/day: {n} >= {g.max_trades_per_day}"
-    if g.max_daily_loss_usd is not None:
-        day_usd = guardrails_repo.realized_usd_on(session, run_date=run_date)
-        if day_usd <= -g.max_daily_loss_usd:
-            return f"max daily loss: ${day_usd:.2f} <= -${g.max_daily_loss_usd:.2f}"
-    if g.max_drawdown_usd is not None:
-        dd = guardrails_repo.live_drawdown_usd(
-            session, anchor_date=g.hwm_anchor_date, baseline_usd=g.hwm_baseline_usd)
-        if dd >= g.max_drawdown_usd:
-            return f"max drawdown: ${dd:.2f} >= ${g.max_drawdown_usd:.2f}"
-    if g.loss_streak_halt is not None:
-        s = guardrails_repo.live_loss_streak(session)
-        if s >= g.loss_streak_halt:
-            return f"loss streak: {s} >= {g.loss_streak_halt}"
-    return None
+    breach = guardrails_repo.breached_breaker(session, g, run_date=run_date)
+    return None if breach is None else breach[1]
 
 
 class NoOpAdapter:

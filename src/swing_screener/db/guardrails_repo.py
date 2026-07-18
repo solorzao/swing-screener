@@ -478,6 +478,43 @@ def live_loss_streak(session: Session) -> int:
     return streak
 
 
+def breached_breaker(
+    session: Session, g: GuardrailsState, *, run_date: date
+) -> tuple[str, str] | None:
+    """``(breaker_column_name, reason)`` for the FIRST breached breaker, else None.
+
+    The four per-breaker checks, extracted from ``execution._guardrail_block``
+    so the submit-side clamp and the dispatch-loop trip evaluation
+    (``pipeline.guardrails.evaluate_breakers``) share ONE definition of
+    "breached" -- same order, same thresholds, byte-identical reason strings
+    (tests/pipeline/test_execution_guardrails.py pins them, and the reasons echo
+    verbatim into cockpit-visible detail/trip_reason). Lives HERE rather than in
+    execution.py because it consumes only this module's queries + snapshot type,
+    and guardrails_repo must never import the pipeline layer (no cycle can ever
+    form). A pure READ + decide: no state consult (state is a trip's OUTCOME,
+    not an input), no clamp, no write. Each breaker is skipped when unset."""
+    if g.max_trades_per_day is not None:
+        n = trades_today(session, run_date=run_date)
+        if n >= g.max_trades_per_day:
+            return "max_trades_per_day", f"max trades/day: {n} >= {g.max_trades_per_day}"
+    if g.max_daily_loss_usd is not None:
+        day_usd = realized_usd_on(session, run_date=run_date)
+        if day_usd <= -g.max_daily_loss_usd:
+            return ("max_daily_loss_usd",
+                    f"max daily loss: ${day_usd:.2f} <= -${g.max_daily_loss_usd:.2f}")
+    if g.max_drawdown_usd is not None:
+        dd = live_drawdown_usd(
+            session, anchor_date=g.hwm_anchor_date, baseline_usd=g.hwm_baseline_usd)
+        if dd >= g.max_drawdown_usd:
+            return ("max_drawdown_usd",
+                    f"max drawdown: ${dd:.2f} >= ${g.max_drawdown_usd:.2f}")
+    if g.loss_streak_halt is not None:
+        s = live_loss_streak(session)
+        if s >= g.loss_streak_halt:
+            return "loss_streak_halt", f"loss streak: {s} >= {g.loss_streak_halt}"
+    return None
+
+
 def guardrails_mandate_ok(session: Session) -> tuple[bool, str]:
     """The mandate that real money may not dispatch with an unset breaker.
 

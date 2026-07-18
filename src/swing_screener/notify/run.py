@@ -31,7 +31,7 @@ from swing_screener.config_secrets import get_secret
 from swing_screener.data.fetch import fetch_bars
 from swing_screener.data.quotes import latest_closes
 from swing_screener.data.universe import names_by_ticker
-from swing_screener.db import repo
+from swing_screener.db import guardrails_repo, repo
 from swing_screener.db.models import EmailLog, ExitEvent, Signal
 from swing_screener.db.session import get_engine
 from swing_screener.notify import market_context
@@ -65,6 +65,7 @@ from swing_screener.pipeline.autonomy import autonomy_gate, gate_status_line
 from swing_screener.pipeline.health import health_line
 from swing_screener.pipeline.broker import BrokerClient
 from swing_screener.pipeline.broker_alpaca import build_broker
+from swing_screener.pipeline import guardrails as gpipe
 from swing_screener.pipeline.disarm import ensure_stop_protection, pull_entry_orders
 from swing_screener.pipeline.execution import (
     UNSIZED_DETAIL,
@@ -745,6 +746,40 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                                     "kill switch: %d position(s) left UNPROTECTED: "
                                     "%s", len(unprotected), ", ".join(unprotected))
                         break
+                    # THE GUARDRAILS BRAKE (Task 6) -- LiveAdapter only, mirroring the
+                    # kill switch's isinstance gate: only the live path arms a venue.
+                    # Re-read FRESH per intent (a cockpit HALT / another process's trip
+                    # can land mid-loop). When state is already 'tripped', breach
+                    # evaluation is SKIPPED (respond_to_trip is not called) -- the trip
+                    # owner already ran the response; resume_incomplete_sweep is the
+                    # re-run owner for a pending/partial sweep. When state is 'ok' but
+                    # a breaker is breached, respond_to_trip runs the full ordered
+                    # protocol (persist-first, sweep, outcome, email seam -- emailer
+                    # None until Task 10). The submit-side brake in LiveAdapter stays
+                    # the hard backstop; this consult is the RESPONSE trigger.
+                    if isinstance(adapter, LiveAdapter):
+                        gpipe.resume_incomplete_sweep(
+                            session, broker=live_broker, source="digest")
+                        g = guardrails_repo.load_guardrails(session)
+                        breach = (None if g.state != "ok"
+                                  else gpipe.evaluate_breakers(session, run_date=run_date))
+                        if breach is not None:
+                            gpipe.respond_to_trip(
+                                session, breaker=breach[0], reason=breach[1],
+                                source="digest", broker=live_broker, emailer=None)
+                        if breach is not None or g.state != "ok":
+                            log.warning("guardrails brake: halting dispatch for %s %s",
+                                        kind, run_date)
+                            if g.state == "halted" and live_broker is not None:
+                                # manual HALT: same protective sweep as the kill
+                                # switch, but NO trip is recorded (a HALT is not a
+                                # breach -- there is nothing to trip on).
+                                pull_entry_orders(live_broker)
+                                ensure_stop_protection(
+                                    live_broker,
+                                    lambda sym: repo.latest_recorded_stop(session, sym),
+                                    key_suffix=f"halt-{run_date:%Y%m%d}")
+                            break
                     result = adapter.submit(
                         intent, session=session, run_date=run_date, limits=limits)
                     tickets[(intent.ticker, intent.play_type)] = _ticket_line(intent, result)

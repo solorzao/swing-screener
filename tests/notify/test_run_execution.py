@@ -22,11 +22,14 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from swing_screener.db.models import ExecutionLog, Signal
+from swing_screener.db import guardrails_repo as gr
+from swing_screener.db import repo
+from swing_screener.db.models import AgentGuardrailEvent, ExecutionLog, PaperTrade, Signal
 from swing_screener.db.session import get_engine
 from swing_screener.notify import run
 from swing_screener.notify.analysis import ConvictionResult, SignalAnalysis
 from swing_screener.notify.market_context import Fundamentals
+from swing_screener.pipeline.broker import BrokerOrderSpec, FakeBroker
 from swing_screener.pipeline.execution import UNSIZED_DETAIL, OrderResult
 from swing_screener.pipeline.insight import OrderIntent
 from swing_screener.pipeline.reflect import Verdict
@@ -198,6 +201,118 @@ def test_zero_share_intent_never_reaches_adapter_and_renders_unsized(tmp_path, m
     assert "order ticket" in body   # the synthetic ticket still renders honestly
     assert UNSIZED_DETAIL in body   # the shared detail constant, verbatim
     assert "skipped" in body
+
+
+class _CancelCountingBroker(FakeBroker):
+    """A FakeBroker that counts cancels, so 'entries pulled ONCE' is assertable."""
+
+    def __init__(self, **kw: object) -> None:
+        super().__init__(**kw)  # type: ignore[arg-type]
+        self.cancels = 0
+
+    def cancel_order(self, broker_order_id: str) -> None:  # type: ignore[override]
+        self.cancels += 1
+        super().cancel_order(broker_order_id)
+
+
+def _entry_spec(key: str, symbol: str, **overrides: object) -> BrokerOrderSpec:
+    base: dict[str, object] = dict(client_order_id=key, symbol=symbol, side="buy",
+                                   qty=10, order_type="limit", limit_price=100.0,
+                                   time_in_force="day")
+    base.update(overrides)
+    return BrokerOrderSpec(**base)  # type: ignore[arg-type]
+
+
+def _live_env(monkeypatch):
+    """Arm the LIVE dispatch path: deep on, sized intents, execution mode live.
+    The broker is always an injected FakeBroker, so no venue can ever be touched."""
+    _enable_deep(monkeypatch)
+    monkeypatch.setenv("SWING_RISK_PER_TRADE_DOLLARS", "300")
+    monkeypatch.setenv("SWING_EXECUTION_MODE", "live")
+
+
+def test_dispatch_loop_halts_batch_on_trip(tmp_path, monkeypatch):
+    """A breached breaker BEFORE dispatch: zero submits (the whole batch halts on
+    the first guardrails consult), the trip is persisted + swept, and the resting
+    entry order is pulled exactly once."""
+    _live_env(monkeypatch)
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS_TOP_N", "3")   # 3 sized intents
+    url = f"sqlite:///{tmp_path / 'trip.sqlite'}"
+    _seed(url, n=3)
+    with Session(get_engine(url)) as s:
+        # a -$60 realized live day against a $50 cap: the daily-loss breaker breached.
+        s.add(PaperTrade(
+            ticker="LOSE", timeframe="1d", horizon="medium", signal_score=0.8, rank=1,
+            account="live", fill_status="filled", entry_date=date(2026, 6, 10),
+            entry_price=50.0, stop=45.0, target=60.0, risk=5.0, status="closed",
+            exit_date=RUN, exit_price=44.0, realized_r=-1.2, qty=10))
+        s.commit()
+        gr.edit_limits(s, source="test", max_daily_loss_usd=50.0)
+    broker = _CancelCountingBroker()
+    broker.submit_order(_entry_spec("rest-1", "TSLA"))     # a resting entry at the venue
+    n_armed = len(broker.submitted_specs)
+    sent = []
+
+    res = run.send_digest(**_insight_kwargs(
+        tmp_path, url, smtp_send=lambda **k: sent.append(k), broker=broker,
+        mode_reader=lambda: "live"))
+
+    assert res.sent is True                                # the digest still went out
+    with Session(get_engine(url)) as s:
+        g = gr.load_guardrails(s)
+        assert g.state == "tripped"                        # the trip persisted
+        assert g.sweep_state == "complete"
+        assert s.query(AgentGuardrailEvent).filter_by(kind="trip").count() == 1
+        assert list(s.scalars(select(ExecutionLog))) == [] # ZERO submits reached an adapter
+    assert broker.list_open_orders() == []                 # the entry order was pulled...
+    assert broker.cancels == 1                             # ...exactly once
+    assert len(broker.submitted_specs) == n_armed          # no NEW venue orders placed
+
+
+def test_halted_state_stops_dispatch_and_pulls_entries(tmp_path, monkeypatch):
+    """A manual HALT (not a breach): the batch stops, entries are pulled and dead
+    stops restored (the kill-switch sweep), and NO trip event is recorded."""
+    _live_env(monkeypatch)
+    url = f"sqlite:///{tmp_path / 'halt.sqlite'}"
+    _seed(url, n=1)
+    with Session(get_engine(url)) as s:
+        assert gr.halt(s, source="test") is True
+        # the recorded live ticket the halt sweep copies NVDA's stop level from.
+        repo.add_execution_log(
+            s, created_date=RUN, ticker="NVDA", timeframe="1d",
+            play_type="continuation", run_date=RUN, account="live", mode="live",
+            side="buy", limit_price=100.0, shares=8, stop=95.0, target=110.0,
+            risk_dollars=40.0, notional=800.0, status="submitted_live",
+            detail="live order", idempotency_key="k-nvda")
+    broker = FakeBroker()
+    broker.submit_order(_entry_spec("rest-1", "TSLA"))     # a resting entry to pull
+    entry = broker.submit_order(_entry_spec("k-nvda", "NVDA", qty=8, stop_loss=95.0,
+                                            take_profit=110.0))
+    broker.fill(entry.broker_order_id, 100.0)              # a filled bracket position...
+    for order in list(broker.list_open_orders()):          # ...whose legs already died
+        if order.side == "sell":
+            broker.cancel_order(order.broker_order_id)
+    sent = []
+
+    res = run.send_digest(**_insight_kwargs(
+        tmp_path, url, smtp_send=lambda **k: sent.append(k), broker=broker,
+        mode_reader=lambda: "live"))
+
+    assert res.sent is True
+    open_orders = broker.list_open_orders()
+    assert [o for o in open_orders if o.side == "buy"] == []          # entries pulled
+    stops = [o for o in open_orders if o.side == "sell" and o.order_type == "stop"]
+    assert [o.symbol for o in stops] == ["NVDA"]                      # stop restored
+    restored = broker.submitted_specs[-1]
+    assert restored.stop_price == 95.0                     # COPIED from the ticket
+    assert restored.client_order_id == f"disarm-stop-NVDA-halt-{RUN:%Y%m%d}"
+    with Session(get_engine(url)) as s:
+        g = gr.load_guardrails(s)
+        assert g.state == "halted"                         # a HALT is not a breach...
+        assert g.sweep_state is None
+        assert s.query(AgentGuardrailEvent).filter_by(kind="trip").count() == 0
+        # only the seeded ticket exists: no submit reached the adapter.
+        assert s.query(ExecutionLog).count() == 1
 
 
 def test_off_mode_does_not_dispatch_or_render_or_log(tmp_path, monkeypatch):
