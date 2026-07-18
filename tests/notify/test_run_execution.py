@@ -24,7 +24,13 @@ from sqlalchemy.orm import Session
 
 from swing_screener.db import guardrails_repo as gr
 from swing_screener.db import repo
-from swing_screener.db.models import AgentGuardrailEvent, ExecutionLog, PaperTrade, Signal
+from swing_screener.db.models import (
+    AgentGuardrailEvent,
+    DisarmEvent,
+    ExecutionLog,
+    PaperTrade,
+    Signal,
+)
 from swing_screener.db.session import get_engine
 from swing_screener.notify import run
 from swing_screener.notify.analysis import ConvictionResult, SignalAnalysis
@@ -313,6 +319,150 @@ def test_halted_state_stops_dispatch_and_pulls_entries(tmp_path, monkeypatch):
         assert s.query(AgentGuardrailEvent).filter_by(kind="trip").count() == 0
         # only the seeded ticket exists: no submit reached the adapter.
         assert s.query(ExecutionLog).count() == 1
+        # the halt sweep moved venue state -> it is on the Auditor's conduct record.
+        ev = s.query(DisarmEvent).one()
+        assert ev.reason == "halt"
+        assert ev.orders_cancelled == 1                    # the resting TSLA entry
+
+
+def test_tripped_pending_sweep_resumes_even_when_mode_off(tmp_path, monkeypatch):
+    """THE resume hoist (2026-07-18 red-team break 1): a tripped book with an
+    unfinished sweep is resumed ONCE PER RUN, outside every dispatch gate -- even
+    with execution_mode=off (the operator's natural post-trip reaction), zero
+    picks, or no live adapter. The broker is built on demand from the seam."""
+    _enable_deep(monkeypatch)
+    monkeypatch.setenv("SWING_EXECUTION_MODE", "off")      # NoOp adapter, no dispatch
+    url = f"sqlite:///{tmp_path / 'resume.sqlite'}"
+    _seed(url, n=1)
+    with Session(get_engine(url)) as s:
+        # last night's trip, swept by nobody (the evening screen had no broker).
+        assert gr.trip(s, breaker="max_daily_loss_usd",
+                       reason="max daily loss: $-60.00 <= -$50.00",
+                       source="screen") is not None
+        assert gr.load_guardrails(s).sweep_state == "pending"
+    broker = FakeBroker()
+    broker.submit_order(_entry_spec("rest-1", "TSLA"))     # a DAY entry, still fillable
+    sent = []
+
+    res = run.send_digest(**_insight_kwargs(
+        tmp_path, url, smtp_send=lambda **k: sent.append(k), broker=broker))
+
+    assert res.sent is True
+    assert broker.list_open_orders() == []                 # the entry was pulled
+    with Session(get_engine(url)) as s:
+        g = gr.load_guardrails(s)
+        assert g.state == "tripped"
+        assert g.sweep_state == "complete"                 # the hoist finished the sweep
+        assert s.query(DisarmEvent).one().reason == "guardrail:max_daily_loss_usd"
+
+
+def test_halted_with_breach_still_records_the_trip(tmp_path, monkeypatch):
+    """A breach DURING a manual HALT must still be recorded as a trip (red-team
+    break 5): run_date-scoped breakers (daily loss) evaporate when the date
+    advances, so skipping evaluation while halted loses the conduct record
+    permanently. The repo election deliberately lets a trip overwrite 'halted'."""
+    _live_env(monkeypatch)
+    url = f"sqlite:///{tmp_path / 'haltbreach.sqlite'}"
+    _seed(url, n=1)
+    with Session(get_engine(url)) as s:
+        assert gr.halt(s, source="test") is True
+        s.add(PaperTrade(
+            ticker="LOSE", timeframe="1d", horizon="medium", signal_score=0.8, rank=1,
+            account="live", fill_status="filled", entry_date=date(2026, 6, 10),
+            entry_price=50.0, stop=45.0, target=60.0, risk=5.0, status="closed",
+            exit_date=RUN, exit_price=44.0, realized_r=-1.2, qty=10))
+        s.commit()
+        gr.edit_limits(s, source="test", max_daily_loss_usd=50.0)
+    broker = _CancelCountingBroker()
+    broker.submit_order(_entry_spec("rest-1", "TSLA"))
+    sent = []
+
+    res = run.send_digest(**_insight_kwargs(
+        tmp_path, url, smtp_send=lambda **k: sent.append(k), broker=broker,
+        mode_reader=lambda: "live"))
+
+    assert res.sent is True
+    with Session(get_engine(url)) as s:
+        g = gr.load_guardrails(s)
+        assert g.state == "tripped"                        # the trip OVERWROTE the halt
+        assert g.sweep_state == "complete"
+        assert s.query(AgentGuardrailEvent).filter_by(kind="trip").count() == 1
+        assert list(s.scalars(select(ExecutionLog))) == [] # no submits
+    assert broker.list_open_orders() == []                 # sweep ran...
+    assert broker.cancels == 1                             # ...exactly once (no halt-sweep double)
+
+
+def test_mid_batch_trip_halts_remaining_intents(tmp_path, monkeypatch):
+    """The mid-batch trip: with max_trades_per_day=1 and three sized intents, the
+    first SUBMITS, the second intent's consult trips the breaker, and the rest of
+    the batch never reaches the adapter. The sweep pulls the day's own
+    just-submitted resting entry (intended -- once the cap is hit, nothing
+    unfilled may keep working)."""
+    _live_env(monkeypatch)
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS_TOP_N", "3")   # 3 sized intents
+    url = f"sqlite:///{tmp_path / 'midbatch.sqlite'}"
+    _seed(url, n=3)
+    with Session(get_engine(url)) as s:
+        gr.edit_limits(s, source="test", max_trades_per_day=1)
+    broker = _CancelCountingBroker()
+    sent = []
+
+    res = run.send_digest(**_insight_kwargs(
+        tmp_path, url, smtp_send=lambda **k: sent.append(k), broker=broker,
+        mode_reader=lambda: "live"))
+
+    assert res.sent is True
+    with Session(get_engine(url)) as s:
+        logs = list(s.scalars(select(ExecutionLog)))
+        assert [(log.ticker, log.status) for log in logs] == [("AMD", "submitted_live")]
+        g = gr.load_guardrails(s)
+        assert g.state == "tripped"
+        assert g.trip_reason == "max trades/day: 1 >= 1"
+        assert g.sweep_state == "complete"
+        assert s.query(AgentGuardrailEvent).filter_by(kind="trip").count() == 1
+    assert broker.list_open_orders() == []                 # AMD's own entry was pulled
+    assert broker.cancels == 1
+
+
+def test_outcome_write_failure_never_blocks_the_digest(tmp_path, monkeypatch):
+    """Red-team break 3: a sweep-outcome write that dies mid-UPDATE poisons the
+    shared session; without the guarded write + except-rollback the next session
+    use (the autonomy footer) raises PendingRollbackError and NO email goes out."""
+    _live_env(monkeypatch)
+    url = f"sqlite:///{tmp_path / 'poison.sqlite'}"
+    _seed(url, n=1)
+    with Session(get_engine(url)) as s:
+        s.add(PaperTrade(
+            ticker="LOSE", timeframe="1d", horizon="medium", signal_score=0.8, rank=1,
+            account="live", fill_status="filled", entry_date=date(2026, 6, 10),
+            entry_price=50.0, stop=45.0, target=60.0, risk=5.0, status="closed",
+            exit_date=RUN, exit_price=44.0, realized_r=-1.2, qty=10))
+        s.commit()
+        gr.edit_limits(s, source="test", max_daily_loss_usd=50.0)
+
+    def _poisoning_outcome(session, **kw):
+        # a real mid-write failure that POISONS the session: a failed flush
+        # (NOT NULL violation) leaves it inactive -- PendingRollbackError on
+        # every next use (the autonomy footer) until somebody rolls back.
+        session.add(DisarmEvent(created_at=None, reason="boom", orders_cancelled=0))
+        session.flush()
+
+    monkeypatch.setattr(gr, "record_sweep_outcome", _poisoning_outcome)
+    broker = FakeBroker()
+    broker.submit_order(_entry_spec("rest-1", "TSLA"))
+    sent = []
+
+    res = run.send_digest(**_insight_kwargs(
+        tmp_path, url, smtp_send=lambda **k: sent.append(k), broker=broker,
+        mode_reader=lambda: "live"))
+
+    assert res.sent is True                                # the digest still went out
+    assert len(sent) == 1
+    assert broker.list_open_orders() == []                 # the sweep itself ran
+    with Session(get_engine(url)) as s:
+        g = gr.load_guardrails(s)
+        assert g.state == "tripped"                        # the brake held
+        assert g.sweep_state == "pending"                  # outcome unrecorded -> re-runnable
 
 
 def test_off_mode_does_not_dispatch_or_render_or_log(tmp_path, monkeypatch):

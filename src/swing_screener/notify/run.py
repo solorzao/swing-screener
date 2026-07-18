@@ -66,7 +66,7 @@ from swing_screener.pipeline.health import health_line
 from swing_screener.pipeline.broker import BrokerClient
 from swing_screener.pipeline.broker_alpaca import build_broker
 from swing_screener.pipeline import guardrails as gpipe
-from swing_screener.pipeline.disarm import ensure_stop_protection, pull_entry_orders
+from swing_screener.pipeline.disarm import run_protective_sweep
 from swing_screener.pipeline.execution import (
     UNSIZED_DETAIL,
     ExecutionAdapter,
@@ -451,6 +451,26 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
 
     engine = get_engine(db_url)
     with Session(engine) as session:
+        # GUARDRAIL SWEEP RESUME -- once per run, OUTSIDE every dispatch gate
+        # (2026-07-18 red-team): the in-loop resume below runs only with intents
+        # collected AND a live adapter AND a live broker, so a crash mid-trip-sweep
+        # (or the operator flipping SWING_EXECUTION_MODE off after a trip -- the
+        # natural reaction) would leave resting DAY entries fillable for hours
+        # with nothing retrying, and a zero-pick morning would never resume at
+        # all. Here: if the book is tripped with an unfinished sweep, build a
+        # broker ON DEMAND (the injected seam or settings -- REGARDLESS of the
+        # execution mode) and finish it. Swallow-everything: protection is
+        # best-effort, the digest must always send. The state check comes first
+        # so the broker is only ever built when there is a sweep to finish.
+        try:
+            g0 = guardrails_repo.load_guardrails(session)
+            if g0.state == "tripped" and g0.sweep_state in ("pending", "partial"):
+                resume_broker = live_broker or broker or build_broker(cfg)
+                gpipe.resume_incomplete_sweep(session, broker=resume_broker,
+                                              source="digest")
+        except Exception:  # the sweep resume must never block the digest
+            log.warning("guardrail sweep resume failed for %s", kind, exc_info=True)
+
         # The digest summarizes the LATEST screen run -- the morning digest reflects
         # the prior evening's screen (they run on different days), so defaulting to
         # date.today() would query a run_date with no signals. An explicit run_date
@@ -731,11 +751,15 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                         log.warning("execution kill switch: halting dispatch for %s %s "
                                     "and pulling entry-side resting orders", kind, run_date)
                         if live_broker is not None:
-                            pull_entry_orders(live_broker)
-                            restored, unprotected = ensure_stop_protection(
+                            entries, restored, unprotected = run_protective_sweep(
                                 live_broker,
                                 lambda sym: repo.latest_recorded_stop(session, sym),
                                 key_suffix=f"kill-{run_date:%Y%m%d}")
+                            # a venue-moving sweep always reaches the Auditor's
+                            # conduct record (best-effort, never raises).
+                            gpipe.record_disarm_event(
+                                session, reason="kill-switch",
+                                orders_cancelled=len(entries))
                             if restored:
                                 log.warning(
                                     "kill switch: re-submitted %d protective "
@@ -749,19 +773,22 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                     # THE GUARDRAILS BRAKE (Task 6) -- LiveAdapter only, mirroring the
                     # kill switch's isinstance gate: only the live path arms a venue.
                     # Re-read FRESH per intent (a cockpit HALT / another process's trip
-                    # can land mid-loop). When state is already 'tripped', breach
-                    # evaluation is SKIPPED (respond_to_trip is not called) -- the trip
-                    # owner already ran the response; resume_incomplete_sweep is the
-                    # re-run owner for a pending/partial sweep. When state is 'ok' but
-                    # a breaker is breached, respond_to_trip runs the full ordered
-                    # protocol (persist-first, sweep, outcome, email seam -- emailer
-                    # None until Task 10). The submit-side brake in LiveAdapter stays
-                    # the hard backstop; this consult is the RESPONSE trigger.
+                    # can land mid-loop). Breach evaluation is skipped ONLY when state
+                    # is already 'tripped' -- the trip owner already ran the response
+                    # (resume_incomplete_sweep is the re-run owner for a pending/
+                    # partial sweep). A breach DURING a manual HALT still records its
+                    # trip (2026-07-18 red-team): run_date-scoped breakers (daily
+                    # loss, trades/day) evaporate when the date advances, and the repo
+                    # election deliberately lets a trip overwrite 'halted' -- so
+                    # respond_to_trip runs the full ordered protocol (persist-first,
+                    # sweep, outcome, email seam -- emailer None until Task 10) from
+                    # BOTH 'ok' and 'halted'. The submit-side brake in LiveAdapter
+                    # stays the hard backstop; this consult is the RESPONSE trigger.
                     if isinstance(adapter, LiveAdapter):
                         gpipe.resume_incomplete_sweep(
                             session, broker=live_broker, source="digest")
                         g = guardrails_repo.load_guardrails(session)
-                        breach = (None if g.state != "ok"
+                        breach = (None if g.state == "tripped"
                                   else gpipe.evaluate_breakers(session, run_date=run_date))
                         if breach is not None:
                             gpipe.respond_to_trip(
@@ -770,15 +797,30 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                         if breach is not None or g.state != "ok":
                             log.warning("guardrails brake: halting dispatch for %s %s",
                                         kind, run_date)
-                            if g.state == "halted" and live_broker is not None:
-                                # manual HALT: same protective sweep as the kill
-                                # switch, but NO trip is recorded (a HALT is not a
-                                # breach -- there is nothing to trip on).
-                                pull_entry_orders(live_broker)
-                                ensure_stop_protection(
+                            if (g.state == "halted" and breach is None
+                                    and live_broker is not None):
+                                # pure manual HALT (no breach): same protective sweep
+                                # as the kill switch, but NO trip is recorded (there
+                                # is nothing to trip on). A halted+breach run took
+                                # the respond_to_trip path above instead -- its sweep
+                                # supersedes this one.
+                                entries, restored, unprotected = run_protective_sweep(
                                     live_broker,
                                     lambda sym: repo.latest_recorded_stop(session, sym),
                                     key_suffix=f"halt-{run_date:%Y%m%d}")
+                                gpipe.record_disarm_event(
+                                    session, reason="halt",
+                                    orders_cancelled=len(entries))
+                                if restored:
+                                    log.warning(
+                                        "halt sweep: re-submitted %d protective "
+                                        "stop(s): %s",
+                                        len(restored), ", ".join(restored))
+                                if unprotected:
+                                    log.error(
+                                        "halt sweep: %d position(s) left UNPROTECTED:"
+                                        " %s", len(unprotected),
+                                        ", ".join(unprotected))
                             break
                     result = adapter.submit(
                         intent, session=session, run_date=run_date, limits=limits)
@@ -786,6 +828,13 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
             except Exception:  # execution must never block the digest
                 log.warning("execution dispatch failed for %s %s", kind, run_date,
                             exc_info=True)
+                try:
+                    # a dispatch failure can leave the SHARED session's transaction
+                    # poisoned (PendingRollbackError on every later use) -- and the
+                    # email path below still needs it (2026-07-18 red-team).
+                    session.rollback()
+                except Exception:  # noqa: BLE001 -- the email path is the priority
+                    log.warning("post-dispatch rollback failed", exc_info=True)
         if tickets:  # attach each ticket to its pick (only when execution is armed)
             digest_picks = _attach_digest_tickets(digest_picks, tickets, "continuation")
             pdf_picks = _attach_pdf_tickets(pdf_picks, tickets, "continuation")

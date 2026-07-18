@@ -30,8 +30,8 @@ from sqlalchemy.orm import Session
 
 from swing_screener.db import guardrails_repo, repo
 from swing_screener.db.models import AgentGuardrailEvent, DisarmEvent
-from swing_screener.pipeline.broker import BrokerClient
-from swing_screener.pipeline.disarm import ensure_stop_protection, pull_entry_orders
+from swing_screener.pipeline.broker import BrokerClient, BrokerOrder
+from swing_screener.pipeline.disarm import run_protective_sweep
 from swing_screener.pipeline.preflight import broker_error_detail
 
 log = logging.getLogger(__name__)
@@ -41,17 +41,20 @@ _INCOMPLETE_SWEEPS = ("pending", "partial")
 
 
 def evaluate_breakers(session: Session, *, run_date: date) -> tuple[str, str] | None:
-    """``(breaker, reason)`` for the first BREACHED breaker, else None. Pure read.
+    """``(breaker, reason)`` for the first BREACHED breaker, else None.
 
+    A read-only DECISION -- but not a pure read: ``load_guardrails`` commits on
+    its get-or-create seed (``breached_breaker`` is the pure half), so call this
+    between transactions, never with uncommitted session work pending.
     Deliberately does NOT consult state -- state is the trip's OUTCOME, not an
-    input (an already-halted book with a breached drawdown still needs the trip
-    recorded); the caller gates on state (the dispatch loop skips evaluation
-    when the brake is already engaged). Delegates the four per-breaker checks to
+    input (an already-HALTED book with a breached drawdown still needs the trip
+    recorded; the repo election lets a trip overwrite 'halted' by design). The
+    caller gates on state, skipping evaluation ONLY when already 'tripped' (the
+    trip owner ran the response; re-tripping would just spam trip events).
+    Delegates the four per-breaker checks to
     ``guardrails_repo.breached_breaker`` -- the SAME definition the submit-side
     clamp (``execution._guardrail_block``) enforces, so the loop and the adapter
-    can never disagree about a breach. NOTE: ``load_guardrails`` commits on its
-    get-or-create seed, so call this between transactions, never with uncommitted
-    session work pending."""
+    can never disagree about a breach."""
     g = guardrails_repo.load_guardrails(session)
     return guardrails_repo.breached_breaker(session, g, run_date=run_date)
 
@@ -71,7 +74,12 @@ def respond_to_trip(
     skipped -- the next cycle owns it via ``resume_incomplete_sweep``.
     ``emailer(trip_event_id, breaker, reason)`` is the Task-10 seam; None skips
     step 4, and a raising emailer is swallowed (the sweep outcome must survive a
-    dead mailer). Returns the trip event id when this call won the election."""
+    dead mailer). Returns the trip event id when this call won the election.
+
+    NOTE: a trades/day trip's sweep cancels the day's own just-submitted resting
+    entries too -- intended, and conservative: once the cap is hit, nothing
+    unfilled may keep working (a fill after the trip would grow exposure exactly
+    when the brake said stop)."""
     # (1) PERSIST-FIRST: the tripped state + trip event commit BEFORE any venue
     # call -- the brake holds even if everything after this line dies.
     trip_id = guardrails_repo.trip(session, breaker=breaker, reason=reason, source=source)
@@ -90,7 +98,7 @@ def respond_to_trip(
         # (2) the sweep + (3) its recorded outcome, keyed on THE trip we won so a
         # late finish can never stamp a newer trip's bookkeeping.
         outcome, detail = _run_sweep(session, broker, trip_id=trip_id, breaker=breaker)
-        guardrails_repo.record_sweep_outcome(
+        _record_outcome_guarded(
             session, trip_id=trip_id, outcome=outcome, detail=detail, source=source)
     # (4) the alert email -- isolated: a mail failure never aborts (or unwinds)
     # anything above.
@@ -129,33 +137,54 @@ def resume_incomplete_sweep(
     log.warning("resuming incomplete guardrail sweep for trip %d (sweep_state=%s)",
                 g.trip_id, g.sweep_state)
     outcome, detail = _run_sweep(session, broker, trip_id=g.trip_id, breaker=breaker)
-    guardrails_repo.record_sweep_outcome(
+    _record_outcome_guarded(
         session, trip_id=g.trip_id, outcome=outcome, detail=detail, source=source)
     return True
+
+
+def _record_outcome_guarded(
+    session: Session, *, trip_id: int, outcome: str, detail: str, source: str
+) -> None:
+    """``record_sweep_outcome``, isolated: the sweep already MOVED VENUE STATE,
+    so a failed outcome write (dead DB, mid-UPDATE failure) must neither unwind
+    the caller nor leave the shared session poisoned (PendingRollbackError would
+    kill everything downstream -- for the digest, the email itself). On failure:
+    log, roll back, move on -- ``sweep_state`` simply stays 'pending'/'partial'
+    and the next cycle's resume re-runs the (idempotent) sweep and re-records."""
+    try:
+        guardrails_repo.record_sweep_outcome(
+            session, trip_id=trip_id, outcome=outcome, detail=detail, source=source)
+    except Exception:  # noqa: BLE001 -- bookkeeping must never outrank the caller
+        log.error("failed to record sweep outcome for trip %d (%s) -- sweep_state "
+                  "stays re-runnable", trip_id, outcome, exc_info=True)
+        try:
+            session.rollback()
+        except Exception:  # noqa: BLE001 -- a dead session must not break the protocol
+            log.warning("sweep-outcome rollback also failed", exc_info=True)
 
 
 def _run_sweep(
     session: Session, broker: BrokerClient, *, trip_id: int, breaker: str
 ) -> tuple[str, str]:
-    """The disarm sweep body -> ``(outcome, detail)``: entry pulls + stop protection.
+    """The trip's disarm sweep -> ``(outcome, detail)``: entry pulls + stop protection.
 
-    Mirrors the dispatch loop's kill-switch block: cancel every resting
-    ENTRY-side order (the sell side is the protection -- never a blanket
-    cancel), then make sure every open position keeps a live protective stop,
-    restored at the ExecutionLog ticket's RECORDED level (copied, never
-    computed). ``key_suffix`` is derived from the TRIP id so re-runs of the SAME
-    trip's sweep -- any process, any day -- collapse to the same
+    The venue work is ``disarm.run_protective_sweep`` -- the SAME body the
+    kill-switch and manual-HALT paths run (one definition of "the sweep") --
+    with the stops restored at the ExecutionLog ticket's RECORDED level (copied,
+    never computed). ``key_suffix`` is derived from the TRIP id so re-runs of
+    the SAME trip's sweep -- any process, any day -- collapse to the same
     client_order_ids at the venue. Full success -> ``('complete', summary)``;
     any exception -> ``('partial', class-name-only detail)`` -- the caller
     records either, so a failed sweep is visible and re-runnable, never silent.
     After the attempt (success OR partial) a best-effort DisarmEvent is written
     (``reason='guardrail:<breaker>'``): the Auditor's breach scanner already
     turns DisarmEvents into alerts, so the sweep is on the conduct record with
-    zero new Auditor code."""
-    entries: list = []
+    zero new Auditor code. NOTE its ``orders_cancelled`` UNDER-reports when
+    ``pull_entry_orders`` dies mid-cancel (``entries`` stays empty) --
+    best-effort telemetry, never the ledger; the venue is the ledger."""
+    entries: list[BrokerOrder] = []
     try:
-        entries, _sells = pull_entry_orders(broker)
-        restored, unprotected = ensure_stop_protection(
+        entries, restored, unprotected = run_protective_sweep(
             broker,
             lambda sym: repo.latest_recorded_stop(session, sym),
             key_suffix=f"guardrail-{trip_id}")
@@ -173,20 +202,24 @@ def _run_sweep(
                   "re-runnable ('partial')", trip_id, exc_info=True)
         outcome = "partial"
         detail = broker_error_detail(e)
-    _record_disarm_event(
+    record_disarm_event(
         session, reason=f"guardrail:{breaker}", orders_cancelled=len(entries))
     return outcome, detail
 
 
-def _record_disarm_event(session: Session, *, reason: str, orders_cancelled: int) -> None:
-    """Persist a DisarmEvent so the System Behavior Auditor sees the sweep.
+def record_disarm_event(session: Session, *, reason: str, orders_cancelled: int) -> None:
+    """Persist a DisarmEvent so the System Behavior Auditor sees a venue-moving
+    sweep -- EVERY one of them: the trip response (``reason='guardrail:<breaker>'``),
+    the mid-dispatch kill switch (``'kill-switch'``), and the manual-HALT brake
+    (``'halt'``) all journal here (the cockpit's own "more alarming, not less"
+    rationale: an unexplained disarm must never be invisible to the Auditor).
 
     Replicates the cockpit's ``_record_disarm`` posture (cockpit/routers/safety.py):
     best-effort, rollback-FIRST (a failed sweep may arrive with a poisoned
-    session -- add+commit on it would always lose the event; the trip protocol
-    only ever commits before this point, so there is nothing pending to lose),
-    and NEVER raises -- the sweep moved venue state, and failing to journal that
-    must not unwind the outcome bookkeeping that follows."""
+    session -- add+commit on it would always lose the event; every caller only
+    ever commits before this point, so there is nothing pending to lose), and
+    NEVER raises -- the sweep moved venue state, and failing to journal that
+    must not unwind the caller."""
     try:
         session.rollback()
         session.add(DisarmEvent(

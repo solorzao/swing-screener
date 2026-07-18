@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from swing_screener.db import repo
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline import disarm
-from swing_screener.pipeline.broker import BrokerOrderSpec, FakeBroker
+from swing_screener.pipeline.broker import BrokerOrder, BrokerOrderSpec, FakeBroker
 
 
 def _spec(key: str, symbol: str, **overrides: object) -> BrokerOrderSpec:
@@ -174,6 +174,48 @@ def test_ensure_stop_protection_returns_restored_and_unprotected() -> None:
     live_stops = [o for o in broker.list_open_orders()
                   if o.side == "sell" and o.order_type == "stop"]
     assert [o.symbol for o in live_stops] == ["NVDA"]  # restored means SUBMITTED
+
+
+class _RacingBroker(FakeBroker):
+    """A rival process's sweep lands a protective stop between the FIRST
+    list_open_orders scan and this process's re-submit -- the cross-process
+    race (guardrail trip sweep vs cockpit /api/disarm) whose different
+    client_order_id suffixes the venue's duplicate-ID rejection can't collapse."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._scans = 0
+
+    def list_open_orders(self) -> list[BrokerOrder]:  # type: ignore[override]
+        self._scans += 1
+        if self._scans == 2 and "rival-stop" not in self._orders:
+            # the rival's GTC stop appears AFTER the first scan.
+            self._orders["rival-stop"] = BrokerOrder(
+                broker_order_id="rival-stop", client_order_id="rival-disarm-NVDA",
+                status="new", filled_qty=0, filled_avg_price=None,
+                symbol="NVDA", side="sell", order_type="stop")
+        return super().list_open_orders()
+
+
+def test_ensure_stop_protection_rechecks_venue_before_each_submit() -> None:
+    """THE duplicate-GTC-stop hazard (2026-07-18 red-team): if a concurrent sweep
+    protects the symbol between the first scan and our submit, submitting anyway
+    leaves TWO live sell stops -- position closed, then SHORTED on a margin
+    account. The last-instant re-list must catch it and skip."""
+    broker = _RacingBroker()
+    entry = broker.submit_order(_spec("k2", "NVDA", qty=8))  # plain fill, no legs
+    broker.fill(entry.broker_order_id, 100.0)
+    n_specs = len(broker.submitted_specs)
+
+    restored, unprotected = disarm.ensure_stop_protection(
+        broker, {"NVDA": 95.0}.get, key_suffix="test")
+
+    assert restored == []                                  # nothing was re-submitted...
+    assert unprotected == []                               # ...and nothing cried wolf
+    assert len(broker.submitted_specs) == n_specs          # NO second stop went out
+    stops = [o for o in broker.list_open_orders()
+             if o.side == "sell" and o.order_type == "stop"]
+    assert len(stops) == 1                                 # exactly the rival's stop
 
 
 def test_ensure_stop_protection_dry_run_reports_restored_without_submitting() -> None:

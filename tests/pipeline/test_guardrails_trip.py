@@ -22,6 +22,7 @@ All in-memory sqlite + FakeBroker -- no venue, no network, no mail.
 
 from datetime import date
 
+import pytest
 from sqlalchemy.orm import Session
 
 from swing_screener.db import guardrails_repo as gr
@@ -218,6 +219,7 @@ def test_pending_or_partial_sweep_rerun_next_cycle() -> None:
                                      source="screen", broker=None)
         assert trip_id is not None
         assert gr.load_guardrails(s).sweep_state == "pending"
+        assert s.query(DisarmEvent).count() == 0           # no sweep ran yet
 
         broker = _CountingBroker()
         broker.submit_order(_spec("k1", "AMD"))            # the entry the resume pulls
@@ -225,10 +227,106 @@ def test_pending_or_partial_sweep_rerun_next_cycle() -> None:
         assert gp.resume_incomplete_sweep(s, broker=broker, source="digest") is True
         assert gr.load_guardrails(s).sweep_state == "complete"
         assert broker.list_open_orders() == []             # the entry was cancelled
+        # the resumed sweep writes its OWN DisarmEvent -- every venue-touching
+        # sweep attempt belongs on the Auditor's conduct record (deliberate).
+        assert s.query(DisarmEvent).count() == 1
 
         broker.venue_calls = 0
         assert gp.resume_incomplete_sweep(s, broker=broker, source="digest") is False
         assert broker.venue_calls == 0                     # complete -> venue untouched
+        assert s.query(DisarmEvent).count() == 1           # and no phantom record
+
+
+def test_partial_sweep_resumes_to_complete() -> None:
+    """The 'partial' half of the resume contract: a sweep that died at the venue
+    stays re-runnable, and the re-run flips it to 'complete'."""
+    with _session() as s:
+        trip_id = gp.respond_to_trip(s, breaker=BREAKER, reason=REASON,
+                                     source="digest", broker=_ExplodingBroker())
+        assert trip_id is not None
+        assert gr.load_guardrails(s).sweep_state == "partial"
+        assert s.query(DisarmEvent).count() == 1           # the failed attempt is recorded
+
+        broker = FakeBroker()
+        broker.submit_order(_spec("k1", "AMD"))
+        assert gp.resume_incomplete_sweep(s, broker=broker, source="digest") is True
+        assert gr.load_guardrails(s).sweep_state == "complete"
+        assert broker.list_open_orders() == []
+        # one DisarmEvent PER venue-touching attempt (deliberate -- see above).
+        assert s.query(DisarmEvent).count() == 2
+
+
+def test_resume_degrades_when_trip_event_row_is_missing() -> None:
+    """A tripped row whose trip event vanished (never expected) still sweeps --
+    the DisarmEvent reason just degrades to an empty breaker name."""
+    with _session() as s:
+        trip_id = gp.respond_to_trip(s, breaker=BREAKER, reason=REASON,
+                                     source="screen", broker=None)
+        assert trip_id is not None
+        event = s.get(AgentGuardrailEvent, trip_id)
+        assert event is not None
+        s.delete(event)
+        s.commit()
+
+        broker = FakeBroker()
+        broker.submit_order(_spec("k1", "AMD"))
+        assert gp.resume_incomplete_sweep(s, broker=broker, source="digest") is True
+        assert gr.load_guardrails(s).sweep_state == "complete"
+        assert broker.list_open_orders() == []
+        assert s.query(DisarmEvent).one().reason == "guardrail:"   # degraded, not dead
+
+
+def test_unprotected_positions_still_complete_the_sweep() -> None:
+    """A position with no recorded stop level is reported UNPROTECTED (loudly, in
+    the recorded detail) but the sweep outcome is still 'complete' -- everything
+    the sweep COULD do, it did; the human owns the rest."""
+    with _session() as s:
+        broker = FakeBroker()
+        entry = broker.submit_order(_spec("k2", "NVDA", qty=8, stop_loss=95.0,
+                                          take_profit=110.0))
+        broker.fill(entry.broker_order_id, 100.0)
+        for order in list(broker.list_open_orders()):      # kill the bracket legs
+            if order.side == "sell":
+                broker.cancel_order(order.broker_order_id)
+        # deliberately NO ExecutionLog ticket: latest_recorded_stop returns None.
+
+        trip_id = gp.respond_to_trip(s, breaker=BREAKER, reason=REASON,
+                                     source="digest", broker=broker)
+
+        assert trip_id is not None
+        assert gr.load_guardrails(s).sweep_state == "complete"
+        sweep_event = s.query(AgentGuardrailEvent).filter_by(kind="sweep").one()
+        assert "UNPROTECTED: NVDA" in sweep_event.reason
+        # nothing was invented: no stop went out for the level-less position.
+        assert [o for o in broker.list_open_orders() if o.side == "sell"] == []
+
+
+def test_outcome_write_failure_never_poisons_the_session(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """A dead outcome-write (the DB dying mid-UPDATE poisons the transaction) must
+    neither unwind respond_to_trip nor leave the caller's session unusable -- the
+    sweep already MOVED VENUE STATE, and the digest email still has to go out."""
+    with _session() as s:
+        broker = FakeBroker()
+        broker.submit_order(_spec("k1", "AMD"))
+
+        def _poisoning_outcome(session: Session, **kw: object) -> None:
+            # a real mid-write failure that POISONS the session: a failed flush
+            # (NOT NULL violation) leaves it inactive -- PendingRollbackError on
+            # every next use until somebody rolls back.
+            session.add(DisarmEvent(created_at=None,  # type: ignore[arg-type]
+                                    reason="boom", orders_cancelled=0))
+            session.flush()
+
+        monkeypatch.setattr(gr, "record_sweep_outcome", _poisoning_outcome)
+        trip_id = gp.respond_to_trip(s, breaker=BREAKER, reason=REASON,
+                                     source="digest", broker=broker)
+
+        assert trip_id is not None                         # the protocol completed
+        g = gr.load_guardrails(s)                          # the session is USABLE
+        assert g.state == "tripped"
+        assert g.sweep_state == "pending"                  # stays re-runnable
+        assert broker.list_open_orders() == []             # the sweep itself DID run
 
 
 def test_broker_none_persists_trip_with_pending_sweep() -> None:

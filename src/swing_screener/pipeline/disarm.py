@@ -79,7 +79,16 @@ def ensure_stop_protection(
     to the human (guessing a level would violate North Star #4). Returns
     ``(restored, unprotected)``: ``restored`` names every symbol a stop was
     re-submitted for -- dry-run INCLUDED (the symbols a real run WOULD protect, so a
-    hold preview can show them); ``unprotected`` the positions left to the human."""
+    hold preview can show them); ``unprotected`` the positions left to the human.
+
+    LAST-INSTANT RE-CHECK (2026-07-18 red-team): open orders are re-listed
+    immediately before EACH submit, because a CONCURRENT sweep (a guardrail trip
+    sweep racing the cockpit's /api/disarm) carries a different client_order_id
+    suffix -- the venue's duplicate-ID rejection cannot collapse that race, and
+    two live GTC sell stops on a margin account mean the position is closed and
+    then SHORTED. The re-list shrinks the cross-process window to near zero for
+    every caller; a symbol protected since the first scan is skipped (and NOT
+    reported as restored -- the rival's stop is the protection)."""
     protected = {o.symbol for o in broker.list_open_orders()
                  if o.side == "sell" and o.order_type in _STOP_TYPES}
     restored: list[str] = []
@@ -94,11 +103,18 @@ def ensure_stop_protection(
                       "recorded ticket level to restore -- protect it manually NOW",
                       pos.symbol, pos.qty)
             continue
-        restored.append(pos.symbol)
         if dry_run:
+            restored.append(pos.symbol)
             log.info("[dry-run] would re-submit protective stop: %s x%d @ %.2f",
                      pos.symbol, pos.qty, stop)
             continue
+        fresh_protected = {o.symbol for o in broker.list_open_orders()
+                           if o.side == "sell" and o.order_type in _STOP_TYPES}
+        if pos.symbol in fresh_protected:
+            log.info("protective stop for %s appeared at the venue since the scan "
+                     "(a concurrent sweep) -- skipping the re-submit", pos.symbol)
+            continue
+        restored.append(pos.symbol)
         broker.submit_order(BrokerOrderSpec(
             client_order_id=f"disarm-stop-{pos.symbol}-{key_suffix}",
             symbol=pos.symbol, side="sell", qty=pos.qty, order_type="stop",
@@ -106,6 +122,26 @@ def ensure_stop_protection(
         log.info("re-submitted protective stop: %s x%d @ %.2f (level copied from the "
                  "ExecutionLog ticket)", pos.symbol, pos.qty, stop)
     return restored, unprotected
+
+
+def run_protective_sweep(
+    broker: BrokerClient,
+    stop_for: Callable[[str], float | None],
+    *,
+    key_suffix: str,
+) -> tuple[list[BrokerOrder], list[str], list[str]]:
+    """The ONE venue-moving sweep body every emergency path shares -- the
+    guardrail trip response, the mid-dispatch kill switch, and the manual-HALT
+    brake: pull every resting ENTRY-side order (the sell side is the
+    protection), then make sure every remaining position keeps a live protective
+    stop. Returns ``(entries, restored, unprotected)``: the entry orders
+    cancelled, the symbols a stop was re-submitted for, and the positions left
+    to the human. Idempotent per ``key_suffix`` (re-runs collapse to the same
+    client_order_ids at the venue); callers own the audit trail (DisarmEvent /
+    sweep outcome) and the error boundary."""
+    entries, _sells = pull_entry_orders(broker)
+    restored, unprotected = ensure_stop_protection(broker, stop_for, key_suffix=key_suffix)
+    return entries, restored, unprotected
 
 
 def _recorded_stop_lookup(settings: Settings) -> Callable[[str], float | None]:
