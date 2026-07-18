@@ -124,7 +124,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 - [x] L7 `discipline.py` ImportError fallback
 - [x] L8 `add_thesis` writer (table stays)
 - [x] L9 `conviction_sizing` / `conviction_weight_*` knobs
-- [ ] L10 stale `storage/__init__.py` facade
+- [x] L10 stale `storage/__init__.py` facade
 - [ ] L11 `option_review_facts` NOTE annotation (no delete)
 
 **Phase M — `chore/replay-and-test-structure`**
