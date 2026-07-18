@@ -326,6 +326,11 @@ class AnalysisRequest(Base):
     pdf_blob_key: Mapped[str | None] = mapped_column(String(512), default=None)
     chart_blob_keys: Mapped[str] = mapped_column(String(2048), default="")
     error: Mapped[str | None] = mapped_column(String(1024), default=None)
+    # APPROXIMATE list-price estimate of the request's Opus spend (see
+    # notify.analysis.Usage): cost visibility for the UNCAPPED on-demand path (up to
+    # 4 chart images + web search per request; a crash-requeue can re-bill). NULL on
+    # failed/fallback/legacy rows (no billed call captured) -- never a fake $0.
+    est_cost_usd: Mapped[float | None] = mapped_column(default=None)
 
 
 class CoachDraftRequest(Base):

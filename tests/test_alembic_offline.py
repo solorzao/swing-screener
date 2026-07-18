@@ -87,6 +87,26 @@ def test_migration_adds_analyst_call_token_spend_columns(tmp_path, monkeypatch):
     assert {"input_tokens", "output_tokens", "web_searches", "est_cost_usd"} <= cols
 
 
+def test_migration_adds_analysis_request_est_cost_column(tmp_path, monkeypatch):
+    # E3c: the uncapped on-demand path gets cost visibility -- analysis_requests
+    # carries an APPROXIMATE est_cost_usd. Nullable, NO server_default (NULL means
+    # a fallback/legacy row where no billed call was captured, never a fake $0).
+    db = tmp_path / "ac.db"
+    url = f"sqlite:///{db}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    command.upgrade(_config(url), "head")
+
+    con = sqlite3.connect(db)
+    try:
+        info = {r[1]: r for r in con.execute("PRAGMA table_info(analysis_requests)")}
+    finally:
+        con.close()
+
+    assert "est_cost_usd" in info
+    assert info["est_cost_usd"][3] == 0     # nullable (notnull flag off)
+    assert info["est_cost_usd"][4] is None  # no server default
+
+
 def test_migration_adds_trade_override_column(tmp_path, monkeypatch):
     # The cockpit's log-trade action stamps HOW a fill deviated from the engine's
     # plan into trades.override -- nullable, NO server_default (NULL means

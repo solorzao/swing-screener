@@ -317,7 +317,12 @@ _MODEL_PRICES: dict[str, tuple[float, float]] = {
 # FAIL-SAFE for a model with no row above: charge the MOST EXPENSIVE known rates so
 # the spend cap OVERCOUNTS rather than silently no-ops -- an unnoticed swap to an
 # unpriced (possibly pricier) model is exactly the failure the cap exists to catch.
-_FALLBACK_PRICES = max(_MODEL_PRICES.values())
+# ELEMENTWISE max, not max() over the tuples: a lexicographic max would undercount
+# output rates if a future row wins on input price alone.
+_FALLBACK_PRICES = (
+    max(p[0] for p in _MODEL_PRICES.values()),
+    max(p[1] for p in _MODEL_PRICES.values()),
+)
 _UNPRICED_MODELS_WARNED: set[str] = set()  # warn once per process per model id
 # Web search list price: $10 per 1,000 searches == $0.01 per search (Anthropic docs,
 # web-search tool "Usage and pricing"). Also approximate.
@@ -571,8 +576,21 @@ def _ticker_user_content(report: TickerReport, charts: list[bytes]) -> list[dict
     return content
 
 
-def _ticker_fallback(report: TickerReport) -> tuple[str, str, bool]:
-    """Deterministic multi-timeframe summary built purely from the reads."""
+@dataclass(frozen=True)
+class TickerAnalysis:
+    """One on-demand multi-timeframe analyst result (analyze_ticker_deep)."""
+
+    summary: str
+    analysis_text: str
+    is_deep: bool  # True only when the Opus path actually produced this
+    usage: Usage | None = None  # token spend; None only when no billed call happened
+
+
+def _ticker_fallback(report: TickerReport, usage: Usage | None = None) -> TickerAnalysis:
+    """Deterministic multi-timeframe summary built purely from the reads.
+
+    ``usage`` carries the billed spend of a call that responded but then failed
+    (empty reply / post-response error), so the fallback never hides money spent."""
     summary = f"{report.ticker}: multi-timeframe read"
     lines: list[str] = []
     for r in report.reads:
@@ -584,26 +602,28 @@ def _ticker_fallback(report: TickerReport) -> tuple[str, str, bool]:
                 f"stop {s.stop:g}, target {s.target:g})"
             )
         lines.append(line)
-    return summary, "\n".join(lines), False
+    return TickerAnalysis(
+        summary=summary, analysis_text="\n".join(lines), is_deep=False, usage=usage)
 
 
 def analyze_ticker_deep(
     report: TickerReport, *, charts: list[bytes] | None = None, context_text: str = "",
     client: anthropic.Anthropic | None = None, model: str = "claude-opus-4-8",
     reasoning: str = "high", max_searches: int = 4, web_search: bool = True,
-) -> tuple[str, str, bool]:
-    """Return (summary, analysis_text, is_deep). ONE Opus call over the whole
-    multi-timeframe picture: the per-TF deterministic facts + chart images. Falls
-    back to a deterministic multi-TF summary on ANY failure so the worker still
-    produces a report.
+) -> TickerAnalysis:
+    """ONE Opus call over the whole multi-timeframe picture: the per-TF
+    deterministic facts + chart images. Falls back to a deterministic multi-TF
+    summary on ANY failure so the worker still produces a report. A failure AFTER
+    the API responded was still BILLED, so the fallback carries the captured usage
+    (E3c -- this path is uncapped, making the persisted estimate its only cost
+    visibility).
     """
+    usage: Usage | None = None  # None only when no billed call happened
     try:
         content = _ticker_user_content(report, charts or [])
         if context_text:
             content.append({"type": "text", "text": context_text})
-        # usage is captured by the helper but DISCARDED here: this path still
-        # returns the bare (summary, analysis_text, is_deep) tuple (E3c widens it).
-        text, sources, _usage = _analyst_call(
+        text, sources, usage = _analyst_call(
             system=_TICKER_SYSTEM, content=content,
             client=client, model=model, reasoning=reasoning,
             max_searches=max_searches, web_search=web_search,
@@ -617,13 +637,18 @@ def analyze_ticker_deep(
             f"{report.ticker}: multi-timeframe read",
         )
         analysis_text = text.strip() + (_format_sources(sources) if sources else "")
-        return summary, analysis_text, True
-    except Exception:
+        return TickerAnalysis(
+            summary=summary, analysis_text=analysis_text, is_deep=True, usage=usage)
+    except Exception as exc:
+        # EmptyAnalysisError carries the billed usage; any other post-response
+        # failure left it in `usage` via the unpack above; a failed call -> None.
+        if isinstance(exc, EmptyAnalysisError):
+            usage = exc.usage
         log.warning(
             "ticker deep analysis failed for %s; using deterministic fallback",
             report.ticker, exc_info=True,
         )
-        return _ticker_fallback(report)
+        return _ticker_fallback(report, usage=usage)
 
 
 # --- Conviction nudge: the analyst MOVES the deterministic grade, bounded +-1 ---
