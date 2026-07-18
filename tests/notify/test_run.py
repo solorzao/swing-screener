@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, date, datetime
 
 from sqlalchemy import select
@@ -245,6 +246,78 @@ def test_weekly_digest_persists_no_reversal_funnel(tmp_path):
     assert res.sent is True
     with Session(get_engine(url)) as s:
         assert list(s.scalars(select(ReversalFunnel))) == []
+
+
+def _sig_on(run_date, ticker, tf, rank, first_seen=None):
+    return Signal(run_date=run_date, ticker=ticker, timeframe=tf, horizon="medium",
+                  score=1.0 / rank, rank=rank, trigger_close=100.0, atr=4.0, rsi=55.0,
+                  entry_floor=96.0, entry_ceiling=101.0, stop=95.0, target=110.0,
+                  first_seen_date=first_seen)
+
+
+def test_weekly_digest_keeps_setups_older_than_the_daily_cooldown(tmp_path, caplog):
+    """Per-kind cooldown horizon: a 1wk setup first seen 4 daily runs ago is still fresh
+    on the WEEKLY cadence (weekly setups persist across many daily screens by nature --
+    first_seen_date inherits the streak start), so it must appear in the weekly digest
+    even though the daily cooldown (1 run) drops it from the daily. Under the old shared
+    horizon the weekly digest showed only setups born in the last ~2 daily screens, so a
+    cooldown-blanked weekly was indistinguishable from a quiet market."""
+    url = f"sqlite:///{tmp_path / 'wk.sqlite'}"
+    engine = get_engine(url)
+    with Session(engine) as s:
+        # Establish the run calendar the run-denominated cooldown walks back over.
+        for d in (date(2026, 6, 9), date(2026, 6, 10), date(2026, 6, 11), date(2026, 6, 12)):
+            s.add(_sig_on(d, "FILL", "1d", 9))
+        # Streak started 4 daily runs back (june 10); re-detected on today's run.
+        s.add(_sig_on(RUN, "NVDA", "1wk", 1, first_seen=date(2026, 6, 10)))
+        # Born today: fresh on every cadence.
+        s.add(_sig_on(RUN, "MSFT", "1wk", 2, first_seen=RUN))
+        s.commit()
+
+    sent = []
+    kw = dict(db_url=url, run_date=RUN, to="me@example.com", pdf_dir=tmp_path / "d",
+              anthropic_client=_FakeClient(), smtp_send=lambda **k: sent.append(k))
+
+    with caplog.at_level(logging.INFO, logger="swing_screener.notify.run"):
+        daily = run.send_digest(kind="daily", **kw)
+        weekly = run.send_digest(kind="weekly", **kw)
+
+    # Daily (cooldown = 1 run): only the fresh setup survives.
+    assert daily.n_picks == 1
+    assert "MSFT" in sent[0]["text"] and "NVDA" not in sent[0]["text"]
+    # Weekly (5-run horizon ~ one trading week): the 4-runs-old setup still surfaces.
+    assert weekly.n_picks == 2
+    assert "NVDA" in sent[1]["text"] and "MSFT" in sent[1]["text"]
+    # Nothing outlived the weekly horizon, so no drop line fires.
+    assert [r for r in caplog.records if "cooldown dropped" in r.getMessage()] == []
+
+
+def test_weekly_cooldown_drop_is_logged_with_true_count(tmp_path, caplog):
+    """A setup that outlives even the weekly horizon (first seen before the last 5 runs)
+    is still dropped -- and the drop is LOGGED with the true surfaced-set count, so a
+    cooldown-blanked weekly digest is diagnosable from the job log instead of reading
+    as a quiet market."""
+    url = f"sqlite:///{tmp_path / 'wkdrop.sqlite'}"
+    engine = get_engine(url)
+    with Session(engine) as s:
+        # 6 prior runs + today's = 7 distinct run dates; the weekly horizon (5 runs)
+        # cuts off at june 6, so a june-5 streak start is genuinely stale.
+        for d in (5, 6, 9, 10, 11, 12):
+            s.add(_sig_on(date(2026, 6, d), "FILL", "1d", 9))
+        s.add(_sig_on(RUN, "AAPL", "1wk", 1, first_seen=date(2026, 6, 5)))  # stale
+        s.add(_sig_on(RUN, "MSFT", "1wk", 2, first_seen=RUN))               # fresh
+        s.commit()
+
+    sent = []
+    with caplog.at_level(logging.INFO, logger="swing_screener.notify.run"):
+        res = run.send_digest(kind="weekly", db_url=url, run_date=RUN, to="me@example.com",
+                              pdf_dir=tmp_path / "d", anthropic_client=_FakeClient(),
+                              smtp_send=lambda **k: sent.append(k))
+
+    assert res.n_picks == 1
+    assert "MSFT" in sent[0]["text"] and "AAPL" not in sent[0]["text"]
+    drops = [r.getMessage() for r in caplog.records if "cooldown dropped" in r.getMessage()]
+    assert drops == ["cooldown dropped 1 picks for weekly digest"]
 
 
 def test_bounded_overflow_never_cuts_mid_ticker():
