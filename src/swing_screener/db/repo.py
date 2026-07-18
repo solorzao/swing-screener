@@ -495,7 +495,7 @@ def get_closed_trades(session: Session) -> list[Trade]:
 
 
 class AlreadyClosedError(ValueError):
-    """Raised by ``close_trade`` on a trade that is already closed.
+    """Raised by the close path (``close_trade_with_event``) on an already-closed trade.
 
     A ``ValueError`` SUBCLASS so any existing caller catching ``ValueError`` keeps
     working; the cockpit close endpoint tells the two flavors apart by type
@@ -524,16 +524,6 @@ def _apply_close(trade: Trade, *, exit_date: date, exit_price: float,
     trade.exit_reason = exit_reason
 
 
-def close_trade(session: Session, trade_id: int, *, exit_date: date, exit_price: float,
-                exit_reason: str) -> Trade:
-    trade = _open_trade_or_raise(session, trade_id)
-    _apply_close(trade, exit_date=exit_date, exit_price=exit_price,
-                 exit_reason=exit_reason)
-    session.commit()
-    session.refresh(trade)
-    return trade
-
-
 def close_trade_with_event(
     session: Session, trade_id: int, *, exit_date: date, exit_price: float,
     exit_reason: str, event_reason: str, event_message: str, created_date: date,
@@ -542,12 +532,13 @@ def close_trade_with_event(
     """Close a trade AND record its ExitEvent in ONE transaction.
 
     The cockpit's manual close needs both rows or neither: with separate commits
-    (``close_trade`` then ``record_exit_event``) a failure between them leaves the
-    trade durably closed while the client sees a 503 -- the retry then 409s
+    (a plain close commit then ``record_exit_event``) a failure between them leaves
+    the trade durably closed while the client sees a 503 -- the retry then 409s
     confusingly, and the audit ExitEvent is PERMANENTLY missing (the exit
     change-token watermark never moves for that close). One commit carries both
     rows, so the failure mode is all-or-nothing: either both land or the trade is
-    still open and a retry succeeds cleanly. Raises exactly like ``close_trade``.
+    still open and a retry succeeds cleanly. Raises a plain ``ValueError`` on an
+    unknown id and ``AlreadyClosedError`` (its subclass) when already closed.
     """
     trade = _open_trade_or_raise(session, trade_id)
     _apply_close(trade, exit_date=exit_date, exit_price=exit_price,
