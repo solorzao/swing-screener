@@ -86,7 +86,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 - [x] G4 CD single-alembic-head guard
 - [x] G5 CI push-trigger filter
 - [x] G6 SQL token out of `GITHUB_ENV`
-- [ ] G7 cockpit DB write grants + runbook
+- [x] G7 cockpit DB write grants + runbook (**prod manual step**: run the new `db_datawriter` grant from `infra/post-deploy.sql` §2 as the Entra admin)
 - [ ] G8 stale bicep secret docs
 
 **Phase H — `fix/fetch-cache-poisoning`**

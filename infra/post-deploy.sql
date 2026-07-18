@@ -16,10 +16,18 @@ ALTER ROLE db_datawriter ADD MEMBER [<uami-name>];
 ALTER ROLE db_ddladmin  ADD MEMBER [<uami-name>];   -- Alembic issues CREATE/ALTER TABLE
 GO
 
--- 2) Your own Entra user, so the LOCAL cockpit (ActiveDirectoryDefault) can
---    READ candidates. Read-only is enough; the cockpit never writes.
+-- 2) Your own Entra user -- the LOCAL cockpit's principal (ActiveDirectoryDefault).
+--    The cockpit is NOT read-only: its actions WRITE -- DISARM events
+--    (disarm_events), manual trade closes (trades UPDATE + exit_events insert),
+--    manual journal entries/notes/tags (journal_reviews, journal_notes, tags,
+--    trade_tags), coach tag-confirms/edits (journal_reviews), and audit ACKs
+--    (system_audits UPDATE). db_datawriter covers that whole (growing) DML
+--    surface; the schema stays Alembic-owned via the UAMI -- deliberately NO
+--    db_ddladmin here.
+--    (Deployed before 2026-07? Re-run just the db_datawriter line to upgrade.)
 CREATE USER [<your-entra-upn>] FROM EXTERNAL PROVIDER;
 ALTER ROLE db_datareader ADD MEMBER [<your-entra-upn>];
+ALTER ROLE db_datawriter ADD MEMBER [<your-entra-upn>];
 GO
 
 -- 3) The GitHub deploy identity (the cd.yml/reflect.yml OIDC app registration or UAMI),

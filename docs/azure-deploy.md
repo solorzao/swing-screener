@@ -97,10 +97,17 @@ CREATE USER [<uami-name>] FROM EXTERNAL PROVIDER;
 ALTER ROLE db_datareader ADD MEMBER [<uami-name>];
 ALTER ROLE db_datawriter ADD MEMBER [<uami-name>];
 ALTER ROLE db_ddladmin  ADD MEMBER [<uami-name>];   -- Alembic issues CREATE/ALTER TABLE
--- your own Entra user, so the LOCAL cockpit can read:
+-- your own Entra user -- the LOCAL cockpit's principal. The cockpit READS and
+-- WRITES (DISARM events, manual closes, journal notes/tags, coach edits, audit
+-- ACKs), so it needs db_datawriter too. No ddladmin: schema stays Alembic/UAMI-owned.
 CREATE USER [<your-entra-upn>] FROM EXTERNAL PROVIDER;
 ALTER ROLE db_datareader ADD MEMBER [<your-entra-upn>];
+ALTER ROLE db_datawriter ADD MEMBER [<your-entra-upn>];
 ```
+
+> **Existing deployments:** the cockpit user was originally granted read-only. Run the
+> `db_datawriter` line above once as the Entra admin, or every cockpit action that
+> writes (DISARM, close, journal, ACK) fails with a SQL permission error.
 
 Then grant your human identity **Storage Blob Data Reader** so the local cockpit can
 download charts:
