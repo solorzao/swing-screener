@@ -10,6 +10,7 @@ import argparse
 import logging
 import os
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -17,9 +18,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from swing_screener.data.fetch import fetch_bars
-from swing_screener.db.models import OptionPaperTrade
+from swing_screener.db.models import GexSnapshot, OptionPaperTrade
 from swing_screener.db.session import get_engine
 from swing_screener.options import broker_import
+from swing_screener.options.autograde import AutoGrade, autograde
 from swing_screener.options.chain import (
     ChainSnapshot,
     LiquidityReport,
@@ -40,6 +42,10 @@ _MARKET_CLOSE_HOUR = 16  # 4pm ET; half-days share settle.py's market-calendar T
 Snapshotter = Callable[[str, GexConfig], ChainSnapshot]
 DailyBars = Callable[[str], pd.DataFrame]
 BarsFetcher = Callable[[str], pd.DataFrame]
+# The cold-ticker analyze seam for run_autograde. Signature mirrors run_analyze
+# (kwargs-only cfg/save/session); the return is ignored -- run_autograde re-reads
+# the snapshot it persisted.
+Analyzer = Callable[..., tuple[GexLevels, LiquidityReport]]
 
 
 def _default_snapshotter(ticker: str, cfg: GexConfig) -> ChainSnapshot:
@@ -125,6 +131,83 @@ def run_analyze(
     if save and session is not None:
         save_snapshot(session, underlying=ticker, ts=snap.asof, levels=levels, thin=liq.thin)
     return levels, liq
+
+
+def _latest_snapshot(session: Session, underlying: str) -> GexSnapshot | None:
+    """The newest GEX snapshot for an underlying (any day) -- the same latest-row
+    query the plan router serves. Autograde's same-day gate handles staleness, so
+    this deliberately does not filter by date."""
+    return session.scalars(
+        select(GexSnapshot).where(GexSnapshot.underlying == underlying)
+        .order_by(GexSnapshot.ts.desc()).limit(1)
+    ).first()
+
+
+def _try_bars(fetch: BarsFetcher, ticker: str) -> pd.DataFrame | None:
+    """Fetch bars for autograde, degrading any failure to None so the affected item
+    grades 'unavailable' rather than sinking the whole read (run_plan's per-ticker
+    isolation posture)."""
+    try:
+        return fetch(ticker)
+    except Exception:
+        log.exception("autograde: bar fetch failed for %s; its items degrade", ticker)
+        return None
+
+
+def run_autograde(
+    underlying: str, direction: str, play_type: str,
+    entry: float | None, stop: float | None, target: float | None,
+    pivot_level: float | None, *,
+    cfg: GexConfig, session: Session,
+    daily_fetcher: DailyBars | None = None,
+    m5_fetcher: BarsFetcher | None = None,
+    analyzer: Analyzer | None = None,
+    now: Callable[[], datetime] | None = None,
+) -> AutoGrade:
+    """Wire the pure ``autograde`` to the lab's data seams: fetch daily + 5m bars,
+    load (or auto-produce) a same-day GEX snapshot, and machine-grade the eight
+    computable checklist items for one ticker.
+
+    Isolation posture (run_plan's): a bar-fetch failure or a failed cold-ticker
+    auto-analyze degrades the affected items to ``unavailable`` -- nothing here
+    raises except the direction ``ValueError`` (``autograde``'s contract; the
+    router turns it into a 422). A dead DB is the one genuinely unexpected failure
+    and rides the app-level handler as usual.
+
+    ``daily_fetcher`` / ``m5_fetcher`` default to the real cached fetchers
+    (``_daily_fetcher`` / ``_5m_fetcher``, reused from the plan/settle paths);
+    ``analyzer`` to ``run_analyze`` (the one-click cold-ticker fallback);
+    ``now`` to ``_now_eastern`` (naive US/Eastern, injectable for tests)."""
+    if direction not in ("long", "short"):
+        # Fail before any fetch; the router validates first, this is the seam-level
+        # backstop that keeps a bad direction from silently grading as short.
+        raise ValueError(f"direction must be 'long' or 'short', got {direction!r}")
+    daily_fn = daily_fetcher or _daily_fetcher(None)
+    m5_fn = m5_fetcher or _5m_fetcher(None)
+    analyze_fn = analyzer or run_analyze
+    today = (now or _now_eastern)().date()
+
+    daily_bars = _try_bars(daily_fn, underlying)
+    bars_5m = _try_bars(m5_fn, underlying)
+
+    snapshot = _latest_snapshot(session, underlying)
+    if snapshot is None or snapshot.ts.date() != today:
+        # Cold (or stale) ticker: produce today's snapshot in one click. A dead
+        # upstream degrades the snapshot-backed items to 'unavailable' -- the honest
+        # 'incomplete', never a 503 for the whole read.
+        try:
+            analyze_fn(underlying, cfg=cfg, save=True, session=session)
+        except Exception:
+            log.exception(
+                "autograde: auto-analyze failed for %s; snapshot items degrade",
+                underlying)
+        else:
+            snapshot = _latest_snapshot(session, underlying)
+
+    return autograde(
+        underlying, direction, play_type, entry, stop, target, pivot_level,
+        cfg=cfg, daily_bars=daily_bars, bars_5m=bars_5m, snapshot=snapshot, now=now,
+    )
 
 
 def run_settle(
