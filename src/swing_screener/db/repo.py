@@ -558,12 +558,15 @@ def close_trade_with_event(
     plain ``ValueError`` on an unknown id, ``AlreadyClosedError`` otherwise --
     and the first close's exit fields stand untouched.
     """
-    matched = session.execute(
+    result = session.execute(
         update(Trade)
         .where(Trade.id == trade_id, Trade.status == "open")
         .values(status="closed", exit_date=exit_date, exit_price=exit_price,
                 exit_reason=exit_reason)
-    ).rowcount
+    )
+    # `Session.execute` is typed `Result`; an UPDATE actually yields a
+    # `CursorResult`, which is what carries `rowcount` (requeue_stale_running's cast).
+    matched = cast("CursorResult[Any]", result).rowcount
     if matched == 0:
         session.rollback()  # end the no-op write txn; expire any stale identity map
         trade = session.get(Trade, trade_id)
