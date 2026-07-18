@@ -65,8 +65,10 @@ def _daily_fetcher(cache_dir: Path | None) -> DailyBars:
 
 
 def _5m_fetcher(cache_dir: Path | None) -> BarsFetcher:
-    # Post-close, the day-keyed cache is safe: all session 5m bars are complete
-    # (see docs/modules/gex-lab.md -- the completed-bar invariant holds for settle).
+    # fetch_bars never caches a 5m frame whose session is still in progress
+    # (data/fetch.py, 2026-07-17 audit H1 follow-up), so an intraday sweep can't
+    # pin a partial session for the post-close run; complete sessions cache per
+    # day as before (the completed-bar invariant, docs/modules/gex-lab.md).
     cache = _resolve_cache_dir(cache_dir)
 
     def _fetch(ticker: str) -> pd.DataFrame:
@@ -239,6 +241,13 @@ def main() -> None:
         elif args.cmd == "settle":
             now = _now_eastern()
             if now.hour < _MARKET_CLOSE_HOUR and not args.force:
+                if now.weekday() >= 5:  # Sat/Sun: the intraday rationale would mislead
+                    raise SystemExit(
+                        f"refusing to settle at {now:%a %H:%M} ET: weekend run before "
+                        "16:00 -- no session is in progress, the last session is "
+                        "already complete; pass --force to run now or wait until "
+                        "after 16:00"
+                    )
                 raise SystemExit(
                     f"refusing to settle at {now:%H:%M} ET, before the 16:00 close: "
                     "an intraday run pins the day-keyed 5m cache on a partial session; "

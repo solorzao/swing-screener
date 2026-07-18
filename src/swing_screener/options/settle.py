@@ -53,8 +53,10 @@ def settle_open_trades(
     Trades whose underlying has no frame are left open (retried on the next run),
     as are untouched trades whose frame does not cover a complete session for the
     trade's session day (counted in ``skipped_incomplete_session`` -- only the
-    eod_flat fallback is gated; intraday stop/target touches always settle).
-    Commits at the end, repo-style.
+    eod_flat fallback is gated; SAME-DAY stop/target touches always settle). A
+    frame that entirely predates the trade's session day is never walked at all:
+    prior-day touches must not close a trade that had not opened yet (also
+    counted in ``skipped_incomplete_session``). Commits at the end, repo-style.
     """
     stmt = select(OptionPaperTrade).where(
         OptionPaperTrade.account == "options-lab",
@@ -81,21 +83,33 @@ def settle_open_trades(
             frame = frame.copy()
             frame.index = idx.tz_convert("America/New_York").tz_localize(None)
 
+        last_ts = pd.Timestamp(frame.index[-1])
+        session_day = trade.opened_at.date() if trade.opened_at is not None else last_ts.date()
+
         # Bars from the open onward. If the trade opened after every available bar
-        # (all bars precede it), fall back to the full session so a same-bar entry
-        # still settles rather than lingering open forever.
+        # (all bars precede it) but the frame IS the trade's session day, fall back
+        # to the full session so a same-bar entry still settles rather than
+        # lingering open forever.
         relevant = frame
         if trade.opened_at is not None:
             after_open = frame[frame.index >= trade.opened_at]
             if not after_open.empty:
                 relevant = after_open
+            elif last_ts.date() < session_day:
+                # The whole frame predates the trade's session day: the same-bar-entry
+                # fallback below must not walk it -- a prior-day touch would close the
+                # trade at yesterday's level, BEFORE it opened (closed_at < opened_at,
+                # negative hold_minutes, and closed rows are immutable). The fallback
+                # is only for a SAME-DAY entry stamped after its own bar.
+                skipped_incomplete_session += 1
+                log.info("frame for %s ends %s, before trade %s's session day %s; leaving open",
+                         trade.underlying, last_ts, trade.id, session_day)
+                continue
 
         # eod_flat fills at the frame's LAST close, so that close must be a real
         # session-close price (last bar at/after 15:55) on a day no earlier than
         # the trade's session day (a stale prior-day frame must not flatten
         # today's trade at yesterday's close).
-        last_ts = pd.Timestamp(frame.index[-1])
-        session_day = trade.opened_at.date() if trade.opened_at is not None else last_ts.date()
         session_complete = (last_ts.date() >= session_day
                             and last_ts.time() >= _LAST_SESSION_BAR)
 

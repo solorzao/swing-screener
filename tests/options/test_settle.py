@@ -95,6 +95,29 @@ def test_intraday_stop_hit_still_settles() -> None:
     assert res.settled == 1 and res.skipped_incomplete_session == 0
 
 
+def test_stale_frame_touch_never_settles_todays_trade() -> None:
+    """Yesterday's session contains a stop touch, but the trade opened TODAY:
+    walking the stale frame (via the all-bars-precede-open fallback) would close
+    the trade at yesterday's level, BEFORE it opened -- closed_at < opened_at,
+    negative hold_minutes, and closed rows are immutable (review follow-up)."""
+    rows = [dict(open=100, high=100.2, low=98.9, close=99.0)] + [_QUIET] * 2
+    t, res = _settle_one(_trade(opened_at=datetime(2026, 7, 14, 9, 35)),
+                         rows, start="2026-07-13 15:45")
+    assert t.status == "open"
+    assert res.settled == 0 and res.skipped_incomplete_session == 1
+
+
+def test_same_day_entry_after_last_bar_still_settles() -> None:
+    # the fallback's intended case: the trade opened mid-bar (after the bar's
+    # 13:00 stamp) so all bars precede opened_at -- a SAME-DAY touch still
+    # settles rather than lingering open forever
+    rows = [dict(open=100, high=100.2, low=98.9, close=99.0)]
+    t, res = _settle_one(_trade(opened_at=datetime(2026, 7, 13, 13, 2)),
+                         rows, start="2026-07-13 13:00")
+    assert t.status == "closed" and t.exit_reason == "stop"
+    assert res.settled == 1
+
+
 def test_stale_prior_day_frame_leaves_trade_open() -> None:
     # trade opened on the 14th but the frame is the 13th's (complete) session:
     # the all-bars-precede-open fallback must not eod_flat today's trade at

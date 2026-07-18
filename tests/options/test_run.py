@@ -97,6 +97,18 @@ def test_settle_cli_force_overrides_pre_close_refusal(monkeypatch) -> None:
     run_mod.main()  # proceeds (empty book settles nothing); no SystemExit
 
 
+def test_settle_cli_weekend_refusal_names_the_weekend(monkeypatch) -> None:
+    # Saturday morning: the intraday-cache rationale would be misleading (there
+    # is no session in progress) -- the refusal must say it's a weekend
+    saturday = datetime(2026, 7, 11, 10, 0)
+    assert saturday.weekday() == 5
+    monkeypatch.setattr(run_mod, "_now_eastern", lambda: saturday)
+    _settle_argv(monkeypatch)
+    with pytest.raises(SystemExit) as excinfo:
+        run_mod.main()
+    assert "weekend" in str(excinfo.value).lower()
+
+
 def test_settle_cli_proceeds_after_close(monkeypatch) -> None:
     monkeypatch.setattr(run_mod, "_now_eastern", lambda: datetime(2026, 7, 13, 16, 5))
     _settle_argv(monkeypatch)
