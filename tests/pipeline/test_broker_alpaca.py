@@ -294,6 +294,29 @@ def test_list_open_orders_dedupes_a_boundary_duplicate() -> None:
     assert ids[-1] == f"o{_ORDERS_PAGE_LIMIT}"
 
 
+def test_list_open_orders_short_page_check_uses_raw_page_length() -> None:
+    """A FULL page whose first element is the boundary duplicate carries only
+    limit-1 NEW orders: the short-page check must count the RAW response (full ->
+    keep paging), not the deduped additions, or page three is never fetched."""
+    calls = {"n": 0}
+    page_one = _order_page(0, _ORDERS_PAGE_LIMIT)
+    # raw length == limit, but only limit-1 orders survive the dedupe.
+    page_two = [page_one[-1], *_order_page(_ORDERS_PAGE_LIMIT, _ORDERS_PAGE_LIMIT - 1)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(200, json=page_one)
+        if calls["n"] == 2:
+            return httpx.Response(200, json=page_two)
+        return httpx.Response(200, json=_order_page(2 * _ORDERS_PAGE_LIMIT - 1, 1))
+
+    orders = _broker(handler).list_open_orders()
+    ids = [o.broker_order_id for o in orders]
+    assert calls["n"] == 3  # page two was raw-FULL, so a third ask must happen
+    assert len(ids) == len(set(ids)) == 2 * _ORDERS_PAGE_LIMIT
+
+
 # ---------------------------------------------------------------------------
 # get_positions -> GET /v2/positions: coerce qty/avg_entry_price from strings.
 # ---------------------------------------------------------------------------

@@ -34,6 +34,7 @@ References (verified against Alpaca's trading API docs):
   ``"ACTIVE"``).
 """
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -50,6 +51,8 @@ from .broker import (
 
 if TYPE_CHECKING:
     from swing_screener.settings import Settings
+
+log = logging.getLogger(__name__)
 
 #: The default (and only money-safe) host: Alpaca's paper trading sandbox.
 PAPER_HOST = "https://paper-api.alpaca.markets"
@@ -156,9 +159,13 @@ class AlpacaBroker:
         Alpaca caps one response at ``limit`` orders (default 50, max 500); unpaginated,
         disarm's cancel sweep and stop-protection restore would silently miss every order
         past the boundary. We ask for the max page in ``direction=asc`` and follow
-        ``after=<last order's submitted_at>`` until a short (or empty) page. Ids are
-        deduped across boundaries (an inclusive cursor may re-serve the boundary order),
-        and a cursor that fails to advance ends the loop rather than re-asking forever.
+        ``after=<last order's submitted_at>`` until a short (or empty) page. Alpaca
+        documents ``after`` as EXCLUSIVE (submitted strictly after), but ids are deduped
+        across boundaries anyway as defense against off-by-one/precision surprises. The
+        inherent limit of a timestamp cursor: an order sharing the boundary order's exact
+        ``submitted_at`` can be skipped server-side (the endpoint has no opaque page
+        token). A cursor that fails to advance ends the loop -- with a WARNING, because
+        the list returned is then known-incomplete -- rather than re-asking forever.
         """
         orders: list[BrokerOrder] = []
         seen: set[str] = set()
@@ -173,16 +180,24 @@ class AlpacaBroker:
                 params["after"] = after
             data = self._request_json("GET", "/v2/orders", params=params)
             for raw in data:
-                order_id = str(raw["id"])
+                order_id = raw["id"]
                 if order_id in seen:
                     continue
                 seen.add(order_id)
                 orders.append(self._to_order(raw))
+            # RAW page length, not the deduped count: a full page with a re-served
+            # boundary order still means more may exist past it.
             if len(data) < _ORDERS_PAGE_LIMIT:
                 break  # a short page is the last page
             next_after = data[-1].get("submitted_at")
             if next_after is None or next_after == after:
-                break  # cursor cannot advance; re-asking would loop forever
+                # cursor cannot advance; re-asking would loop forever. The list we
+                # return is known-incomplete -- and its consumers are disarm's cancel
+                # sweep + stop-protection restore, so say so out loud.
+                log.warning(
+                    "list_open_orders: pagination cursor did not advance after "
+                    "%d orders; result may be incomplete", len(orders))
+                break
             after = next_after
         return orders
 
