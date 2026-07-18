@@ -5721,6 +5721,16 @@ a.needs-hand-link:hover {
   overflow-y: auto;
 }
 
+/* The region is focusable (tabIndex=0) so a keyboard-only user can Tab to it and
+   arrow-scroll the book — a visible focus ring makes that reachable, not a dead
+   outline suppression. Only on keyboard focus (:focus-visible), not mouse.
+   Mirrors .et-scroll:focus-visible (the EventTicker convention). */
+.ob-scroll:focus-visible {
+  outline: 1px solid var(--blue);
+  outline-offset: -1px;
+  border-radius: 3px;
+}
+
 .ob-pos {
   color: var(--green);
 }
