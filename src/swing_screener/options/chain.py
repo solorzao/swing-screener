@@ -11,6 +11,7 @@ No network at import time -- importing this module only imports yfinance; the
 first live call happens inside ``_fetch_chain_raw``.
 """
 
+import math
 import random
 import time
 from collections.abc import Callable
@@ -66,11 +67,16 @@ def _side(df: pd.DataFrame, right: str, expiry: object) -> pd.DataFrame:
 
 
 def _spot_from_ticker(t: yf.Ticker) -> float:
-    """Last price via fast_info, falling back to the last daily close."""
+    """Last price via fast_info, falling back to the last daily close.
+
+    A non-finite fast_info price counts as missing: NaN is truthy, so it would
+    otherwise sail past the None check and become the GEX map's spot."""
     spot = None
     try:
         spot = t.fast_info["lastPrice"]
     except (KeyError, TypeError):
+        spot = None
+    if spot is not None and not math.isfinite(float(spot)):
         spot = None
     if spot is None:
         spot = t.history(period="1d")["Close"].iloc[-1]

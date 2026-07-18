@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass, replace
 
 import pandas as pd
@@ -37,7 +38,10 @@ def _quality_gates_pass(f: pd.DataFrame, last, pullback: list, swing_low: float,
         else:
             base_vol = f["volume"].iloc[-(n + 1):-1].mean()
         rvol = float(last["volume"]) / base_vol if base_vol and base_vol > 0 else 1.0
-        if rvol < cfg.vol_thrust_min:
+        # NaN volume rows are deliberately kept at the download seam (index
+        # tickers), so rvol can be NaN -- and NaN < min is False, silently
+        # no-opping the gate. An unmeasurable thrust rejects (2026-07 audit).
+        if math.isnan(rvol) or rvol < cfg.vol_thrust_min:
             return False
     # trend strength: EMA20 must sit a meaningful (ATR-normalized) distance above EMA50
     if cfg.min_ema_sep_atr > 0 and atr:
@@ -84,7 +88,8 @@ def _quality_gates_pass(f: pd.DataFrame, last, pullback: list, swing_low: float,
         base = f["volume"].iloc[-(n + 1 + k):-(k + 1)].mean()
         pull_vol = sum(float(b["volume"]) for b in pullback) / k
         dryup = pull_vol / base if base and base > 0 else 1.0
-        if dryup > cfg.pullback_vol_dryup_max:
+        # same NaN fail-safe as the thrust gate: an unmeasurable dry-up rejects
+        if math.isnan(dryup) or dryup > cfg.pullback_vol_dryup_max:
             return False
     # pocket pivot: the up trigger bar's volume must exceed the worst recent down-day volume
     if cfg.require_pocket_pivot:
@@ -126,6 +131,11 @@ def _detect_confirmed_breakout(f: pd.DataFrame, cfg: StrategyConfig) -> Pullback
     if base_ctx is None:
         return None
     atr = float(last["atr"])
+    # the recursion above validated the FLIP bar; atr/rsi here are TODAY's and can
+    # be NaN independently -- NaN is truthy, so `if atr` would ship extension=NaN
+    # and a NaN-atr context (NaN stops/targets). Fail safe: no signal.
+    if not (math.isfinite(atr) and math.isfinite(float(last["rsi"]))):
+        return None
     extension_atr = (float(last["close"]) - float(last["ema_fast"])) / atr if atr else 0.0
     return PullbackContext(
         trigger_ts=f.index[-1],
@@ -196,6 +206,12 @@ def detect_last_bar(f: pd.DataFrame, cfg: StrategyConfig) -> PullbackContext | N
         return None
 
     atr = float(last["atr"])
+    # NaN fails safe (2026-07 audit): NaN is truthy and every NaN comparison is
+    # False, so a NaN ATR/RSI would silently no-op the truthiness-guarded gates
+    # below and then ship NaN stops/targets/scores in the context. No finite
+    # indicator at the trigger bar -> no signal.
+    if not (math.isfinite(atr) and math.isfinite(float(last["rsi"]))):
+        return None
     # 3c) Tier-A quality gates (edge tournament round 1) -- all default no-op.
     if not _quality_gates_pass(f, last, pullback, swing_low, atr, cfg):
         return None

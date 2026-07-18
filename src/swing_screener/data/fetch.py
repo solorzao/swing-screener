@@ -51,7 +51,9 @@ def _cache_path(cache_dir: Path, interval: str, ticker: str, today: date) -> Pat
 
 
 def _download(ticker: str, interval: str, period: str) -> pd.DataFrame:
-    """Thin, mockable wrapper around yfinance. Returns OHLCV with lowercase columns."""
+    """Thin, mockable wrapper around yfinance. Returns OHLCV with lowercase columns.
+
+    Rows with any NaN OHLC are dropped (NaN volume kept -- index tickers)."""
     df = yf.download(ticker, interval=interval, period=period,
                      auto_adjust=False, progress=False)
     if isinstance(df.columns, pd.MultiIndex):
@@ -122,11 +124,17 @@ def fetch_vix(*, cache_dir: Path, period: str = "2y", today: date | None = None,
 
 
 def avg_dollar_volume(frame: pd.DataFrame, window: int = 20) -> float | None:
-    """Mean of close*volume over the last `window` bars; None if the frame is empty."""
+    """Mean of close*volume over the last `window` bars; None if the frame is empty
+    or the tail has no finite close*volume products (e.g. NaN volume, which the
+    download seam deliberately keeps for index tickers). The skipna mean of an
+    all-NaN tail is NaN, and apply_universe_metrics would write that straight to
+    SQL Server, which rejects NaN floats (TDS 8023) -- missing reads as None,
+    which apply_universe_metrics skips, preserving the prior value."""
     if frame is None or frame.empty:
         return None
     tail = frame.tail(window)
-    return float((tail["close"] * tail["volume"]).mean())
+    value = float((tail["close"] * tail["volume"]).mean())
+    return value if math.isfinite(value) else None
 
 
 def _fast_info_market_cap(ticker: str) -> float | None:

@@ -57,7 +57,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 
 **Phase C — `fix/nan-hardening`**
 - [x] C1 `_download` dropna + HA recovery test
-- [ ] C2 NaN guards: detect ATR truthiness / `latest_close` / `avg_dollar_volume` / `_spot_from_ticker`
+- [x] C2 NaN guards: detect ATR truthiness / `latest_close` / `avg_dollar_volume` / `_spot_from_ticker`
 - [ ] C3 NaN fundamentals rendered into analyst prompts
 
 **Phase D — `fix/auditor-compliance-math`**

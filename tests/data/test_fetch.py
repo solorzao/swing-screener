@@ -142,6 +142,20 @@ def test_avg_dollar_volume_means_close_times_volume():
     assert avg_dollar_volume(pd.DataFrame({"close": [], "volume": []})) is None
 
 
+def test_avg_dollar_volume_all_nan_tail_returns_none():
+    """An all-NaN close*volume tail (e.g. NaN volume, deliberately KEPT at the
+    download seam for index tickers) means the skipna mean is NaN -- which
+    apply_universe_metrics would write straight to SQL Server, and SQL Server
+    rejects NaN floats (TDS 8023). Missing data must read as None (which
+    apply_universe_metrics skips, preserving the prior value), never NaN."""
+    from swing_screener.data.fetch import avg_dollar_volume
+    df = pd.DataFrame({"close": [10.0, 20.0], "volume": [float("nan")] * 2})
+    assert avg_dollar_volume(df) is None
+    # a PARTIALLY-NaN tail still averages the finite products (skipna semantics)
+    df2 = pd.DataFrame({"close": [10.0, 20.0], "volume": [float("nan"), 100.0]})
+    assert avg_dollar_volume(df2) == 2000.0
+
+
 def test_fetch_market_cap_caches(tmp_path, monkeypatch):
     from swing_screener.data import fetch
     calls = {"n": 0}
