@@ -10,6 +10,7 @@ until confirmed; only on confirm is a ``source="analyst"`` tag written to the ov
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable, Iterator
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -20,6 +21,8 @@ from sqlalchemy.orm import Session
 from swing_screener.cockpit.common import ActionNonce, _require_cockpit, _utc_iso
 from swing_screener.db.models import JournalReview, WeaknessesProfile
 from swing_screener.journal.repo import add_tag, tag_trade
+
+log = logging.getLogger(__name__)
 
 _PERSONAL_BOOKS = ("manual_equity", "robinhood")
 
@@ -72,7 +75,13 @@ def build_coach_router(
             select(JournalReview).where(JournalReview.book == book)
             .order_by(JournalReview.id.desc())
         )
-        return [_review_dict(r) for r in rows]
+        out: list[dict[str, object]] = []
+        for r in rows:
+            try:
+                out.append(_review_dict(r))
+            except ValueError:  # corrupt facts_json: per-row degrade, never a 500
+                log.warning("skipping review %s: corrupt facts_json", r.id)
+        return out
 
     @router.get("/api/coach/weaknesses")
     def weaknesses(session: Session = Depends(_session)) -> dict[str, object]:

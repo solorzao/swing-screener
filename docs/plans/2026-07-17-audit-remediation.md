@@ -98,7 +98,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 - [ ] I1 one migration: `ix_signals_run_date`, `ix_paper_trades_status_account`, `ix_exit_events_created_date`, filtered-unique `import_key`
 
 **Phase J — `fix/cockpit-api-degrade`**
-- [ ] J1 per-row degrade on corrupt JSON rows
+- [x] J1 per-row degrade on corrupt JSON rows
 - [ ] J2 weaknesses `items_json` shape
 - [ ] J3 heartbeats sidecar stat guard
 - [ ] J4 GEX POST 503 posture
