@@ -203,6 +203,31 @@ def test_heartbeats_endpoint_returns_states(tmp_path: Path) -> None:
     assert beats["daily digest"]["last"] is not None
 
 
+def test_heartbeats_survive_a_verdicts_sidecar_vanishing_mid_glob(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An in-place sidecar rewrite (reflect's --verdicts-only replaces the file)
+    can vanish a globbed path before its stat -- the per-file guard skips it
+    (events.py's _file_watermark posture) instead of 500ing /api/heartbeats,
+    and the surviving sidecar still feeds the reflection-verdicts beat."""
+    client = _client(tmp_path)  # built BEFORE the stat patch: app setup stats freely
+    (tmp_path / "continuation.verdicts.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "reversal.verdicts.json").write_text("[]", encoding="utf-8")
+    real_stat = Path.stat
+
+    def vanishing_stat(self: Path, **kwargs: object) -> os.stat_result:
+        if self.name == "reversal.verdicts.json":
+            raise FileNotFoundError(str(self))  # rewritten mid-glob
+        return real_stat(self, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "stat", vanishing_stat)
+    r = client.get("/api/heartbeats")
+    assert r.status_code == 200
+    beats = {b["name"]: b for b in r.json()}
+    assert beats["reflection verdicts"]["state"] == "up"   # fresh surviving file
+    assert beats["reflection verdicts"]["last"] is not None
+
+
 def test_heartbeats_wire_the_gh_poller_from_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

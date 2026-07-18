@@ -100,7 +100,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 **Phase J — `fix/cockpit-api-degrade`**
 - [x] J1 per-row degrade on corrupt JSON rows
 - [x] J2 weaknesses `items_json` shape
-- [ ] J3 heartbeats sidecar stat guard
+- [x] J3 heartbeats sidecar stat guard
 - [ ] J4 GEX POST 503 posture
 - [ ] J5 atomic manual close
 - [ ] J6 `loss_r` gauge research-grid scoping

@@ -319,8 +319,15 @@ def newest_verdicts_mtime(edge_dir: Path) -> datetime | None:
     The reflection-verdicts heartbeat's "did reflection run?" clock -- heartbeat
     only. (The wake channel's change token stats each sidecar itself via
     ``_file_watermark`` in ``routers/events.py``: per-file ns-mtimes, because this
-    newest-float summary can miss an in-place rewrite within the same second.)"""
-    mtimes = [p.stat().st_mtime for p in edge_dir.glob("*.verdicts.json")]
+    newest-float summary can miss an in-place rewrite within the same second.)
+    Per-file stat guard (the ``_file_watermark`` posture): an in-place rewrite can
+    vanish a globbed path before its stat -- skip it, never 500 the rail."""
+    mtimes: list[float] = []
+    for p in edge_dir.glob("*.verdicts.json"):
+        try:
+            mtimes.append(p.stat().st_mtime)
+        except OSError:  # vanished/rewritten mid-glob: the file no longer vouches
+            continue
     return None if not mtimes else datetime.fromtimestamp(max(mtimes), tz=UTC)
 
 
