@@ -229,12 +229,10 @@ class StrategyConfig:
     # confirmed_only in reversal_picks). Premium stays computed/shadow-booked as a tier; it may
     # regain surfacing only with a full-universe result AND a documented expected picks/week.
     reversal_surface_premium_only: bool = False
-    # 1b conviction sizing: weight each fill's R by its conviction tier in SIZE-WEIGHTED
-    # performance (size the edge cohort up, the dead baseline down). False = risk-equal (legacy).
-    conviction_sizing: bool = False
-    conviction_weight_premium: float = 2.0
-    conviction_weight_strong: float = 1.0
-    conviction_weight_base: float = 0.5
+    # 1b conviction sizing weights live in analytics/performance.py's
+    # _DEFAULT_CONVICTION_WEIGHTS (consumed by size_weighted_expectancy / the sizing
+    # replay) -- the conviction_sizing/conviction_weight_* knobs that used to shadow
+    # them here were never read and were deleted (2026-07-17 audit L9).
 
     # --- market screener (weekly macro "Market Weather" report) ------------------------
     vix_spike_rank: float = 80.0   # VIX percentile rank at/above this = a panic spike (flag it)
