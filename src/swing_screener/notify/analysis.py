@@ -372,6 +372,46 @@ def _create_message(client: anthropic.Anthropic, kwargs: dict) -> object:
         raise
 
 
+class EmptyAnalysisError(ValueError):
+    """The model returned no usable text. Carries the captured Usage so callers
+    can still charge billed-but-failed calls against spend ceilings (Task E3b)."""
+
+    def __init__(self, usage: Usage | None) -> None:
+        super().__init__("empty model response")
+        self.usage = usage
+
+
+def _analyst_call(
+    *, system: str, content: list[dict], client: anthropic.Anthropic | None,
+    model: str, reasoning: str, max_searches: int, web_search: bool,
+) -> tuple[str, list[tuple[str, str]], Usage | None]:
+    """One place that owns the analyst call scaffold: client construction, kwargs
+    assembly, thinking/effort wiring, web-search tool config, _create_message,
+    text+citation extraction, usage capture, and the empty-response check.
+    Raises on any failure; each analyst keeps its own deterministic fallback."""
+    client = client or anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
+    kwargs: dict = {
+        "model": model,
+        "max_tokens": _REASONING_MAX_TOKENS.get(reasoning, 16000),
+        "system": system,
+        "messages": [{"role": "user", "content": content}],
+    }
+    effort = _REASONING_EFFORT.get(reasoning)
+    if effort is not None:  # opus-4.8+ adaptive thinking; "none"/unknown omits it
+        kwargs["thinking"] = {"type": "adaptive"}
+        kwargs["output_config"] = {"effort": effort}
+    if web_search:
+        kwargs["tools"] = [
+            {"type": "web_search_20250305", "name": "web_search", "max_uses": max_searches}
+        ]
+    resp = _create_message(client, kwargs)
+    usage = _capture_usage(resp, model)
+    text, sources = _extract_text_and_citations(resp)
+    if not text.strip():
+        raise EmptyAnalysisError(usage)
+    return text, sources, usage
+
+
 def analyze_signal_deep(
     facts: SignalFacts, *, chart_bytes: bytes | None = None, context_text: str = "",
     client: anthropic.Anthropic | None = None, model: str = "claude-opus-4-8",
@@ -382,32 +422,17 @@ def analyze_signal_deep(
     ANY failure (missing key, API/tool error, empty reply) so the digest never blocks.
     """
     try:
-        client = client or anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
-        kwargs: dict = {
-            "model": model,
-            "max_tokens": _REASONING_MAX_TOKENS.get(reasoning, 16000),
-            "system": _DEEP_SYSTEM,
-            "messages": [
-                {"role": "user", "content": _deep_user_content(facts, chart_bytes, context_text)}
-            ],
-        }
-        effort = _REASONING_EFFORT.get(reasoning)
-        if effort is not None:  # opus-4.8+ adaptive thinking; "none"/unknown omits it
-            kwargs["thinking"] = {"type": "adaptive"}
-            kwargs["output_config"] = {"effort": effort}
-        if web_search:
-            kwargs["tools"] = [
-                {"type": "web_search_20250305", "name": "web_search", "max_uses": max_searches}
-            ]
-        resp = _create_message(client, kwargs)
-        text, sources = _extract_text_and_citations(resp)
-        if not text.strip():
-            raise ValueError("empty model response")
+        text, sources, usage = _analyst_call(
+            system=_DEEP_SYSTEM,
+            content=_deep_user_content(facts, chart_bytes, context_text),
+            client=client, model=model, reasoning=reasoning,
+            max_searches=max_searches, web_search=web_search,
+        )
         analysis = _parse(text, facts)
         rationale = analysis.rationale + (_format_sources(sources) if sources else "")
         return SignalAnalysis(
             core_reason=analysis.core_reason, rationale=rationale, is_deep=True,
-            usage=_capture_usage(resp, model),
+            usage=usage,
         )
     except Exception:
         log.warning(
@@ -521,28 +546,16 @@ def analyze_ticker_deep(
     produces a report.
     """
     try:
-        client = client or anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
         content = _ticker_user_content(report, charts or [])
         if context_text:
             content.append({"type": "text", "text": context_text})
-        kwargs: dict = {
-            "model": model,
-            "max_tokens": _REASONING_MAX_TOKENS.get(reasoning, 16000),
-            "system": _TICKER_SYSTEM,
-            "messages": [{"role": "user", "content": content}],
-        }
-        effort = _REASONING_EFFORT.get(reasoning)
-        if effort is not None:  # opus-4.8+ adaptive thinking; "none"/unknown omits it
-            kwargs["thinking"] = {"type": "adaptive"}
-            kwargs["output_config"] = {"effort": effort}
-        if web_search:
-            kwargs["tools"] = [
-                {"type": "web_search_20250305", "name": "web_search", "max_uses": max_searches}
-            ]
-        resp = _create_message(client, kwargs)
-        text, sources = _extract_text_and_citations(resp)
-        if not text.strip():
-            raise ValueError("empty model response")
+        # usage is captured by the helper but DISCARDED here: this path still
+        # returns the bare (summary, analysis_text, is_deep) tuple (E3c widens it).
+        text, sources, _usage = _analyst_call(
+            system=_TICKER_SYSTEM, content=content,
+            client=client, model=model, reasoning=reasoning,
+            max_searches=max_searches, web_search=web_search,
+        )
         summary = next(
             (
                 line.split("CORE:", 1)[1].strip()
@@ -691,37 +704,19 @@ def analyze_conviction(
     "learning participant" seam; citations get appended to the insight.
     """
     try:
-        client = client or anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
-        kwargs: dict = {
-            "model": model,
-            "max_tokens": _REASONING_MAX_TOKENS.get(reasoning, 16000),
-            "system": _CONVICTION_SYSTEM,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": _conviction_user_content(
-                        facts, baseline, playbook_text, chart_bytes, context_text
-                    ),
-                }
-            ],
-        }
-        effort = _REASONING_EFFORT.get(reasoning)
-        if effort is not None:  # opus-4.8+ adaptive thinking; "none"/unknown omits it
-            kwargs["thinking"] = {"type": "adaptive"}
-            kwargs["output_config"] = {"effort": effort}
-        if web_search:
-            kwargs["tools"] = [
-                {"type": "web_search_20250305", "name": "web_search", "max_uses": max_searches}
-            ]
-        resp = _create_message(client, kwargs)
-        text, sources = _extract_text_and_citations(resp)
-        if not text.strip():
-            raise ValueError("empty model response")
+        text, sources, usage = _analyst_call(
+            system=_CONVICTION_SYSTEM,
+            content=_conviction_user_content(
+                facts, baseline, playbook_text, chart_bytes, context_text
+            ),
+            client=client, model=model, reasoning=reasoning,
+            max_searches=max_searches, web_search=web_search,
+        )
         conviction, reason, insight = _parse_conviction(text, baseline, max_step=max_step)
         insight += _format_sources(sources) if sources else ""
         return ConvictionResult(
             conviction=conviction, nudge_reason=reason, insight=insight, is_deep=True,
-            usage=_capture_usage(resp, model),
+            usage=usage,
         )
     except Exception:
         log.warning(

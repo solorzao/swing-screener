@@ -12,14 +12,9 @@ from dataclasses import dataclass
 
 import anthropic
 
-from swing_screener.config_secrets import get_secret
 from swing_screener.notify.analysis import (
-    _REASONING_EFFORT,
-    _REASONING_MAX_TOKENS,
     Usage,
-    _capture_usage,
-    _create_message,
-    _extract_text_and_citations,
+    _analyst_call,
     _format_sources,
 )
 from swing_screener.pipeline.market import MarketFacts
@@ -159,29 +154,16 @@ def analyze_market_deep(
     """Opus macro analyst: weighs the deterministic market facts, web-searches the macro context,
     and writes the weekly read. Falls back to the deterministic facts report on ANY failure."""
     try:
-        client = client or anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
-        kwargs: dict = {
-            "model": model,
-            "max_tokens": _REASONING_MAX_TOKENS.get(reasoning, 16000),
-            "system": _MARKET_SYSTEM,
-            "messages": [{"role": "user", "content": _market_prompt(facts)}],
-        }
-        effort = _REASONING_EFFORT.get(reasoning)
-        if effort is not None:
-            kwargs["thinking"] = {"type": "adaptive"}
-            kwargs["output_config"] = {"effort": effort}
-        if web_search:
-            kwargs["tools"] = [
-                {"type": "web_search_20250305", "name": "web_search", "max_uses": max_searches}
-            ]
-        resp = _create_message(client, kwargs)
-        text, sources = _extract_text_and_citations(resp)
-        if not text.strip():
-            raise ValueError("empty model response")
+        text, sources, usage = _analyst_call(
+            system=_MARKET_SYSTEM,
+            content=[{"type": "text", "text": _market_prompt(facts)}],
+            client=client, model=model, reasoning=reasoning,
+            max_searches=max_searches, web_search=web_search,
+        )
         text = _strip_preamble(text)
         report = text.strip() + (_format_sources(sources) if sources else "")
         return MarketAnalysis(core=_core_line(text), report=report, is_deep=True,
-                              usage=_capture_usage(resp, model))
+                              usage=usage)
     except Exception:
         log.warning("market deep analysis failed; using deterministic fallback", exc_info=True)
         det = _deterministic_report(facts)

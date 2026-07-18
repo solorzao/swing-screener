@@ -66,7 +66,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 - [ ] D3 breach-scan window / empty-narrative rows / `would_surface_leaks` overflow
 
 **Phase E — `feat/analyst-cost-optimization`** (strict order E1 → E6)
-- [ ] E1 `_analyst_call` consolidation (behavior-preserving; both analysis test suites green unchanged)
+- [x] E1 `_analyst_call` consolidation (behavior-preserving; both analysis test suites green unchanged)
 - [ ] E2 `web_search_20260209` + legacy-retry in `_create_message`
 - [ ] E3a `_MODEL_PRICES` additions + unknown-model fail-safe warning
 - [ ] E3b billed-but-failed usage reaches the spend accumulator
