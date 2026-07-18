@@ -120,12 +120,13 @@ def process_one(session, request, *, settings, cfg, today, now,
         report0 = TickerReport(
             ticker=ticker, name=name, run_at=now, reads=reads,
             summary="", analysis_text="", is_deep=False)
-        summary, analysis_text, is_deep = analyze_ticker_deep(
+        analysis = analyze_ticker_deep(
             report0, charts=chart_bytes, client=client, model=settings.analysis_model,
             reasoning=settings.analysis_reasoning,
             max_searches=settings.analysis_max_searches, web_search=True)
         report = dataclasses.replace(
-            report0, summary=summary, analysis_text=analysis_text, is_deep=is_deep)
+            report0, summary=analysis.summary, analysis_text=analysis.analysis_text,
+            is_deep=analysis.is_deep)
 
         pdf_dir = Path(settings.pdf_dir)
         pdf_dir.mkdir(parents=True, exist_ok=True)
@@ -153,8 +154,12 @@ def process_one(session, request, *, settings, cfg, today, now,
             log.warning("no recipient for request %s; completing without email", request.id)
 
         repo.complete_analysis_request(
-            session, request.id, summary=summary, pdf_blob_key=pdf_key,
-            chart_blob_keys=",".join(chart_keys), finished_at=now)
+            session, request.id, summary=analysis.summary, pdf_blob_key=pdf_key,
+            chart_blob_keys=",".join(chart_keys), finished_at=now,
+            # The billed spend (approximate list price) -- this path has NO cap, so
+            # the persisted estimate is its only cost visibility. None = no billed
+            # call captured (deterministic fallback), an honest unknown not a $0.
+            est_cost_usd=analysis.usage.est_cost_usd if analysis.usage else None)
     except Exception as exc:  # noqa: BLE001 -- per-request isolation; never abort the batch
         # Leak posture: the stored error reaches the cockpit wire (/api/analysis and
         # the Zone E ticker), and fetch/SDK messages can embed hosts, URLs, and keys

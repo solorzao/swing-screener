@@ -41,18 +41,19 @@ def _facts():
 
 
 def test_injected_client_prose_is_returned():
-    out = draft_review(_facts(), client=_FakeClient(text="Nice target hit; size up next time."))
+    out = draft_review(_facts(), client=_FakeClient(text="Nice target hit; size up next time."),
+                       model="claude-haiku-4-5")
     assert out.text == "Nice target hit; size up next time."
 
 
 def test_failing_client_degrades_to_template_with_no_usage():
-    out = draft_review(_facts(), client=_FakeClient(raises=True))
+    out = draft_review(_facts(), client=_FakeClient(raises=True), model="claude-haiku-4-5")
     assert out.usage is None
     assert "AMD" in out.text and "target" in out.text          # deterministic template
 
 
 def test_empty_reply_degrades_to_template():
-    out = draft_review(_facts(), client=_FakeClient(text="   "))
+    out = draft_review(_facts(), client=_FakeClient(text="   "), model="claude-haiku-4-5")
     assert out.usage is None
     assert out.text.endswith(".")
 

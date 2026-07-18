@@ -83,10 +83,15 @@ def draft_audit(
     findings: dict,
     *,
     client: anthropic.Anthropic | None = None,
-    model: str = "claude-opus-4-8",
+    model: str,
 ) -> DraftResult:
     """Draft the audit narrative over ``findings``. Degrades to a deterministic template
-    on ANY failure (usage None on that path)."""
+    on ANY failure (usage None on that path).
+
+    ``model`` is REQUIRED, no default: ``audit_run._MODEL`` is the single authoritative
+    model id, passed here AND stamped on the SystemAudit row, so the provenance stamp
+    always matches the model actually called (a default here duplicated that constant --
+    a stamp/call mismatch hazard flagged by the 2026-07-17 audit)."""
     try:
         from swing_screener.notify.analysis import _capture_usage  # noqa: PLC0415
 

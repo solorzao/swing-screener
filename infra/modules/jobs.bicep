@@ -114,8 +114,12 @@ param deepAnalysisEnabled string = '1'
 @description('Model id for the analysis call.')
 param analysisModel string = 'claude-opus-4-8'
 
+// Extended thinking bills as OUTPUT tokens at the opus $25/MTok rate, making the
+// thinking budget the digest's dominant output cost -- 'medium' halves that term vs
+// 'high' (2026-07-17 cost plan). Template default MUST match the intended prod state,
+// and 'medium' IS the intended prod state as of that plan.
 @description('Reasoning effort -> extended-thinking budget: none/low/medium/high.')
-param analysisReasoning string = 'high'
+param analysisReasoning string = 'medium'
 
 @description('How many top picks per digest get the deep treatment.')
 param deepAnalysisTopN string = '5'
@@ -132,6 +136,14 @@ param analysisMaxSearches string = '4'
 // as None = unbounded) must never be a template default.
 @description('Per-run deep-analysis spend ceiling in USD (SWING_DEEP_ANALYSIS_MAX_USD).')
 param deepAnalysisMaxUsd string = '2.50'
+
+// The weekly Market Weather LLM read: ONE deep call per Sunday run. The code-level
+// switch (StrategyConfig.market_report_enabled) is ON and market_run ANDs this env
+// gate with it. ON by default -- the template default MUST match the intended prod
+// state. Set '0' to force the deterministic facts read (no LLM bill); no per-run
+// dollar ceiling needed because the job makes at most one call.
+@description('Enable the weekly Market Weather LLM analysis (SWING_MARKET_REPORT).')
+param marketReportEnabled string = '1'
 
 // Journal v2 coaches (Personal Trade Coach + System Behavior Auditor). Enabled by
 // default (turned on 2026-07-13), like deepAnalysisEnabled -- so a re-provision keeps
@@ -287,6 +299,11 @@ var commonEnv = concat(equityEnv, riskPctEnv, executionModeEnv, capsEnv, [
     name: 'SWING_ANALYSIS_MAX_SEARCHES'
     value: analysisMaxSearches
   }
+  // The market-weather job's LLM gate; harmless on every other job (never read).
+  {
+    name: 'SWING_MARKET_REPORT'
+    value: marketReportEnabled
+  }
   // Journal v2 coaches. On commonEnv so the coach/audit jobs read them; the other
   // jobs ignore them harmlessly (like the deep-analysis knobs on the screen jobs).
   {
@@ -419,9 +436,9 @@ var jobSpecs = [
     // Weekly macro "Market Weather" report -- a market-broad regime/risk read (SPY MTF Heiken-Ashi
     // + VIX term structure, HY credit, rotation, breadth, recession odds), NOT a stock pick. Runs
     // Sunday ~09:00 ET off the completed weekly candle (a calm weekend macro review). The Opus
-    // analyst is ON by default (StrategyConfig.market_report_enabled); the recipient comes from
-    // DIGEST_TO and email is sent via ACS, same as the digests. The ET gate makes the Sunday UTC
-    // cron pair fire exactly once, so no DST double-send.
+    // analyst is ON by default (StrategyConfig.market_report_enabled AND the SWING_MARKET_REPORT
+    // env gate above); the recipient comes from DIGEST_TO and email is sent via ACS, same as the
+    // digests. The ET gate makes the Sunday UTC cron pair fire exactly once, so no DST double-send.
     name: 'market-weather'
     cron: '0 13,14 * * 0'
     args: [

@@ -326,6 +326,11 @@ class AnalysisRequest(Base):
     pdf_blob_key: Mapped[str | None] = mapped_column(String(512), default=None)
     chart_blob_keys: Mapped[str] = mapped_column(String(2048), default="")
     error: Mapped[str | None] = mapped_column(String(1024), default=None)
+    # APPROXIMATE list-price estimate of the request's Opus spend (see
+    # notify.analysis.Usage): cost visibility for the UNCAPPED on-demand path (up to
+    # 4 chart images + web search per request; a crash-requeue can re-bill). NULL on
+    # failed/fallback/legacy rows (no billed call captured) -- never a fake $0.
+    est_cost_usd: Mapped[float | None] = mapped_column(default=None)
 
 
 class CoachDraftRequest(Base):
@@ -379,6 +384,11 @@ class MarketReport(Base):
     is_deep: Mapped[bool] = mapped_column(default=False)   # True when the LLM analyst produced it
     core: Mapped[str] = mapped_column(String(512), default="")
     report: Mapped[str] = mapped_column(Text, default="")
+    # Spend visibility (E6): APPROXIMATE list-price cost of the ONE deep-analysis call
+    # that produced this report (migration e7c4a9f1b3d8). NULL on deterministic /
+    # fallback / legacy rows -- no billed call captured, an honest unknown, never a
+    # fake $0. At most one call per weekly run, so this is visibility, not a cap.
+    est_cost_usd: Mapped[float | None] = mapped_column(default=None)
     created_at: Mapped[datetime | None] = mapped_column(default=None)
 
 

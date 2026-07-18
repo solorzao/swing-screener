@@ -804,7 +804,10 @@ def requeue_stale_running(session: Session, *, cutoff: datetime) -> int:
 
 def complete_analysis_request(session: Session, request_id: int, *, summary: str,
                               pdf_blob_key: str | None, chart_blob_keys: str,
-                              finished_at: datetime) -> None:
+                              finished_at: datetime,
+                              est_cost_usd: float | None = None) -> None:
+    # est_cost_usd: the request's approximate billed spend (cost visibility for the
+    # uncapped on-demand path); None = no billed call captured (fallback/legacy).
     req = session.get(AnalysisRequest, request_id)
     if req is None:
         return
@@ -813,6 +816,7 @@ def complete_analysis_request(session: Session, request_id: int, *, summary: str
     req.pdf_blob_key = pdf_blob_key
     req.chart_blob_keys = chart_blob_keys
     req.finished_at = finished_at
+    req.est_cost_usd = est_cost_usd
     session.commit()
 
 

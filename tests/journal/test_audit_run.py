@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from swing_screener.db.models import DisarmEvent, ExecutionLog, SystemAudit
 from swing_screener.db.session import get_engine
+from swing_screener.journal import audit_run
 from swing_screener.journal.audit_author import _AUDIT_SYSTEM, draft_audit
 from swing_screener.journal.audit_run import _breach_scan_window, run_breach_scan, run_weekly
 from swing_screener.settings import load_settings
@@ -20,20 +21,27 @@ class _Block:
     def __init__(self, t): self.text = t
 
 
+class _Usage:
+    input_tokens = 100
+    output_tokens = 50
+
+
 class _Resp:
-    def __init__(self, t):
+    def __init__(self, t, usage=None):
         self.content = [_Block(t)]
-        self.usage = None
+        self.usage = usage
 
 
 class _FakeClient:
-    def __init__(self, text=None, raises=False):
-        self._t, self._raises = text, raises
+    def __init__(self, text=None, raises=False, usage=None):
+        self._t, self._raises, self._usage = text, raises, usage
+        self.last_kwargs: dict = {}
         self.messages = self
     def create(self, **kw):
+        self.last_kwargs = kw
         if self._raises:
             raise RuntimeError("down")
-        return _Resp(self._t)
+        return _Resp(self._t, usage=self._usage)
 
 
 def _settings(monkeypatch, *, audit_enabled=False, max_notional=None):
@@ -57,13 +65,14 @@ def _log(*, notional, status="filled_paper", key):
 # ---- author firewall ----
 
 def test_draft_audit_returns_client_prose():
-    out = draft_audit({"compliance": {}, "anomaly": {}}, client=_FakeClient(text="Clean week."))
+    out = draft_audit({"compliance": {}, "anomaly": {}}, client=_FakeClient(text="Clean week."),
+                      model="claude-haiku-4-5")
     assert out.text == "Clean week."
 
 
 def test_draft_audit_degrades_to_template():
     out = draft_audit({"compliance": {"cap_breaches": []}, "anomaly": {}},
-                      client=_FakeClient(raises=True))
+                      client=_FakeClient(raises=True), model="claude-haiku-4-5")
     assert out.usage is None and "conduct audit" in out.text.lower()
 
 
@@ -103,6 +112,22 @@ def test_enabled_with_a_finding_calls_the_llm(monkeypatch):
         a = run_weekly(s, settings=s_, period_from=_FROM, period_to=_TO, now=_NOW,
                        client=_FakeClient(text="LLM-NARRATION"))
         assert a.narrative == "LLM-NARRATION" and a.severity == "alert"
+
+
+def test_stamped_model_matches_the_model_actually_called(monkeypatch):
+    # Provenance unification (2026-07-17 audit): SystemAudit.model must equal the model
+    # id the API call was actually made with -- both come from audit_run._MODEL, the
+    # worker's ONE authoritative constant, so spend can never be misattributed.
+    s_ = _settings(monkeypatch, audit_enabled=True, max_notional=1000.0)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        s.add_all([_log(notional=800.0, key="a"), _log(notional=800.0, key="b")])
+        s.commit()
+        client = _FakeClient(text="LLM-NARRATION", usage=_Usage())
+        a = run_weekly(s, settings=s_, period_from=_FROM, period_to=_TO, now=_NOW,
+                       client=client)
+        assert a.model == audit_run._MODEL == "claude-haiku-4-5"
+        assert client.last_kwargs["model"] == audit_run._MODEL
+        assert a.est_cost_usd is not None and a.est_cost_usd > 0
 
 
 def test_run_weekly_severity_alert_on_cap_breach(monkeypatch):

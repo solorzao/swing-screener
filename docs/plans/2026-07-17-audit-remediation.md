@@ -66,14 +66,14 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 - [x] D3 breach-scan window / empty-narrative rows / `would_surface_leaks` overflow
 
 **Phase E — `feat/analyst-cost-optimization`** (strict order E1 → E6)
-- [ ] E1 `_analyst_call` consolidation (behavior-preserving; both analysis test suites green unchanged)
-- [ ] E2 `web_search_20260209` + legacy-retry in `_create_message`
-- [ ] E3a `_MODEL_PRICES` additions + unknown-model fail-safe warning
-- [ ] E3b billed-but-failed usage reaches the spend accumulator
-- [ ] E3c `analyze_ticker_deep` usage capture + `analysis_requests.est_cost_usd` migration
-- [ ] E4 `daily_picks` per-ticker dedup (+ cockpit picks mirror)
-- [ ] E5 bicep reasoning default `medium` + coach/audit on `claude-haiku-4-5` (single model constant per worker)
-- [ ] E6 Market Weather env switch + spend visibility
+- [x] E1 `_analyst_call` consolidation (behavior-preserving; both analysis test suites green unchanged)
+- [x] E2 `web_search_20260209` + legacy-retry in `_create_message`
+- [x] E3a `_MODEL_PRICES` additions + unknown-model fail-safe warning
+- [x] E3b billed-but-failed usage reaches the spend accumulator
+- [x] E3c `analyze_ticker_deep` usage capture + `analysis_requests.est_cost_usd` migration
+- [x] E4 `daily_picks` per-ticker dedup (+ cockpit picks mirror)
+- [x] E5 bicep reasoning default `medium` + coach/audit on `claude-haiku-4-5` (single model constant per worker)
+- [x] E6 Market Weather env switch + spend visibility
 - [ ] E-verify (post-deploy, ~1 week) `analyst_calls.input_tokens` well below the 400k/run baseline
 
 **Phase F — `fix/digest-cooldown-cadence`**

@@ -34,7 +34,15 @@ if TYPE_CHECKING:
     import anthropic
 
 log = logging.getLogger(__name__)
-_MODEL = "claude-opus-4-8"
+# The ONE authoritative model id for the auditor (2026-07-17 audit: a duplicated
+# constant here + a separate default in audit_author could stamp a model the call never
+# used). It is passed EXPLICITLY to draft_audit AND stamped on the SystemAudit row, so
+# provenance always matches the model actually called. Audit prose is bounded 600-token
+# template-grade output (2-4 sentences over code-owned findings), so claude-haiku-4-5
+# at $1/$5 per MTok replaces claude-opus-4-8 at $5/$25 -- ~25x cheaper (2026-07-17 cost
+# plan). notify.analysis._MODEL_PRICES carries a claude-haiku-4-5 row, so the audit
+# spend cap keeps metering. No env override by design; the escape hatch is this line.
+_MODEL = "claude-haiku-4-5"
 
 # The breach scan runs weekdays at 16:00 ET, so a today-only window permanently misses
 # anything recorded AFTER that day's run (late fills, post-close disarms) and EVERYTHING
@@ -124,7 +132,7 @@ def run_weekly(
         and _worth_narrating(findings)
     )
     if want_llm:
-        draft = draft_audit(findings, client=client)
+        draft = draft_audit(findings, client=client, model=_MODEL)
         audit.narrative = draft.text
         if draft.usage is not None:
             audit.model = _MODEL
