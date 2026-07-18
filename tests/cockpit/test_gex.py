@@ -94,6 +94,20 @@ def test_build_single_ticker_analyze(tmp_path: Path) -> None:
     assert an["thin_chain"] is True  # 2-strike fixture trips the guard
 
 
+def test_build_lowercase_ticker_is_uppercased(tmp_path: Path) -> None:
+    # The FE uppercases its input, but the server must not trust it: a probed
+    # "nvda" would persist a parallel snapshot row keyed "nvda" that the
+    # uppercase-keyed reads (plan watchlist, autograde same-day gate) never see.
+    url = _db_url(tmp_path)
+    r = _client(tmp_path, seams=True).post(
+        "/api/gex/plan/build", json={"ticker": "nvda"}, headers=_HDR)
+    assert r.status_code == 200
+    assert r.json()["analyzed"]["underlying"] == "NVDA"
+    with Session(get_engine(url)) as s:
+        snap = s.scalars(select(GexSnapshot)).one()
+        assert snap.underlying == "NVDA"
+
+
 def test_build_upstream_failure_is_a_503_class_name_only(tmp_path: Path) -> None:
     """A routine yfinance outage on the ad-hoc analyze path must leave as the
     cockpit's 503 with the exception CLASS only -- fetcher messages embed hosts
@@ -181,6 +195,41 @@ def test_rr_tick_ok_when_levels_missing(tmp_path: Path) -> None:
     body = {"underlying": "SPY", "direction": "long", "checklist": _all_true()}
     r = _client(tmp_path).post("/api/gex/setups", json=body, headers=_HDR)
     assert r.status_code == 200
+
+
+def test_rr_tick_side_insane_ordering_is_422(tmp_path: Path) -> None:
+    # LONG with stop above entry: abs ratio is 10 but the levels are side-insane
+    # (_item_rr's FAIL) -- the ticked box must 422, never store as A+.
+    url = _db_url(tmp_path)
+    body = {"underlying": "SPY", "direction": "long", "checklist": _all_true(),
+            "entry": 100.0, "stop": 110.0, "target": 200.0}
+    r = _client(tmp_path).post("/api/gex/setups", json=body, headers=_HDR)
+    assert r.status_code == 422
+    assert "R:R" in r.json()["detail"]
+    with Session(get_engine(url)) as s:
+        assert list(s.scalars(select(OptionSetup))) == []
+
+
+def test_rr_tick_zero_risk_is_422(tmp_path: Path) -> None:
+    # entry == stop: undefined R:R can never honestly claim >= 2 (no inf escape).
+    body = {"underlying": "SPY", "direction": "long", "checklist": _all_true(),
+            "entry": 100.0, "stop": 100.0, "target": 300.0}
+    r = _client(tmp_path).post("/api/gex/setups", json=body, headers=_HDR)
+    assert r.status_code == 422
+    assert "R:R" in r.json()["detail"]
+
+
+def test_setup_bad_play_type_is_422(tmp_path: Path) -> None:
+    # The write path enforces the same enum-or-empty the autograde read does --
+    # a free-text play_type would poison the machine-vs-human discipline facet.
+    url = _db_url(tmp_path)
+    body = {"underlying": "SPY", "direction": "long", "checklist": _all_true(),
+            "play_type": "bananas"}
+    r = _client(tmp_path).post("/api/gex/setups", json=body, headers=_HDR)
+    assert r.status_code == 422
+    assert "play_type must be breakout|range or empty" in r.json()["detail"]
+    with Session(get_engine(url)) as s:
+        assert list(s.scalars(select(OptionSetup))) == []
 
 
 def test_take_a_setup_transitions_status(tmp_path: Path) -> None:
@@ -623,6 +672,87 @@ def test_autograde_requires_cockpit_header(tmp_path: Path) -> None:
     client, _ = _autograde_client(tmp_path)
     r = client.post("/api/gex/autograde", json={"underlying": "SPY", "direction": "long"})
     assert r.status_code == 403
+
+
+def test_autograde_lowercase_underlying_is_uppercased(tmp_path: Path) -> None:
+    # "spy" must not auto-analyze and persist a parallel snapshot row keyed "spy":
+    # the server uppercases after strip, so the analyzer sees "SPY" and the
+    # response + provenance carry the canonical key.
+    calls: list[str] = []
+
+    def fake_analyzer(ticker: str, *, cfg: object, save: bool,
+                      session: Session) -> tuple[object, object]:
+        calls.append(ticker)
+        session.add(GexSnapshot(
+            underlying=ticker, ts=datetime.now(tz=_EASTERN).replace(tzinfo=None),
+            spot=101.0, call_wall=105.0, put_wall=99.0, gamma_flip=100.5,
+            net_gex=1.0, regime="negative", profile_json="[]", thin_chain=False,
+            source="computed"))
+        session.commit()
+        return object(), object()
+
+    client, url = _autograde_client(
+        tmp_path, daily=lambda t: _uptrend_daily_frame(),
+        bars_5m=lambda t: _uptrend_5m_frame(), analyzer=fake_analyzer)
+    r = client.post("/api/gex/autograde", json=_ag_body(underlying=" spy "),
+                    headers=_HDR)
+    assert r.status_code == 200
+    assert calls == ["SPY"]
+    assert r.json()["underlying"] == "SPY"
+    with Session(get_engine(url)) as s:
+        assert s.scalars(select(GexSnapshot)).one().underlying == "SPY"
+
+
+def test_autograde_bad_play_type_is_422(tmp_path: Path) -> None:
+    client, _ = _autograde_client(tmp_path)
+    r = client.post("/api/gex/autograde", json=_ag_body(play_type="bananas"),
+                    headers=_HDR)
+    assert r.status_code == 422
+    assert "play_type must be breakout|range or empty" in r.json()["detail"]
+
+
+def test_autograde_failed_auto_analyze_degrades_to_incomplete(tmp_path: Path) -> None:
+    # Cold ticker + dead upstream on the auto-analyze: the snapshot-backed items
+    # degrade to 'unavailable' and the read still 200s incomplete -- never a 503.
+    def dead_analyzer(ticker: str, *, cfg: object, save: bool,
+                      session: Session) -> tuple[object, object]:
+        raise RuntimeError("chain snapshot failed (query1.finance.yahoo.com)")
+
+    client, _ = _autograde_client(
+        tmp_path, daily=lambda t: _uptrend_daily_frame(),
+        bars_5m=lambda t: _uptrend_5m_frame(), analyzer=dead_analyzer)
+    r = client.post("/api/gex/autograde", json=_ag_body(), headers=_HDR)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["machine_verdict"] == "incomplete"
+    assert data["snapshot"] is None
+    by = {it["key"]: it for it in data["items"]}
+    assert by["chk_gex_levels_marked"]["state"] == "unavailable"
+    assert "yahoo" not in r.text  # the failure message never leaks to the wire
+
+
+def test_autograde_does_not_bump_nonce_but_setups_does(tmp_path: Path) -> None:
+    # Autograde is READ-shaped (no other window needs waking); journaling a setup
+    # is a write and must wake them. Pin the pair so neither regresses.
+    url = _db_url(tmp_path)
+    get_engine(url)
+    _engine, _session = build_engine_seams(url)
+    nonce = ActionNonce()
+    app = FastAPI()
+    app.include_router(build_gex_router(
+        _session=_session, action_nonce=nonce,
+        daily_bars=lambda t: _uptrend_daily_frame(),  # type: ignore[arg-type]
+        bars_5m=lambda t: _uptrend_5m_frame(),
+    ))
+    client = TestClient(app)
+    _seed_today_snapshot(url)
+    assert client.post("/api/gex/autograde", json=_ag_body(),
+                       headers=_HDR).status_code == 200
+    assert nonce.value == 0  # a read never wakes the other windows
+    body = {"underlying": "SPY", "direction": "long", "checklist": _all_true(),
+            "entry": 100.0, "stop": 99.0, "target": 103.0}
+    assert client.post("/api/gex/setups", json=body, headers=_HDR).status_code == 200
+    assert nonce.value == 1  # the write does
 
 
 def test_autograde_json_round_trips_into_a_setup_row(tmp_path: Path) -> None:

@@ -349,15 +349,20 @@ def build_gex_router(
         """Build the watchlist plans, or analyze one ticker. A routine upstream
         (yfinance) failure is a 503 with the class name only (``_upstream_503``);
         the watchlist path already degrades per ticker inside ``run_plan``."""
-        if body.ticker:
+        # Canonicalize like the autograde route: the FE uppercases its input but a
+        # probed lowercase ticker would persist a parallel snapshot row keyed
+        # "nvda" that the uppercase-keyed reads never see. A whitespace-only
+        # ticker canonicalizes to empty and takes the watchlist path.
+        ticker = (body.ticker or "").strip().upper()
+        if ticker:
             try:
-                levels, liq = run_analyze(body.ticker, cfg=cfg, snapshotter=snapshotter,
+                levels, liq = run_analyze(ticker, cfg=cfg, snapshotter=snapshotter,
                                           save=True, session=session)
             except _UPSTREAM_ERRORS as exc:
                 raise _upstream_503(exc) from exc
             action_nonce.bump()
             return {"analyzed": {
-                "underlying": body.ticker, "regime": levels.regime,
+                "underlying": ticker, "regime": levels.regime,
                 "call_wall": _num(levels.call_wall),
                 "put_wall": _num(levels.put_wall),
                 "gamma_flip": _num(levels.gamma_flip),
@@ -405,6 +410,12 @@ def build_gex_router(
 
     @router.post("/api/gex/setups", dependencies=[Depends(_require_cockpit)])
     def create(body: SetupBody, session: Session = Depends(_session)) -> dict[str, object]:
+        # The write path enforces the same play_type enum the autograde read does:
+        # free text here would poison the machine-vs-human discipline facet the
+        # provenance exists for.
+        if body.play_type not in ("breakout", "range", ""):
+            raise HTTPException(
+                status_code=422, detail="play_type must be breakout|range or empty")
         try:
             # Lab convention: stamp naive Eastern (see _lab_iso), never local/UTC.
             row = create_setup(
@@ -436,7 +447,11 @@ def build_gex_router(
         still 200 with an 'incomplete' verdict -- ``run_autograde``'s isolation means
         the honest incomplete IS the answer, never a 503 for the whole read; only a
         dead DB reaches the app handler."""
-        underlying = body.underlying.strip()
+        # Strip + UPPERCASE: the FE uppercases its input but the server must not
+        # trust it -- a lowercase "spy" would auto-analyze and persist a parallel
+        # snapshot row the uppercase-keyed reads never see (the build route
+        # canonicalizes the same way).
+        underlying = body.underlying.strip().upper()
         if not underlying:
             raise HTTPException(status_code=422, detail="underlying is required")
         if body.direction not in ("long", "short"):

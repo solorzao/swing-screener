@@ -188,3 +188,40 @@ def test_create_setup_rr_boundary_ratio_exactly_min_passes() -> None:
                            entry=100.0, stop=99.0, target=102.0)  # risk 1, reward 2 -> 2.0
         assert row.chk_rr_at_least_2 is True
         assert row.grade == "A+"
+
+
+def test_create_setup_rejects_rr_tick_on_side_insane_ordering() -> None:
+    # A LONG with stop ABOVE entry computes abs-ratio 10 -- but _item_rr calls
+    # these levels a FAIL (not stop<entry<target), so a ticked R:R box is a lie
+    # the abs-ratio gate alone would store as A+. Ordering must gate first.
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        with pytest.raises(ValueError, match="R:R"):
+            create_setup(s, ts=datetime(2026, 7, 13, 10, 5), underlying="SPY",
+                         direction="long", checklist=_all_true(),
+                         entry=100.0, stop=110.0, target=200.0)
+        assert list(s.scalars(select(OptionSetup))) == []  # nothing written
+
+
+def test_create_setup_rejects_rr_tick_on_zero_risk() -> None:
+    # entry == stop: R:R is undefined, which can never honestly claim >= 2. The
+    # strict ordering check rejects it for either side (no inf escape hatch).
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        with pytest.raises(ValueError, match="R:R"):
+            create_setup(s, ts=datetime(2026, 7, 13, 10, 5), underlying="SPY",
+                         direction="long", checklist=_all_true(),
+                         entry=100.0, stop=100.0, target=300.0)
+        assert list(s.scalars(select(OptionSetup))) == []
+
+
+def test_create_setup_proper_short_bracket_passes() -> None:
+    # target < entry < stop with ratio 3.0 -- a side-sane short must not be
+    # rejected by the long ordering rule.
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        row = create_setup(s, ts=datetime(2026, 7, 13, 10, 5), underlying="SPY",
+                           direction="short", checklist=_all_true(),
+                           entry=100.0, stop=101.0, target=97.0)  # risk 1, reward 3
+        assert row.chk_rr_at_least_2 is True
+        assert row.grade == "A+"

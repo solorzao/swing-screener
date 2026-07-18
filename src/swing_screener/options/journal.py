@@ -59,19 +59,29 @@ def create_setup(
     Integrity: a ticked ``chk_rr_at_least_2`` that CONTRADICTS the typed levels is a
     stored lie, so it is refused with ``ValueError`` before any write -- but only on
     a demonstrable contradiction. The tick stands when the levels are missing (the
-    trader may be working from a fuller plan); the check fires only when entry, stop
-    AND target are all present and the computed reward-to-risk falls below ``rr_min``
-    (the same floor ``autograde`` grades against). ``rr_min`` defaults to the config
-    value so the router can thread its own cfg.
+    trader may be working from a fuller plan); with entry, stop AND target all
+    present the check mirrors ``autograde._item_rr`` exactly: side-sane ordering
+    first (long: stop<entry<target; short: target<entry<stop), then the
+    reward-to-risk floor ``rr_min`` (defaulting to the config value so the router
+    can thread its own cfg). Ordering gates FIRST because the abs ratio alone
+    lies for side-insane levels (a long with stop above entry "computes" 10:1),
+    and strict ordering makes risk > 0, so the undefined zero-risk R:R
+    (entry == stop) is rejected here too.
     """
     if (
         checklist.get("chk_rr_at_least_2")
         and entry is not None and stop is not None and target is not None
     ):
-        risk = abs(entry - stop)
-        # Guard zero risk (entry == stop): an undefined ratio is not a demonstrable
-        # contradiction, so the tick stands rather than raising on a divide-by-zero.
-        ratio = abs(target - entry) / risk if risk else float("inf")
+        # Non-"long" grades with short ordering -- the lab's is_long posture
+        # (settle.py grades trades the same way); the message names the direction
+        # so a mis-sent one reads back in the 422.
+        ordered = stop < entry < target if direction == "long" else target < entry < stop
+        if not ordered:
+            raise ValueError(
+                f"checklist claims R:R >= 2 but {direction} levels are not ordered "
+                f"(stop {stop:.2f}, entry {entry:.2f}, target {target:.2f})"
+            )
+        ratio = abs(target - entry) / abs(entry - stop)  # ordered strictly -> risk > 0
         if ratio < rr_min:
             raise ValueError(
                 f"checklist claims R:R >= 2 but levels compute R:R {ratio:.2f}"
