@@ -148,6 +148,71 @@ def test_ceiling_budget_shared_across_continuation_and_reversal(tmp_path, monkey
     assert len(cutoffs) == 1  # logged ONCE for the whole run, not once per play type
 
 
+class _EmptyBilledClient:
+    """A fake anthropic client whose every call is BILLED (usage present) but
+    returns no usable text -- the shape of a persistent failure mode (E3b)."""
+
+    def __init__(self, in_tokens):
+        self._in = in_tokens
+
+    @property
+    def messages(self):
+        outer = self
+
+        class _Text:
+            type = "text"
+            text = ""
+            citations = ()
+
+        class _Usage:
+            input_tokens = outer._in
+            output_tokens = 0
+            server_tool_use = None
+
+        class _Resp:
+            content = [_Text()]
+            usage = _Usage()
+
+        class _M:
+            def create(self, **kw):
+                return _Resp()
+
+        return _M()
+
+
+def test_ceiling_charges_billed_but_failed_calls(tmp_path, monkeypatch, caplog):
+    # E3b: an "empty-response day" -- every analyst call is BILLED but yields no
+    # usable text, so the REAL analyze_conviction returns its deterministic
+    # fallback. The fallback carries the captured usage, so spend accumulates and
+    # the ceiling still engages instead of failing open exactly when things break.
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS", "1")
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS_KINDS", "daily")
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS_TOP_N", "5")
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS_MAX_USD", "0.50")
+    monkeypatch.setenv("SWING_ANALYSIS_MODEL", "claude-opus-4-8")
+    url = f"sqlite:///{tmp_path / 'billedfail.sqlite'}"
+    _seed(url, ["AMD", "AEP", "NVDA", "INTC"])
+    edge = _edge_dir(tmp_path, play_types=("continuation",))
+
+    # 80k input tokens at opus $5/MTok == $0.40 per billed-but-empty call: AMD
+    # (acc 0.40) is under the $0.50 ceiling, AEP (acc 0.80) crosses it, NVDA/INTC
+    # must skip the analyst entirely.
+    with caplog.at_level(logging.WARNING):
+        res = run.send_digest(**_kwargs(
+            tmp_path, url, anthropic_client=_EmptyBilledClient(in_tokens=80_000),
+            deep_analyze_fn=lambda f, **k: SignalAnalysis(core_reason="d", rationale="r"),
+            chart_bytes_loader=lambda p: None, edge_dir=edge,
+            fundamentals_fn=lambda t: Fundamentals(ticker=t, ok=False), news_fn=lambda t: [],
+            market_trend_fn=lambda: "bull"))
+
+    assert res.sent is True
+    # Only the two picks that ran before the ceiling wrote an AnalystCall row.
+    with Session(get_engine(url)) as s:
+        assert sorted(c.ticker for c in s.scalars(select(AnalystCall))) == ["AEP", "AMD"]
+    cutoffs = [r for r in caplog.records if "spend ceiling" in r.getMessage()]
+    assert len(cutoffs) == 1
+
+
 def test_no_ceiling_runs_all_deep_picks(tmp_path, monkeypatch, caplog):
     # Default (no SWING_DEEP_ANALYSIS_MAX_USD) -> the ceiling never fires; ALL top-N picks
     # get the deep path even when each reports a cost. Regression: byte-identical to today.

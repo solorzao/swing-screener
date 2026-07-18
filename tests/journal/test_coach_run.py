@@ -39,8 +39,10 @@ class _Resp:
 class _FakeClient:
     def __init__(self, text):
         self._text = text
+        self.last_kwargs: dict = {}
         self.messages = self
     def create(self, **kw):
+        self.last_kwargs = kw
         return _Resp(self._text)
 
 
@@ -79,12 +81,16 @@ def test_disabled_coach_backfills_template_narrative(monkeypatch):
 def test_enabled_coach_uses_client_prose_and_records_usage(monkeypatch):
     with Session(get_engine("sqlite:///:memory:")) as s:
         r = _seed_review(s)
+        client = _FakeClient("You reached target cleanly; consider a runner next time.")
         coach_run.process_pending(
-            s, settings=_settings(monkeypatch, enabled=True), now=_NOW,
-            client=_FakeClient("You reached target cleanly; consider a runner next time."))
+            s, settings=_settings(monkeypatch, enabled=True), now=_NOW, client=client)
         s.refresh(r)
         assert r.narrative.startswith("You reached target")
-        assert r.model == "claude-opus-4-8"
+        # Provenance unification (2026-07-17 audit): the stamped model column, the model
+        # the API call was actually made with, and the worker's ONE constant all agree --
+        # a future model change can never misattribute a review's spend.
+        assert r.model == coach_run._MODEL == "claude-haiku-4-5"
+        assert client.last_kwargs["model"] == coach_run._MODEL
         assert r.input_tokens == 100 and r.est_cost_usd is not None and r.est_cost_usd > 0
 
 

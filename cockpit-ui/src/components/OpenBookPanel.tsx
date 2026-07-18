@@ -1,3 +1,4 @@
+import type { KeyboardEvent } from 'react'
 import { POLL_MS, getOpenBook, usePolling } from '../lib/api'
 import type { Facet, OpenBook, OpenBookRow } from '../lib/api'
 import { dashOr, fmtClock, fmtPct, fmtR, fmtUsd } from '../lib/fmt'
@@ -52,6 +53,23 @@ function Row({ row }: { row: OpenBookRow }) {
   )
 }
 
+/** EXPLICIT keyboard scroll (the EventTicker convention): a focused tabIndex=0
+ * overflow div does NOT reliably arrow-scroll on its own in Chromium, so the
+ * region owns the gesture. Arrows nudge, PageUp/Down step a viewport, Home/End
+ * jump; vertical only. preventDefault stops the page from also moving. */
+function onScrollKey(e: KeyboardEvent<HTMLDivElement>) {
+  const el = e.currentTarget
+  const step = 48
+  if (e.key === 'ArrowDown') el.scrollBy({ top: step })
+  else if (e.key === 'ArrowUp') el.scrollBy({ top: -step })
+  else if (e.key === 'PageDown') el.scrollBy({ top: el.clientHeight })
+  else if (e.key === 'PageUp') el.scrollBy({ top: -el.clientHeight })
+  else if (e.key === 'Home') el.scrollTo({ top: 0 })
+  else if (e.key === 'End') el.scrollTo({ top: el.scrollHeight })
+  else return
+  e.preventDefault()
+}
+
 export function OpenBookPanel({ facet, wake }: { facet: Facet; wake: number }) {
   const book = usePolling(() => getOpenBook(facet), POLL_MS, wake, facet)
 
@@ -81,7 +99,12 @@ export function OpenBookPanel({ facet, wake }: { facet: Facet; wake: number }) {
                 triggers entries
               </div>
             ) : (
-              <div className="ob-scroll">
+              <div
+                className="ob-scroll"
+                tabIndex={0}
+                aria-label="open book table, scrolls vertically"
+                onKeyDown={onScrollKey}
+              >
                 <table className="pos-table">
                   <thead>
                     <tr>

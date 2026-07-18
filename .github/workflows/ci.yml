@@ -1,7 +1,12 @@
 name: CI
 
+# push is scoped to main so a PR commit runs the suite ONCE (via pull_request)
+# instead of twice (push + pull_request). On a merge to main, CI still runs here
+# and CD runs its own gate copy of the suite -- that main-only duplication is
+# accepted (cd.yml's test job is the deploy gate; this one feeds branch checks).
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:

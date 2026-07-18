@@ -79,6 +79,12 @@ class Settings:
     # position stays protected even if the screener dies. Default ON; SWING_BRACKET_ORDERS
     # ="off" falls back to plain limit entries (reconcile-managed exits only).
     bracket_orders: bool = True
+    # Weekly macro "Market Weather" report: the env off-switch for its once-a-week LLM
+    # call (SWING_MARKET_REPORT). Default ON -- StrategyConfig.market_report_enabled is
+    # the code-level switch and notify.market_run ANDs this env gate with it, so an
+    # absent env preserves today's behavior. Only an EXPLICIT off value disables (a
+    # garbage value must not silently kill a scheduled report -- bracket_orders parse).
+    market_report_enabled: bool = True
 
 
 _TRUE = {"1", "true", "yes", "on"}
@@ -192,6 +198,10 @@ def load_settings() -> Settings:
         ),
         bracket_orders=(
             env.get("SWING_BRACKET_ORDERS", "on").strip().lower()
+            not in {"off", "0", "false", "no"}
+        ),
+        market_report_enabled=(
+            env.get("SWING_MARKET_REPORT", "on").strip().lower()
             not in {"off", "0", "false", "no"}
         ),
     )

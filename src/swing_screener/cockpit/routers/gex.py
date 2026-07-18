@@ -398,8 +398,10 @@ def build_gex_router(
         -- same logic, not duplicated). Idempotent: nothing due is still a 200
         with ``settled: 0``, never an error. Trades whose underlying has no bars
         yet stay open and count in ``open_remaining`` (``run_settle`` degrades
-        per-underlying fetch failures itself); an upstream error that ESCAPES
-        the sweep is a 503 with the class name only (``_upstream_503``)."""
+        per-underlying fetch failures itself); untouched trades whose session
+        is incomplete (intraday sweep) stay open and count in
+        ``skipped_incomplete_session``. An upstream error that ESCAPES the
+        sweep is a 503 with the class name only (``_upstream_503``)."""
         try:
             result = run_settle(session, cfg=cfg, bars_fetcher=bars_5m)
         except _UPSTREAM_ERRORS as exc:
@@ -408,6 +410,7 @@ def build_gex_router(
             action_nonce.bump()  # only when a write actually landed
         return {
             "settled": result.settled,
+            "skipped_incomplete_session": result.skipped_incomplete_session,
             "open_remaining": open_trade_count(session),
         }
 

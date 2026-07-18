@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { POLL_MS, getConfig, getExecutionSafety, getPositions, usePolling } from '../lib/api'
 import { HelpTerm } from '../components/HelpTerm'
 import type { CockpitConfig, ExecutionSafety, Polled } from '../lib/api'
+import { fmtClock } from '../lib/fmt'
 import { BracketLamp } from '../components/BracketLamp'
 import { CapGauge } from '../components/CapGauge'
 import { PanelBody } from '../components/PanelBody'
@@ -21,11 +22,6 @@ import { PanelBody } from '../components/PanelBody'
    UNKNOWN, so this screen deliberately does NOT use PanelBody's stale-dim for
    safety-derived panels. The cap gauges are informational (not a GO claim) and
    keep the standard PanelBody treatment. */
-
-function fmtAsOf(iso: string): string {
-  const d = new Date(iso)
-  return isNaN(d.getTime()) ? iso : d.toLocaleTimeString('en-US', { hour12: false })
-}
 
 /** One arming lock: ON = lit amber (attention — armed), OFF = calm dim (safe). */
 function LockRow({
@@ -325,7 +321,7 @@ export function SafetyScreen({ wake }: { wake: number }) {
                     )}
                     {s.bracket_shield.as_of !== null && (
                       <div className="sfy-note pad">
-                        snapshot as of {fmtAsOf(s.bracket_shield.as_of)} · cached ≤60s
+                        snapshot as of {fmtClock(s.bracket_shield.as_of)} · cached ≤60s
                       </div>
                     )}
                   </>

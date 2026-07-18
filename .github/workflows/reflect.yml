@@ -88,6 +88,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Pre-fetch the database token (the OIDC assertion expires in ~5 min)
+        id: dbtoken
         # The federated client assertion azure/login exchanges is only valid for ~5
         # minutes, and az redeems it PER RESOURCE on first use. Since the 5y fetch
         # window (2026-07-03) the reflect step spends 10+ minutes fetching bars
@@ -98,10 +99,14 @@ jobs:
         # slash form). Fetch the token NOW, mask it, and hand it to the reflect
         # step whole: db/session._attach_aad_token prefers SWING_DB_ACCESS_TOKEN
         # over the credential chain. Tokens live ~60-75 min; the job takes ~20.
+        #
+        # Handed over as a masked step OUTPUT consumed as step-scoped env on the
+        # ONE step that needs it -- never via GITHUB_ENV, which would expose the
+        # live token to every subsequent step, including third-party actions.
         run: |
           TOKEN=$(az account get-access-token --resource https://database.windows.net --query accessToken -o tsv)
           echo "::add-mask::$TOKEN"
-          echo "SWING_DB_ACCESS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Open ephemeral SQL firewall rule for this runner
         # GitHub-hosted runner IPs are dynamic; a one-run rule (deleted below, even on
@@ -156,6 +161,9 @@ jobs:
           # a reachable IMDS endpoint, so the managed-identity probe can otherwise
           # stall or fail the chain before it reaches the CLI credential.
           SWING_DB_URL: mssql+pyodbc://${{ env.SQL_SERVER }}.database.windows.net/swing?driver=ODBC+Driver+18+for+SQL+Server
+          # The pre-fetched Entra access token (see the dbtoken step), scoped to
+          # exactly this step -- the only consumer -- rather than job-wide env.
+          SWING_DB_ACCESS_TOKEN: ${{ steps.dbtoken.outputs.token }}
           AZURE_TOKEN_CREDENTIALS: dev
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: >

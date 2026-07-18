@@ -28,15 +28,21 @@ class _Block:
         self.citations = []
 
 
+class _Usage:
+    input_tokens = 1000
+    output_tokens = 500
+
+
 class _Resp:
-    def __init__(self, text):
+    def __init__(self, text, usage=None):
         self.content = [_Block(text)]
-        self.usage = None
+        self.usage = usage
 
 
 class _FakeClient:
-    def __init__(self, text):
+    def __init__(self, text, usage=None):
         self._text = text
+        self._usage = usage
 
     @property
     def messages(self):
@@ -44,7 +50,7 @@ class _FakeClient:
 
         class _M:
             def create(self, **kw):
-                return _Resp(outer._text)
+                return _Resp(outer._text, usage=outer._usage)
         return _M()
 
 
@@ -77,6 +83,20 @@ def test_facts_block_renders_v2_signals():
     assert "Breadth participation" in block
 
 
+def test_facts_block_never_renders_non_finite_values():
+    # PR #104 hardened the computation layer; this is the rendering-layer backstop:
+    # a stray NaN/inf fact must get the missing-value treatment, never print 'nan'.
+    nan = float("nan")
+    f = replace(_facts(), vix=nan, vix_rank=nan, ten_year=nan,
+                recession_prob=nan, vix_term_ratio=float("inf"),
+                credit_pctile=nan, credit_chg_4w=nan,
+                cyc_def_trend="bear", cyc_def_chg_4w=nan,
+                breadth_trend="bear", breadth_chg_4w=nan)
+    block = facts_block(f)
+    assert "nan" not in block.lower() and "inf" not in block.lower()
+    assert "3m 4.60" in block and "10y n/a" in block  # finite leg still renders
+
+
 def test_analyze_market_deep_parses_labelled_report():
     reply = ("CORE: Transitional tape -- daily rolling over under a bullish monthly.\n"
              "Regime: weekly+daily HA flipped bear vs a bull monthly.\n"
@@ -104,3 +124,16 @@ def test_analyze_market_deep_falls_back_deterministically():
     assert "Risk-off" in out.core            # stance from the alignment
     assert "Deterministic fallback" in out.report
     assert "alignment: aligned_bear" in out.report
+    assert out.usage is None                 # the call never happened -> honest None
+
+
+def test_billed_but_empty_reply_keeps_usage_on_the_fallback():
+    # E3b symmetry with the other three analysts: an empty reply was still BILLED, so
+    # the deterministic fallback must carry the captured usage -- market_run then
+    # persists a real est_cost_usd, keeping the migration's "NULL = no billed call
+    # captured" contract honest.
+    out = analyze_market_deep(_facts(), client=_FakeClient("   ", usage=_Usage()),
+                              web_search=False)
+    assert out.is_deep is False
+    assert "Deterministic fallback" in out.report
+    assert out.usage is not None and out.usage.est_cost_usd > 0

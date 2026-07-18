@@ -41,7 +41,15 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _STALE_AFTER = timedelta(minutes=30)
-_MODEL = "claude-opus-4-8"
+# The ONE authoritative model id for the coach (2026-07-17 audit: a duplicated constant
+# here + a separate default in coach_author could stamp a model the call never used).
+# It is passed EXPLICITLY to draft_review AND stamped on the JournalReview row, so
+# provenance always matches the model actually called. Coach prose is bounded 600-token
+# template-grade output (2-4 sentences over code-owned facts), so claude-haiku-4-5 at
+# $1/$5 per MTok replaces claude-opus-4-8 at $5/$25 -- ~25x cheaper (2026-07-17 cost
+# plan). notify.analysis._MODEL_PRICES carries a claude-haiku-4-5 row, so the coach
+# spend cap keeps metering. No env override by design; the escape hatch is this line.
+_MODEL = "claude-haiku-4-5"
 
 
 def _facts_from_review(review: JournalReview) -> TradeReviewFacts:
@@ -90,7 +98,8 @@ def process_one(
         )
         if settings.coach_enabled and not over_budget:
             draft = draft_review(
-                facts, prior_weaknesses=_latest_weaknesses_text(session), client=client)
+                facts, prior_weaknesses=_latest_weaknesses_text(session), client=client,
+                model=_MODEL)
             if draft.usage is not None:
                 spend[0] += draft.usage.est_cost_usd
         else:

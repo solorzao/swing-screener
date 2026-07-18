@@ -87,6 +87,46 @@ def test_migration_adds_analyst_call_token_spend_columns(tmp_path, monkeypatch):
     assert {"input_tokens", "output_tokens", "web_searches", "est_cost_usd"} <= cols
 
 
+def test_migration_adds_analysis_request_est_cost_column(tmp_path, monkeypatch):
+    # E3c: the uncapped on-demand path gets cost visibility -- analysis_requests
+    # carries an APPROXIMATE est_cost_usd. Nullable, NO server_default (NULL means
+    # a fallback/legacy row where no billed call was captured, never a fake $0).
+    db = tmp_path / "ac.db"
+    url = f"sqlite:///{db}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    command.upgrade(_config(url), "head")
+
+    con = sqlite3.connect(db)
+    try:
+        info = {r[1]: r for r in con.execute("PRAGMA table_info(analysis_requests)")}
+    finally:
+        con.close()
+
+    assert "est_cost_usd" in info
+    assert info["est_cost_usd"][3] == 0     # nullable (notnull flag off)
+    assert info["est_cost_usd"][4] is None  # no server default
+
+
+def test_migration_adds_market_report_est_cost_column(tmp_path, monkeypatch):
+    # E6: the weekly Market Weather LLM call gets spend visibility -- market_reports
+    # carries an APPROXIMATE est_cost_usd. Nullable, NO server_default (NULL means a
+    # deterministic/fallback/legacy row with no billed call captured, never a fake $0).
+    db = tmp_path / "mw.db"
+    url = f"sqlite:///{db}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    command.upgrade(_config(url), "head")
+
+    con = sqlite3.connect(db)
+    try:
+        info = {r[1]: r for r in con.execute("PRAGMA table_info(market_reports)")}
+    finally:
+        con.close()
+
+    assert "est_cost_usd" in info
+    assert info["est_cost_usd"][3] == 0     # nullable (notnull flag off)
+    assert info["est_cost_usd"][4] is None  # no server default
+
+
 def test_migration_adds_trade_override_column(tmp_path, monkeypatch):
     # The cockpit's log-trade action stamps HOW a fill deviated from the engine's
     # plan into trades.override -- nullable, NO server_default (NULL means
@@ -197,6 +237,81 @@ def test_migration_enforces_system_audit_identity_unique(tmp_path, monkeypatch):
         con.commit()
         with pytest.raises(sqlite3.IntegrityError):
             con.execute(row)
+            con.commit()
+    finally:
+        con.close()
+
+
+def test_migration_creates_hot_path_indexes(tmp_path, monkeypatch):
+    # Perf: the three hot-path indexes (2026-07-17 audit, I1). signals.run_date
+    # backs latest_run_date / latest_signals / delete_signals_for / prior_first_seen
+    # (the cockpit picks poll full-scanned a forever-growing table without it);
+    # (status, account) backs the open/pending/closed loaders plus the pre-trade
+    # cap gate and per-day-loss breaker; exit_events.created_date backs the hourly
+    # exit-checker dedup and the reference-screen sort.
+    db = tmp_path / "hp.db"
+    url = f"sqlite:///{db}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    command.upgrade(_config(url), "head")
+
+    con = sqlite3.connect(db)
+    try:
+        indexes = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+        composite_cols = [
+            r[2] for r in con.execute("PRAGMA index_info('ix_paper_trades_status_account')")
+        ]
+    finally:
+        con.close()
+
+    assert {"ix_signals_run_date", "ix_paper_trades_status_account",
+            "ix_exit_events_created_date"} <= indexes
+    # column order matters: every gate query filters status by equality first,
+    # account by equality/inequality second (or not at all), so status leads.
+    assert composite_cols == ["status", "account"]
+
+
+def test_migration_makes_import_key_unique_index_filtered(tmp_path, monkeypatch):
+    # option_paper_trades.import_key is NULLABLE (paper trades skip it) but its
+    # unique index was created PLAIN (f2a9c4e7b1d8). On SQL Server a plain unique
+    # index admits only ONE NULL row -- the second key-less paper trade would be
+    # rejected. The fix recreates it as a FILTERED unique index (WHERE import_key
+    # IS NOT NULL).
+    #
+    # sqlite-vs-mssql proof boundary: sqlite's plain UNIQUE index already allows
+    # multiple NULLs, so the two-NULLs insert below cannot distinguish the broken
+    # mssql schema from the fixed one on sqlite. What sqlite CAN prove is (a) the
+    # index carries the partial WHERE clause (PRAGMA index_list partial flag --
+    # this is the assertion that fails against the pre-fix plain index) and
+    # (b) duplicate non-NULL keys are still rejected (import idempotency intact).
+    # The single-NULL mssql semantics itself is only exercised on a real SQL
+    # Server; the mssql_where rendering is pinned by the migration + model.
+    db = tmp_path / "ik.db"
+    url = f"sqlite:///{db}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    command.upgrade(_config(url), "head")
+
+    con = sqlite3.connect(db)
+    try:
+        idx = {
+            r[1]: r for r in con.execute("PRAGMA index_list('option_paper_trades')")
+        }
+        assert "uq_option_paper_trades_import_key" in idx
+        assert idx["uq_option_paper_trades_import_key"][2] == 1  # unique
+        assert idx["uq_option_paper_trades_import_key"][4] == 1  # partial (filtered)
+
+        # two key-less rows coexist (the mssql failure mode this fix targets)...
+        con.execute("INSERT INTO option_paper_trades (underlying) VALUES ('SPY')")
+        con.execute("INSERT INTO option_paper_trades (underlying) VALUES ('QQQ')")
+        con.commit()
+        # ...while a duplicate non-NULL key is still rejected (import idempotency).
+        con.execute(
+            "INSERT INTO option_paper_trades (underlying, import_key) VALUES ('SPY', 'k1')"
+        )
+        con.commit()
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute(
+                "INSERT INTO option_paper_trades (underlying, import_key) VALUES ('SPY', 'k1')"
+            )
             con.commit()
     finally:
         con.close()

@@ -291,10 +291,17 @@ def _settle_client(tmp_path: Path, bars: pd.DataFrame) -> tuple[TestClient, str]
 
 
 def _target_hit_bars() -> pd.DataFrame:
-    idx = pd.date_range("2026-07-13 09:30", periods=3, freq="5min")
+    # A full session on TODAY's ET date (09:30..15:55): the sweep's stale-frame
+    # guard refuses frames that predate the trade's session day, and the lab
+    # stamps opened_at with the real naive-ET clock. Every bar carries the target
+    # touch (and stays clear of the 556.5 stop) so the sweep settles no matter
+    # what wall time the test runs at.
+    day = datetime.now(tz=_EASTERN).date()
+    idx = pd.date_range(f"{day} 09:30", f"{day} 15:55", freq="5min")
+    n = len(idx)
     return pd.DataFrame({
-        "open": [558.0, 559.0, 560.0], "high": [559.0, 566.0, 566.0],
-        "low": [557.5, 558.5, 559.5], "close": [559.0, 565.5, 565.0],
+        "open": [560.0] * n, "high": [566.0] * n,
+        "low": [559.5] * n, "close": [565.0] * n,
     }, index=idx)
 
 
@@ -306,11 +313,11 @@ def test_settle_endpoint_sweeps_due_trades_and_is_idempotent(tmp_path: Path) -> 
                 json={"status": "taken"}, headers=_HDR)
     r = client.post("/api/gex/settle", headers=_HDR)
     assert r.status_code == 200
-    assert r.json() == {"settled": 1, "open_remaining": 0}
+    assert r.json() == {"settled": 1, "skipped_incomplete_session": 0, "open_remaining": 0}
     # idempotent sweep: nothing due is still a 200, not an error
     again = client.post("/api/gex/settle", headers=_HDR)
     assert again.status_code == 200
-    assert again.json() == {"settled": 0, "open_remaining": 0}
+    assert again.json() == {"settled": 0, "skipped_incomplete_session": 0, "open_remaining": 0}
     listed = client.get("/api/gex/setups").json()["setups"]
     assert listed[0]["trade"]["status"] == "closed"
     assert listed[0]["trade"]["exit_reason"] == "target"
