@@ -17,8 +17,7 @@ Metrics (longs):
 - ``avg_mae_before_win`` -- mean MAE-R on winning trades that have an excursion ("did
   winners dip first?").
 
-The excursion math is reused from :mod:`swing_screener.journal.excursions` (Task 1)
-when importable; until it lands a local helper mirrors that module's contract exactly
+The excursion math is reused from :mod:`swing_screener.journal.excursions`
 (``mae_r = (entry - low_water)/risk``, ``mfe_r = (high_water - entry)/risk``; ``None``
 when any of ``low_water``/``high_water``/``entry_price``/``risk`` is None or risk == 0).
 """
@@ -28,23 +27,7 @@ from statistics import mean
 
 from swing_screener.analytics.performance import _is_closed_filled
 from swing_screener.db.models import PaperTrade
-
-try:  # Prefer Task 1's module; it lands the canonical Excursion + excursion_r.
-    from swing_screener.journal.excursions import excursion_r
-except ImportError:  # pragma: no cover - fallback until journal.excursions is importable
-    from collections import namedtuple
-
-    _Excursion = namedtuple("_Excursion", ["mae_r", "mfe_r"])
-
-    def excursion_r(trade: PaperTrade):  # type: ignore[misc]
-        """Minimal MAE/MFE-in-R helper matching Task 1's contract (longs)."""
-        low = trade.low_water
-        high = trade.high_water
-        entry = trade.entry_price
-        risk = trade.risk
-        if low is None or high is None or entry is None or not risk:
-            return None
-        return _Excursion(mae_r=(entry - low) / risk, mfe_r=(high - entry) / risk)
+from swing_screener.journal.excursions import excursion_r
 
 
 def discipline_report(trades: Iterable[PaperTrade]) -> dict:

@@ -121,7 +121,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 - [x] L4 `rank_bucket` / `score_bucket` wrappers
 - [x] L5 `total_unrealized_pl`
 - [x] L6 `analyze_ticker` wrapper (rewrite its 5 test call sites)
-- [ ] L7 `discipline.py` ImportError fallback
+- [x] L7 `discipline.py` ImportError fallback
 - [ ] L8 `add_thesis` writer (table stays)
 - [ ] L9 `conviction_sizing` / `conviction_weight_*` knobs
 - [ ] L10 stale `storage/__init__.py` facade
