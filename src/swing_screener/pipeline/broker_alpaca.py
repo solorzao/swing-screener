@@ -34,6 +34,7 @@ References (verified against Alpaca's trading API docs):
   ``"ACTIVE"``).
 """
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -51,6 +52,8 @@ from .broker import (
 if TYPE_CHECKING:
     from swing_screener.settings import Settings
 
+log = logging.getLogger(__name__)
+
 #: The default (and only money-safe) host: Alpaca's paper trading sandbox.
 PAPER_HOST = "https://paper-api.alpaca.markets"
 
@@ -58,6 +61,11 @@ PAPER_HOST = "https://paper-api.alpaca.markets"
 _PAPER_MARKER = "paper-api.alpaca.markets"
 
 _DEFAULT_TIMEOUT = httpx.Timeout(30.0)
+
+#: Max page size for ``GET /v2/orders`` (Alpaca's default is 50, max 500). One response
+#: never carries more than this, so ``list_open_orders`` must page until a short page --
+#: otherwise a busy day's disarm sweep silently misses every order past the boundary.
+_ORDERS_PAGE_LIMIT = 500
 
 #: Alpaca's order-status vocabulary -> ours. Statuses not listed fall back to ``"new"``
 #: (treat-as-open) so the reconciler keeps watching an order in a state we didn't model.
@@ -146,9 +154,52 @@ class AlpacaBroker:
         return self._to_order(self._request_json("GET", f"/v2/orders/{broker_order_id}"))
 
     def list_open_orders(self) -> list[BrokerOrder]:
-        """Every order still working at the venue: ``GET /v2/orders?status=open``."""
-        data = self._request_json("GET", "/v2/orders", params={"status": "open"})
-        return [self._to_order(o) for o in data]
+        """Every order still working at the venue: ``GET /v2/orders?status=open``, PAGED.
+
+        Alpaca caps one response at ``limit`` orders (default 50, max 500); unpaginated,
+        disarm's cancel sweep and stop-protection restore would silently miss every order
+        past the boundary. We ask for the max page in ``direction=asc`` and follow
+        ``after=<last order's submitted_at>`` until a short (or empty) page. Alpaca
+        documents ``after`` as EXCLUSIVE (submitted strictly after), but ids are deduped
+        across boundaries anyway as defense against off-by-one/precision surprises. The
+        inherent limit of a timestamp cursor: an order sharing the boundary order's exact
+        ``submitted_at`` can be skipped server-side (the endpoint has no opaque page
+        token). A cursor that fails to advance ends the loop -- with a WARNING, because
+        the list returned is then known-incomplete -- rather than re-asking forever.
+        """
+        orders: list[BrokerOrder] = []
+        seen: set[str] = set()
+        after: str | None = None
+        while True:
+            params: dict[str, Any] = {
+                "status": "open",
+                "direction": "asc",
+                "limit": _ORDERS_PAGE_LIMIT,
+            }
+            if after is not None:
+                params["after"] = after
+            data = self._request_json("GET", "/v2/orders", params=params)
+            for raw in data:
+                order_id = raw["id"]
+                if order_id in seen:
+                    continue
+                seen.add(order_id)
+                orders.append(self._to_order(raw))
+            # RAW page length, not the deduped count: a full page with a re-served
+            # boundary order still means more may exist past it.
+            if len(data) < _ORDERS_PAGE_LIMIT:
+                break  # a short page is the last page
+            next_after = data[-1].get("submitted_at")
+            if next_after is None or next_after == after:
+                # cursor cannot advance; re-asking would loop forever. The list we
+                # return is known-incomplete -- and its consumers are disarm's cancel
+                # sweep + stop-protection restore, so say so out loud.
+                log.warning(
+                    "list_open_orders: pagination cursor did not advance after "
+                    "%d orders; result may be incomplete", len(orders))
+                break
+            after = next_after
+        return orders
 
     def get_positions(self) -> list[BrokerPosition]:
         """All open positions: ``GET /v2/positions`` (qty/avg_entry_price coerced from strings)."""

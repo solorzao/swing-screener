@@ -269,6 +269,50 @@ def test_broker_returns_rejected_order() -> None:
         assert rejected.account == "live"
 
 
+# ---------------------------------------------------------------------------
+# skip-then-resubmit on the SAME run_date: the freed limit lets the second
+# submit act, and the log row must be UPGRADED to submitted_live (never
+# swallowed by the stale skipped row) or the reconciler never materializes the
+# fill -- an untracked real-money position. A THIRD submit short-circuits
+# BEFORE the broker (no second submit_order call).
+# ---------------------------------------------------------------------------
+def test_skipped_then_resubmitted_same_day_ends_submitted_live_for_reconciler() -> None:
+    with _session() as s:
+        # an open live position AT a max_concurrent cap of 1 -> the FIRST submit is clamped.
+        blocker = PaperTrade(ticker="X", timeframe="1d", horizon="medium", account="live",
+                             signal_score=0.5, rank=1, fill_status="filled", status="open",
+                             stop=9.0, target=12.0, risk=1.0)
+        s.add(blocker)
+        s.commit()
+        broker = FakeBroker(real_money=False)
+        limits = Limits(max_daily_notional=None, max_daily_loss=None, max_concurrent=1)
+        adapter = LiveAdapter(broker, settings=_live_settings(), gate_ready_fn=lambda _s: True)
+
+        first = adapter.submit(_intent(), session=s, run_date=RUN, limits=limits)
+        assert first.status == "skipped"
+        assert broker.submitted_specs == []               # clamped BEFORE the venue
+
+        # the cap frees intra-day (the blocking position closes) -> the re-submit ACTS.
+        blocker.status = "closed"
+        s.commit()
+        second = adapter.submit(_intent(), session=s, run_date=RUN, limits=limits)
+        assert second.status == "submitted_live"
+        assert second.broker_order_id == "fake-0"
+        assert len(broker.submitted_specs) == 1           # the broker really got the order
+
+        # ONE log row (unique key), upgraded to submitted_live WITH the broker id --
+        # exactly what the reconciler scans for.
+        row = s.query(ExecutionLog).one()
+        assert row.status == "submitted_live"
+        assert row.broker_order_id == "fake-0"
+
+        # a THIRD submit short-circuits on the counting row BEFORE any broker call.
+        third = adapter.submit(_intent(), session=s, run_date=RUN, limits=limits)
+        assert third.status == "submitted_live"
+        assert third.broker_order_id == "fake-0"
+        assert len(broker.submitted_specs) == 1           # submit_order NOT called again
+
+
 def test_adapter_name() -> None:
     assert LiveAdapter(FakeBroker()).name == "live"
 
