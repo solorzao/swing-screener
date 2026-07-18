@@ -17,7 +17,7 @@ The brake's load-bearing properties, pinned:
 """
 
 import json
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pytest
 from sqlalchemy.orm import Session
@@ -182,6 +182,52 @@ def test_halt_never_downgrades_tripped(session: Session) -> None:
     assert gr.halt(session, source="cockpit") is True
     assert gr.halt(session, source="cockpit") is False
     assert session.query(AgentGuardrailEvent).filter_by(kind="halt").count() == 1
+
+
+def test_clear_halt_refuses_while_tripped(session: Session) -> None:
+    eid = gr.trip(session, breaker="max_daily_loss_usd", reason="breach",
+                  source="screen")
+    assert eid is not None
+
+    # a trip releases ONLY through clear() with the acknowledged trip_id.
+    assert gr.clear_halt(session, source="cockpit") is False
+    g = gr.load_guardrails(session)
+    assert g.state == "tripped"
+    assert g.trip_id == eid
+    assert g.sweep_state == "pending"
+    # event on success only -- the refused release appends nothing.
+    assert session.query(AgentGuardrailEvent).filter_by(kind="clear").count() == 0
+
+
+def test_two_rows_transitions_still_elect_one(session: Session) -> None:
+    """The seed-race survival pin: if the empty-table race ever double-seeds the
+    table, every write stays pinned to the canonical MIN(id) row -- rowcount is
+    capped at 1, so the election still elects exactly one owner."""
+    gr.load_guardrails(session)
+    session.add(AgentGuardrails(updated_at=datetime.now(UTC)))  # no explicit id
+    session.commit()
+    first_id, second_id = [
+        r.id for r in session.query(AgentGuardrails).order_by(AgentGuardrails.id)
+    ]
+    assert first_id < second_id
+
+    eid = gr.trip(session, breaker="max_daily_loss_usd", reason="breach",
+                  source="screen")
+    assert eid is not None                    # rowcount 1 via the MIN-id pin
+    first, second = session.query(AgentGuardrails).order_by(AgentGuardrails.id)
+    assert first.state == "tripped"           # the FIRST row carries the trip
+    assert first.trip_id == eid
+    assert first.sweep_state == "pending"
+    assert second.state == "ok"               # the stray row is never touched
+    assert second.trip_id is None
+    assert gr.load_guardrails(session).state == "tripped"  # reads agree on MIN(id)
+
+    assert gr.clear(session, acknowledged_trip_id=eid, source="cockpit") is True
+    first, second = session.query(AgentGuardrails).order_by(AgentGuardrails.id)
+    assert first.state == "ok"
+    assert first.trip_id is None
+    assert second.state == "ok"
+    assert gr.load_guardrails(session).state == "ok"
 
 
 def test_edit_never_touches_state_columns(session: Session) -> None:

@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, func, select, update
+from sqlalchemy import CursorResult, ScalarSelect, func, select, update
 from sqlalchemy.orm import Session
 
 from swing_screener.db.models import AgentGuardrailEvent, AgentGuardrails, ExitEvent, PaperTrade
@@ -80,6 +80,19 @@ class GuardrailsState:
     sweep_state: str | None
 
 
+def _canonical_row_id() -> "ScalarSelect[Any]":
+    """The canonical row's id, as a scalar subquery: MIN(id), oldest row wins.
+
+    Every conditional UPDATE pins on this so rowcount is capped at 1 even if the
+    empty-table seed race ever leaves TWO rows -- and MIN (not MAX) so writes
+    land on the SAME row the ascending read in ``load_guardrails`` returns.
+    ``.correlate(None)`` keeps the subquery self-contained inside an UPDATE on
+    the same table: auto-correlation would drop its FROM and turn the predicate
+    into a per-row ``id = min(id)`` tautology.
+    """
+    return select(func.min(AgentGuardrails.id)).correlate(None).scalar_subquery()
+
+
 def _select_state(session: Session) -> GuardrailsState | None:
     row = session.execute(
         select(*_STATE_COLUMNS).order_by(AgentGuardrails.id).limit(1)
@@ -92,12 +105,15 @@ def _select_state(session: Session) -> GuardrailsState | None:
 def load_guardrails(session: Session) -> GuardrailsState:
     """The current brake state, get-or-creating the single default row.
 
-    A raw column select of the newest row (``order_by(id).limit(1)`` -- there is
-    only one), bypassing the identity map so a change committed by ANOTHER
-    process/session (a cockpit HALT mid-dispatch) is always visible. If no row
-    exists yet, seed the default row WITHOUT an explicit id: on SQL Server the
-    PK is IDENTITY, and an explicit id needs IDENTITY_INSERT permission the
-    prod managed identity may lack (see the model docstring).
+    A raw column select of the OLDEST row (``order_by(id).limit(1)`` -- the
+    canonical row; there is normally only one), bypassing the identity map so a
+    change committed by ANOTHER process/session (a cockpit HALT mid-dispatch)
+    is always visible. Every write is pinned to the same MIN(id) row (see
+    ``_canonical_row_id``), so reads and writes agree even if the empty-table
+    seed race ever leaves a stray second row. If no row exists yet, seed the
+    default row WITHOUT an explicit id: on SQL Server the PK is IDENTITY, and
+    an explicit id needs IDENTITY_INSERT permission the prod managed identity
+    may lack (see the model docstring).
     """
     state = _select_state(session)
     if state is not None:
@@ -152,7 +168,10 @@ def trip(session: Session, *, breaker: str, reason: str, source: str) -> int | N
     won = _conditional_update(
         session,
         update(AgentGuardrails)
-        .where(AgentGuardrails.state != "tripped")
+        .where(
+            AgentGuardrails.id == _canonical_row_id(),
+            AgentGuardrails.state != "tripped",
+        )
         .values(state="tripped", trip_id=eid, trip_reason=reason[:256],
                 sweep_state="pending", updated_at=datetime.now(UTC)),
     )
@@ -171,6 +190,7 @@ def clear(session: Session, *, acknowledged_trip_id: int, source: str) -> bool:
         session,
         update(AgentGuardrails)
         .where(
+            AgentGuardrails.id == _canonical_row_id(),
             AgentGuardrails.trip_id == acknowledged_trip_id,
             AgentGuardrails.state == "tripped",
         )
@@ -195,7 +215,10 @@ def halt(session: Session, *, source: str, reason: str = "manual HALT") -> bool:
     halted = _conditional_update(
         session,
         update(AgentGuardrails)
-        .where(AgentGuardrails.state == "ok")
+        .where(
+            AgentGuardrails.id == _canonical_row_id(),
+            AgentGuardrails.state == "ok",
+        )
         .values(state="halted", updated_at=datetime.now(UTC)),
     )
     if not halted:
@@ -209,7 +232,10 @@ def clear_halt(session: Session, *, source: str) -> bool:
     released = _conditional_update(
         session,
         update(AgentGuardrails)
-        .where(AgentGuardrails.state == "halted")
+        .where(
+            AgentGuardrails.id == _canonical_row_id(),
+            AgentGuardrails.state == "halted",
+        )
         .values(state="ok", updated_at=datetime.now(UTC)),
     )
     if not released:
@@ -243,7 +269,9 @@ def edit_limits(session: Session, *, source: str, **limits: object) -> None:
     old_values = {k: _jsonable(getattr(old, k)) for k in limits}
     new_values = {k: _jsonable(v) for k, v in limits.items()}
     session.execute(
-        update(AgentGuardrails).values(updated_at=datetime.now(UTC), **limits)
+        update(AgentGuardrails)
+        .where(AgentGuardrails.id == _canonical_row_id())
+        .values(updated_at=datetime.now(UTC), **limits)
     )
     session.commit()
     record_event(
@@ -266,7 +294,10 @@ def record_sweep_outcome(
     """
     session.execute(
         update(AgentGuardrails)
-        .where(AgentGuardrails.trip_id == trip_id)
+        .where(
+            AgentGuardrails.id == _canonical_row_id(),
+            AgentGuardrails.trip_id == trip_id,
+        )
         .values(sweep_state=outcome, updated_at=datetime.now(UTC))
     )
     session.commit()
