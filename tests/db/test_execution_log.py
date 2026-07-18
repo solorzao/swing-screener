@@ -88,6 +88,49 @@ def test_duplicate_idempotency_key_is_a_noop_returning_first_row() -> None:
         assert s.query(ExecutionLog).count() == 1
 
 
+def test_add_execution_log_upgrades_skipped_to_submitted() -> None:
+    """A ``skipped`` row superseded by a COUNTING write on the same key upgrades in place.
+
+    The untracked-real-money bug: a limit-clamped ``skipped`` row used to swallow a later
+    successful submit's ``submitted_live`` write on the same key -- the broker order was
+    live but the reconciler (which scans ``submitted_live`` only) never saw it. The
+    upgrade must also carry the per-outcome fields: ``broker_order_id`` above all (the
+    reconciler skips a submitted_live row without one), and the order spec (the key
+    hashes the intent identity, not its levels -- a later re-run can carry fresh levels).
+    """
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        first = repo.add_execution_log(s, **_fields(
+            status="skipped", detail="per-day notional cap"))
+        upgraded = repo.add_execution_log(s, **_fields(
+            status="submitted_live", detail="order submitted",
+            broker="fake", broker_order_id="fake-0", broker_status="new",
+            limit_price=121.0, notional=1210.0, stop=111.0,
+        ))
+        assert upgraded.id == first.id                    # same row, not a second insert
+        assert s.query(ExecutionLog).count() == 1
+        got = s.query(ExecutionLog).one()
+        assert got.status == "submitted_live"
+        assert got.detail == "order submitted"
+        assert got.broker_order_id == "fake-0" and got.broker_status == "new"
+        assert got.limit_price == 121.0 and got.notional == 1210.0 and got.stop == 111.0
+
+
+def test_add_execution_log_never_downgrades_counting_status() -> None:
+    """A COUNTING row is never downgraded by a later non-counting write on the same key."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        first = repo.add_execution_log(s, **_fields(
+            status="filled_paper", detail="paper position opened"))
+        again = repo.add_execution_log(s, **_fields(
+            status="skipped", detail="per-day notional cap"))
+        assert again.id == first.id
+        got = s.query(ExecutionLog).one()
+        assert got.status == "filled_paper"               # never downgraded
+        assert got.detail == "paper position opened"      # nothing refreshed either
+        assert s.query(ExecutionLog).count() == 1
+
+
 def test_execution_logs_for_day_filters_by_date_account_and_excludes_skipped() -> None:
     """Only ``recorded`` / ``filled_paper`` rows for that run_date + account count.
 

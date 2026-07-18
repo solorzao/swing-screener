@@ -28,10 +28,15 @@ the caller):
    per-day realized-loss circuit breaker against the database. A breach is CLAMPED by
    logging a ``skipped`` row (audit) and returning -- the order is never recorded. Each
    check is skipped when its cap is ``None`` (the unbounded sentinel).
-2. The idempotency key (:func:`idempotency_key`): unique per ``(pick, run, side)`` so a
-   force-resent or hourly-digest re-run that tries to record the SAME order hits the
-   ``execution_logs`` unique constraint and is a no-op (``add_execution_log`` returns the
-   existing row). One order per pick per run.
+2. The idempotency key (:func:`idempotency_key`): unique per ``(pick, run, side)``, and
+   enforced in TWO layers. Load-before-act: the paper + live adapters short-circuit when
+   a COUNTING ExecutionLog row (``counting_execution_log``) already exists for the key,
+   so a re-submit never re-touches the venue or re-opens a position. Log-time: a write
+   that still races into the ``execution_logs`` unique constraint collapses to the
+   existing row -- except that a non-counting row (a limit-clamped ``skipped``, a
+   ``rejected``) superseded by a counting write is UPGRADED in place, so a submit that
+   ACTED after an earlier same-day clamp is never silently swallowed. One order per pick
+   per run.
 
 PER-DAY-LOSS UNIT DECISION: ``Limits.max_daily_loss`` is interpreted as an **R
 threshold**, NOT a dollar amount. The design left $ vs R open; we choose R because the
@@ -59,10 +64,11 @@ from sqlalchemy.orm import Session
 
 from sqlalchemy import select
 
-from swing_screener.db.models import ExecutionLog, PaperTrade
+from swing_screener.db.models import PaperTrade
 from swing_screener.db.repo import (
     add_execution_log,
     count_open_positions,
+    counting_execution_log,
     execution_logs_for_day,
     realized_r_on,
     save_paper_trades,
@@ -262,8 +268,8 @@ class PaperAdapter:
     non-positive risk (``limit_price <= stop``) is ``rejected`` (logged, opens nothing)
     rather than booked as a degenerate fill; and it is idempotent per ``(pick, run,
     side)`` -- a duplicate submit hands back the prior fill WITHOUT opening a second
-    position (guarded on the existing ``filled_paper`` log for the key, belt-and-braces
-    with the ExecutionLog unique constraint)."""
+    position (the load-before-act guard on an existing COUNTING log row for the key,
+    belt-and-braces with the ExecutionLog unique constraint)."""
 
     name = "paper"
 
@@ -272,30 +278,34 @@ class PaperAdapter:
     ) -> OrderResult:
         key = idempotency_key(intent, run_date)
 
-        # No-double-open guard: if this intent x run already opened a paper position
-        # (a `filled_paper` log row for `key`), hand the prior fill back rather than
-        # opening a second one. The ExecutionLog unique key alone would dedupe the LOG,
-        # but the PaperTrade has no such constraint -- so we must short-circuit here.
-        prior = session.scalars(
-            select(ExecutionLog).where(
-                ExecutionLog.idempotency_key == key,
-                ExecutionLog.status == "filled_paper",
-            )
-        ).first()
+        # Load-before-act no-double-open guard: a COUNTING log row for `key` means this
+        # intent x run already acted -- hand the prior outcome back rather than opening a
+        # second position. The ExecutionLog unique key alone would dedupe the LOG, but
+        # the PaperTrade has no such constraint -- so we must short-circuit here. A
+        # non-counting row (an earlier same-day limit-clamped `skipped`) does NOT block:
+        # acting then upgrades it in place (add_execution_log's upgrade path).
+        prior = counting_execution_log(session, key)
         if prior is not None:
-            existing_open = session.scalars(
-                select(PaperTrade).where(
-                    PaperTrade.account == PAPER_ACCOUNT,
-                    PaperTrade.ticker == intent.ticker,
-                    PaperTrade.timeframe == intent.timeframe,
-                    PaperTrade.play_type == intent.play_type,
-                    PaperTrade.opened_date == run_date,
+            if prior.status == "filled_paper":
+                existing_open = session.scalars(
+                    select(PaperTrade).where(
+                        PaperTrade.account == PAPER_ACCOUNT,
+                        PaperTrade.ticker == intent.ticker,
+                        PaperTrade.timeframe == intent.timeframe,
+                        PaperTrade.play_type == intent.play_type,
+                        PaperTrade.opened_date == run_date,
+                    )
+                ).first()
+                return OrderResult(
+                    status="filled_paper", account=PAPER_ACCOUNT,
+                    detail="paper position already open",
+                    trade_id=existing_open.id if existing_open is not None else None,
                 )
-            ).first()
+            # the key was burned by another counting status (a recorded ticket / a live
+            # order): refuse to act -- opening a position here would go unrecorded.
             return OrderResult(
-                status="filled_paper", account=PAPER_ACCOUNT,
-                detail="paper position already open",
-                trade_id=existing_open.id if existing_open is not None else None,
+                status=prior.status, account=PAPER_ACCOUNT,
+                detail="already submitted under this idempotency key",
             )
 
         reason = _limit_block(
@@ -393,6 +403,11 @@ class LiveAdapter:
 
     The load-bearing safety, all INSIDE ``submit`` (never trusting the caller):
 
+    0. The load-before-act idempotency guard: an existing COUNTING log row for the key (a
+       working ``submitted_live`` / terminal ``filled_live`` order) short-circuits BEFORE
+       any broker call -- a re-submit can never place a venue order whose status write
+       would be swallowed by the unique key (an untracked position the reconciler,
+       which scans ``submitted_live`` rows only, would never materialize).
     1. The REAL-MONEY guard, consulted ONLY when ``broker.is_real_money()`` -- a paper broker
        (Alpaca paper) needs no locks and skips it entirely. For a real-money endpoint it
        demands all THREE arming locks (``can_arm_real_money``: mode=live AND allow_real_money
@@ -427,6 +442,20 @@ class LiveAdapter:
         self, intent: OrderIntent, *, session: Session, run_date: date, limits: Limits
     ) -> OrderResult:
         key = idempotency_key(intent, run_date)
+
+        # 0. Load-before-act idempotency guard: a COUNTING row for this key means an order
+        #    already went out (working/filled) -- short-circuit BEFORE the venue, because a
+        #    second broker order's status write would be swallowed by the unique key and
+        #    the reconciler would never see (or materialize) it. A non-counting row (an
+        #    earlier same-day limit-clamped `skipped`, a `rejected_live`) does NOT block:
+        #    acting then upgrades it in place (add_execution_log's upgrade path).
+        prior = counting_execution_log(session, key)
+        if prior is not None:
+            return OrderResult(
+                status=prior.status, account=LIVE_ACCOUNT,
+                detail="already submitted under this idempotency key",
+                broker_order_id=prior.broker_order_id,
+            )
 
         # 1. REAL-MONEY guard -- consulted ONLY for a real-money endpoint. A paper broker
         #    (is_real_money() False) needs no locks and skips this block entirely.
