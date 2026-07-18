@@ -137,7 +137,7 @@ def test_reject_marks_rejected_and_not_open() -> None:
 
 
 # ---------------------------------------------------------------------------
-# cancel_order / cancel_all_orders -> canceled, not open.
+# cancel_order -> canceled, not open.
 # ---------------------------------------------------------------------------
 def test_cancel_order_marks_canceled_and_not_open() -> None:
     broker = FakeBroker()
@@ -147,20 +147,6 @@ def test_cancel_order_marks_canceled_and_not_open() -> None:
 
     canceled = broker.get_order(order.broker_order_id)
     assert canceled.status == "canceled"
-    assert broker.list_open_orders() == []
-
-
-def test_cancel_all_orders_cancels_every_open_order() -> None:
-    broker = FakeBroker()
-    a = broker.submit_order(_spec(client_order_id="a", symbol="AAA"))
-    b = broker.submit_order(_spec(client_order_id="b", symbol="BBB"))
-    # one already filled -> cancel_all leaves it filled, only opens get canceled.
-    broker.fill(a.broker_order_id, price=10.0)
-
-    broker.cancel_all_orders()
-
-    assert broker.get_order(a.broker_order_id).status == "filled"
-    assert broker.get_order(b.broker_order_id).status == "canceled"
     assert broker.list_open_orders() == []
 
 
@@ -268,19 +254,6 @@ def test_fill_of_bracket_entry_spawns_live_protective_legs() -> None:
     assert broker.get_positions() == [
         BrokerPosition(symbol="NVDA", qty=8, avg_entry_price=100.0)
     ]
-
-
-def test_cancel_all_orders_kills_bracket_stop_legs_like_the_venue() -> None:
-    # Documents the REAL venue semantic that makes a blanket cancel dangerous:
-    # DELETE /v2/orders pulls the protective legs of a FILLED position too.
-    broker = FakeBroker()
-    entry = broker.submit_order(_bracket_spec())
-    broker.fill(entry.broker_order_id, price=100.0)
-
-    broker.cancel_all_orders()
-
-    assert broker.list_open_orders() == []          # the protective stop died too
-    assert len(broker.get_positions()) == 1         # ...while the position remains
 
 
 # ---------------------------------------------------------------------------

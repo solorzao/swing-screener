@@ -180,10 +180,6 @@ class AlpacaBroker:
         """Cancel one resting order: ``DELETE /v2/orders/{id}``."""
         self._request("DELETE", f"/v2/orders/{broker_order_id}")
 
-    def cancel_all_orders(self) -> None:
-        """Pull every resting order (the kill switch): ``DELETE /v2/orders``."""
-        self._request("DELETE", "/v2/orders")
-
     def is_real_money(self) -> bool:
         """Whether this client trades REAL money. Conservative: ``True`` UNLESS the host is a
         recognized PAPER host. A live host or an UNKNOWN host -> ``True`` (fail safe), so an

@@ -114,7 +114,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 - [ ] K5 dead CSS refs + dead null-check + time/date helper consolidation (brace-count after every CSS edit)
 
 **Phase L — `chore/dead-code-sweep`** (one commit per deletion; `git grep` before each)
-- [ ] L1 `cancel_all_orders` (Protocol + both impls)
+- [x] L1 `cancel_all_orders` (Protocol + both impls)
 - [ ] L2 `latest_signals` + `update_trade`
 - [ ] L3 `fetch_universe` + `fetch_vix`
 - [ ] L4 `rank_bucket` / `score_bucket` wrappers

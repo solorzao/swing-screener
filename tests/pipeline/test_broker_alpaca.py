@@ -236,7 +236,7 @@ def test_get_positions_coerces_string_numbers() -> None:
 
 
 # ---------------------------------------------------------------------------
-# cancel_order / cancel_all_orders -> DELETE.
+# cancel_order -> DELETE by id.
 # ---------------------------------------------------------------------------
 def test_cancel_order_deletes_by_id() -> None:
     seen: dict[str, object] = {}
@@ -250,20 +250,6 @@ def test_cancel_order_deletes_by_id() -> None:
     broker.cancel_order("oid-9")
     assert seen["method"] == "DELETE"
     assert seen["path"] == "/v2/orders/oid-9"
-
-
-def test_cancel_all_orders_deletes_the_collection() -> None:
-    seen: dict[str, object] = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["method"] = request.method
-        seen["path"] = request.url.path
-        return httpx.Response(207, json=[])
-
-    broker = _broker(handler)
-    broker.cancel_all_orders()
-    assert seen["method"] == "DELETE"
-    assert seen["path"] == "/v2/orders"
 
 
 # ---------------------------------------------------------------------------
