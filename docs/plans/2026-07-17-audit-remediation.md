@@ -77,7 +77,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 - [ ] E-verify (post-deploy, ~1 week) `analyst_calls.input_tokens` well below the 400k/run baseline
 
 **Phase F — `fix/digest-cooldown-cadence`**
-- [ ] F1 per-kind cooldown + dropped-picks log line
+- [x] F1 per-kind cooldown + dropped-picks log line
 
 **Phase G — `fix/infra-cd-hardening`**
 - [ ] G1 `notify.run` `_resolve_db_url` + mssql-gated migrate
