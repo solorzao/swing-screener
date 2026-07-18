@@ -464,7 +464,10 @@ def analyze_signal_deep(
     """Opus analyst: reads the chart image + facts + fundamentals/news, web-searches
     sentiment/trends, and weighs it all. Falls back to the deterministic rationale on
     ANY failure (missing key, API/tool error, empty reply) so the digest never blocks.
+    A failure AFTER the API responded was still BILLED, so the fallback carries the
+    captured usage and the run-level spend ceiling charges it (E3b).
     """
+    usage: Usage | None = None  # None only when no billed call happened
     try:
         text, sources, usage = _analyst_call(
             system=_DEEP_SYSTEM,
@@ -478,7 +481,11 @@ def analyze_signal_deep(
             core_reason=analysis.core_reason, rationale=rationale, is_deep=True,
             usage=usage,
         )
-    except Exception:
+    except Exception as exc:
+        # EmptyAnalysisError carries the billed usage; any other post-response
+        # failure left it in `usage` via the unpack above; a failed call -> None.
+        if isinstance(exc, EmptyAnalysisError):
+            usage = exc.usage
         log.warning(
             "deep analysis failed for %s %s; using deterministic fallback",
             facts.ticker, facts.timeframe, exc_info=True,
@@ -486,6 +493,7 @@ def analyze_signal_deep(
         return SignalAnalysis(
             core_reason=_deterministic_core(facts),
             rationale=_deterministic_rationale(facts),
+            usage=usage,
         )
 
 
@@ -747,6 +755,7 @@ def analyze_conviction(
     sentiment/sector context that genuinely bears on the thesis -- the point of the
     "learning participant" seam; citations get appended to the insight.
     """
+    usage: Usage | None = None  # None only when no billed call happened
     try:
         text, sources, usage = _analyst_call(
             system=_CONVICTION_SYSTEM,
@@ -762,7 +771,13 @@ def analyze_conviction(
             conviction=conviction, nudge_reason=reason, insight=insight, is_deep=True,
             usage=usage,
         )
-    except Exception:
+    except Exception as exc:
+        # A failure AFTER the API responded was still BILLED: EmptyAnalysisError
+        # carries the usage; any other post-response failure left it in `usage`
+        # via the unpack above; a failed call -> None. The fallback keeps it so
+        # the run-level spend ceiling charges billed failures (E3b).
+        if isinstance(exc, EmptyAnalysisError):
+            usage = exc.usage
         log.warning(
             "conviction analysis failed for %s %s; using baseline + deterministic rationale",
             facts.ticker, facts.timeframe, exc_info=True,
@@ -772,4 +787,5 @@ def analyze_conviction(
             nudge_reason="(baseline; analyst unavailable)",
             insight=_deterministic_rationale(facts),
             is_deep=False,
+            usage=usage,
         )

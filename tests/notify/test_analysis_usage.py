@@ -250,3 +250,38 @@ def test_signal_deep_fallback_leaves_usage_none():
     out = analyze_signal_deep(_facts(), client=_BoomClient())
     assert out.is_deep is False
     assert out.usage is None
+
+
+# ---------------------------------------------------------------------------
+# Billed-but-failed calls (E3b): the fallback result still carries the usage,
+# so the run-level spend ceiling charges the call instead of failing open.
+# ---------------------------------------------------------------------------
+def test_signal_deep_billed_but_empty_reply_attaches_usage_to_fallback():
+    # The API call was BILLED (usage present) but returned no usable text: the
+    # deterministic fallback must still carry that usage.
+    resp = _Resp(
+        [_TextBlock("")],
+        usage=_Usage(input_tokens=80_000, output_tokens=0, web_search_requests=2),
+    )
+    out = analyze_signal_deep(_facts(), client=_RecordingClient(resp), model="claude-opus-4-8")
+    assert out.is_deep is False  # still the deterministic fallback
+    assert "ATR of 4.0% of price" in out.rationale
+    assert out.usage is not None
+    assert out.usage.input_tokens == 80_000
+    # 80_000/1e6*$5 + 2 searches * $0.01 == 0.40 + 0.02
+    assert abs(out.usage.est_cost_usd - 0.42) < 1e-9
+
+
+def test_conviction_billed_but_empty_reply_attaches_usage_to_fallback():
+    resp = _Resp(
+        [_TextBlock("")],
+        usage=_Usage(input_tokens=80_000, output_tokens=0),
+    )
+    out = analyze_conviction(
+        _facts(), baseline="medium", playbook_text=_PLAYBOOK,
+        client=_RecordingClient(resp), model="claude-opus-4-8",
+    )
+    assert out.is_deep is False
+    assert out.conviction == "medium"  # fallback keeps the baseline
+    assert out.usage is not None
+    assert abs(out.usage.est_cost_usd - 0.40) < 1e-9
