@@ -29,8 +29,17 @@ from swing_screener.options.journal import (
     list_setups,
     set_status,
 )
+from swing_screener.options.autograde import AutoGrade
 from swing_screener.options.reading import describe_gex
-from swing_screener.options.run import BarsFetcher, Snapshotter, run_analyze, run_plan, run_settle
+from swing_screener.options.run import (
+    Analyzer,
+    BarsFetcher,
+    Snapshotter,
+    run_analyze,
+    run_autograde,
+    run_plan,
+    run_settle,
+)
 from swing_screener.options.stats import by_grade, lab_summary, open_trade_count, robinhood_summary
 
 _EASTERN = ZoneInfo("America/New_York")
@@ -114,6 +123,19 @@ class SetupBody(BaseModel):
     # response; stored opaquely (provenance, not authority -- no re-validation
     # beyond this generous size cap: the canonical blob is small).
     autograde_json: str | None = Field(default=None, max_length=8192)
+
+
+class AutogradeBody(BaseModel):
+    # underlying + direction are validated server-side in the handler (the audit
+    # flagged the setups route trusting the FE for a nonempty/known value); the
+    # levels are optional floats the pure grader degrades to needs_input.
+    underlying: str = Field(max_length=16)
+    direction: str = Field(max_length=8)
+    play_type: str = Field(default="", max_length=16)
+    entry: float | None = Field(default=None, allow_inf_nan=False)
+    stop: float | None = Field(default=None, allow_inf_nan=False)
+    target: float | None = Field(default=None, allow_inf_nan=False)
+    pivot_level: float | None = Field(default=None, allow_inf_nan=False)
 
 
 class StatusBody(BaseModel):
@@ -252,6 +274,46 @@ def _episode_dict(e: broker_import.Episode) -> dict[str, object]:
     }
 
 
+def _latest_snapshot(session: Session, underlying: str) -> GexSnapshot | None:
+    """The newest snapshot for an underlying (the plan endpoint's latest-row query),
+    used to serve the snapshot the autograde read graded against."""
+    return session.scalars(
+        select(GexSnapshot).where(GexSnapshot.underlying == underlying)
+        .order_by(GexSnapshot.ts.desc()).limit(1)
+    ).first()
+
+
+def _autograde_items(result: AutoGrade) -> list[dict[str, object]]:
+    return [{"key": v.key, "state": v.state, "fact": v.fact} for v in result.items]
+
+
+def _autograde_provenance(
+    underlying: str, direction: str, play_type: str, result: AutoGrade,
+    cfg: GexConfig, ts: str | None,
+) -> dict[str, object]:
+    """The canonical machine provenance, built server-side so the FE never
+    constructs authority it does not own: the per-item verdicts + facts, the two
+    hints, the cfg thresholds in force at decision time, and the stamp. The FE
+    echoes this back verbatim on ``POST /api/gex/setups`` (stored opaquely there)."""
+    return {
+        "ts": ts,
+        "underlying": underlying,
+        "direction": direction,
+        "play_type": play_type,
+        "machine_verdict": result.machine_verdict,
+        "items": _autograde_items(result),
+        "hints": list(result.hints),
+        "thresholds": {
+            "vol_confirm_mult": cfg.vol_confirm_mult,
+            "vol_lookback": cfg.vol_lookback,
+            "rr_min": cfg.rr_min,
+            "pivot_tolerance_pct": cfg.pivot_tolerance_pct,
+            "swing_lookback": cfg.swing_lookback,
+            "ema_spans": list(cfg.ema_spans),
+        },
+    }
+
+
 def build_gex_router(
     *,
     _session: Callable[[], Iterator[Session]],
@@ -259,10 +321,13 @@ def build_gex_router(
     snapshotter: Snapshotter | None = None,
     daily_bars: Callable[[str], object] | None = None,
     bars_5m: BarsFetcher | None = None,
+    autograde_analyzer: Analyzer | None = None,
 ) -> APIRouter:
     """``snapshotter`` / ``daily_bars`` are the plan-build test seams and ``bars_5m``
     the settle-sweep one (None binds the real yfinance chain / daily-bar / 5m-bar
-    fetches); nothing here touches the network until a build/analyze/settle POST
+    fetches); ``daily_bars`` + ``bars_5m`` double as the autograde fetch seams and
+    ``autograde_analyzer`` is its cold-ticker analyze seam (None binds run_analyze).
+    Nothing here touches the network until a build/analyze/settle/autograde POST
     asks."""
     router = APIRouter()
     cfg = GexConfig()
@@ -357,6 +422,55 @@ def build_gex_router(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         action_nonce.bump()
         return _setup_dict(row)
+
+    @router.post("/api/gex/autograde", dependencies=[Depends(_require_cockpit)])
+    def autograde_setup(body: AutogradeBody,
+                        session: Session = Depends(_session)) -> dict[str, object]:
+        """Machine pre-grade the eight computable checklist items for one ticker --
+        decision support for the A+ hypothesis, not the journaled grade. READ-shaped:
+        no action-nonce bump even though a cold ticker may auto-analyze a snapshot.
+
+        Server-side validation the setups route lacks (2026-07-18 audit): a nonempty
+        ``underlying`` and a known ``direction``; ``autograde``'s ValueError is the
+        backstop. Upstream (yfinance) failures degrade items to 'unavailable' and
+        still 200 with an 'incomplete' verdict -- ``run_autograde``'s isolation means
+        the honest incomplete IS the answer, never a 503 for the whole read; only a
+        dead DB reaches the app handler."""
+        underlying = body.underlying.strip()
+        if not underlying:
+            raise HTTPException(status_code=422, detail="underlying is required")
+        if body.direction not in ("long", "short"):
+            raise HTTPException(status_code=422, detail="direction must be long|short")
+        if body.play_type not in ("breakout", "range", ""):
+            raise HTTPException(
+                status_code=422, detail="play_type must be breakout|range or empty")
+        try:
+            result = run_autograde(
+                underlying, body.direction, body.play_type,
+                body.entry, body.stop, body.target, body.pivot_level,
+                cfg=cfg, session=session,
+                daily_fetcher=daily_bars,  # type: ignore[arg-type]
+                m5_fetcher=bars_5m, analyzer=autograde_analyzer,
+            )
+        except ValueError as exc:  # backstop for the direction contract
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        provenance = _autograde_provenance(
+            underlying, body.direction, body.play_type, result, cfg,
+            _lab_iso(_now_eastern()))
+        # Serve the snapshot the read graded against (the newest same-day one, after
+        # any cold-ticker auto-analyze); a stale/absent one is null, matching the
+        # 'unavailable' the levels item already reported.
+        snap = _latest_snapshot(session, underlying)
+        snap_today = snap is not None and snap.ts.date() == _now_eastern().date()
+        return {
+            "underlying": underlying,
+            "machine_verdict": result.machine_verdict,
+            "items": _autograde_items(result),
+            "hints": list(result.hints),
+            "autograde_json": json.dumps(provenance),
+            "snapshot": _snapshot_dict(snap) if snap_today and snap is not None else None,
+        }
 
     @router.post("/api/gex/setups/{setup_id}/status", dependencies=[Depends(_require_cockpit)])
     def status(setup_id: int, body: StatusBody,

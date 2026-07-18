@@ -1,3 +1,4 @@
+import json
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -12,11 +13,12 @@ from sqlalchemy.orm import Session
 from swing_screener.cockpit.api import create_app
 from swing_screener.cockpit.common import ActionNonce, build_engine_seams
 from swing_screener.cockpit.routers.gex import build_gex_router
-from swing_screener.db.models import GexSnapshot, OptionPaperTrade
+from swing_screener.db.models import GexSnapshot, OptionPaperTrade, OptionSetup
 from swing_screener.db.session import get_engine
 from swing_screener.options.chain import ChainSnapshot
 from swing_screener.options.checklist import CHECKLIST_ITEMS
 from swing_screener.options.journal import create_setup
+from tests.conftest import make_bars
 
 _HDR = {"X-Cockpit": "1"}
 _FIXTURE = Path(__file__).parent.parent / "options" / "fixtures" / "robinhood_sample.csv"
@@ -464,3 +466,180 @@ def test_analyze_carries_profile_and_reading(tmp_path: Path) -> None:
     # The analyze path DOES know the per-reason strings -- they ride the line.
     assert "populated strikes" in an["reading"][0]
     assert isinstance(an["net_gex"], float)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/gex/autograde -- machine pre-grade with degrade-honest verdicts
+
+def _autograde_client(
+    tmp_path: Path, *,
+    daily: object | None = None, bars_5m: object | None = None,
+    analyzer: object | None = None,
+) -> tuple[TestClient, str]:
+    """Router mounted directly so the autograde daily / 5m / analyzer seams can be
+    injected (create_app threads only the plan-build daily seam); no network."""
+    url = _db_url(tmp_path)
+    get_engine(url)  # create tables
+    _engine, _session = build_engine_seams(url)
+    app = FastAPI()
+    app.include_router(build_gex_router(
+        _session=_session, action_nonce=ActionNonce(),
+        daily_bars=daily, bars_5m=bars_5m,  # type: ignore[arg-type]
+        autograde_analyzer=analyzer,  # type: ignore[arg-type]
+    ))
+    return TestClient(app), url
+
+
+def _uptrend_daily_frame() -> pd.DataFrame:
+    closes = [100.0 + 0.5 * i for i in range(150)]
+    return pd.DataFrame(
+        {"open": closes, "high": [c + 0.1 for c in closes],
+         "low": [c - 0.1 for c in closes], "close": closes,
+         "volume": [1_000_000.0] * 150},
+        index=pd.date_range("2026-01-01", periods=150, freq="D"),
+    )
+
+
+def _uptrend_5m_frame() -> pd.DataFrame:
+    # Dated three days back so every bar is COMPLETE regardless of the wall clock at
+    # which the test runs (the endpoint grades against the real _now_eastern); the
+    # last bar is a green volume spike (confirms + volume-confirming for a long).
+    day = datetime.now(tz=_EASTERN).date() - timedelta(days=3)
+    n = 105
+    closes = [100.0 + 0.5 * i for i in range(n)]
+    vols = [1_000_000.0] * n
+    vols[-1] = 3_000_000.0
+    rows = [
+        dict(open=c - 0.2, high=c + 0.1, low=c - 0.3, close=c, volume=v)
+        for c, v in zip(closes, vols, strict=True)
+    ]
+    return make_bars(rows, start=f"{day} 09:30", freq="5min")
+
+
+def _seed_today_snapshot(url: str, *, underlying: str = "SPY",
+                         regime: str = "negative") -> None:
+    with Session(get_engine(url)) as s:
+        s.add(GexSnapshot(
+            underlying=underlying,
+            ts=datetime.now(tz=_EASTERN).replace(tzinfo=None),  # naive-Eastern, today
+            spot=101.0, call_wall=105.0, put_wall=99.0, gamma_flip=100.5,
+            net_gex=1.0, regime=regime, profile_json="[]", thin_chain=False,
+            source="computed",
+        ))
+        s.commit()
+
+
+def _ag_body(**kw: object) -> dict[str, object]:
+    body: dict[str, object] = {
+        "underlying": "SPY", "direction": "long", "play_type": "breakout",
+        "entry": 100.0, "stop": 99.0, "target": 103.0,
+    }
+    body.update(kw)
+    return body
+
+
+def test_autograde_happy_path_all_eight_pass(tmp_path: Path) -> None:
+    client, url = _autograde_client(
+        tmp_path, daily=lambda t: _uptrend_daily_frame(),
+        bars_5m=lambda t: _uptrend_5m_frame())
+    _seed_today_snapshot(url)
+    r = client.post("/api/gex/autograde", json=_ag_body(), headers=_HDR)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["underlying"] == "SPY"
+    assert data["machine_verdict"] == "yes"
+    assert len(data["items"]) == 8
+    assert all(it["state"] == "pass" for it in data["items"])
+    assert {"key", "state", "fact"} == set(data["items"][0])
+    assert len(data["hints"]) == 2
+    assert data["snapshot"] is not None and data["snapshot"]["regime"] == "negative"
+    # server-built provenance: items + hints + the cfg thresholds + a stamp
+    prov = json.loads(data["autograde_json"])
+    assert prov["machine_verdict"] == "yes"
+    assert len(prov["items"]) == 8
+    assert prov["thresholds"]["rr_min"] == 2.0
+    assert prov["thresholds"]["vol_confirm_mult"] == 1.5
+    assert prov["ts"]
+
+
+def test_autograde_cold_ticker_runs_analyzer_exactly_once(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def fake_analyzer(ticker: str, *, cfg: object, save: bool,
+                      session: Session) -> tuple[object, object]:
+        calls.append(ticker)
+        # persist a same-day snapshot, as run_analyze(save=True) would
+        session.add(GexSnapshot(
+            underlying=ticker, ts=datetime.now(tz=_EASTERN).replace(tzinfo=None),
+            spot=101.0, call_wall=105.0, put_wall=99.0, gamma_flip=100.5,
+            net_gex=1.0, regime="negative", profile_json="[]", thin_chain=False,
+            source="computed"))
+        session.commit()
+        return object(), object()  # (levels, liq) -- run_autograde ignores the return
+
+    client, _ = _autograde_client(
+        tmp_path, daily=lambda t: _uptrend_daily_frame(),
+        bars_5m=lambda t: _uptrend_5m_frame(), analyzer=fake_analyzer)
+    r = client.post("/api/gex/autograde", json=_ag_body(), headers=_HDR)
+    assert r.status_code == 200
+    assert calls == ["SPY"]  # cold ticker auto-analyzed exactly once
+    data = r.json()
+    assert data["snapshot"] is not None  # the freshly analyzed snapshot is used
+    assert data["machine_verdict"] == "yes"
+
+
+def test_autograde_fetch_failure_is_200_incomplete(tmp_path: Path) -> None:
+    def dead(ticker: str) -> pd.DataFrame:
+        raise RuntimeError(f"no bars for {ticker} (query1.finance.yahoo.com)")
+
+    client, url = _autograde_client(tmp_path, daily=dead, bars_5m=dead)
+    _seed_today_snapshot(url)  # snapshot-backed items still grade
+    r = client.post("/api/gex/autograde", json=_ag_body(), headers=_HDR)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["machine_verdict"] == "incomplete"  # gaps, no fabricated fail
+    by = {it["key"]: it for it in data["items"]}
+    assert by["chk_daily_bias_clear"]["state"] == "unavailable"
+    assert by["chk_m5_agrees"]["state"] == "unavailable"
+    assert by["chk_gex_levels_marked"]["state"] == "pass"  # from the seeded snapshot
+    assert "yahoo" not in r.text  # a degraded item never leaks the fetcher's host
+
+
+def test_autograde_bad_direction_is_422(tmp_path: Path) -> None:
+    client, _ = _autograde_client(tmp_path)
+    r = client.post("/api/gex/autograde",
+                    json={"underlying": "SPY", "direction": "buy"}, headers=_HDR)
+    assert r.status_code == 422
+
+
+def test_autograde_empty_underlying_is_422(tmp_path: Path) -> None:
+    client, _ = _autograde_client(tmp_path)
+    r = client.post("/api/gex/autograde",
+                    json={"underlying": "   ", "direction": "long"}, headers=_HDR)
+    assert r.status_code == 422
+
+
+def test_autograde_requires_cockpit_header(tmp_path: Path) -> None:
+    client, _ = _autograde_client(tmp_path)
+    r = client.post("/api/gex/autograde", json={"underlying": "SPY", "direction": "long"})
+    assert r.status_code == 403
+
+
+def test_autograde_json_round_trips_into_a_setup_row(tmp_path: Path) -> None:
+    client, url = _autograde_client(
+        tmp_path, daily=lambda t: _uptrend_daily_frame(),
+        bars_5m=lambda t: _uptrend_5m_frame())
+    _seed_today_snapshot(url)
+    ag = client.post("/api/gex/autograde", json=_ag_body(), headers=_HDR).json()
+    prov = ag["autograde_json"]
+    assert isinstance(prov, str)
+    # the FE echoes the provenance back verbatim when journaling the setup
+    body = {"underlying": "SPY", "direction": "long", "checklist": _all_true(),
+            "entry": 100.0, "stop": 99.0, "target": 103.0,
+            "play_type": "breakout", "autograde_json": prov}
+    created = client.post("/api/gex/setups", json=body, headers=_HDR)
+    assert created.status_code == 200
+    with Session(get_engine(url)) as s:
+        row = s.scalars(select(OptionSetup)).one()
+        assert row.autograde_json == prov
+        assert row.play_type == "breakout"
