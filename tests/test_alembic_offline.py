@@ -317,6 +317,55 @@ def test_migration_makes_import_key_unique_index_filtered(tmp_path, monkeypatch)
         con.close()
 
 
+def test_migration_adds_option_setup_play_type_and_autograde_json(tmp_path, monkeypatch):
+    # T2: option_setups gains play_type (NOT NULL, server_default "" -- legacy/
+    # unspecified rows backfill to empty) and autograde_json (nullable Text -- the
+    # machine per-item provenance; NULL means no auto-grade ran, never a fake grade).
+    db = tmp_path / "os.db"
+    url = f"sqlite:///{db}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    command.upgrade(_config(url), "head")
+
+    con = sqlite3.connect(db)
+    try:
+        info = {r[1]: r for r in con.execute("PRAGMA table_info(option_setups)")}
+    finally:
+        con.close()
+
+    assert "play_type" in info
+    assert info["play_type"][3] == 1          # NOT NULL
+    assert info["play_type"][4] == "''"       # server_default '' backfills existing rows
+    assert "autograde_json" in info
+    assert info["autograde_json"][3] == 0     # nullable (notnull flag off)
+    assert info["autograde_json"][4] is None  # no server default -- NULL = no grade ran
+
+
+def test_migration_option_setup_columns_reversible(tmp_path, monkeypatch):
+    # Up/down/up cycle on scratch sqlite: the downgrade drops both columns and a
+    # re-upgrade restores them, so the migration is a clean round-trip.
+    db = tmp_path / "osr.db"
+    url = f"sqlite:///{db}"
+    monkeypatch.setenv("SWING_DB_URL", url)
+    cfg = _config(url)
+    command.upgrade(cfg, "head")
+    command.downgrade(cfg, "-1")
+
+    con = sqlite3.connect(db)
+    try:
+        cols = {r[1] for r in con.execute("PRAGMA table_info(option_setups)")}
+    finally:
+        con.close()
+    assert "play_type" not in cols and "autograde_json" not in cols
+
+    command.upgrade(cfg, "head")  # up again: the cycle is clean
+    con = sqlite3.connect(db)
+    try:
+        cols = {r[1] for r in con.execute("PRAGMA table_info(option_setups)")}
+    finally:
+        con.close()
+    assert {"play_type", "autograde_json"} <= cols
+
+
 def test_migration_enforces_email_log_dedup(tmp_path, monkeypatch):
     db = tmp_path / "u.db"
     url = f"sqlite:///{db}"

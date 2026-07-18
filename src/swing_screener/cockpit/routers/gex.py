@@ -105,10 +105,15 @@ class SetupBody(BaseModel):
     stop: float | None = Field(default=None, allow_inf_nan=False)
     target: float | None = Field(default=None, allow_inf_nan=False)
     regime: str = Field(default="unknown", max_length=16)
+    play_type: str = Field(default="", max_length=16)
     pivot_level: float | None = Field(default=None, allow_inf_nan=False)
     pattern: str = Field(default="", max_length=256)
     notes: str = Field(default="", max_length=2048)
     gex_snapshot_id: int | None = None
+    # The machine provenance the FE echoes back verbatim from the last autograde
+    # response; stored opaquely (provenance, not authority -- no re-validation
+    # beyond this generous size cap: the canonical blob is small).
+    autograde_json: str | None = Field(default=None, max_length=8192)
 
 
 class StatusBody(BaseModel):
@@ -204,8 +209,8 @@ def _setup_dict(
 ) -> dict[str, object]:
     d: dict[str, object] = {
         "id": s.id, "ts": _lab_iso(s.ts), "underlying": s.underlying,
-        "direction": s.direction, "regime": s.regime, "grade": s.grade,
-        "status": s.status, "pattern": s.pattern, "notes": s.notes,
+        "direction": s.direction, "regime": s.regime, "play_type": s.play_type,
+        "grade": s.grade, "status": s.status, "pattern": s.pattern, "notes": s.notes,
         "pivot_level": _num(s.pivot_level),
         "entry": _num(s.entry), "stop": _num(s.stop),
         "target": _num(s.target),
@@ -341,12 +346,15 @@ def build_gex_router(
                 session, ts=_now_eastern(), underlying=body.underlying,
                 direction=body.direction, checklist=body.checklist,
                 entry=body.entry, stop=body.stop, target=body.target,
-                regime=body.regime, pivot_level=body.pivot_level,
-                pattern=body.pattern, notes=body.notes,
+                regime=body.regime, play_type=body.play_type,
+                pivot_level=body.pivot_level, pattern=body.pattern, notes=body.notes,
                 gex_snapshot_id=body.gex_snapshot_id,
+                autograde_json=body.autograde_json, rr_min=cfg.rr_min,
             )
         except KeyError as exc:
             raise HTTPException(status_code=422, detail=f"bad checklist key: {exc}") from exc
+        except ValueError as exc:  # a ticked R:R that contradicts the typed levels
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         action_nonce.bump()
         return _setup_dict(row)
 

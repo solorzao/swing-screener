@@ -143,6 +143,44 @@ def test_bad_checklist_key_is_422(tmp_path: Path) -> None:
     assert r.status_code == 422
 
 
+def test_setup_persists_play_type_and_autograde_json(tmp_path: Path) -> None:
+    url = _db_url(tmp_path)
+    client = _client(tmp_path)
+    body = {"underlying": "SPY", "direction": "long", "checklist": _all_true(),
+            "entry": 558.0, "stop": 556.5, "target": 565.0,
+            "play_type": "breakout", "autograde_json": '{"machine_verdict": "yes"}'}
+    created = client.post("/api/gex/setups", json=body, headers=_HDR)
+    assert created.status_code == 200
+    assert created.json()["play_type"] == "breakout"
+    # provenance lands in the DB row (it is not echoed on the lean list payload)
+    with Session(get_engine(url)) as s:
+        from swing_screener.db.models import OptionSetup
+        row = s.scalars(select(OptionSetup)).one()
+        assert row.play_type == "breakout"
+        assert row.autograde_json == '{"machine_verdict": "yes"}'
+
+
+def test_rr_tick_contradicting_levels_is_422(tmp_path: Path) -> None:
+    # A ticked chk_rr_at_least_2 whose levels compute R:R < 2 is a stored lie: the
+    # server refuses it with a 422 naming the contradiction, never persists it.
+    url = _db_url(tmp_path)
+    body = {"underlying": "SPY", "direction": "long", "checklist": _all_true(),
+            "entry": 100.0, "stop": 98.0, "target": 101.0}  # R:R 0.5 < 2
+    r = _client(tmp_path).post("/api/gex/setups", json=body, headers=_HDR)
+    assert r.status_code == 422
+    assert "R:R" in r.json()["detail"]
+    with Session(get_engine(url)) as s:
+        from swing_screener.db.models import OptionSetup
+        assert list(s.scalars(select(OptionSetup))) == []
+
+
+def test_rr_tick_ok_when_levels_missing(tmp_path: Path) -> None:
+    # The tick stands with no levels typed -- only a demonstrable contradiction is a 422.
+    body = {"underlying": "SPY", "direction": "long", "checklist": _all_true()}
+    r = _client(tmp_path).post("/api/gex/setups", json=body, headers=_HDR)
+    assert r.status_code == 200
+
+
 def test_take_a_setup_transitions_status(tmp_path: Path) -> None:
     client = _client(tmp_path)
     body = {"underlying": "SPY", "direction": "long", "checklist": _all_true(),

@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from swing_screener.db.models import OptionPaperTrade, OptionSetup
 from swing_screener.options.checklist import grade
+from swing_screener.options.config import GexConfig
 
 _STATUSES = frozenset({"idea", "taken", "skipped"})
 
@@ -41,21 +42,46 @@ def create_setup(
     stop: float | None = None,
     target: float | None = None,
     regime: str = "unknown",
+    play_type: str = "",
     pivot_level: float | None = None,
     pattern: str = "",
     notes: str = "",
     gex_snapshot_id: int | None = None,
+    autograde_json: str | None = None,
+    rr_min: float = GexConfig().rr_min,
 ) -> OptionSetup:
     """Journal a new setup, graded against the 12-point checklist at decision time.
 
     ``checklist`` must carry every ``chk_*`` key and only known keys -- ``grade()``
-    raises ``KeyError`` otherwise, before anything is written.
+    raises ``KeyError`` otherwise, before anything is written. ``autograde_json`` is
+    the machine provenance stored opaquely (None when no auto-grade ran).
+
+    Integrity: a ticked ``chk_rr_at_least_2`` that CONTRADICTS the typed levels is a
+    stored lie, so it is refused with ``ValueError`` before any write -- but only on
+    a demonstrable contradiction. The tick stands when the levels are missing (the
+    trader may be working from a fuller plan); the check fires only when entry, stop
+    AND target are all present and the computed reward-to-risk falls below ``rr_min``
+    (the same floor ``autograde`` grades against). ``rr_min`` defaults to the config
+    value so the router can thread its own cfg.
     """
+    if (
+        checklist.get("chk_rr_at_least_2")
+        and entry is not None and stop is not None and target is not None
+    ):
+        risk = abs(entry - stop)
+        # Guard zero risk (entry == stop): an undefined ratio is not a demonstrable
+        # contradiction, so the tick stands rather than raising on a divide-by-zero.
+        ratio = abs(target - entry) / risk if risk else float("inf")
+        if ratio < rr_min:
+            raise ValueError(
+                f"checklist claims R:R >= 2 but levels compute R:R {ratio:.2f}"
+            )
     setup_grade = grade(checklist)
     setup = OptionSetup(
         ts=ts,
         underlying=underlying,
         direction=direction,
+        play_type=play_type,
         gex_snapshot_id=gex_snapshot_id,
         regime=regime,
         pivot_level=pivot_level,
@@ -66,6 +92,7 @@ def create_setup(
         grade=setup_grade,
         status="idea",
         notes=notes,
+        autograde_json=autograde_json,
         **checklist,
     )
     session.add(setup)

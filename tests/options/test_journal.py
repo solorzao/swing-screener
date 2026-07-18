@@ -115,3 +115,76 @@ def test_list_recent_setups_is_a_bounded_newest_first_window() -> None:
         recent = list_recent_setups(s, end_day=date(2026, 7, 17))
         # 7 calendar days ending 07-17 -> [07-11, 07-17]; 07-03 falls out
         assert [x.underlying for x in recent] == ["NEW", "EDGE"]
+
+
+# --- T2: play_type + autograde provenance + R:R integrity -------------------
+
+def test_create_setup_persists_play_type_and_autograde_json() -> None:
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        row = create_setup(
+            s, ts=datetime(2026, 7, 13, 10, 5), underlying="SPY", direction="long",
+            checklist=_all_true(), entry=558.0, stop=556.5, target=565.0,
+            play_type="breakout", autograde_json='{"machine_verdict": "yes"}',
+        )
+        assert row.play_type == "breakout"
+        assert row.autograde_json == '{"machine_verdict": "yes"}'
+        # reload from the DB to prove they persisted, not just set in memory
+        reloaded = s.get(OptionSetup, row.id)
+        assert reloaded is not None
+        assert reloaded.play_type == "breakout"
+        assert reloaded.autograde_json == '{"machine_verdict": "yes"}'
+
+
+def test_create_setup_defaults_play_type_empty_and_autograde_null() -> None:
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        row = create_setup(s, ts=datetime(2026, 7, 13, 10, 5), underlying="SPY",
+                           direction="long", checklist=_all_true())
+        assert row.play_type == ""        # legacy/unspecified
+        assert row.autograde_json is None  # no auto-grade ran
+
+
+def test_create_setup_rejects_rr_tick_that_contradicts_levels() -> None:
+    # chk_rr_at_least_2 ticked True but entry/stop/target compute R:R 0.50 < 2 --
+    # a stored lie. The write is refused BEFORE anything persists.
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        with pytest.raises(ValueError, match="R:R"):
+            create_setup(s, ts=datetime(2026, 7, 13, 10, 5), underlying="SPY",
+                         direction="long", checklist=_all_true(),
+                         entry=100.0, stop=98.0, target=101.0)  # risk 2, reward 1 -> 0.5
+        assert list(s.scalars(select(OptionSetup))) == []  # nothing written
+
+
+def test_create_setup_rr_contradiction_not_raised_when_levels_missing() -> None:
+    # The tick stands when levels are absent -- the trader may work from a fuller plan.
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        row = create_setup(s, ts=datetime(2026, 7, 13, 10, 5), underlying="SPY",
+                           direction="long", checklist=_all_true(),
+                           entry=None, stop=None, target=None)
+        assert row.chk_rr_at_least_2 is True
+
+
+def test_create_setup_rr_contradiction_not_raised_when_tick_is_false() -> None:
+    # Levels compute a poor R:R but the box is UNticked -- no contradiction to reject.
+    checklist = _all_true()
+    checklist["chk_rr_at_least_2"] = False
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        row = create_setup(s, ts=datetime(2026, 7, 13, 10, 5), underlying="SPY",
+                           direction="long", checklist=checklist,
+                           entry=100.0, stop=98.0, target=101.0)
+        assert row.chk_rr_at_least_2 is False
+
+
+def test_create_setup_rr_boundary_ratio_exactly_min_passes() -> None:
+    # ratio exactly rr_min (2.0) is NOT < rr_min -- the tick is honest, write proceeds.
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        row = create_setup(s, ts=datetime(2026, 7, 13, 10, 5), underlying="SPY",
+                           direction="long", checklist=_all_true(),
+                           entry=100.0, stop=99.0, target=102.0)  # risk 1, reward 2 -> 2.0
+        assert row.chk_rr_at_least_2 is True
+        assert row.grade == "A+"
