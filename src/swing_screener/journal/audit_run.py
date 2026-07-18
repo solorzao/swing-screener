@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 from swing_screener.db.models import DisarmEvent, SystemAudit
 from swing_screener.db.session import get_engine
 from swing_screener.journal.audit_anomaly import anomaly_findings
-from swing_screener.journal.audit_author import draft_audit, template_audit
+from swing_screener.journal.audit_author import breach_narrative, draft_audit, template_audit
 from swing_screener.journal.audit_compliance import compliance_findings
 from swing_screener.pipeline.run import _migrate_with_retry, _resolve_db_url
 from swing_screener.settings import Settings, load_settings
@@ -162,20 +162,29 @@ def run_breach_scan(
         written.append(_write_breach(session, day=day, breach_key=key, severity="alert",
                                      findings={"cap_breach": breach}, now=now))
 
-    # disarms (one breach row per disarm day)
-    disarm_days = {
-        d.date() for d in session.scalars(
-            select(DisarmEvent.created_at).where(
-                DisarmEvent.created_at >= datetime.combine(day_from, time.min),
-                DisarmEvent.created_at <= datetime.combine(day_to, time.max)))
-    }
-    for day in sorted(disarm_days):
+    # disarms (one breach row per disarm day, carrying that day's actual events so the
+    # narrative and findings_json state what happened, not a day with no detail)
+    disarms_by_day: dict[date, list[DisarmEvent]] = {}
+    for event in session.scalars(
+        select(DisarmEvent).where(
+            DisarmEvent.created_at >= datetime.combine(day_from, time.min),
+            DisarmEvent.created_at <= datetime.combine(day_to, time.max))):
+        disarms_by_day.setdefault(event.created_at.date(), []).append(event)
+    for day in sorted(disarms_by_day):
         key = f"disarm:{day.isoformat()}"
         if _get_audit(session, kind="breach", period_from=day, period_to=day,
                       breach_key=key) is not None:
             continue
+        findings = {
+            "disarm_day": day.isoformat(),
+            "disarms": [
+                {"at": e.created_at.isoformat(), "reason": e.reason,
+                 "orders_cancelled": e.orders_cancelled}
+                for e in sorted(disarms_by_day[day], key=lambda e: e.created_at)
+            ],
+        }
         written.append(_write_breach(session, day=day, breach_key=key, severity="alert",
-                                     findings={"disarm_day": day.isoformat()}, now=now))
+                                     findings=findings, now=now))
 
     if written:
         session.commit()
@@ -186,8 +195,7 @@ def _write_breach(session: Session, *, day: date, breach_key: str, severity: str
                   findings: dict, now: datetime) -> SystemAudit:
     row = SystemAudit(kind="breach", period_from=day, period_to=day, breach_key=breach_key,
                       findings_json=json.dumps(findings), severity=severity,
-                      narrative=template_audit({"compliance": {}, "anomaly": {}}),
-                      generated_at=now)
+                      narrative=breach_narrative(findings), generated_at=now)
     session.add(row)
     session.flush()  # assign an id without ending the batch txn
     return row

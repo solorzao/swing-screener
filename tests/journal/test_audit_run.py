@@ -134,6 +134,31 @@ def test_breach_scan_writes_cap_and_disarm_breaches_idempotently(monkeypatch):
         assert s.query(SystemAudit).filter_by(kind="breach").count() == 2
 
 
+def test_breach_row_narrates_the_actual_breach(monkeypatch):
+    """An ALERT breach row must state what fired -- not render the period template over
+    empty findings ("0 cap breach(es); ...; 0 disarm(s)" on a breach row is a lie)."""
+    s_ = _settings(monkeypatch, audit_enabled=False, max_notional=1000.0)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        s.add_all([_log(notional=800.0, key="a"), _log(notional=800.0, key="b")])
+        s.add(DisarmEvent(created_at=datetime(2026, 7, 8, 10, 0),
+                          reason="cockpit kill switch", orders_cancelled=3))
+        s.commit()
+        rows = run_breach_scan(s, settings=s_, day_from=date(2026, 7, 8),
+                               day_to=date(2026, 7, 8), now=_NOW)
+        by_key = {r.breach_key: r for r in rows}
+        cap = by_key["cap:2026-07-08:paper"].narrative
+        assert "0 cap breach" not in cap  # the old empty-findings render
+        assert "paper" in cap and "2026-07-08" in cap
+        assert "1600" in cap and "1000" in cap  # the actual values vs the cap
+        dis = by_key["disarm:2026-07-08"].narrative
+        assert "0 cap breach" not in dis and "0 disarm" not in dis
+        assert "cockpit kill switch" in dis and "3 order(s) cancelled" in dis
+        # findings_json is authoritative: the disarm row carries the actual events.
+        f = json.loads(by_key["disarm:2026-07-08"].findings_json)
+        assert f["disarms"][0]["reason"] == "cockpit kill switch"
+        assert f["disarms"][0]["orders_cancelled"] == 3
+
+
 def test_breach_scan_window_covers_the_trailing_week():
     # The scan runs weekdays 16:00 ET: Monday's window must reach back over the whole
     # weekend AND yesterday's post-scan tail (a today-only window records neither).
