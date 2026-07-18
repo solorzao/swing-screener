@@ -28,7 +28,7 @@ import type {
   RobinhoodBook,
 } from '../lib/api'
 import { GexProfileChart } from '../components/GexProfileChart'
-import { dashOr, fmtSignedUsd, fmtUsd } from '../lib/fmt'
+import { dashOr, fmtSignedUsd, fmtUsd, localTodayIso } from '../lib/fmt'
 import { PanelBody } from '../components/PanelBody'
 import { Segmented } from '../components/Segmented'
 import { StatChip } from '../components/StatChip'
@@ -151,16 +151,6 @@ function GradeChip({ grade, lg }: { grade: string; lg?: boolean }) {
   )
 }
 
-/** Local calendar date (YYYY-MM-DD) — the cockpit runs beside its server, so the
- * client's local day matches the server-naive `ts` day the journal filters on. */
-function localToday(): string {
-  const d = new Date()
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
-}
-
 /* ============================ 1 · DAY PLAN ============================ */
 
 function ThinBadge({ title }: { title?: string }) {
@@ -175,7 +165,7 @@ function ThinBadge({ title }: { title?: string }) {
  * the GEX model is morning-static and valid for ONE session, so yesterday's
  * walls must never present as today's decision levels. */
 function snapshotIsStale(ts: string): boolean {
-  return ts.slice(0, 10) < localToday()
+  return ts.slice(0, 10) < localTodayIso()
 }
 
 function SnapshotsTable({ rows }: { rows: GexSnapshot[] }) {
@@ -779,8 +769,14 @@ function JournalRow({
           </span>
         ) : (
           <span
-            className={`gex-outcome ${
-              (setup.trade.realized_r ?? 0) >= 0 ? 'gex-outcome-win' : 'gex-outcome-loss'
+            /* null realized_r = closed but ungraded — NEUTRAL, never win-green
+               (the old `?? 0 >= 0` styled an unmeasured close as a win). */
+            className={`gex-outcome${
+              setup.trade.realized_r === null
+                ? ''
+                : setup.trade.realized_r >= 0
+                  ? ' gex-outcome-win'
+                  : ' gex-outcome-loss'
             }`}
             title={`settled ${setup.trade.exit_reason ?? '—'}`}
           >
@@ -820,7 +816,7 @@ function JournalRow({
 }
 
 function JournalPanel({ wake, onAction }: { wake: number; onAction: () => void }) {
-  const day = localToday()
+  const day = localTodayIso()
   // today vs the last 7 days — a taken setup's outcome usually lands AFTER its
   // day (the settle sweep), so a today-only journal read "taken" forever.
   const [scope, setScope] = useState<'today' | 'recent'>('today')
@@ -1091,6 +1087,10 @@ function ImportPanel({ onAction }: { onAction: () => void }) {
   const onFile = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (file === undefined) return
+    // Reset the input NOW (the File object stays readable): a same-file
+    // re-select must fire change again, or a failed parse/commit could never
+    // be retried without picking a different file first.
+    e.target.value = ''
     setFileName(file.name)
     const reader = new FileReader()
     reader.onload = () => {

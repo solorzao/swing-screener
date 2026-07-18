@@ -107,11 +107,11 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 - [ ] J7 `spend_rows_since` SQL cutoff
 
 **Phase K — `fix/cockpit-ui-polish`**
-- [ ] K1 surfaced errors (tag-confirm + acknowledge x2)
-- [ ] K2 CSV input reset
-- [ ] K3 fmt fixes (fmtResult / null realized_r / null max_drawdown)
-- [ ] K4 keyboard-reachable open-book scroll region
-- [ ] K5 dead CSS refs + dead null-check + time/date helper consolidation (brace-count after every CSS edit)
+- [x] K1 surfaced errors (tag-confirm + acknowledge x2)
+- [x] K2 CSV input reset
+- [x] K3 fmt fixes (fmtResult / null realized_r / null max_drawdown)
+- [x] K4 keyboard-reachable open-book scroll region
+- [x] K5 dead CSS refs + dead null-check + time/date helper consolidation (brace-count after every CSS edit)
 
 **Phase L — `chore/dead-code-sweep`** (one commit per deletion; `git grep` before each)
 - [ ] L1 `cancel_all_orders` (Protocol + both impls)
