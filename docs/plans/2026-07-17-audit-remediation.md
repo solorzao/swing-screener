@@ -104,7 +104,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 - [x] J4 GEX POST 503 posture
 - [x] J5 atomic manual close
 - [x] J6 `loss_r` gauge research-grid scoping
-- [ ] J7 `spend_rows_since` SQL cutoff
+- [x] J7 `spend_rows_since` SQL cutoff
 
 **Phase K — `fix/cockpit-ui-polish`**
 - [ ] K1 surfaced errors (tag-confirm + acknowledge x2)
