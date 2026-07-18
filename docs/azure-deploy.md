@@ -242,10 +242,10 @@ the `analysis_requests` table is created by `alembic upgrade head` on the job's 
 > the feature does **not** create them: CD (`cd.yml`) only *updates existing* jobs and
 > silently **skips** ones that don't exist yet, so they must be **provisioned by re-running
 > Step 1** (`az deployment sub create`). Two gotchas:
-> - **Pass a current `imageTag`** (`latest` or the CD-built `<git-sha>`), never the Bicep
->   default `bootstrap` — that pre-Journal-v2 image lacks the `journal.coach_run` /
->   `journal.audit_run` modules (the new jobs would crash) **and** re-pinning it would
->   regress the seven live jobs back to `:bootstrap`.
+> - **`imageTag` now defaults to `latest`** (2026-07 hardening; older checkouts defaulted
+>   to the pre-Journal-v2 `bootstrap` image, and omitting the param silently rolled every
+>   job back to it). Omitting `imageTag` is now safe — CD pushes `:latest` alongside each
+>   `<git-sha>` — but passing the current sha still gives an immutable pin.
 > - **Add the three job names to CD's repoint loop** (`cd.yml`, the `for job in …` list)
 >   or, once provisioned, they freeze on the provision-time image and never receive later
 >   code — silent drift, no error.
