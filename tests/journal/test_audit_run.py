@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from swing_screener.db.models import DisarmEvent, ExecutionLog, SystemAudit
 from swing_screener.db.session import get_engine
 from swing_screener.journal.audit_author import _AUDIT_SYSTEM, draft_audit
-from swing_screener.journal.audit_run import run_breach_scan, run_weekly
+from swing_screener.journal.audit_run import _breach_scan_window, run_breach_scan, run_weekly
 from swing_screener.settings import load_settings
 
 _NOW = datetime(2026, 7, 12, 14, 0, tzinfo=UTC)
@@ -132,3 +132,38 @@ def test_breach_scan_writes_cap_and_disarm_breaches_idempotently(monkeypatch):
                                 day_to=date(2026, 7, 8), now=_NOW)
         assert again == []
         assert s.query(SystemAudit).filter_by(kind="breach").count() == 2
+
+
+def test_breach_scan_window_covers_the_trailing_week():
+    # The scan runs weekdays 16:00 ET: Monday's window must reach back over the whole
+    # weekend AND yesterday's post-scan tail (a today-only window records neither).
+    day_from, day_to = _breach_scan_window(date(2026, 7, 13))  # a Monday
+    assert day_to == date(2026, 7, 13)
+    assert day_from <= date(2026, 7, 11)  # Saturday is in-window
+
+
+def test_breach_recorded_after_yesterdays_scan_is_caught_today(monkeypatch):
+    # A cap breach dated 2026-07-08 that landed AFTER that day's 16:00 scan: the next
+    # run's window still covers 07-08, so it is recorded a day late instead of never.
+    s_ = _settings(monkeypatch, audit_enabled=False, max_notional=1000.0)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        s.add_all([_log(notional=800.0, key="a"), _log(notional=800.0, key="b")])
+        s.commit()
+        day_from, day_to = _breach_scan_window(date(2026, 7, 9))
+        rows = run_breach_scan(s, settings=s_, day_from=day_from, day_to=day_to, now=_NOW)
+        assert {r.breach_key for r in rows} == {"cap:2026-07-08:paper"}
+
+
+def test_weekend_disarm_is_recorded_by_mondays_scan(monkeypatch):
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        s.add(DisarmEvent(created_at=datetime(2026, 7, 11, 18, 30), reason="weekend kill"))
+        s.commit()
+        day_from, day_to = _breach_scan_window(date(2026, 7, 13))  # Monday's run
+        rows = run_breach_scan(s, settings=s_, day_from=day_from, day_to=day_to, now=_NOW)
+        assert {r.breach_key for r in rows} == {"disarm:2026-07-11"}
+        # Tuesday's window overlaps the same days: idempotent, no duplicate rows.
+        day_from, day_to = _breach_scan_window(date(2026, 7, 14))
+        assert run_breach_scan(s, settings=s_, day_from=day_from, day_to=day_to,
+                               now=_NOW) == []
+        assert s.query(SystemAudit).filter_by(kind="breach").count() == 1
