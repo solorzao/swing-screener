@@ -11,6 +11,9 @@ test → adjust → re-evaluate) — that ultimately executes autonomously, but 
 proven, sized by a rule, under hard limits a human can always override.*
 **▶ [Architecture & module contract](docs/ARCHITECTURE.md)** — what the platform provides and
 what every module must bring.
+**▶ [Using Meridian — the operator's guide](docs/using-meridian.md)** — what *you* do with it:
+the first two weeks, the daily and weekly loops, and where to look when something's off. Start
+here if you want to *use* the system rather than understand its internals.
 
 | Module | Charter | Status |
 |---|---|---|
@@ -384,7 +387,8 @@ tests/                 mirrors src/ — engine + pipeline + db + data + cockpit
 scripts/               make_amd_fixture, make_universe_seed, run_local
 alembic/               schema migrations (applied on job startup)
 infra/                 Bicep IaC (Container Apps Jobs, Azure SQL, Blob, Key Vault)
-docs/                  running-locally, cockpit, email-digests, azure-deploy
+docs/                  using-meridian (the operator's guide), running-locally,
+                       cockpit, email-digests, azure-deploy
 docs/runbooks/         arming-alpaca-live (the deliberate human flip to real money)
 docs/plans/            NORTH_STAR-governed design docs + per-phase implementation plans
 ```
