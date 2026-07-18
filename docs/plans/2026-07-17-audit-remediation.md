@@ -92,7 +92,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 **Phase H — `fix/fetch-cache-poisoning`**
 - [x] H1 pre-close truncated frame not written to the day cache
 - [x] H2 GEX settle: eod_flat only on complete sessions; pre-16:00 refusal without `--force`
-- [ ] H3 GEX `--cache-dir` wired through
+- [x] H3 GEX `--cache-dir` wired through
 
 **Phase I — `perf/hot-path-indexes`**
 - [ ] I1 one migration: `ix_signals_run_date`, `ix_paper_trades_status_account`, `ix_exit_events_created_date`, filtered-unique `import_key`

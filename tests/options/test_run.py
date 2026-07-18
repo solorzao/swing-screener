@@ -101,3 +101,33 @@ def test_settle_cli_proceeds_after_close(monkeypatch) -> None:
     monkeypatch.setattr(run_mod, "_now_eastern", lambda: datetime(2026, 7, 13, 16, 5))
     _settle_argv(monkeypatch)
     run_mod.main()  # post-close runs never need --force
+
+
+def test_cache_dir_flag_reaches_the_fetch_path(tmp_path, monkeypatch) -> None:
+    """--cache-dir was parsed but silently ignored -- the default fetchers resolved
+    load_settings().cache_dir instead (2026-07-17 audit, H3). End-to-end through
+    main(): the flag's value must be the cache_dir the fetch seam receives."""
+    url = f"sqlite:///{tmp_path / 'lab.db'}"
+    with Session(get_engine(url)) as s:
+        s.add(OptionPaperTrade(
+            account="options-lab", strategy="gex", underlying="SPY", direction="long",
+            opened_at=datetime(2026, 7, 13, 9, 35), entry=100.0, stop=99.0, target=102.0))
+        s.commit()
+
+    seen: dict[str, object] = {}
+
+    def fake_fetch(ticker, interval, *, cache_dir, **kw):
+        seen["cache_dir"] = cache_dir
+        idx = pd.date_range("2026-07-13 15:45", periods=3, freq="5min")
+        return pd.DataFrame({"open": 100.0, "high": 100.6, "low": 99.6,
+                             "close": 100.5, "volume": 1e6}, index=idx)
+
+    monkeypatch.setattr(run_mod, "fetch_bars", fake_fetch)
+    monkeypatch.setattr(run_mod, "_now_eastern", lambda: datetime(2026, 7, 13, 16, 5))
+    monkeypatch.delenv("KEY_VAULT_URL", raising=False)
+    monkeypatch.delenv("SWING_REQUIRE_DB", raising=False)
+    custom = tmp_path / "custom-cache"
+    monkeypatch.setattr(sys, "argv",
+                        ["gex", "--db", url, "--cache-dir", str(custom), "settle"])
+    run_mod.main()
+    assert seen["cache_dir"] == custom

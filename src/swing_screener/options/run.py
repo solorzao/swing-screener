@@ -46,20 +46,36 @@ def _default_snapshotter(ticker: str, cfg: GexConfig) -> ChainSnapshot:
     return snapshot_chain(ticker, cfg=cfg)
 
 
-def _default_daily(ticker: str) -> pd.DataFrame:
-    bars = fetch_bars(ticker, "1d", cache_dir=load_settings().cache_dir)
-    if bars is None or bars.empty:
-        raise RuntimeError(f"no daily bars for {ticker}")
-    return bars
+def _resolve_cache_dir(cache_dir: Path | None) -> Path:
+    """An explicit ``cache_dir`` (the CLI's ``--cache-dir``) wins over settings --
+    the flag used to be parsed and silently ignored (2026-07-17 audit, H3)."""
+    return cache_dir if cache_dir is not None else load_settings().cache_dir
 
 
-def _default_5m(ticker: str) -> pd.DataFrame:
+def _daily_fetcher(cache_dir: Path | None) -> DailyBars:
+    cache = _resolve_cache_dir(cache_dir)
+
+    def _fetch(ticker: str) -> pd.DataFrame:
+        bars = fetch_bars(ticker, "1d", cache_dir=cache)
+        if bars is None or bars.empty:
+            raise RuntimeError(f"no daily bars for {ticker}")
+        return bars
+
+    return _fetch
+
+
+def _5m_fetcher(cache_dir: Path | None) -> BarsFetcher:
     # Post-close, the day-keyed cache is safe: all session 5m bars are complete
     # (see docs/modules/gex-lab.md -- the completed-bar invariant holds for settle).
-    bars = fetch_bars(ticker, "5m", cache_dir=load_settings().cache_dir, period="5d")
-    if bars is None or bars.empty:
-        raise RuntimeError(f"no 5m bars for {ticker}")
-    return bars
+    cache = _resolve_cache_dir(cache_dir)
+
+    def _fetch(ticker: str) -> pd.DataFrame:
+        bars = fetch_bars(ticker, "5m", cache_dir=cache, period="5d")
+        if bars is None or bars.empty:
+            raise RuntimeError(f"no 5m bars for {ticker}")
+        return bars
+
+    return _fetch
 
 
 def _analyze(ticker: str, cfg: GexConfig, snapshotter: Snapshotter) -> tuple[
@@ -74,13 +90,16 @@ def _analyze(ticker: str, cfg: GexConfig, snapshotter: Snapshotter) -> tuple[
 def run_plan(
     session: Session, *, cfg: GexConfig,
     snapshotter: Snapshotter | None = None, daily_bars: DailyBars | None = None,
+    cache_dir: Path | None = None,
 ) -> list[DayPlan]:
     """Build and persist a morning GEX map + day plan for each watchlist ticker.
 
     Per-ticker failure isolation: one bad chain never sinks the rest of the plan.
+    ``cache_dir`` only steers the default daily-bar fetcher; an injected
+    ``daily_bars`` brings its own caching (or none).
     """
     snap_fn = snapshotter or _default_snapshotter
-    daily_fn = daily_bars or _default_daily
+    daily_fn = daily_bars or _daily_fetcher(cache_dir)
     plans: list[DayPlan] = []
     for ticker in cfg.watchlist:
         try:
@@ -108,13 +127,16 @@ def run_analyze(
 
 def run_settle(
     session: Session, *, cfg: GexConfig, bars_fetcher: BarsFetcher | None = None,
+    cache_dir: Path | None = None,
 ) -> SettleResult:
     """Settle every open options-lab trade against its underlying's completed 5m bars.
 
     Untouched trades whose frame lacks a complete session stay open (see
     ``settle_open_trades`` -- the eod_flat fallback is gated on session
-    completeness, so an intraday sweep can never flatten at a mid-session price)."""
-    fetch = bars_fetcher or _default_5m
+    completeness, so an intraday sweep can never flatten at a mid-session price).
+    ``cache_dir`` only steers the default 5m fetcher; an injected ``bars_fetcher``
+    brings its own caching (or none)."""
+    fetch = bars_fetcher or _5m_fetcher(cache_dir)
     underlyings = list(session.scalars(
         select(OptionPaperTrade.underlying)
         .where(OptionPaperTrade.account == "options-lab", OptionPaperTrade.status == "open")
@@ -212,7 +234,7 @@ def main() -> None:
     engine = get_engine(_resolve_db_url(args.db))
     with Session(engine) as session:
         if args.cmd == "plan":
-            for p in run_plan(session, cfg=cfg):
+            for p in run_plan(session, cfg=cfg, cache_dir=args.cache_dir):
                 log.info("%s: bias=%s regime=%s -> %s", p.underlying, p.bias, p.regime, p.call)
         elif args.cmd == "settle":
             now = _now_eastern()
@@ -223,7 +245,7 @@ def main() -> None:
                     "pass --force to sweep intraday stop/target exits anyway "
                     "(untouched trades stay open either way)"
                 )
-            res = run_settle(session, cfg=cfg)
+            res = run_settle(session, cfg=cfg, cache_dir=args.cache_dir)
             log.info("settled=%d skipped_no_bars=%d skipped_incomplete_session=%d",
                      res.settled, res.skipped_no_bars, res.skipped_incomplete_session)
         elif args.cmd == "analyze":
