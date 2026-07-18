@@ -5,6 +5,7 @@ import {
   getGexPlan,
   getGexSetups,
   getGexStats,
+  postGexAutograde,
   postGexBuild,
   postGexImportCommit,
   postGexImportParse,
@@ -16,11 +17,14 @@ import {
 import { HelpTerm } from '../components/HelpTerm'
 import type {
   GexAnalyzed,
+  GexAutogradeItem,
+  GexAutogradeResponse,
   GexChecklist,
   GexDayPlan,
   GexEpisode,
   GexGrade,
   GexParseResult,
+  GexPlayType,
   GexSetup,
   GexSetupCreate,
   GexSnapshot,
@@ -101,6 +105,20 @@ const BLOCKS: { id: ChkItem['block']; label: string }[] = [
   { id: 'structure', label: 'Structure' },
   { id: 'trigger', label: 'Trigger' },
   { id: 'risk', label: 'Risk' },
+]
+
+/** key → short human label (the incomplete-verdict names the gap items by label,
+ * not by their raw chk_* key). */
+const CHK_LABEL: Record<string, string> = Object.fromEntries(
+  CHK_ITEMS.map((it) => [it.key, it.label]),
+)
+
+/** The play-type segmented options — breakout | range | — (unset). The machine's
+ * regime rule keys on this; '' leaves the regime item reading needs_input. */
+const PLAY_TYPE_OPTIONS: { value: GexPlayType; label: string; title: string }[] = [
+  { value: 'breakout', label: 'breakout', title: 'breakout play — wants negative gamma' },
+  { value: 'range', label: 'range', title: 'range play — wants positive gamma' },
+  { value: '', label: MINUS, title: 'no play type set' },
 ]
 
 const EMPTY_CHECKS: GexChecklist = {
@@ -479,9 +497,30 @@ function DayPlanPanel({ wake, onAction }: { wake: number; onAction: () => void }
 
 type Direction = 'long' | 'short'
 
+/** The machine verdict line (options/autograde.py's rule, rendered): a YES names
+ * the count and stays "pending your confirms" (blue, never the green edge claim);
+ * a NO joins the failing FACTS; an incomplete NAMES the gap items (by label, not
+ * raw key) so the trader knows what to grade by eye. */
+function machineVerdict(
+  res: GexAutogradeResponse,
+): { tone: 'yes' | 'no' | 'incomplete'; text: string } {
+  if (res.machine_verdict === 'yes') {
+    return { tone: 'yes', text: 'machine: 8/8 — YES, pending your confirms' }
+  }
+  if (res.machine_verdict === 'no') {
+    const fails = res.items.filter((it) => it.state === 'fail').map((it) => it.fact)
+    return { tone: 'no', text: `machine: NO — ${fails.join(' · ')}` }
+  }
+  const gaps = res.items
+    .filter((it) => it.state === 'unavailable' || it.state === 'needs_input')
+    .map((it) => CHK_LABEL[it.key] ?? it.key)
+  return { tone: 'incomplete', text: `machine: incomplete — ${gaps.join(' · ')}` }
+}
+
 function GraderPanel({ onAction }: { onAction: () => void }) {
   const [underlying, setUnderlying] = useState('')
   const [direction, setDirection] = useState<Direction>('long')
+  const [playType, setPlayType] = useState<GexPlayType>('')
   const [entry, setEntry] = useState('')
   const [stop, setStop] = useState('')
   const [target, setTarget] = useState('')
@@ -493,11 +532,47 @@ function GraderPanel({ onAction }: { onAction: () => void }) {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState<GexSetup | null>(null)
+  // The last autograde response (holds the per-item facts, the two hints, the
+  // verdict, and the provenance blob echoed VERBATIM on submit); `machineKeys` is
+  // which boxes still wear the ⚙ mark — a human edit drops that key from the set.
+  const [autograding, setAutograding] = useState(false)
+  const [autoResult, setAutoResult] = useState<GexAutogradeResponse | null>(null)
+  const [machineKeys, setMachineKeys] = useState<Set<keyof GexChecklist>>(new Set())
 
-  const toggle = (key: keyof GexChecklist) =>
+  // Editing underlying/direction after a grade must drop the stale provenance
+  // entirely — it belongs to a different ticket and must never be journaled.
+  const clearAutograde = () => {
+    setAutoResult(null)
+    setMachineKeys((m) => (m.size === 0 ? m : new Set()))
+  }
+
+  const toggle = (key: keyof GexChecklist) => {
     setChecks((c) => ({ ...c, [key]: !c[key] }))
+    // A human edit of a machine-ticked box flips it out of the machine-graded set
+    // (⚙ off) — but the provenance JSON stays as the machine said (its record,
+    // not the form state; the human owns the final submission).
+    setMachineKeys((m) => {
+      if (!m.has(key)) return m
+      const next = new Set(m)
+      next.delete(key)
+      return next
+    })
+  }
 
   const grade = previewGrade(checks)
+  // Per-key machine item + advisory hint lookups for the checklist render.
+  const machineItems = new Map<string, GexAutogradeItem>(
+    (autoResult?.items ?? []).map((it): [string, GexAutogradeItem] => [it.key, it]),
+  )
+  // hints arrive [pivot, stop] (autograde.py HINT_KEYS order); each rides under
+  // its own human box.
+  const hintForKey = (key: string): string | null => {
+    if (autoResult === null) return null
+    if (key === 'chk_price_at_pivot') return autoResult.hints[0] ?? null
+    if (key === 'chk_stop_structural') return autoResult.hints[1] ?? null
+    return null
+  }
+  const verdict = autoResult === null ? null : machineVerdict(autoResult)
 
   // Deterministic R / R:R read-out off the bracket — the "reward-to-risk ≥ 2R"
   // check is easier to honour when the number is live. Null → em dash (a fact,
@@ -515,6 +590,7 @@ function GraderPanel({ onAction }: { onAction: () => void }) {
   const reset = () => {
     setUnderlying('')
     setDirection('long')
+    setPlayType('')
     setEntry('')
     setStop('')
     setTarget('')
@@ -523,6 +599,43 @@ function GraderPanel({ onAction }: { onAction: () => void }) {
     setPattern('')
     setNotes('')
     setChecks(EMPTY_CHECKS)
+    setAutoResult(null)
+    setMachineKeys(new Set())
+  }
+
+  const runAutograde = () => {
+    setAutograding(true)
+    setError(null)
+    postGexAutograde({
+      underlying: underlying.trim(),
+      direction,
+      play_type: playType,
+      entry: num(entry),
+      stop: num(stop),
+      target: num(target),
+      pivot_level: num(pivot),
+    }).then(
+      (res) => {
+        setAutograding(false)
+        setAutoResult(res)
+        // Pre-fill the eight machine boxes: pass → checked, everything else
+        // (fail / needs_input / unavailable) → unchecked. A fail UNCHECKS a box a
+        // human had ticked — machine facts win on machine items. The four human
+        // boxes (pattern, pivot, stop, risk) are never touched here.
+        setChecks((c) => {
+          const next = { ...c }
+          for (const it of res.items) {
+            next[it.key as keyof GexChecklist] = it.state === 'pass'
+          }
+          return next
+        })
+        setMachineKeys(new Set(res.items.map((it) => it.key as keyof GexChecklist)))
+      },
+      (err: unknown) => {
+        setAutograding(false)
+        setError(err instanceof Error ? err.message : String(err))
+      },
+    )
   }
 
   const submit = () => {
@@ -538,8 +651,12 @@ function GraderPanel({ onAction }: { onAction: () => void }) {
       target: num(target),
       pivot_level: num(pivot),
       regime: regime.trim() === '' ? undefined : regime.trim(),
+      play_type: playType,
       pattern: pattern.trim(),
       notes: notes.trim(),
+      // The machine's record, echoed verbatim (null when it never ran / was
+      // cleared by a ticker edit) — never reconstructed client-side.
+      autograde_json: autoResult?.autograde_json ?? null,
     }
     postGexSetup(body).then(
       (row) => {
@@ -577,7 +694,10 @@ function GraderPanel({ onAction }: { onAction: () => void }) {
               className="gex-in mono"
               value={underlying}
               maxLength={16}
-              onChange={(e) => setUnderlying(e.target.value.toUpperCase())}
+              onChange={(e) => {
+                setUnderlying(e.target.value.toUpperCase())
+                clearAutograde()
+              }}
             />
           </label>
           <span className="gex-field">
@@ -589,7 +709,19 @@ function GraderPanel({ onAction }: { onAction: () => void }) {
                 { value: 'short', label: 'short' },
               ]}
               value={direction}
-              onChange={setDirection}
+              onChange={(d) => {
+                setDirection(d)
+                clearAutograde()
+              }}
+            />
+          </span>
+          <span className="gex-field">
+            <span className="gex-lab">play type</span>
+            <Segmented
+              title="play type"
+              options={PLAY_TYPE_OPTIONS}
+              value={playType}
+              onChange={setPlayType}
             />
           </span>
           <div className="gex-bracket">
@@ -667,6 +799,16 @@ function GraderPanel({ onAction }: { onAction: () => void }) {
           </label>
         </div>
 
+        {verdict !== null && (
+          <div
+            className={`gex-verdict gex-verdict-${verdict.tone}`}
+            role="status"
+            aria-live="polite"
+          >
+            {verdict.text}
+          </div>
+        )}
+
         <div className="gex-blocks">
           {BLOCKS.map((block) => {
             const items = CHK_ITEMS.filter((it) => it.block === block.id)
@@ -681,16 +823,39 @@ function GraderPanel({ onAction }: { onAction: () => void }) {
                     {checkedN}/{items.length}
                   </span>
                 </div>
-                {items.map((it) => (
-                  <label key={it.key} className="gex-check">
-                    <input
-                      type="checkbox"
-                      checked={checks[it.key]}
-                      onChange={() => toggle(it.key)}
-                    />
-                    <span>{it.label}</span>
-                  </label>
-                ))}
+                {items.map((it) => {
+                  const mi = machineItems.get(it.key)
+                  const hint = hintForKey(it.key)
+                  return (
+                    <div key={it.key} className="gex-check-row">
+                      <label className="gex-check">
+                        <input
+                          type="checkbox"
+                          checked={checks[it.key]}
+                          onChange={() => toggle(it.key)}
+                        />
+                        <span>{it.label}</span>
+                        {machineKeys.has(it.key) && (
+                          <span
+                            className="gex-auto"
+                            title="machine-graded — editing this box clears the mark"
+                          >
+                            ⚙
+                          </span>
+                        )}
+                      </label>
+                      {mi !== undefined && (
+                        <div className={`gex-fact gex-fact-${mi.state}`}>{mi.fact}</div>
+                      )}
+                      {hint !== null && (
+                        <div className="gex-fact gex-hint">
+                          <span className="gex-hint-tag">hint</span>
+                          {hint}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             )
           })}
@@ -703,9 +868,18 @@ function GraderPanel({ onAction }: { onAction: () => void }) {
             <span className="gex-grade-reason">{gradeReason(checks)}</span>
           </span>
           <button
+            type="button"
+            className="gex-btn"
+            disabled={autograding || underlying.trim() === ''}
+            title="machine pre-grade the 8 computable checklist items for this ticker — decision support, not the journaled grade"
+            onClick={runAutograde}
+          >
+            {autograding ? 'auto-grading…' : 'Auto-grade'}
+          </button>
+          <button
             type="submit"
             className="gex-btn gex-submit"
-            disabled={submitting || underlying.trim() === ''}
+            disabled={submitting || autograding || underlying.trim() === ''}
           >
             {submitting ? 'saving…' : 'Grade & journal setup'}
           </button>
