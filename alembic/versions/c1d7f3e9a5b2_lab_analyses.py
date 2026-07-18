@@ -1,7 +1,7 @@
 """add lab_analyses (TICKER LAB deep-analysis notes)
 
 Revision ID: c1d7f3e9a5b2
-Revises: b4e9f2c7a3d1
+Revises: f3c9a1e6b4d2
 Create Date: 2026-07-18
 
 The cockpit's TICKER LAB screen queues one row per on-demand deep-analysis
@@ -20,7 +20,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "c1d7f3e9a5b2"
-down_revision: Union[str, Sequence[str], None] = "b4e9f2c7a3d1"
+down_revision: Union[str, Sequence[str], None] = "f3c9a1e6b4d2"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

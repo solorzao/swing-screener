@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from swing_screener.db.models import OptionPaperTrade, OptionSetup
 from swing_screener.options.checklist import grade
+from swing_screener.options.config import GexConfig
 
 _STATUSES = frozenset({"idea", "taken", "skipped"})
 
@@ -41,21 +42,56 @@ def create_setup(
     stop: float | None = None,
     target: float | None = None,
     regime: str = "unknown",
+    play_type: str = "",
     pivot_level: float | None = None,
     pattern: str = "",
     notes: str = "",
     gex_snapshot_id: int | None = None,
+    autograde_json: str | None = None,
+    rr_min: float = GexConfig().rr_min,
 ) -> OptionSetup:
     """Journal a new setup, graded against the 12-point checklist at decision time.
 
     ``checklist`` must carry every ``chk_*`` key and only known keys -- ``grade()``
-    raises ``KeyError`` otherwise, before anything is written.
+    raises ``KeyError`` otherwise, before anything is written. ``autograde_json`` is
+    the machine provenance stored opaquely (None when no auto-grade ran).
+
+    Integrity: a ticked ``chk_rr_at_least_2`` that CONTRADICTS the typed levels is a
+    stored lie, so it is refused with ``ValueError`` before any write -- but only on
+    a demonstrable contradiction. The tick stands when the levels are missing (the
+    trader may be working from a fuller plan); with entry, stop AND target all
+    present the check mirrors ``autograde._item_rr`` exactly: side-sane ordering
+    first (long: stop<entry<target; short: target<entry<stop), then the
+    reward-to-risk floor ``rr_min`` (defaulting to the config value so the router
+    can thread its own cfg). Ordering gates FIRST because the abs ratio alone
+    lies for side-insane levels (a long with stop above entry "computes" 10:1),
+    and strict ordering makes risk > 0, so the undefined zero-risk R:R
+    (entry == stop) is rejected here too.
     """
+    if (
+        checklist.get("chk_rr_at_least_2")
+        and entry is not None and stop is not None and target is not None
+    ):
+        # Non-"long" grades with short ordering -- the lab's is_long posture
+        # (settle.py grades trades the same way); the message names the direction
+        # so a mis-sent one reads back in the 422.
+        ordered = stop < entry < target if direction == "long" else target < entry < stop
+        if not ordered:
+            raise ValueError(
+                f"checklist claims R:R >= 2 but {direction} levels are not ordered "
+                f"(stop {stop:.2f}, entry {entry:.2f}, target {target:.2f})"
+            )
+        ratio = abs(target - entry) / abs(entry - stop)  # ordered strictly -> risk > 0
+        if ratio < rr_min:
+            raise ValueError(
+                f"checklist claims R:R >= 2 but levels compute R:R {ratio:.2f}"
+            )
     setup_grade = grade(checklist)
     setup = OptionSetup(
         ts=ts,
         underlying=underlying,
         direction=direction,
+        play_type=play_type,
         gex_snapshot_id=gex_snapshot_id,
         regime=regime,
         pivot_level=pivot_level,
@@ -66,6 +102,7 @@ def create_setup(
         grade=setup_grade,
         status="idea",
         notes=notes,
+        autograde_json=autograde_json,
         **checklist,
     )
     session.add(setup)

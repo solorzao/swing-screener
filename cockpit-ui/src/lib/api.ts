@@ -1706,6 +1706,11 @@ export interface GexBuildResult {
 export type GexGrade = 'A+' | 'B' | 'no_trade'
 export type GexStatus = 'idea' | 'taken' | 'skipped'
 
+/** The GEX play type — the machine regime rule keys on it (breakout wants
+ * negative gamma, range positive); '' is "unset" (the regime item then reads
+ * needs_input). Distinct from the equity `PlayType` (continuation/reversal). */
+export type GexPlayType = 'breakout' | 'range' | ''
+
 /** The 12 checklist keys — the exact OptionSetup.chk_* columns (checklist.py). */
 export interface GexChecklist {
   chk_daily_bias_clear: boolean
@@ -1740,6 +1745,9 @@ export interface GexSetup extends GexChecklist {
   underlying: string
   direction: string
   regime: string
+  /** breakout | range | '' — the machine-vs-human discipline facet's play axis
+   * (server `_setup_dict` returns it; '' on rows journaled before play types). */
+  play_type: string
   grade: string
   status: string
   pattern: string
@@ -1756,7 +1764,8 @@ export interface GexSetupsResponse {
 }
 
 /** POST /api/gex/setups body — the checklist carries all 12 keys; the server
- * grades it (422 on an unknown/missing key). */
+ * grades it (422 on an unknown/missing key, on junk play_type, or on a ticked
+ * R:R that contradicts the typed levels). */
 export interface GexSetupCreate {
   underlying: string
   direction: string
@@ -1765,9 +1774,53 @@ export interface GexSetupCreate {
   stop?: number | null
   target?: number | null
   regime?: string
+  /** breakout | range | '' — the write path enforces the same enum the autograde
+   * read does (422 on junk); '' is a valid "no play type". */
+  play_type?: GexPlayType
   pivot_level?: number | null
   pattern?: string
   notes?: string
+  /** The last autograde response's provenance blob, echoed back VERBATIM (null /
+   * omitted when the grader never ran) — stored opaquely, never reconstructed
+   * client-side (it is the machine's record, not the form state). */
+  autograde_json?: string | null
+}
+
+/** One machine-graded checklist item (POST /api/gex/autograde) — `state` mirrors
+ * options/autograde.py's per-item verdict; `fact` is the single line that decided
+ * it (the number, never a restatement of the rule). */
+export interface GexAutogradeItem {
+  key: string
+  state: 'pass' | 'fail' | 'needs_input' | 'unavailable'
+  fact: string
+}
+
+/** POST /api/gex/autograde response — the eight machine items (MACHINE_KEYS
+ * order), the two advisory hints (pivot, then stop), the whole-checklist
+ * `machine_verdict` (any fail → 'no'; all pass → 'yes'; a gap → 'incomplete'),
+ * the opaque `autograde_json` provenance the FE echoes back VERBATIM on the
+ * setups POST (never constructed client-side), and the same-day `snapshot` the
+ * read graded against (null when none is). */
+export interface GexAutogradeResponse {
+  underlying: string
+  machine_verdict: 'yes' | 'no' | 'incomplete'
+  items: GexAutogradeItem[]
+  hints: string[]
+  autograde_json: string
+  snapshot: GexSnapshot | null
+}
+
+/** POST /api/gex/autograde body — underlying required (422 when blank),
+ * direction long|short, play_type breakout|range|''; the levels are optional
+ * floats the pure grader degrades to needs_input rather than fabricating. */
+export interface GexAutogradeBody {
+  underlying: string
+  direction: string
+  play_type: GexPlayType
+  entry: number | null
+  stop: number | null
+  target: number | null
+  pivot_level: number | null
 }
 
 /** A lab Stat with its checklist grade label (GET /api/gex/stats by_grade). */
@@ -1858,6 +1911,15 @@ export const getGexSetups = (
 /** Journal a graded setup — the server grades the checklist and returns the row. */
 export const postGexSetup = (body: GexSetupCreate): Promise<GexSetup> =>
   postAction<GexSetup>('/api/gex/setups', body)
+
+/** Machine pre-grade the eight computable checklist items — decision support for
+ * the A+ hypothesis, NOT the journaled grade. A READ despite the POST (the server
+ * bumps no action-nonce); X-Cockpit guarded like every action. Upstream failures
+ * degrade items to 'unavailable' and still return an 'incomplete' verdict. */
+export const postGexAutograde = (
+  body: GexAutogradeBody,
+): Promise<GexAutogradeResponse> =>
+  postAction<GexAutogradeResponse>('/api/gex/autograde', body)
 
 /** Take (opens a paper trade) or skip an `idea` setup. */
 export const postGexSetupStatus = (

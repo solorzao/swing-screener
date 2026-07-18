@@ -677,6 +677,9 @@ class OptionSetup(Base):
     ts: Mapped[datetime] = mapped_column(index=True)
     underlying: Mapped[str] = mapped_column(String(16), index=True)
     direction: Mapped[str] = mapped_column(String(8))  # long | short (calls vs puts)
+    # breakout | range -- the play the checklist grades against (chk_regime_match);
+    # "" is the legacy/unspecified default (setups journaled before the auto-grader).
+    play_type: Mapped[str] = mapped_column(String(16), default="")
     gex_snapshot_id: Mapped[int | None] = mapped_column(
         ForeignKey("gex_snapshots.id"), default=None
     )
@@ -701,6 +704,10 @@ class OptionSetup(Base):
     grade: Mapped[str] = mapped_column(String(8), default="no_trade")
     status: Mapped[str] = mapped_column(String(16), default="idea", index=True)
     notes: Mapped[str] = mapped_column(String(2048), default="")
+    # Machine per-item verdicts / facts / threshold values at decision time --
+    # provenance for later machine-vs-human discipline stats. Text (unbounded, never
+    # filtered); NULL means no auto-grade ran (never a fabricated grade).
+    autograde_json: Mapped[str | None] = mapped_column(Text, default=None)
 
 
 class OptionPaperTrade(Base):
