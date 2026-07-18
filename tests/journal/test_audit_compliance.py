@@ -5,7 +5,7 @@ from datetime import date, datetime
 
 from sqlalchemy.orm import Session
 
-from swing_screener.db.models import DisarmEvent, ExecutionLog
+from swing_screener.db.models import DisarmEvent, ExecutionLog, PaperTrade
 from swing_screener.db.session import get_engine
 from swing_screener.journal.audit_compliance import compliance_findings
 
@@ -76,6 +76,47 @@ def test_real_breach_still_fires():
                                 max_daily_notional=1000.0, max_daily_loss=None)
         assert len(f.cap_breaches) == 1
         assert f.cap_breaches[0]["account"] == "paper"
+
+
+def _closed(*, exit_day=date(2026, 7, 7), realized_r=-1.0, account="paper"):
+    """A closed shadow-book trade -- what realized_r_on (the breaker's source) sums."""
+    return PaperTrade(ticker="AMD", timeframe="1d", horizon="medium", account=account,
+                      signal_score=0.5, rank=1, fill_status="filled", status="closed",
+                      stop=95.0, target=110.0, risk=5.0, realized_r=realized_r,
+                      exit_date=exit_day)
+
+
+def test_realized_minus_3R_day_breaches_with_2R_cap():
+    # max_daily_loss is the execution breaker's R threshold on REALIZED loss
+    # (execution.py PER-DAY-LOSS UNIT DECISION): -3R realized vs a 2R cap breaches.
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        s.add_all([_log(), _closed(realized_r=-3.0)])
+        s.commit()
+        f = compliance_findings(s, period_from=_FROM, period_to=_TO,
+                                max_daily_notional=None, max_daily_loss=2.0)
+        assert len(f.cap_breaches) == 1
+        b = f.cap_breaches[0]
+        assert b["day_r"] == -3.0 and b["loss_cap_r"] == 2.0 and b["account"] == "paper"
+
+
+def test_entry_risk_alone_never_breaches_loss_cap():
+    # $500 committed at entry with nothing realized is NOT a loss; grading entry risk
+    # against an R-tuned cap (2.0) would flag essentially every executed day.
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        s.add(_log(risk=500.0))
+        s.commit()
+        f = compliance_findings(s, period_from=_FROM, period_to=_TO,
+                                max_daily_notional=None, max_daily_loss=2.0)
+        assert f.cap_breaches == []
+
+
+def test_positive_day_never_breaches():
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        s.add_all([_log(), _closed(realized_r=1.5)])
+        s.commit()
+        f = compliance_findings(s, period_from=_FROM, period_to=_TO,
+                                max_daily_notional=None, max_daily_loss=2.0)
+        assert f.cap_breaches == []
 
 
 def test_reject_and_clamp_rate():

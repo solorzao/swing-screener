@@ -1,7 +1,8 @@
 """The System Behavior Auditor's compliance grader -- code owns every number.
 
-Pure aggregation over MACHINE conduct data (``ExecutionLog`` hard-limit sums, reject/
-clamp statuses, ``DisarmEvent``) for one audited period. It deliberately imports NO
+Pure aggregation over MACHINE conduct data (``ExecutionLog`` hard-limit sums, the
+machine book's realized R via ``repo.realized_r_on``, reject/clamp statuses,
+``DisarmEvent``) for one audited period. It deliberately imports NO
 personal-book model: ``Trade.override`` is Coach data and off-limits here (the Auditor
 audits the machine, not the human's discipline).
 
@@ -19,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from swing_screener.db.models import DisarmEvent, ExecutionLog
-from swing_screener.db.repo import LIMIT_COUNTING_STATUSES
+from swing_screener.db.repo import LIMIT_COUNTING_STATUSES, realized_r_on
 
 # ExecutionLog.status values that mean an order did NOT go through cleanly.
 _REJECT_STATUSES = frozenset({"rejected", "rejected_live", "skipped"})
@@ -31,7 +32,7 @@ class ComplianceFindings:
     execution rows exist (unmeasurable, not zero). ``n_clamps`` counts "skipped" rows --
     the limit engine doing its job (good conduct, surfaced separately, never a breach)."""
 
-    # [{date, account, notional, risk, notional_cap, loss_cap}]
+    # [{date, account, notional, risk_dollars, notional_cap, day_r, loss_cap_r}]
     cap_breaches: list[dict[str, object]]
     reject_rate: float | None
     n_rejected: int
@@ -49,7 +50,15 @@ def compliance_findings(
     max_daily_loss: float | None,
 ) -> ComplianceFindings:
     """Grade machine execution conduct over ``[period_from, period_to]``. Caps of None
-    mean uncapped -> never a breach for that dimension."""
+    mean uncapped -> never a breach for that dimension.
+
+    UNIT CONTRACT: ``max_daily_loss`` is the execution adapter's realized-loss circuit
+    breaker in **R**, NOT a $ cap on entry risk (see execution.py's PER-DAY-LOSS UNIT
+    DECISION: ``max_daily_loss=2.0`` blocks new orders once the account has realized
+    -2R or worse today). The auditor grades with the breaker's own source
+    (``repo.realized_r_on``) and predicate (``day_r <= -cap``), on the (day, account)
+    cells that had counted order activity. ``max_daily_notional`` stays a $ cap on the
+    day's summed counted notional."""
     logs = list(session.scalars(
         select(ExecutionLog)
         .where(ExecutionLog.created_date >= period_from,
@@ -73,13 +82,21 @@ def compliance_findings(
 
     cap_breaches: list[dict[str, object]] = []
     for day, account in sorted(by_key_notional):
-        notional, risk = by_key_notional[(day, account)], by_key_risk[(day, account)]
+        notional = by_key_notional[(day, account)]
+        risk_dollars = by_key_risk[(day, account)]
         over_notional = max_daily_notional is not None and notional > max_daily_notional
-        over_loss = max_daily_loss is not None and risk > max_daily_loss
+        # the loss cap is graded in the breaker's own unit: the day's summed REALIZED R
+        # for the account (realized_r_on -- the execution breaker's source), tripping at
+        # day_r <= -cap. Entry risk_dollars is $ committed, not a loss; it stays in the
+        # breach dict as information only.
+        day_r = (realized_r_on(session, run_date=day, account=account)
+                 if max_daily_loss is not None else None)
+        over_loss = max_daily_loss is not None and day_r is not None and day_r <= -max_daily_loss
         if over_notional or over_loss:
             cap_breaches.append({
                 "date": day.isoformat(), "account": account, "notional": notional,
-                "risk": risk, "notional_cap": max_daily_notional, "loss_cap": max_daily_loss,
+                "risk_dollars": risk_dollars, "notional_cap": max_daily_notional,
+                "day_r": day_r, "loss_cap_r": max_daily_loss,
             })
 
     # reject_rate stays over ALL rows: it is ABOUT the blocked/dirty attempts
