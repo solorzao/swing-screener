@@ -9,6 +9,7 @@ nightly pipeline never blocks on the LLM.
 
 import base64
 import logging
+import math
 from dataclasses import dataclass
 
 import anthropic
@@ -447,12 +448,19 @@ _TICKER_SYSTEM = (
 )
 
 
+def _fmt_num(x: float, spec: str) -> str:
+    """``format(x, spec)``, or 'n/a' when non-finite. Short frames leave the last
+    RSI/ATR NaN (e.g. the 1mo timeframe of a young listing) -- the analyst must
+    never read a literal 'nan' fact (PR #104's class at the rendering layer)."""
+    return format(x, spec) if math.isfinite(x) else "n/a"
+
+
 def _read_line(read: TimeframeRead) -> str:
     """One deterministic fact line per timeframe read (entry/stop/target if firing)."""
     line = (
         f"- {read.timeframe}: HA {read.ha_trend}, EMA "
         f"{'aligned' if read.ema_aligned else 'not aligned'}, "
-        f"RSI {read.rsi:.0f}, ATR {read.atr_pct:.1%}"
+        f"RSI {_fmt_num(read.rsi, '.0f')}, ATR {_fmt_num(read.atr_pct, '.1%')}"
     )
     if read.setup is not None:
         s = read.setup
@@ -499,7 +507,8 @@ def _ticker_fallback(report: TickerReport) -> tuple[str, str, bool]:
     summary = f"{report.ticker}: multi-timeframe read"
     lines: list[str] = []
     for r in report.reads:
-        line = f"{r.timeframe}: {r.ha_trend}, RSI {r.rsi:.0f}, ATR {r.atr_pct:.1%}"
+        line = (f"{r.timeframe}: {r.ha_trend}, RSI {_fmt_num(r.rsi, '.0f')}, "
+                f"ATR {_fmt_num(r.atr_pct, '.1%')}")
         if r.setup is not None:
             s = r.setup
             line += (

@@ -112,3 +112,22 @@ def test_analyze_ticker_deep_falls_back_on_empty_reply():
     summary, analysis_text, is_deep = analyze_ticker_deep(_report(), client=_FakeClient(text=""))
     assert is_deep is False
     assert "1d:" in analysis_text
+
+
+def test_ticker_prompt_and_fallback_never_render_nan():
+    # Short frames leave the last RSI/ATR NaN (e.g. the 1mo timeframe of a young
+    # listing) -- the analyst must read 'n/a', never a literal 'nan' fact.
+    nan = float("nan")
+    reads = [TimeframeRead(timeframe="1mo", ha_trend="bullish", ema_aligned=True,
+                           rsi=nan, atr_pct=nan)]
+    client = _FakeClient(text=_CANNED)
+    analyze_ticker_deep(_report(reads=reads), client=client, web_search=False)
+    prompt = client.kwargs["messages"][0]["content"][-1]["text"]
+    assert "nan" not in prompt.lower()
+    assert "RSI n/a" in prompt and "ATR n/a" in prompt
+
+    _, fallback_text, is_deep = analyze_ticker_deep(
+        _report(reads=reads), client=_FakeClient(exc=RuntimeError("boom")))
+    assert is_deep is False
+    assert "nan" not in fallback_text.lower()
+    assert "RSI n/a" in fallback_text

@@ -77,6 +77,20 @@ def test_facts_block_renders_v2_signals():
     assert "Breadth participation" in block
 
 
+def test_facts_block_never_renders_non_finite_values():
+    # PR #104 hardened the computation layer; this is the rendering-layer backstop:
+    # a stray NaN/inf fact must get the missing-value treatment, never print 'nan'.
+    nan = float("nan")
+    f = replace(_facts(), vix=nan, vix_rank=nan, ten_year=nan,
+                recession_prob=nan, vix_term_ratio=float("inf"),
+                credit_pctile=nan, credit_chg_4w=nan,
+                cyc_def_trend="bear", cyc_def_chg_4w=nan,
+                breadth_trend="bear", breadth_chg_4w=nan)
+    block = facts_block(f)
+    assert "nan" not in block.lower() and "inf" not in block.lower()
+    assert "3m 4.60" in block and "10y n/a" in block  # finite leg still renders
+
+
 def test_analyze_market_deep_parses_labelled_report():
     reply = ("CORE: Transitional tape -- daily rolling over under a bullish monthly.\n"
              "Regime: weekly+daily HA flipped bear vs a bull monthly.\n"
