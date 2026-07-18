@@ -93,7 +93,16 @@ def delete_signals_for(session: Session, run_date: date) -> None:
 
 
 def delete_paper_trades_opened_on(session: Session, opened_date: date) -> None:
-    session.execute(delete(PaperTrade).where(PaperTrade.opened_date == opened_date))
+    """Delete ONLY the research shadow grid's same-day rows (re-run idempotency).
+
+    Live/paper/manual rows are NOT re-created by a screen re-run (their
+    ExecutionLog is already terminal), so deleting them permanently loses real
+    positions -- the 2026-07-17 audit's critical finding.
+    """
+    session.execute(delete(PaperTrade).where(
+        PaperTrade.opened_date == opened_date,
+        PaperTrade.account == "research",
+    ))
     session.commit()
 
 

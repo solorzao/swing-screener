@@ -47,7 +47,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 ### Progress Ledger
 
 **Phase A — `fix/live-money-safety`**
-- [ ] A1 account-scoped same-day delete + regression tests
+- [x] A1 account-scoped same-day delete + regression tests
 - [ ] A2 ExecutionLog idempotency status upgrade + adapter load-before-act guards
 - [ ] A3 paginated `list_open_orders`
 
