@@ -202,6 +202,10 @@ class PaperTrade(Base):
     partial_r: Mapped[float | None] = mapped_column(default=None)
     remaining_frac: Mapped[float] = mapped_column(default=1.0)
     high_water: Mapped[float | None] = mapped_column(default=None)
+    # Live-book share count, stamped by reconcile._materialize_fills from the broker's
+    # filled_qty (fallback: the ExecutionLog ticket's shares). NULL on every non-live
+    # book and on legacy live rows -- realized $ math must skip NULL, never guess.
+    qty: Mapped[int | None] = mapped_column(default=None)
 
 
 class ExitEvent(Base):
@@ -643,6 +647,51 @@ class DisarmEvent(Base):
     created_at: Mapped[datetime]
     reason: Mapped[str] = mapped_column(String(256), default="")
     orders_cancelled: Mapped[int] = mapped_column(default=0)
+
+
+class AgentGuardrails(Base):
+    """The live agent's brake state: ONE mutable row (id=1 by convention), mutated only
+    by atomic conditional UPDATEs (db.guardrails_repo). Subordinate to the env master arm
+    (SWING_EXECUTION_MODE): it can only BLOCK dispatch, never arm it. ``state`` is a
+    String enum -- 'ok' | 'halted' | 'tripped' -- deliberately not a boolean so no WHERE
+    clause ever renders `IS 1` on SQL Server. History lives in agent_guardrail_events."""
+
+    __tablename__ = "agent_guardrails"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    state: Mapped[str] = mapped_column(String(16), default="ok", server_default="ok")
+    # breakers: NULL = unset. The three $-and-count breakers are MANDATORY for a
+    # real-money endpoint (guardrails_mandate_ok); loss_streak_halt is optional.
+    max_daily_loss_usd: Mapped[float | None] = mapped_column(default=None)
+    max_trades_per_day: Mapped[int | None] = mapped_column(default=None)
+    max_drawdown_usd: Mapped[float | None] = mapped_column(default=None)
+    loss_streak_halt: Mapped[int | None] = mapped_column(default=None)
+    # drawdown window: baseline $ at the anchor date; copied forward verbatim on every
+    # edit/trip/clear -- resetting the anchor is its own deliberate 'edit' event.
+    hwm_anchor_date: Mapped[date | None] = mapped_column(default=None)
+    hwm_baseline_usd: Mapped[float] = mapped_column(default=0.0, server_default="0")
+    # trip bookkeeping: which event tripped us, why, and whether the sweep finished
+    # ('pending' | 'partial' | 'complete'; NULL when not tripped).
+    trip_id: Mapped[int | None] = mapped_column(default=None)
+    trip_reason: Mapped[str | None] = mapped_column(String(256), default=None)
+    sweep_state: Mapped[str | None] = mapped_column(String(16), default=None)
+    updated_at: Mapped[datetime]
+
+
+class AgentGuardrailEvent(Base):
+    """Append-only guardrail history + the Auditor feed: one row per edit / halt /
+    trip / clear / sweep outcome. Mirrors DisarmEvent's role for machine conduct."""
+
+    __tablename__ = "agent_guardrail_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[datetime]
+    kind: Mapped[str] = mapped_column(String(16))  # edit | halt | trip | clear | sweep
+    breaker: Mapped[str] = mapped_column(String(32), default="")
+    reason: Mapped[str] = mapped_column(String(256), default="")
+    values_json: Mapped[str] = mapped_column(Text, default="{}")
+    # cockpit | digest | screen -- required, no default (journal convention).
+    source: Mapped[str] = mapped_column(String(16))
 
 
 class GexSnapshot(Base):
