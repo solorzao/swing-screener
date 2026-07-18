@@ -28,7 +28,7 @@ import type {
   RobinhoodBook,
 } from '../lib/api'
 import { GexProfileChart } from '../components/GexProfileChart'
-import { dashOr, fmtSignedUsd, fmtUsd } from '../lib/fmt'
+import { dashOr, fmtSignedUsd, fmtUsd, localTodayIso } from '../lib/fmt'
 import { PanelBody } from '../components/PanelBody'
 import { Segmented } from '../components/Segmented'
 import { StatChip } from '../components/StatChip'
@@ -151,16 +151,6 @@ function GradeChip({ grade, lg }: { grade: string; lg?: boolean }) {
   )
 }
 
-/** Local calendar date (YYYY-MM-DD) — the cockpit runs beside its server, so the
- * client's local day matches the server-naive `ts` day the journal filters on. */
-function localToday(): string {
-  const d = new Date()
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
-}
-
 /* ============================ 1 · DAY PLAN ============================ */
 
 function ThinBadge({ title }: { title?: string }) {
@@ -175,7 +165,7 @@ function ThinBadge({ title }: { title?: string }) {
  * the GEX model is morning-static and valid for ONE session, so yesterday's
  * walls must never present as today's decision levels. */
 function snapshotIsStale(ts: string): boolean {
-  return ts.slice(0, 10) < localToday()
+  return ts.slice(0, 10) < localTodayIso()
 }
 
 function SnapshotsTable({ rows }: { rows: GexSnapshot[] }) {
@@ -826,7 +816,7 @@ function JournalRow({
 }
 
 function JournalPanel({ wake, onAction }: { wake: number; onAction: () => void }) {
-  const day = localToday()
+  const day = localTodayIso()
   // today vs the last 7 days — a taken setup's outcome usually lands AFTER its
   // day (the settle sweep), so a today-only journal read "taken" forever.
   const [scope, setScope] = useState<'today' | 'recent'>('today')

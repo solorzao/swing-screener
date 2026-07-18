@@ -2092,6 +2092,13 @@ button.pos-close:hover {
   cursor: wait;
 }
 
+/* The quiet variant (clear prefill / dismiss) — mirrors .gex-btn-quiet:
+   --dim, not --faint: a clickable control must clear the 3:1 non-text floor
+   at rest (these are operable, not decoration). */
+.ltf-btn-quiet {
+  color: var(--dim);
+}
+
 /* The submit: blue-tinted (neutral-info accent) — an action, never a claim. */
 .ltf-btn.ltf-submit {
   letter-spacing: 0.1em;
@@ -4730,6 +4737,28 @@ button.needs-hand-btn:hover {
 .jr-rec-chip {
   font-size: 9px;
   letter-spacing: 0.02em;
+}
+
+/* --- Weaknesses (Journal v2 coach) — the distillation list. The wrapper owns
+   the panel-body padding; the nested .panel-wait lines (thin-data hint / empty)
+   drop their own so they don't double-pad. The list is the app's list idiom
+   (18px indent, tight grid gap — matches .gex-reading / .gex-thin-reasons). */
+.jr-weak {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 12px 12px;
+}
+.jr-weak .panel-wait {
+  padding: 6px 0;
+}
+.jr-weak-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--txt);
+  display: grid;
+  gap: 4px;
 }
 
 /* ============================================================================

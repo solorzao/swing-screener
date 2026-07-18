@@ -32,7 +32,7 @@ import type {
   NoteKind,
   WeaknessesProfile,
 } from '../lib/api'
-import { dashOr, fmtR, fmtSignedUsd } from '../lib/fmt'
+import { dashOr, fmtR, fmtSignedUsd, localTodayIso } from '../lib/fmt'
 import { HelpTerm } from '../components/HelpTerm'
 import { PanelBody } from '../components/PanelBody'
 import { Segmented } from '../components/Segmented'
@@ -511,16 +511,8 @@ function MistakesPanel({ book, wake, scope }: { book: JournalBook; wake: number;
 
 const NOTE_KINDS: NoteKind[] = ['premarket', 'postmarket', 'adhoc']
 
-/** Today in the LOCAL calendar as YYYY-MM-DD (the note day the form defaults to). */
-function todayIso(): string {
-  const d = new Date()
-  const mm = String(d.getMonth() + 1).padStart(2, '0')
-  const dd = String(d.getDate()).padStart(2, '0')
-  return `${d.getFullYear()}-${mm}-${dd}`
-}
-
 function NotebookPanel({ wake }: { wake: number }) {
-  const [day, setDay] = useState<string>(todayIso)
+  const [day, setDay] = useState<string>(localTodayIso)
   const [localBump, setLocalBump] = useState(0)
   // Notes are DAY-scoped (no book) — paramsKey is the day; a local bump rides the
   // wake param for an immediate refetch after a successful write.
@@ -573,7 +565,7 @@ function NotebookPanel({ wake }: { wake: number }) {
             type="date"
             value={day}
             aria-label="notebook day"
-            onChange={(e) => setDay(e.target.value === '' ? todayIso() : e.target.value)}
+            onChange={(e) => setDay(e.target.value === '' ? localTodayIso() : e.target.value)}
           />
         </label>
       </div>

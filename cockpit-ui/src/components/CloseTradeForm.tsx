@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ApiError, postCloseTrade } from '../lib/api'
 import type { CloseTradeResult, RealPositionRow } from '../lib/api'
-import { dashOr, fmtR, fmtSignedUsd } from '../lib/fmt'
+import { dashOr, fmtR, fmtSignedUsd, localTodayIso } from '../lib/fmt'
 
 /* CLOSE TRADE — the second action. Closes one open REAL trade at the price
    Oliver reports; the server writes the trade close and its
@@ -38,13 +38,6 @@ type Phase =
   | { kind: 'submitting' }
   | { kind: 'closed'; result: CloseTradeResult }
 
-const isoToday = (): string => {
-  const d = new Date()
-  const mm = String(d.getMonth() + 1).padStart(2, '0')
-  const dd = String(d.getDate()).padStart(2, '0')
-  return `${d.getFullYear()}-${mm}-${dd}`
-}
-
 export function CloseTradeForm({
   row,
   onClosed,
@@ -70,7 +63,7 @@ export function CloseTradeForm({
   const [exitPrice, setExitPrice] = useState(
     row.last_close === null ? '' : row.last_close.toFixed(2),
   )
-  const [exitDate, setExitDate] = useState(isoToday())
+  const [exitDate, setExitDate] = useState(localTodayIso())
   const [reason, setReason] = useState<string>('manual')
   const [phase, setPhase] = useState<Phase>({ kind: 'editing' })
   const [error, setError] = useState<string | null>(null)
