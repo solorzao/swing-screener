@@ -151,6 +151,39 @@ def test_run_market_report_skips_without_spy(tmp_path):
     assert out is None and not sent
 
 
+def test_run_market_report_sqlite_does_not_migrate(tmp_path):
+    """Local sqlite must NOT trigger the alembic migration seam: alembic lives in the
+    [azure] extra, and the create_all-born local.db is unstamped -- an unconditional
+    migrate crashes every local run (every sibling entrypoint already gates on mssql)."""
+    migrated: list[str] = []
+    db = f"sqlite:///{tmp_path / 'm.db'}"
+    facts = run_market_report(db_url=db, to="me@example.com",
+                              fetch=_fake_fetch({"SPY": _rising()}),
+                              smtp_send=lambda **kw: None,
+                              migrate_fn=lambda u: migrated.append(u),
+                              cfg=replace(CFG, market_report_enabled=False))
+    assert facts is not None  # the report still runs end-to-end
+    assert migrated == []     # sqlite never touches the alembic seam
+
+
+def test_run_market_report_migrates_on_mssql(tmp_path, monkeypatch):
+    """An mssql url still self-migrates before touching the schema (Alembic owns it)."""
+    from swing_screener.notify import market_run
+
+    migrated: list[str] = []
+    # Stand-in engine so the mssql code path can open a real Session offline.
+    monkeypatch.setattr(market_run, "get_engine",
+                        lambda url: get_engine(f"sqlite:///{tmp_path / 'stand_in.db'}"))
+    db = "mssql+pyodbc://server/db?driver=ODBC+Driver+18+for+SQL+Server"
+    facts = run_market_report(db_url=db, to="me@example.com",
+                              fetch=_fake_fetch({"SPY": _rising()}),
+                              smtp_send=lambda **kw: None,
+                              migrate_fn=lambda u: migrated.append(u),
+                              cfg=replace(CFG, market_report_enabled=False))
+    assert facts is not None
+    assert migrated == [db]  # invoked exactly once, with the mssql url
+
+
 def test_db_float_maps_nan_to_none_at_the_db_boundary():
     """Defense in depth for the 2026-07-05 incident: even if a future fact computation
     lets a NaN through, the persist boundary must send NULL, never NaN (SQL Server

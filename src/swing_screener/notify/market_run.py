@@ -121,7 +121,10 @@ def run_market_report(
 
     # Alembic owns the Azure SQL schema (get_engine does NOT create_all there), so self-migrate --
     # the Sunday run can precede a fresh migration and must not assume another job seeded the table.
-    (migrate_fn or _migrate_with_retry)(db_url)
+    # Gated on mssql like every other entrypoint: locally alembic lives in the [azure] extra and
+    # the create_all-born local.db is unstamped, so an unconditional migrate crashes sqlite runs.
+    if db_url.startswith("mssql"):
+        (migrate_fn or _migrate_with_retry)(db_url)
     engine = get_engine(db_url)
     try:
         with Session(engine) as s:
