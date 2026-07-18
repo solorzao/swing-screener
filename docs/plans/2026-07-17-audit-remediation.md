@@ -52,7 +52,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 - [ ] A3 paginated `list_open_orders`
 
 **Phase B — `fix/queue-claim-datetime`**
-- [ ] B1 whole-second claim tokens in both claim functions
+- [x] B1 whole-second claim tokens in both claim functions
 - [ ] B1-verify (post-deploy) one on-demand request processes end-to-end in prod
 
 **Phase C — `fix/nan-hardening`**
