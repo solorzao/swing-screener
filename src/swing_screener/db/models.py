@@ -654,7 +654,10 @@ class AgentGuardrails(Base):
     by atomic conditional UPDATEs (db.guardrails_repo). Subordinate to the env master arm
     (SWING_EXECUTION_MODE): it can only BLOCK dispatch, never arm it. ``state`` is a
     String enum -- 'ok' | 'halted' | 'tripped' -- deliberately not a boolean so no WHERE
-    clause ever renders `IS 1` on SQL Server. History lives in agent_guardrail_events."""
+    clause ever renders `IS 1` on SQL Server. History lives in agent_guardrail_events.
+    Seed the row WITHOUT an explicit id (the first insert gets id=1 naturally): on SQL
+    Server the PK is IDENTITY, and an explicit id needs IDENTITY_INSERT/ALTER permission
+    the prod managed identity may lack."""
 
     __tablename__ = "agent_guardrails"
 

@@ -2,6 +2,9 @@
 
 from datetime import UTC, date, datetime
 
+import pytest
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from swing_screener.db.models import AgentGuardrailEvent, AgentGuardrails, PaperTrade
@@ -26,6 +29,22 @@ def test_guardrails_row_defaults() -> None:
         assert row.sweep_state is None
 
 
+def test_guardrails_server_defaults_on_raw_insert() -> None:
+    # A raw INSERT never touches the ORM's Python-side defaults -- this exercises
+    # the server_defaults (state='ok', hwm_baseline_usd=0) the migration mirrors.
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        s.execute(
+            # a pre-formatted string, not a datetime: raw sqlite3 binding of datetime
+            # objects goes through the default adapter deprecated in Python 3.12.
+            text("INSERT INTO agent_guardrails (updated_at) VALUES (:ts)"),
+            {"ts": "2026-07-18 12:00:00.000000"},
+        )
+        s.commit()
+        row = s.query(AgentGuardrails).one()
+        assert row.state == "ok"
+        assert row.hwm_baseline_usd == 0.0
+
+
 def test_guardrail_event_requires_source() -> None:
     with Session(get_engine("sqlite:///:memory:")) as s:
         ev = AgentGuardrailEvent(
@@ -36,6 +55,15 @@ def test_guardrail_event_requires_source() -> None:
         s.commit()
         s.refresh(ev)
         assert ev.id is not None
+
+        # source has no default (journal convention) -- omitting it must NOT commit.
+        s.add(AgentGuardrailEvent(
+            kind="edit", breaker="", reason="no source",
+            values_json="{}", created_at=datetime.now(UTC),
+        ))
+        with pytest.raises(IntegrityError):
+            s.commit()
+        s.rollback()
 
 
 def test_paper_trade_qty_column() -> None:

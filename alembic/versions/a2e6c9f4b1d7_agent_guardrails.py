@@ -57,9 +57,9 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.Column("kind", sa.String(length=16), nullable=False),
-        sa.Column("breaker", sa.String(length=32), nullable=False, server_default=""),
-        sa.Column("reason", sa.String(length=256), nullable=False, server_default=""),
-        sa.Column("values_json", sa.Text(), nullable=False, server_default="{}"),
+        sa.Column("breaker", sa.String(length=32), nullable=False),
+        sa.Column("reason", sa.String(length=256), nullable=False),
+        sa.Column("values_json", sa.Text(), nullable=False),
         sa.Column("source", sa.String(length=16), nullable=False),
         sa.PrimaryKeyConstraint("id"),
     )
