@@ -489,7 +489,7 @@ The sweep body mirrors the kill-switch block at `notify/run.py:715-729` (`pull_e
 - Modify: `src/swing_screener/settings.py` (Settings field + `load_settings`), `src/swing_screener/notify/run.py` (~709: filter `collected_intents`)
 - Test: `tests/notify/test_run_execution_scope.py`, `tests/test_settings_broker.py` pattern for the env parse
 
-**Failing tests:** `SWING_EXECUTE_PLAY_TYPES="reversal"` → continuation intents get `skipped` tickets (`detail="play type not in execution scope"`), reversal intents dispatch; unset → both dispatch (today's behavior); garbage value → fail-safe to empty set (NOTHING dispatches, loud warning — fail-closed, matching the mode-coercion posture). **Implementation:** `execute_play_types: frozenset[str] | None` parsed like `deep_analysis_kinds` (`None` when unset = allow-all; empty-after-validation = allow-none + warning; validate members against `{"continuation", "reversal"}`). Filter in the dispatch loop before the submit (synthetic skipped ticket so the digest stays honest). Surface the knob in `/api/config`'s execution section (`_cfg_row("execute play types", "SWING_EXECUTE_PLAY_TYPES", ...)`). Commit `feat: SWING_EXECUTE_PLAY_TYPES execution scoping`.
+**Failing tests:** `SWING_EXECUTE_PLAY_TYPES="reversal"` → continuation intents get `skipped` tickets (`detail="play type not in execution scope"`), reversal intents dispatch; unset → both dispatch (today's behavior); garbage value → fail-safe to empty set (NOTHING dispatches, loud warning — fail-closed, matching the mode-coercion posture). **Implementation:** `execute_play_types: frozenset[str] | None` parsed like `deep_analysis_kinds` (`None` when unset = allow-all; empty-after-validation = allow-none + warning; validate members against `{"continuation", "reversal"}`). Filter in the dispatch loop before the submit (synthetic skipped ticket so the digest stays honest). Surface the knob in `/api/config`'s execution section (`_cfg_row("execute play types", "SWING_EXECUTE_PLAY_TYPES", ...)`). **Seam for the Strategy Board (Task 22):** route the decision through one function — `effective_execution_scope(settings, session) -> frozenset[str]` (for now: just the env parse; `session` accepted and unused) — so the cockpit `disabled_play_types` subtraction lands there without touching the loop again. Commit `feat: SWING_EXECUTE_PLAY_TYPES execution scoping`.
 
 ### Task 9 (Stage-1): Orphan adoption on duplicate client_order_id
 
@@ -583,6 +583,35 @@ def test_dry_run_halt_previews_sweep(...):
 **Files:** `cockpit-ui` glossary source `glossary.data.json` (+ `HelpTerm` usages on the new panel), pytest citation-guard will enforce coverage.
 
 Add terms: `guardrail`, `HALT (brake)`, `trip`, `drawdown anchor / high-water mark`, `loss streak`, `sweep (guardrail)` — each with source-links to `pipeline/guardrails.py` / the design doc. Run the citation-guard test. Commit `docs: glossary entries for guardrails`.
+
+---
+
+## Phase 4b — Strategy Board (addendum, approved 2026-07-18: tighten-only selection)
+
+### Task 22: `disabled_play_types` — the cockpit scope subtraction
+
+**Files:**
+- Modify: `src/swing_screener/db/models.py` (`AgentGuardrails.disabled_play_types: Mapped[str] = mapped_column(String(64), default="", server_default="")` — comma-separated, bounded), new Alembic revision (down_revision = current head) adding the column
+- Modify: `src/swing_screener/db/guardrails_repo.py`: `GuardrailsState.disabled_play_types: frozenset[str]` (parsed), `set_disabled_play_types(session, *, disabled: set[str], source: str)` — validates ⊆ `{"continuation", "reversal"}`, MIN(id)-pinned plain UPDATE touching ONLY this column + updated_at, one 'edit' event (breaker `'disabled_play_types'`, old→new values_json), single commit
+- Modify: wherever Task 8 put `effective_execution_scope(settings, session)`: effective = env ceiling − `load_guardrails(session).disabled_play_types`
+- Test: extend `tests/db/test_guardrails_repo.py` + the Task 8 scope tests (disabled set subtracts; re-enable returns to ceiling, never past it; unknown play type → ValueError)
+
+TDD as usual; `alembic heads` single; commit `feat: cockpit play-type subtraction (tighten-only strategy scope)`.
+
+### Task 23: `GET /api/strategies` — the evidence ranking
+
+**Files:**
+- Create: `src/swing_screener/cockpit/routers/strategies.py` (register like the other routers)
+- Test: `tests/cockpit/test_strategies_router.py`
+
+Per play type return: `in_ceiling` (env), `disabled` (cockpit), `effective` (traded now), `playbook_present` (edge/<pt>.md + verdicts exist), `tier` (best verdict tier in the sidecar: forward_confirmed > replay_screened > hunch), `best_cohort` {dimension, ci_low, expectancy, n} (highest ci_low among the best tier's entries), `calibration` (reuse the autonomy gate's counts — scored-high/scored-low/tickers vs the 20/20/8 floors; do NOT reimplement the arithmetic, import from `pipeline.autonomy`), `gate_ready`, and forward shadow stats (would_surface facet: n, mean R over the trailing window — reuse the existing stats helpers; if no clean helper exists, expose what `edge/<pt>.md` frontmatter carries and note the gap rather than inventing math). Rank: tier desc, then ci_low desc. DB/file-only — no broker call. Commit `feat: /api/strategies evidence ranking`.
+
+### Task 24: STRATEGY SCOPE panel + docs
+
+**Files:**
+- Modify: `cockpit-ui/src/screens/SafetyScreen.tsx` (+ new `StrategyBoard.tsx` component below the guardrails panel), glossary terms (evidence tier, CI floor, execution scope/ceiling), docs (`using-meridian.md` Safety section)
+
+Per-strategy row: rank, IN SCOPE/OUT lamp, tier chip, ci-low + n, calibration countdown, gate lamp; disable/enable toggle = 400 ms hold (light-decision tier — no venue state moves; enable is capped at the env ceiling and the control states that). Caption: *"selection is evidence-gated: the ceiling changes via env ceremony; the board can only subtract or restore within it."* Same UI verification ritual (brace balance, vite dev + Playwright states). Commit `feat: strategy board panel`.
 
 ---
 

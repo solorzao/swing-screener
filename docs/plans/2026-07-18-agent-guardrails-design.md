@@ -241,6 +241,33 @@ counting in place).
 - Masthead: the existing gate poll gains the brake state chip (`TRIPPED`/`HALTED` next to the
   execution-mode chip).
 
+## Addendum (2026-07-18, approved): the Strategy Board
+
+**Decisions (Oliver):** strategy selection is **tighten-only**, and the board ships on this
+branch, reusing the guardrails plumbing.
+
+**Visibility.** A cockpit STRATEGY SCOPE panel (Safety screen, below guardrails) lists every
+play type with: an IN SCOPE / OUT lamp, playbook presence (`edge/<pt>.md` + verdicts), the
+evidence tier (`hunch → replay_screened → forward_confirmed`), the ranking metric — the
+**CI lower bound on expectancy** (the autonomy gate's own number; never the point estimate,
+which invites picking noise) — plus n, forward shadow-book stats (`would_surface` facet), the
+analyst-calibration countdown, and the gate-ready lamp. Rank order: tier first, CI floor
+second. Served by a DB/file-only `GET /api/strategies` (no broker call).
+
+**Selection model — two-level scope.**
+
+- `SWING_EXECUTE_PLAY_TYPES` (env, Task 8) is the **ceiling**: the ceremony-controlled set the
+  agent may ever trade. Changing the ceiling is an env/IaC act, always.
+- `agent_guardrails.disabled_play_types` (new bounded-string column, comma-separated, default
+  `""`) is the **cockpit subtraction**: one-click disable of any strategy (pure risk removal),
+  and re-enable back up to — never past — the env ceiling (same logic as releasing HALT: the
+  brake can return to what the master arm allows, it can never exceed it).
+- Effective scope = ceiling − disabled. The dispatch filter and the submit-side brake both
+  consult effective scope; Task 8 builds the filter behind an
+  `effective_execution_scope(settings, session)` seam so the subtraction lands without rework.
+- Scope changes append `agent_guardrail_events` rows (`kind='edit'`, breaker
+  `'disabled_play_types'`) — Auditor-visible like every other brake write.
+
 ## Out of scope (v1)
 
 - Unrealized P&L in breakers (venue-held stops bound open risk; realized-only is deterministic).
