@@ -24,6 +24,116 @@
 
 ---
 
+## Execution state & resume protocol (read this first)
+
+Sessions WILL get interrupted (usage caps, restarts). This plan is built to survive that; follow these rules and no work is ever lost or re-derived.
+
+**The Progress Ledger below is the single source of truth for what is done.** Session task lists and chat context do not survive; this file does.
+
+**Rules while executing:**
+1. **Commit after every green test** — each task's steps already end in a commit. Never batch multiple tasks into one commit.
+2. **Tick the ledger checkbox in the SAME commit** as the task's final commit (`git add docs/plans/... src/... tests/...`). A ticked box == that task's code is committed and its tests pass.
+3. **If you must stop mid-task** (usage warning, end of session): commit whatever exists as `wip(<task-id>): <one line on exact stopping point>` and add a `> WIP:` note under the task's checkbox describing the next step. A `wip:` commit is always safe to push to the phase branch — CI failing on a phase branch is fine.
+4. **Never leave uncommitted edits at the end of a turn** in a shared worktree (the 2026-07 stash-pop incident: an aborted git operation wiped parallel uncommitted work).
+
+**Cold-start resume (fresh session, zero context):**
+1. `git fetch origin main` and read this file on the phase branch (or create the branch from latest main if it doesn't exist).
+2. Find the phase's first unticked checkbox. Check `git log --oneline -10` for a trailing `wip(<task-id>)` commit — if present, read its `> WIP:` note and finish that task first.
+3. Run that phase's test suite before writing anything (`pytest tests/<area> -q`) to confirm the baseline is green.
+4. Continue task-by-task per superpowers:executing-plans.
+
+**Phase independence:** every phase is its own branch off latest main with no cross-phase dependency (only exception: E2–E6 need E1's helper — they are inside one branch anyway). An interruption in one phase never blocks another; phases can also run in parallel worktrees.
+
+### Progress Ledger
+
+**Phase A — `fix/live-money-safety`**
+- [ ] A1 account-scoped same-day delete + regression tests
+- [ ] A2 ExecutionLog idempotency status upgrade + adapter load-before-act guards
+- [ ] A3 paginated `list_open_orders`
+
+**Phase B — `fix/queue-claim-datetime`**
+- [ ] B1 whole-second claim tokens in both claim functions
+- [ ] B1-verify (post-deploy) one on-demand request processes end-to-end in prod
+
+**Phase C — `fix/nan-hardening`**
+- [ ] C1 `_download` dropna + HA recovery test
+- [ ] C2 NaN guards: detect ATR truthiness / `latest_close` / `avg_dollar_volume` / `_spot_from_ticker`
+- [ ] C3 NaN fundamentals rendered into analyst prompts
+
+**Phase D — `fix/auditor-compliance-math`**
+- [ ] D1 cap sums filtered to counting statuses, per account, `n_clamps` surfaced
+- [ ] D2 `max_daily_loss` graded in realized R
+- [ ] D3 breach-scan window / empty-narrative rows / `would_surface_leaks` overflow
+
+**Phase E — `feat/analyst-cost-optimization`** (strict order E1 → E6)
+- [ ] E1 `_analyst_call` consolidation (behavior-preserving; both analysis test suites green unchanged)
+- [ ] E2 `web_search_20260209` + legacy-retry in `_create_message`
+- [ ] E3a `_MODEL_PRICES` additions + unknown-model fail-safe warning
+- [ ] E3b billed-but-failed usage reaches the spend accumulator
+- [ ] E3c `analyze_ticker_deep` usage capture + `analysis_requests.est_cost_usd` migration
+- [ ] E4 `daily_picks` per-ticker dedup (+ cockpit picks mirror)
+- [ ] E5 bicep reasoning default `medium` + coach/audit on `claude-haiku-4-5` (single model constant per worker)
+- [ ] E6 Market Weather env switch + spend visibility
+- [ ] E-verify (post-deploy, ~1 week) `analyst_calls.input_tokens` well below the 400k/run baseline
+
+**Phase F — `fix/digest-cooldown-cadence`**
+- [ ] F1 per-kind cooldown + dropped-picks log line
+
+**Phase G — `fix/infra-cd-hardening`**
+- [ ] G1 `notify.run` `_resolve_db_url` + mssql-gated migrate
+- [ ] G2 `market_run` mssql-gated migrate
+- [ ] G3 `imageTag` default `latest` (3 files)
+- [ ] G4 CD single-alembic-head guard
+- [ ] G5 CI push-trigger filter
+- [ ] G6 SQL token out of `GITHUB_ENV`
+- [ ] G7 cockpit DB write grants + runbook
+- [ ] G8 stale bicep secret docs
+
+**Phase H — `fix/fetch-cache-poisoning`**
+- [ ] H1 pre-close truncated frame not written to the day cache
+- [ ] H2 GEX settle: eod_flat only on complete sessions; pre-16:00 refusal without `--force`
+- [ ] H3 GEX `--cache-dir` wired through
+
+**Phase I — `perf/hot-path-indexes`**
+- [ ] I1 one migration: `ix_signals_run_date`, `ix_paper_trades_status_account`, `ix_exit_events_created_date`, filtered-unique `import_key`
+
+**Phase J — `fix/cockpit-api-degrade`**
+- [ ] J1 per-row degrade on corrupt JSON rows
+- [ ] J2 weaknesses `items_json` shape
+- [ ] J3 heartbeats sidecar stat guard
+- [ ] J4 GEX POST 503 posture
+- [ ] J5 atomic manual close
+- [ ] J6 `loss_r` gauge research-grid scoping
+- [ ] J7 `spend_rows_since` SQL cutoff
+
+**Phase K — `fix/cockpit-ui-polish`**
+- [ ] K1 surfaced errors (tag-confirm + acknowledge x2)
+- [ ] K2 CSV input reset
+- [ ] K3 fmt fixes (fmtResult / null realized_r / null max_drawdown)
+- [ ] K4 keyboard-reachable open-book scroll region
+- [ ] K5 dead CSS refs + dead null-check + time/date helper consolidation (brace-count after every CSS edit)
+
+**Phase L — `chore/dead-code-sweep`** (one commit per deletion; `git grep` before each)
+- [ ] L1 `cancel_all_orders` (Protocol + both impls)
+- [ ] L2 `latest_signals` + `update_trade`
+- [ ] L3 `fetch_universe` + `fetch_vix`
+- [ ] L4 `rank_bucket` / `score_bucket` wrappers
+- [ ] L5 `total_unrealized_pl`
+- [ ] L6 `analyze_ticker` wrapper (rewrite its 5 test call sites)
+- [ ] L7 `discipline.py` ImportError fallback
+- [ ] L8 `add_thesis` writer (table stays)
+- [ ] L9 `conviction_sizing` / `conviction_weight_*` knobs
+- [ ] L10 stale `storage/__init__.py` facade
+- [ ] L11 `option_review_facts` NOTE annotation (no delete)
+
+**Phase M — `chore/replay-and-test-structure`**
+- [ ] M1 shared `load_replay_corpus` across the 18 replay scripts (exclusion set decided + documented)
+- [ ] M2 `tests/cockpit/test_api.py` split per router (moves only)
+- [ ] M3 reflect.py drift pair
+- [ ] M4 notify low items (blob logging / dedup key / side-aware instruction / ACS guard / single autonomy_gate)
+
+---
+
 ## Phase A — Live-money safety (P0) — branch `fix/live-money-safety`
 
 ### Task A1: Account-scope the same-day idempotency delete
