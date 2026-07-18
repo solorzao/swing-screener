@@ -80,7 +80,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 - [ ] F1 per-kind cooldown + dropped-picks log line
 
 **Phase G — `fix/infra-cd-hardening`**
-- [ ] G1 `notify.run` `_resolve_db_url` + mssql-gated migrate
+- [x] G1 `notify.run` `_resolve_db_url` + mssql-gated migrate
 - [ ] G2 `market_run` mssql-gated migrate
 - [ ] G3 `imageTag` default `latest` (3 files)
 - [ ] G4 CD single-alembic-head guard
