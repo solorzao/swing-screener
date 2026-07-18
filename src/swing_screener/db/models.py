@@ -7,7 +7,7 @@ with ``default=None``.
 
 from datetime import date, datetime
 
-from sqlalchemy import ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import ForeignKey, Index, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -31,7 +31,10 @@ class Signal(Base):
     __tablename__ = "signals"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    run_date: Mapped[date]
+    # indexed: the predicate of every hot signals path -- latest_run_date (the
+    # cockpit picks poll's ORDER BY run_date DESC LIMIT 1), latest_signals,
+    # delete_signals_for, prior_first_seen. The table grows daily forever.
+    run_date: Mapped[date] = mapped_column(index=True)
     ticker: Mapped[str] = mapped_column(String(16), index=True)
     timeframe: Mapped[str] = mapped_column(String(32))
     horizon: Mapped[str] = mapped_column(String(32))
@@ -98,6 +101,16 @@ class PaperTrade(Base):
     """Shadow book of simulated fills."""
 
     __tablename__ = "paper_trades"
+    # composite hot-path index on the largest table (the shadow grid multiplies
+    # rows per arm x variant daily): every status-driven loader filters status by
+    # equality first (open / pending / closed) with account second as equality,
+    # ``!= "live"``, or absent -- open-book stepping, count_open_positions (the
+    # pre-trade position-cap gate), realized_r_on (the per-day-loss breaker),
+    # the closed research-grid aggregates. Status leads so status-only queries
+    # use the same index.
+    __table_args__ = (
+        Index("ix_paper_trades_status_account", "status", "account"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     ticker: Mapped[str] = mapped_column(String(16), index=True)
@@ -195,7 +208,9 @@ class ExitEvent(Base):
     __tablename__ = "exit_events"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    created_date: Mapped[date]
+    # indexed: exit_events_for filters on it hourly (the intraday exit checker's
+    # dedup) and the cockpit reference screen sorts by it.
+    created_date: Mapped[date] = mapped_column(index=True)
     is_paper: Mapped[bool] = mapped_column(default=False)
     # which book the closing trade belonged to, mirroring ``PaperTrade.account``.
     # The shadow stepper records EVERY paper exit under ``is_paper=True`` -- both the
@@ -663,6 +678,22 @@ class OptionPaperTrade(Base):
     Robinhood flat-to-flat episode. Never mixed with the equity paper_trades table."""
 
     __tablename__ = "option_paper_trades"
+    # FILTERED unique on the nullable import idempotency key: on SQL Server a
+    # plain unique index admits only ONE NULL row, which would cap the lab at a
+    # single key-less paper trade (import_key is NULL on every non-imported
+    # trade). The WHERE clause scopes uniqueness to real keys on both dialects
+    # (sqlite honors sqlite_where in create_all-born test DBs); unique=True must
+    # NOT also sit on the column or create_all would emit a second, unfiltered
+    # constraint. Matches migration b4e9f2c7a3d1.
+    __table_args__ = (
+        Index(
+            "uq_option_paper_trades_import_key",
+            "import_key",
+            unique=True,
+            mssql_where=text("import_key IS NOT NULL"),
+            sqlite_where=text("import_key IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     setup_id: Mapped[int | None] = mapped_column(ForeignKey("option_setups.id"), default=None)
@@ -689,9 +720,10 @@ class OptionPaperTrade(Base):
     entry_premium: Mapped[float | None] = mapped_column(default=None)
     exit_premium: Mapped[float | None] = mapped_column(default=None)
     premium_pnl: Mapped[float | None] = mapped_column(default=None)
-    # Idempotency for import commits: hash of the episode's first fill. Unique so
-    # re-committing the same review is a no-op, nullable so paper trades skip it.
-    import_key: Mapped[str | None] = mapped_column(String(64), default=None, unique=True)
+    # Idempotency for import commits: hash of the episode's first fill. Unique
+    # (via the FILTERED index in __table_args__) so re-committing the same review
+    # is a no-op, nullable so paper trades skip it.
+    import_key: Mapped[str | None] = mapped_column(String(64), default=None)
     needs_review: Mapped[bool] = mapped_column(default=False)
 
 

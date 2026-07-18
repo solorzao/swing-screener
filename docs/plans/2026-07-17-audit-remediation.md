@@ -95,7 +95,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 - [ ] H3 GEX `--cache-dir` wired through
 
 **Phase I — `perf/hot-path-indexes`**
-- [ ] I1 one migration: `ix_signals_run_date`, `ix_paper_trades_status_account`, `ix_exit_events_created_date`, filtered-unique `import_key`
+- [x] I1 one migration: `ix_signals_run_date`, `ix_paper_trades_status_account`, `ix_exit_events_created_date`, filtered-unique `import_key`
 
 **Phase J — `fix/cockpit-api-degrade`**
 - [ ] J1 per-row degrade on corrupt JSON rows
