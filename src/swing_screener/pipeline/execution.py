@@ -111,6 +111,11 @@ OFF_ACCOUNT = "research"
 # reconciler (Task 5) materializes the eventual position under the same tag.
 LIVE_ACCOUNT = "live"
 
+# the zero-qty clamp's log/ticket detail, shared with the dispatch loop's own filter
+# (notify/run.py). Deliberately NOT a "guardrail: ..." detail -- the Auditor greps that
+# prefix, and an unsized intent is inert config noise, not a tripped safety rail.
+UNSIZED_DETAIL = "unsized (0 shares)"
+
 
 @dataclass(frozen=True)
 class OrderResult:
@@ -462,6 +467,11 @@ class LiveAdapter:
        any broker call -- a re-submit can never place a venue order whose status write
        would be swallowed by the unique key (an untracked position the reconciler,
        which scans ``submitted_live`` rows only, would never materialize).
+    0.25. The zero-qty clamp: an unsized intent (``shares <= 0``) logs a ``skipped`` row
+       with detail ``unsized (0 shares)`` (:data:`UNSIZED_DETAIL`) and refuses -- qty<=0
+       at the venue is a guaranteed 422 reject the log would carry as ``rejected_live``
+       noise. Inert, so it runs BEFORE the brake / locks / limits: an order that was
+       never placeable must not log a ``guardrail: ...`` or ``rejected_live`` row.
     0.5. The GUARDRAILS BRAKE (``_guardrail_block``): the ``agent_guardrails`` state +
        breakers, loaded FRESH per submit and consulted UNCONDITIONALLY (paper host
        included -- the Stage-0 drill rehearses every trip path), BEFORE the real-money
@@ -477,9 +487,6 @@ class LiveAdapter:
        any failing logs a ``rejected_live`` row and refuses, placing no broker order.
     2. The hard-limit clamp (``_limit_block``): a breach logs a ``skipped`` row and refuses
        BEFORE any broker call -- the venue is never touched on a clamped order.
-    2.5. The zero-qty clamp: an unsized intent (``shares <= 0``) logs a ``skipped`` row
-       with detail ``unsized (0 shares)`` and refuses -- qty<=0 at the venue is a
-       guaranteed 422 reject the log would carry as ``rejected_live`` noise.
     3. A graceful broker boundary: an exception from ``submit_order`` is caught and logged as
        ``rejected_live`` (never propagated); a broker-returned ``rejected`` order likewise.
 
@@ -521,6 +528,19 @@ class LiveAdapter:
                 detail="already submitted under this idempotency key",
                 broker_order_id=prior.broker_order_id,
             )
+
+        # 0.25 The zero-qty clamp: an UNSIZED intent (``size_order`` floored to 0 --
+        #      unconfigured/tiny risk unit, or an 'avoid' conviction) must never reach
+        #      the venue, where qty<=0 is a guaranteed 422 logged as rejected_live
+        #      noise. It is INERT, so it runs BEFORE the brake / locks / limits: an
+        #      order that was never placeable must not log 'guardrail: ...' (Auditor
+        #      grep) or 'rejected_live' -- nor pay their DB reads. The dispatch loop
+        #      filters these before submit; this is the adapter's own last line
+        #      (never trusting the caller).
+        if intent.shares <= 0:
+            self._log(session, intent, run_date=run_date, key=key,
+                      status="skipped", detail=UNSIZED_DETAIL)
+            return OrderResult(status="skipped", account=LIVE_ACCOUNT, detail=UNSIZED_DETAIL)
 
         # 0.5 THE GUARDRAILS BRAKE -- unconditional (paper host included, so the drill
         #     rehearses every trip path), BEFORE the real-money guard and the venue.
@@ -572,18 +592,6 @@ class LiveAdapter:
             self._log(session, intent, run_date=run_date, key=key,
                       status="skipped", detail=limit_reason)
             return OrderResult(status="skipped", account=LIVE_ACCOUNT, detail=limit_reason)
-
-        # 2.5 The zero-qty clamp: an UNSIZED intent (``size_order`` floored to 0 --
-        #     unconfigured/tiny risk unit, or an 'avoid' conviction) must never reach
-        #     the venue, where qty<=0 is a guaranteed 422 logged as rejected_live
-        #     noise. The dispatch loop filters these before submit; this is the
-        #     adapter's own last line (never trusting the caller). Deliberately NOT
-        #     a "guardrail: ..." detail -- the Auditor greps that prefix.
-        if intent.shares <= 0:
-            detail = "unsized (0 shares)"
-            self._log(session, intent, run_date=run_date, key=key,
-                      status="skipped", detail=detail)
-            return OrderResult(status="skipped", account=LIVE_ACCOUNT, detail=detail)
 
         # 3. Submit to the venue, GRACEFULLY: any broker exception is logged + refused, never
         #    propagated. The idempotency key is the broker's client_order_id, so a re-submit

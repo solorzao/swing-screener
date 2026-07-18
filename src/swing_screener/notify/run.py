@@ -67,6 +67,7 @@ from swing_screener.pipeline.broker import BrokerClient
 from swing_screener.pipeline.broker_alpaca import build_broker
 from swing_screener.pipeline.disarm import ensure_stop_protection, pull_entry_orders
 from swing_screener.pipeline.execution import (
+    UNSIZED_DETAIL,
     ExecutionAdapter,
     LiveAdapter,
     ManualAdapter,
@@ -714,12 +715,16 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                         # risk unit, or an 'avoid' conviction) is INERT -- qty<=0 at the
                         # venue is a guaranteed 422 reject. Skip BEFORE the kill-switch
                         # check (nothing is being armed) and before the adapter, but
-                        # ticket it so the digest renders the skip honestly.
+                        # ticket it so the digest renders the skip honestly. Logged
+                        # because no adapter runs -> no ExecutionLog row: without this
+                        # line the email ticket would be the ONLY trace.
+                        log.info("skipping unsized intent %s %s (0 shares)",
+                                 intent.ticker, intent.play_type)
                         tickets[(intent.ticker, intent.play_type)] = OrderTicketLine(
                             side=intent.side, shares=intent.shares, ticker=intent.ticker,
                             limit_price=intent.limit_price, stop=intent.stop,
                             target=intent.target, status="skipped",
-                            detail="unsized (0 shares)")
+                            detail=UNSIZED_DETAIL)
                         continue
                     if _execution_halted(adapter, _mode_reader):
                         log.warning("execution kill switch: halting dispatch for %s %s "

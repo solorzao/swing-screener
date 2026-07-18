@@ -27,7 +27,7 @@ from swing_screener.db.session import get_engine
 from swing_screener.notify import run
 from swing_screener.notify.analysis import ConvictionResult, SignalAnalysis
 from swing_screener.notify.market_context import Fundamentals
-from swing_screener.pipeline.execution import OrderResult
+from swing_screener.pipeline.execution import UNSIZED_DETAIL, OrderResult
 from swing_screener.pipeline.insight import OrderIntent
 from swing_screener.pipeline.reflect import Verdict
 
@@ -196,7 +196,7 @@ def test_zero_share_intent_never_reaches_adapter_and_renders_unsized(tmp_path, m
     assert adapter.calls == []  # submit was NEVER called for the unsized intent
     body = sent[-1]["text"].lower()
     assert "order ticket" in body   # the synthetic ticket still renders honestly
-    assert "unsized" in body
+    assert UNSIZED_DETAIL in body   # the shared detail constant, verbatim
     assert "skipped" in body
 
 

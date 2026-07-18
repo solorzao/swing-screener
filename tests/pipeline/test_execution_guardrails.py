@@ -25,7 +25,7 @@ from swing_screener.db import repo
 from swing_screener.db.models import ExecutionLog, PaperTrade
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.broker import FakeBroker
-from swing_screener.pipeline.execution import LiveAdapter
+from swing_screener.pipeline.execution import UNSIZED_DETAIL, LiveAdapter
 from swing_screener.pipeline.insight import OrderIntent
 from swing_screener.settings import Limits, Settings
 
@@ -262,10 +262,12 @@ def test_brake_enforced_on_paper_host_too() -> None:
 
 
 # ---------------------------------------------------------------------------
-# the zero-qty clamp (step 2.5): an unsized intent (size_order floored to 0)
+# the zero-qty clamp (step 0.25): an unsized intent (size_order floored to 0)
 # never reaches the venue -- qty<=0 is a guaranteed 422 the broker would log
-# as rejected_live noise. The dispatch loop filters these too; this is the
-# adapter's own defensive last line.
+# as rejected_live noise. It fires AFTER the idempotency guard but BEFORE the
+# brake, the real-money locks, and the hard limits: an order that was never
+# placeable must not log 'guardrail: ...' or 'rejected_live'. The dispatch
+# loop filters these too; this is the adapter's own defensive last line.
 # ---------------------------------------------------------------------------
 def test_zero_share_intent_skips_before_venue() -> None:
     with _session() as s:
@@ -277,12 +279,33 @@ def test_zero_share_intent_skips_before_venue() -> None:
 
         assert result.status == "skipped"
         assert result.account == "live"
-        assert result.detail == "unsized (0 shares)"
+        assert result.detail == UNSIZED_DETAIL
         assert broker.submitted_specs == []            # the venue was never touched
         row = s.query(ExecutionLog).filter_by(status="skipped").one()
-        assert row.detail == "unsized (0 shares)"
+        assert row.detail == UNSIZED_DETAIL
         # deliberately NOT the "guardrail: ..." prefix the Auditor greps for.
         assert not row.detail.startswith("guardrail:")
+
+
+def test_zero_share_clamp_fires_before_brake_and_locks() -> None:
+    # an engaged HALT + a real-money host with failing locks: were the clamp
+    # ordered after them, this would log 'guardrail: halted' (Auditor noise)
+    # or 'rejected_live' for an order that was never placeable. The clamp
+    # must win: one 'skipped' row, the unsized detail, gate never consulted.
+    with _session() as s:
+        assert gr.halt(s, source="test") is True
+        broker = FakeBroker(real_money=True)
+        adapter = LiveAdapter(broker, settings=_live_settings(mode="off", allow=False),
+                              gate_ready_fn=_boom)
+        result = adapter.submit(_intent(shares=0, risk_dollars=0.0),
+                                session=s, run_date=RUN, limits=FULL_CAPS)
+
+        assert result.status == "skipped"
+        assert result.detail == UNSIZED_DETAIL         # not "guardrail: halted"
+        assert broker.submitted_specs == []
+        row = s.query(ExecutionLog).one()
+        assert row.status == "skipped"
+        assert row.detail == UNSIZED_DETAIL
 
 
 # ---------------------------------------------------------------------------
