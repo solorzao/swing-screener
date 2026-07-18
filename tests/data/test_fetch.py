@@ -278,6 +278,88 @@ def test_daily_fetch_drops_todays_in_progress_bar_before_the_close(tmp_path, mon
     assert df is not None and len(df) == 3
 
 
+def test_pre_close_truncated_frame_is_never_cached(tmp_path, monkeypatch):
+    """A truncated (in-progress-bar-dropped) daily frame must NOT be written to the
+    per-day cache: a 2pm cockpit fetch would otherwise pin a frame ending YESTERDAY
+    as the day's truth, and the evening screen would detect on yesterday's bar and
+    permanently miss today's triggers (2026-07-17 audit, H1)."""
+    from datetime import datetime
+
+    calls = {"n": 0}
+
+    def fake_download(*a):
+        calls["n"] += 1
+        return _df_ending("2026-07-03")
+
+    monkeypatch.setattr(fetch, "_download", fake_download)
+
+    # 2pm ET: the truncated frame is returned but NOT cached
+    monkeypatch.setattr(fetch, "_now_eastern",
+                        lambda: datetime(2026, 7, 3, 14, 0, tzinfo=fetch._EASTERN))
+    df = fetch.fetch_bars("AAPL", "1d", cache_dir=tmp_path)
+    assert df is not None and len(df) == 2
+    assert calls["n"] == 1
+
+    # 5pm ET same day, SAME cache dir: no poisoned cache hit -- re-downloads and
+    # gets the full frame (which post-close IS cached)
+    monkeypatch.setattr(fetch, "_now_eastern",
+                        lambda: datetime(2026, 7, 3, 17, 0, tzinfo=fetch._EASTERN))
+    df = fetch.fetch_bars("AAPL", "1d", cache_dir=tmp_path)
+    assert df is not None and len(df) == 3
+    assert calls["n"] == 2
+
+    # third call: served from the cache written by the post-close fetch
+    df = fetch.fetch_bars("AAPL", "1d", cache_dir=tmp_path)
+    assert df is not None and len(df) == 3
+    assert calls["n"] == 2
+
+
+def _df_5m_ending(last: str, periods: int = 3):
+    idx = pd.date_range(end=last, periods=periods, freq="5min", tz="America/New_York")
+    return pd.DataFrame(
+        {"open": [1.0] * periods, "high": [2.0] * periods, "low": [0.5] * periods,
+         "close": [1.5] * periods, "volume": [100.0] * periods}, index=idx,
+    )
+
+
+def test_in_progress_5m_session_is_never_cached(tmp_path, monkeypatch):
+    """Same mechanism as the daily in-progress bar, one interval over: a 1pm settle
+    fetch must not pin a partial 5m session in the day-keyed cache -- the post-close
+    settle would cache-hit the partial frame, skip every untouched trade, and
+    TOMORROW's run would eod_flat them at tomorrow's close (2026-07-17 audit,
+    H1/H2 follow-up)."""
+    from datetime import datetime
+
+    calls = {"n": 0}
+    frames = {"df": _df_5m_ending("2026-07-03 13:00")}
+
+    def fake_download(*a):
+        calls["n"] += 1
+        return frames["df"]
+
+    monkeypatch.setattr(fetch, "_download", fake_download)
+    monkeypatch.setattr(fetch, "_now_eastern",
+                        lambda: datetime(2026, 7, 3, 13, 2, tzinfo=fetch._EASTERN))
+
+    df = fetch.fetch_bars("SPY", "5m", cache_dir=tmp_path, period="5d")
+    assert df is not None and len(df) == 3  # returned whole -- only the cache write is skipped
+    assert calls["n"] == 1
+
+    # same day, same cache dir: nothing was pinned, so the next call re-fetches
+    fetch.fetch_bars("SPY", "5m", cache_dir=tmp_path, period="5d")
+    assert calls["n"] == 2
+
+    # post-close: the complete session IS cached; a further call hits the cache
+    frames["df"] = _df_5m_ending("2026-07-03 15:55")
+    monkeypatch.setattr(fetch, "_now_eastern",
+                        lambda: datetime(2026, 7, 3, 17, 0, tzinfo=fetch._EASTERN))
+    df = fetch.fetch_bars("SPY", "5m", cache_dir=tmp_path, period="5d")
+    assert df is not None and len(df) == 3
+    assert calls["n"] == 3
+    fetch.fetch_bars("SPY", "5m", cache_dir=tmp_path, period="5d")
+    assert calls["n"] == 3  # served from parquet
+
+
 def test_hourly_fetch_is_not_touched_by_the_daily_guard(tmp_path, monkeypatch):
     from datetime import datetime
 

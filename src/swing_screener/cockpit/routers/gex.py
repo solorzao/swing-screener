@@ -371,12 +371,15 @@ def build_gex_router(
         """Sweep due open lab trades through the CLI's settle path (``run_settle``
         -- same logic, not duplicated). Idempotent: nothing due is still a 200
         with ``settled: 0``, never an error. Trades whose underlying has no bars
-        yet stay open and count in ``open_remaining``."""
+        yet stay open and count in ``open_remaining``; untouched trades whose
+        session is incomplete (intraday sweep) stay open and count in
+        ``skipped_incomplete_session``."""
         result = run_settle(session, cfg=cfg, bars_fetcher=bars_5m)
         if result.settled:
             action_nonce.bump()  # only when a write actually landed
         return {
             "settled": result.settled,
+            "skipped_incomplete_session": result.skipped_incomplete_session,
             "open_remaining": open_trade_count(session),
         }
 

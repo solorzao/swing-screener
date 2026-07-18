@@ -3,7 +3,7 @@ import logging
 import math
 import random
 import time
-from datetime import date, datetime
+from datetime import date, datetime, time as dt_time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -20,7 +20,12 @@ _COLS = ["open", "high", "low", "close", "volume"]
 # the evening screen then detected, filled, and advanced off a half-formed candle (the
 # 2026-07 audit's partial-bar contamination, previously guarded only by a docstring).
 _EASTERN = ZoneInfo("America/New_York")
-_MARKET_CLOSE_HOUR = 16  # 4pm ET; ignores half-days (a 1pm close keeps the guard active)
+# TODO(2026-07-17 audit, H1): the fixed 16:00 close ignores half-days -- after a 1pm
+# close this guard keeps dropping a COMPLETE final bar until 4pm. Doing this right
+# needs a market calendar. Harmless-ish today: truncated frames are never cached
+# (see fetch_bars), so a post-1pm-close fetch merely stays uncached for the day.
+_MARKET_CLOSE_HOUR = 16  # 4pm ET
+_LAST_5M_BAR = dt_time(15, 55)  # the session's final regular 5m bar starts 15:55 ET
 
 
 def _now_eastern() -> datetime:
@@ -28,21 +33,44 @@ def _now_eastern() -> datetime:
     return datetime.now(tz=_EASTERN)
 
 
-def _drop_in_progress_daily_bar(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
+def _drop_in_progress_daily_bar(df: pd.DataFrame, ticker: str) -> tuple[pd.DataFrame, bool]:
     """Drop the last row of a DAILY frame when it is today's not-yet-closed session bar.
 
-    Yahoo serves the live in-progress bar during market hours; caching it per-day
-    poisons every consumer for the rest of the day. Rows for prior dates (or today's
-    row fetched after the close) pass through untouched."""
+    Yahoo serves the live in-progress bar during market hours. Rows for prior dates
+    (or today's row fetched after the close) pass through untouched. Returns
+    ``(frame, dropped)`` -- ``dropped`` tells ``fetch_bars`` the frame is truncated
+    and must NOT be written to the per-day cache (a cached truncated frame ends
+    YESTERDAY, so every later same-day consumer would miss today's bar entirely)."""
     if not len(df):
-        return df
+        return df, False
     now = _now_eastern()
     last_date = df.index[-1].date()
     if last_date == now.date() and now.hour < _MARKET_CLOSE_HOUR:
         log.info("dropping in-progress daily bar for %s (fetched %s ET, before the close)",
                  ticker, now.strftime("%H:%M"))
-        return df.iloc[:-1]
-    return df
+        return df.iloc[:-1], True
+    return df, False
+
+
+def _is_in_progress_5m_session(df: pd.DataFrame, ticker: str) -> bool:
+    """True when a 5m frame's last bar sits on TODAY's session before the 15:55 ET
+    close bar -- the session is still in progress. Such a frame is fine to RETURN
+    but must never be cached: the day-keyed cache would pin the partial session,
+    the post-close settle would cache-hit it and skip every untouched trade, and
+    tomorrow's run would eod_flat them at TOMORROW's close (2026-07-17 audit,
+    H1 follow-up -- the same poisoning as the daily in-progress bar, one interval
+    over). Prior-day frames (e.g. a pre-market fetch) pass through untouched."""
+    if not len(df):
+        return False
+    last = pd.Timestamp(df.index[-1])
+    if last.tzinfo is not None:  # yfinance 5m bars are tz-aware; fixtures naive ET
+        last = last.tz_convert(_EASTERN).tz_localize(None)
+    now = _now_eastern()
+    if last.date() == now.date() and last.time() < _LAST_5M_BAR:
+        log.info("5m session in progress for %s (last bar %s ET); returning uncached",
+                 ticker, last.strftime("%H:%M"))
+        return True
+    return False
 
 
 def _cache_path(cache_dir: Path, interval: str, ticker: str, today: date) -> Path:
@@ -97,10 +125,20 @@ def fetch_bars(ticker: str, interval: str, *, cache_dir: Path, period: str = "5y
             df = _download(ticker, interval, period)
             if df is None or df.empty:
                 raise ValueError("empty frame")
+            skip_cache = False
             if interval == "1d":
-                df = _drop_in_progress_daily_bar(df, ticker)
+                df, skip_cache = _drop_in_progress_daily_bar(df, ticker)
                 if df.empty:
                     raise ValueError("empty frame after dropping the in-progress bar")
+            elif interval == "5m":
+                skip_cache = _is_in_progress_5m_session(df, ticker)
+            if skip_cache:
+                # Never cache an incomplete frame -- the cache-hit early return above
+                # has no completeness check. A truncated 1d frame ends YESTERDAY (a
+                # 2pm cockpit fetch would pin it and the evening screen would miss
+                # today's triggers); an in-progress 5m frame pins a partial session
+                # (2026-07-17 audit, H1). Uncached, the next call simply re-fetches.
+                return df
             cache_file.parent.mkdir(parents=True, exist_ok=True)
             df.to_parquet(cache_file)
             return df
