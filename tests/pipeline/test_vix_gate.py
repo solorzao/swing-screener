@@ -1,8 +1,8 @@
 """VIX-percentile-rank regime overlay for the reversal book (edge-discovery exp 15).
 
-Covers the pure rank/bucket functions, the point-in-time by-date map (no lookahead), the
-mockable ^VIX fetch (no network), and the replay gate that suppresses reversal fills in
-high-VIX states while stamping vix_bucket for breakdown().
+Covers the pure rank/bucket functions, the point-in-time by-date map (no lookahead), and
+the replay gate that suppresses reversal fills in high-VIX states while stamping
+vix_bucket for breakdown().
 """
 
 from datetime import date
@@ -57,25 +57,6 @@ def test_vix_rank_by_date_is_point_in_time():
     assert ranks[date(2024, 1, 5)] == pytest.approx(0.0)
     # the first day has nothing below it
     assert ranks[date(2024, 1, 1)] == pytest.approx(0.0)
-
-
-# --- mockable ^VIX fetch (no network) ----------------------------------------
-
-def test_fetch_vix_uses_download_seam_no_network(tmp_path, monkeypatch):
-    from swing_screener.data import fetch as fetch_mod
-
-    calls = {}
-
-    def fake_download(ticker, interval, period):
-        calls["ticker"] = ticker
-        idx = pd.date_range("2024-01-01", periods=3, freq="D")
-        return pd.DataFrame({"open": [1, 2, 3], "high": [1, 2, 3], "low": [1, 2, 3],
-                             "close": [11.0, 12.0, 13.0], "volume": [0, 0, 0]}, index=idx)
-
-    monkeypatch.setattr(fetch_mod, "_download", fake_download)
-    out = fetch_mod.fetch_vix(cache_dir=tmp_path)
-    assert calls["ticker"] == "^VIX"
-    assert out is not None and list(out["close"]) == [11.0, 12.0, 13.0]
 
 
 # --- replay gate + stamp -----------------------------------------------------

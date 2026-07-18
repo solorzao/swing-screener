@@ -12,10 +12,10 @@ from datetime import date, datetime
 
 from sqlalchemy.orm import Session
 
-from swing_screener.db.models import PaperTrade
+from swing_screener.db.models import JournalThesis, PaperTrade
 from swing_screener.db.session import get_engine
 from swing_screener.journal.record import TagView, ThesisView, TradeRecord, trade_records
-from swing_screener.journal.repo import add_tag, add_thesis, tag_trade
+from swing_screener.journal.repo import add_tag, tag_trade
 
 
 def _pt(*, r=None, status="closed", account="research", ticker="AMD",
@@ -37,12 +37,15 @@ def test_trade_records_shape_tags_and_theses():
 
         chased = add_tag(s, kind="mistake", name="chased", description="too extended")
         tag_trade(s, trade_id=closed.id, book="research", tag_id=chased.id, source="human")
-        add_thesis(s, trade_id=closed.id, book="research", event_kind="entry",
-                   source="screener", body="pullback into 20EMA",
-                   created_at=datetime(2026, 7, 1, 9, 30))
+        # Theses seeded via the model directly (the add_thesis writer was deleted as
+        # dead -- 2026-07-17 audit L8; the table + read path stay).
+        s.add(JournalThesis(trade_id=closed.id, book="research", event_kind="entry",
+                            source="screener", body="pullback into 20EMA",
+                            created_at=datetime(2026, 7, 1, 9, 30)))
         # a thesis on the SAME trade id but a different book must not attach here
-        add_thesis(s, trade_id=closed.id, book="paper", event_kind="entry",
-                   source="human", body="wrong book")
+        s.add(JournalThesis(trade_id=closed.id, book="paper", event_kind="entry",
+                            source="human", body="wrong book"))
+        s.commit()
 
         records = trade_records(s, book="research")
         assert all(isinstance(r, TradeRecord) for r in records)

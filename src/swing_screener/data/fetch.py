@@ -150,17 +150,6 @@ def fetch_bars(ticker: str, interval: str, *, cache_dir: Path, period: str = "5y
     return None
 
 
-def fetch_vix(*, cache_dir: Path, period: str = "2y", today: date | None = None,
-              **kwargs: object) -> pd.DataFrame | None:
-    """^VIX daily bars (the CBOE volatility index), cached per day like any other ticker.
-
-    Routed through the same ``fetch_bars`` -> ``_download`` seam as the universe and SPY, so
-    it is mockable and tests stay offline. Only ``close`` is used downstream (the VIX rank);
-    ^VIX has no real volume. Returns None on persistent failure (per-ticker isolation)."""
-    return fetch_bars("^VIX", "1d", cache_dir=cache_dir, period=period,
-                      today=today, **kwargs)  # type: ignore[arg-type]
-
-
 def avg_dollar_volume(frame: pd.DataFrame, window: int = 20) -> float | None:
     """Mean of close*volume over the last `window` bars; None if the frame is empty
     or the tail has no finite close*volume products (e.g. NaN volume, which the
@@ -255,19 +244,3 @@ def fetch_sector(ticker: str, *, cache_dir: Path, today: date | None = None,
                 time.sleep(backoff * (2 ** attempt) + random.uniform(0, jitter))
     log.warning("sector fetch failed for %s after %d tries: %s", ticker, retries, last_err)
     return None
-
-
-def fetch_universe(tickers: list[str], interval: str, *, cache_dir: Path,
-                   **kwargs: object) -> dict[str, pd.DataFrame]:
-    """Fetch many tickers; silently skip those that fail (isolation).
-
-    Serial by design: this is a nightly after-close batch and the cache makes
-    re-runs cheap. If cold-run latency over the full universe becomes a problem,
-    parallelize here with a thread pool (work is I/O-bound and per-ticker isolated).
-    """
-    out: dict[str, pd.DataFrame] = {}
-    for ticker in tickers:
-        df = fetch_bars(ticker, interval, cache_dir=cache_dir, **kwargs)  # type: ignore[arg-type]
-        if df is not None:
-            out[ticker] = df
-    return out

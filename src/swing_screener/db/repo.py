@@ -36,11 +36,6 @@ def save_signals(session: Session, signals: Sequence[Signal]) -> None:
     session.commit()
 
 
-def latest_signals(session: Session, run_date: date) -> list[Signal]:
-    stmt = select(Signal).where(Signal.run_date == run_date).order_by(Signal.rank)
-    return list(session.scalars(stmt))
-
-
 def latest_run_date(session: Session) -> date | None:
     """The most recent run_date present in the signals table, or None if empty."""
     stmt = select(Signal.run_date).order_by(Signal.run_date.desc()).limit(1)
@@ -562,43 +557,12 @@ def get_closed_trades(session: Session) -> list[Trade]:
 
 
 class AlreadyClosedError(ValueError):
-    """Raised by ``close_trade`` on a trade that is already closed.
+    """Raised by the close path (``close_trade_with_event``) on an already-closed trade.
 
     A ``ValueError`` SUBCLASS so any existing caller catching ``ValueError`` keeps
     working; the cockpit close endpoint tells the two flavors apart by type
     (unknown id -> 404, already closed -> 409) instead of string-matching messages.
     """
-
-
-def _open_trade_or_raise(session: Session, trade_id: int) -> Trade:
-    """Fetch a trade for closing: plain ``ValueError`` on an unknown id,
-    ``AlreadyClosedError`` on a closed one. Refused HERE, once, rather than in
-    every caller (the Streamlit form only OFFERED open trades; an HTTP endpoint
-    can be raced or replayed) -- re-closing would silently overwrite the exit."""
-    trade = session.get(Trade, trade_id)
-    if trade is None:
-        raise ValueError(f"no trade with id {trade_id}")
-    if trade.status == "closed":
-        raise AlreadyClosedError(f"trade {trade_id} is already closed")
-    return trade
-
-
-def _apply_close(trade: Trade, *, exit_date: date, exit_price: float,
-                 exit_reason: str) -> None:
-    trade.status = "closed"
-    trade.exit_date = exit_date
-    trade.exit_price = exit_price
-    trade.exit_reason = exit_reason
-
-
-def close_trade(session: Session, trade_id: int, *, exit_date: date, exit_price: float,
-                exit_reason: str) -> Trade:
-    trade = _open_trade_or_raise(session, trade_id)
-    _apply_close(trade, exit_date=exit_date, exit_price=exit_price,
-                 exit_reason=exit_reason)
-    session.commit()
-    session.refresh(trade)
-    return trade
 
 
 def close_trade_with_event(
@@ -609,21 +573,20 @@ def close_trade_with_event(
     """Close a trade AND record its ExitEvent in ONE transaction.
 
     The cockpit's manual close needs both rows or neither: with separate commits
-    (``close_trade`` then ``record_exit_event``) a failure between them leaves the
-    trade durably closed while the client sees a 503 -- the retry then 409s
+    (a plain close commit then ``record_exit_event``) a failure between them leaves
+    the trade durably closed while the client sees a 503 -- the retry then 409s
     confusingly, and the audit ExitEvent is PERMANENTLY missing (the exit
     change-token watermark never moves for that close). One commit carries both
     rows, so the failure mode is all-or-nothing: either both land or the trade is
-    still open and a retry succeeds cleanly. Raises exactly like ``close_trade``.
+    still open and a retry succeeds cleanly. Raises a plain ``ValueError`` on an
+    unknown id and ``AlreadyClosedError`` (its subclass) when already closed.
 
     ATOMIC, not check-then-act: the close is one ``UPDATE ... WHERE
-    status='open'`` -- a ``_open_trade_or_raise`` fetch would re-read this
-    session's identity map, so two concurrent closes (each having read the trade
-    open) would BOTH pass the check and the loser would silently overwrite the
-    recorded exit. Zero rows matched means someone else won (or the id is
-    unknown): re-read the row to raise the same errors ``close_trade`` does --
-    plain ``ValueError`` on an unknown id, ``AlreadyClosedError`` otherwise --
-    and the first close's exit fields stand untouched.
+    status='open'`` -- a pre-read would hit this session's identity map, so two
+    concurrent closes (each having read the trade open) would BOTH pass the
+    check and the loser would silently overwrite the recorded exit. Zero rows
+    matched means someone else won (or the id is unknown): re-read the row to
+    raise the errors above, and the first close's exit fields stand untouched.
     """
     result = session.execute(
         update(Trade)
@@ -650,17 +613,6 @@ def close_trade_with_event(
         raise ValueError(f"no trade with id {trade_id}")
     session.refresh(event)
     return trade, event
-
-
-def update_trade(session: Session, trade_id: int, **fields: object) -> Trade:
-    trade = session.get(Trade, trade_id)
-    if trade is None:
-        raise ValueError(f"no trade with id {trade_id}")
-    for key, value in fields.items():
-        setattr(trade, key, value)
-    session.commit()
-    session.refresh(trade)
-    return trade
 
 
 def list_universe(session: Session, search: str | None = None) -> list[Universe]:

@@ -176,7 +176,7 @@ def test_emits_one_verdict_per_bucket_including_empties():
     assert ("volatility_tier", "low") in keys
     assert ("volatility_tier", "med") in keys
     assert ("volatility_tier", "high") in keys
-    # score bands keyed off score_bucket's labels
+    # score bands keyed off the published _score_labels(SCORE_EDGES) labels
     assert ("score", "0.70-0.80") in keys
     assert ("score", "0.80-1.00") in keys
     assert len(verdicts) == _family_size()
@@ -185,7 +185,7 @@ def test_emits_one_verdict_per_bucket_including_empties():
         assert v.tier == "hunch" and v.n == 0 and v.source == "none"
 
 
-def test_score_band_bucket_grades_off_score_bucket_labels():
+def test_score_band_bucket_grades_off_published_band_labels():
     # Trades with score in [0.80, 1.00) should land in the "0.80-1.00" band and,
     # with a deep consistent edge, confirm there.
     forward = _spread_book([1.5] * 10, per=3)  # score defaults to 0.9 -> "0.80-1.00" band

@@ -40,16 +40,6 @@ def test_fetch_bars_returns_none_on_persistent_failure(tmp_path, monkeypatch):
     assert fetch.fetch_bars("AAPL", "1d", cache_dir=tmp_path, retries=3) is None
 
 
-def test_fetch_universe_isolates_failures(tmp_path, monkeypatch):
-    def selective(ticker, interval, period):
-        if ticker == "BAD":
-            raise RuntimeError("nope")
-        return _df()
-    monkeypatch.setattr(fetch, "_download", selective)
-    out = fetch.fetch_universe(["AAPL", "BAD", "MSFT"], "1d", cache_dir=tmp_path)
-    assert set(out.keys()) == {"AAPL", "MSFT"}  # BAD skipped, batch survived
-
-
 def test_fetch_retries_with_jittered_backoff(tmp_path, monkeypatch):
     # transient failures retry with exponential backoff + jitter, then give up;
     # jitter decorrelates the universe's retries so they don't hammer in lockstep.

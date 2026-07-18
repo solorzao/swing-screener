@@ -114,17 +114,18 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 - [x] K5 dead CSS refs + dead null-check + time/date helper consolidation (brace-count after every CSS edit)
 
 **Phase L — `chore/dead-code-sweep`** (one commit per deletion; `git grep` before each)
-- [ ] L1 `cancel_all_orders` (Protocol + both impls)
-- [ ] L2 `latest_signals` + `update_trade`
-- [ ] L3 `fetch_universe` + `fetch_vix`
-- [ ] L4 `rank_bucket` / `score_bucket` wrappers
-- [ ] L5 `total_unrealized_pl`
-- [ ] L6 `analyze_ticker` wrapper (rewrite its 5 test call sites)
-- [ ] L7 `discipline.py` ImportError fallback
-- [ ] L8 `add_thesis` writer (table stays)
-- [ ] L9 `conviction_sizing` / `conviction_weight_*` knobs
-- [ ] L10 stale `storage/__init__.py` facade
-- [ ] L11 `option_review_facts` NOTE annotation (no delete)
+- [x] L1 `cancel_all_orders` (Protocol + both impls)
+- [x] L2 `latest_signals` + `update_trade`
+- [x] L3 `fetch_universe` + `fetch_vix`
+- [x] L4 `rank_bucket` / `score_bucket` wrappers
+- [x] L5 `total_unrealized_pl`
+- [x] L6 `analyze_ticker` wrapper (rewrite its 5 test call sites)
+- [x] L7 `discipline.py` ImportError fallback
+- [x] L8 `add_thesis` writer (table stays)
+- [x] L9 `conviction_sizing` / `conviction_weight_*` knobs
+- [x] L10 stale `storage/__init__.py` facade
+- [x] L11 `option_review_facts` NOTE annotation (no delete)
+- [x] L12 (extra, found in Phase J review) `db.repo.close_trade` — superseded by the atomic `close_trade_with_event`; guard tests folded onto the survivor. MERGE NOTE vs PR #143: docstring conflict in `close_trade_with_event` + EOF conflict in `tests/db/test_trade_repo.py`; whichever merges second also deletes the then-orphaned `_open_trade_or_raise`/`_apply_close`.
 
 **Phase M — `chore/replay-and-test-structure`**
 - [ ] M1 shared `load_replay_corpus` across the 18 replay scripts (exclusion set decided + documented)

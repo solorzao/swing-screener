@@ -1,22 +1,21 @@
 """Task 7 test contract: plain session-first repo functions for the journal tables.
 
 ``source`` is a REQUIRED keyword everywhere provenance is written (tag_trade,
-add_note, add_thesis) -- no default -- so a caller can never silently drop it.
-Idempotency where it matters: a (trade, book, tag, source) application is unique;
-re-applying returns the same row instead of duplicating. Tag DEFINITIONS are
-get-or-create on (kind, name) so the vocabulary never accretes duplicates.
+add_note) -- no default -- so a caller can never silently drop it. Idempotency
+where it matters: a (trade, book, tag, source) application is unique; re-applying
+returns the same row instead of duplicating. Tag DEFINITIONS are get-or-create on
+(kind, name) so the vocabulary never accretes duplicates.
 """
 
 from datetime import date, datetime
 
 from sqlalchemy.orm import Session
 
-from swing_screener.db.models import JournalTradeTag
+from swing_screener.db.models import JournalThesis, JournalTradeTag
 from swing_screener.db.session import get_engine
 from swing_screener.journal.repo import (
     add_note,
     add_tag,
-    add_thesis,
     list_trade_tags,
     notes_for_day,
     tag_trade,
@@ -86,17 +85,23 @@ def test_add_note_requires_source_and_notes_for_day_filters_by_day():
 
 # --- theses -----------------------------------------------------------------
 
-def test_add_thesis_and_theses_for_trade():
+def test_theses_for_trade_filters_by_trade_and_book():
+    # Seeded via the model directly: the add_thesis writer was deleted as dead
+    # (2026-07-17 audit L8); the table + this reader stay.
     with _session() as s:
-        add_thesis(s, trade_id=9, book="research", event_kind="entry", source="screener",
-                   body="pullback into 20EMA", snapshot_json='{"rsi": 40}',
-                   created_at=datetime(2026, 7, 12, 9, 30, 0))
-        add_thesis(s, trade_id=9, book="research", event_kind="exit", source="human",
-                   body="hit target")
-        add_thesis(s, trade_id=9, book="paper", event_kind="entry", source="human",
-                   body="other book")
+        s.add_all([
+            JournalThesis(trade_id=9, book="research", event_kind="entry",
+                          source="screener", body="pullback into 20EMA",
+                          snapshot_json='{"rsi": 40}',
+                          created_at=datetime(2026, 7, 12, 9, 30, 0)),
+            JournalThesis(trade_id=9, book="research", event_kind="exit",
+                          source="human", body="hit target"),
+            JournalThesis(trade_id=9, book="paper", event_kind="entry",
+                          source="human", body="other book"),
+        ])
+        s.commit()
 
         got = theses_for_trade(s, trade_id=9, book="research")
         assert [t.event_kind for t in got] == ["entry", "exit"]
         assert got[0].snapshot_json == '{"rsi": 40}'
-        assert got[1].snapshot_json == "{}"  # default when omitted
+        assert got[1].snapshot_json == "{}"  # the model's column default

@@ -689,7 +689,7 @@ def test_performance_kpis_breakdowns_and_equity_curve(tmp_path: Path) -> None:
     assert set(by_tf["1d"]["stat"]) == STAT_KEYS
     assert by_tf["1d"]["n_closed"] == 2 and by_tf["1d"]["win_rate"] == 0.5
     # Rank buckets keep their natural order and INCLUDE empty buckets (page parity:
-    # rank_bucket emits every label) -- only score omits empties.
+    # _bucket_trades_by_rank emits every label) -- only score omits empties.
     assert [row["key"] for row in body["breakdowns"]["rank"]] == ["1-5", "6-10", "11+"]
     assert [row["key"] for row in body["breakdowns"]["score"]] == ["0.70-0.80", "0.80-1.00"]
     assert body["breakdowns"]["market_trend"] == []  # regime unknown on every row

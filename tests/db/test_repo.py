@@ -27,11 +27,14 @@ def _sig_on(ticker, run_date, first_seen):
     )
 
 
-def test_save_and_latest_signals_ordered_by_rank():
+def test_save_signals_round_trips():
+    # Read back via a direct query (the repo read-back wrapper was deleted as dead
+    # -- 2026-07-17 audit L2; production reads signals through its own queries).
     engine = get_engine("sqlite:///:memory:")
     with Session(engine) as s:
         repo.save_signals(s, [_signal("MSFT", rank=2, score=0.6), _signal("AAPL", rank=1, score=0.9)])
-        got = repo.latest_signals(s, date(2024, 1, 2))
+        got = list(s.scalars(select(Signal).where(
+            Signal.run_date == date(2024, 1, 2)).order_by(Signal.rank)))
         assert [x.ticker for x in got] == ["AAPL", "MSFT"]  # ascending rank
 
 
