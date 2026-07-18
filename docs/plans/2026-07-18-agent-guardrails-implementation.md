@@ -636,7 +636,7 @@ No unit test — verification is `az bicep build` (lint) locally. Document in th
 ### Task 20: Docs + runbook
 
 **Files:**
-- Modify: `docs/runbooks/arming-alpaca-live.md`: guardrails section (mandatory breakers in the arming checklist, the HALT/trip/clear operator flow), the small-account env block (sizing envs sized to actual funded equity — values are Oliver's call, the runbook documents *which* envs), an Azure appendix (per-job `az containerapp job update --set-env-vars` flips; never `job start --env-vars` — it replaces template env and drops secret refs)
+- Modify: `docs/runbooks/arming-alpaca-live.md`: guardrails section (mandatory breakers in the arming checklist, the HALT/trip/clear operator flow — including the Task-6 behavior note: while a trip's sweep is unfinished, every digest/hourly cycle retries it even with `SWING_EXECUTION_MODE=off`, so mode-off no longer guarantees zero venue writes until the sweep completes; the sweep only ever reduces exposure), the small-account env block (sizing envs sized to actual funded equity — values are Oliver's call, the runbook documents *which* envs), an Azure appendix (per-job `az containerapp job update --set-env-vars` flips; never `job start --env-vars` — it replaces template env and drops secret refs)
 - Modify: `docs/using-meridian.md` (Safety screen section: the brake), `docs/cockpit.md` if present-pattern requires
 - Modify: `docs/plans/2026-07-18-agent-guardrails-design.md`: status line → implemented, link PR
 
