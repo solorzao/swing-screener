@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, ScalarSelect, func, select, update
+from sqlalchemy import CursorResult, ScalarSelect, Update, func, select, update
 from sqlalchemy.orm import Session
 
 from swing_screener.db.models import AgentGuardrailEvent, AgentGuardrails, ExitEvent, PaperTrade
@@ -41,6 +41,19 @@ _EDITABLE_LIMITS = (
     "hwm_anchor_date",
     "hwm_baseline_usd",
 )
+# the breakers among them that must be POSITIVE numbers when set (None = unset
+# stays legal): a zero or negative cap would trip on the first close, and a
+# negative streak would trip on an empty book. The two hwm_* anchors are
+# unconstrained -- a baseline of 0.0 is a legitimate fresh-start anchor.
+_POSITIVE_LIMITS = (
+    "max_daily_loss_usd",
+    "max_trades_per_day",
+    "max_drawdown_usd",
+    "loss_streak_halt",
+)
+# the sweep_state vocabulary (matches the model comment); validated BEFORE the
+# UPDATE so a typo'd outcome fails loudly on every backend, not just Azure SQL.
+_SWEEP_OUTCOMES = ("pending", "partial", "complete")
 
 # the snapshot columns, selected raw so the read NEVER routes through the
 # Session's identity map (a long-lived dispatch Session would serve the entity
@@ -125,30 +138,53 @@ def load_guardrails(session: Session) -> GuardrailsState:
     return seeded
 
 
+def _event(
+    *, kind: str, source: str, breaker: str = "", reason: str = "",
+    values_json: str = "{}",
+) -> AgentGuardrailEvent:
+    """Build one event row, truncated to the column bounds.
+
+    sqlite never enforces ``String(N)`` but Azure SQL raises -- and in ``trip``
+    the event insert runs BEFORE the state UPDATE, so an overlong breaker or
+    source would keep the brake from engaging in PROD only. Truncation makes
+    the append infallible on both backends.
+    """
+    return AgentGuardrailEvent(
+        created_at=datetime.now(UTC), kind=kind, breaker=breaker[:32],
+        reason=reason[:256], values_json=values_json, source=source[:16],
+    )
+
+
 def record_event(
     session: Session, *, kind: str, source: str, breaker: str = "",
     reason: str = "", values_json: str = "{}",
 ) -> int:
     """Append one AgentGuardrailEvent row and commit; returns its id."""
-    event = AgentGuardrailEvent(
-        created_at=datetime.now(UTC), kind=kind, breaker=breaker,
-        reason=reason[:256], values_json=values_json, source=source,
-    )
+    event = _event(kind=kind, source=source, breaker=breaker, reason=reason,
+                   values_json=values_json)
     session.add(event)
     session.commit()
     session.refresh(event)
     return event.id
 
 
-def _conditional_update(session: Session, stmt: Any) -> bool:
-    """Execute + commit one conditional UPDATE; True iff exactly one row changed.
+def _plain_update(session: Session, stmt: Update) -> int:
+    """Execute one conditional UPDATE in the CURRENT transaction; returns rowcount.
 
-    `Session.execute` is typed `Result`; an UPDATE actually yields a
-    `CursorResult`, which is what carries `rowcount` (repo.py's cast).
+    ``synchronize_session=False``: with a scalar subquery in the WHERE (the
+    MIN-id pin), the ORM's 'auto' sync falls back to 'fetch', which injects
+    RETURNING/OUTPUT and makes rowcount ride three layers of SQLAlchemy
+    internals (and OUTPUT hard-errors on SQL Server if the table ever gains a
+    trigger). No read in this module uses ORM entities, so there is nothing to
+    synchronize -- plain UPDATE, DBAPI-native rowcount on both backends.
+
+    Does NOT commit: the caller owns the transaction, so a state change and
+    its audit event can share one commit (a crash can never leave a transition
+    with no audit row). `Session.execute` is typed `Result`; an UPDATE actually
+    yields a `CursorResult`, which is what carries `rowcount` (repo.py's cast).
     """
-    result = session.execute(stmt)
-    session.commit()
-    return cast("CursorResult[Any]", result).rowcount == 1
+    result = session.execute(stmt.execution_options(synchronize_session=False))
+    return cast("CursorResult[Any]", result).rowcount
 
 
 def trip(session: Session, *, breaker: str, reason: str, source: str) -> int | None:
@@ -161,11 +197,15 @@ def trip(session: Session, *, breaker: str, reason: str, source: str) -> int | N
     someone else already tripped and owns it -- return None, stand down. A
     'halted' state IS overwritten: the trip is the stronger record (a breach
     happened; the halt's dispatch block is preserved either way).
+
+    DELIBERATELY two transactions (the event commits before the UPDATE), unlike
+    every other transition: the event id must exist to become ``trip_id``, and
+    the breach record must survive even if this process dies mid-election.
     """
     load_guardrails(session)  # get-or-create so the UPDATE has a target
     eid = record_event(session, kind="trip", source=source, breaker=breaker,
                        reason=reason)
-    won = _conditional_update(
+    rowcount = _plain_update(
         session,
         update(AgentGuardrails)
         .where(
@@ -175,7 +215,8 @@ def trip(session: Session, *, breaker: str, reason: str, source: str) -> int | N
         .values(state="tripped", trip_id=eid, trip_reason=reason[:256],
                 sweep_state="pending", updated_at=datetime.now(UTC)),
     )
-    return eid if won else None
+    session.commit()
+    return eid if rowcount == 1 else None
 
 
 def clear(session: Session, *, acknowledged_trip_id: int, source: str) -> bool:
@@ -184,9 +225,10 @@ def clear(session: Session, *, acknowledged_trip_id: int, source: str) -> bool:
     ``WHERE trip_id == acknowledged_trip_id AND state == 'tripped'``: a stale
     ack (the brake re-tripped since the operator looked) matches nothing and
     the brake stays on. No event on a failed clear -- nothing changed. Halts
-    release via ``clear_halt``, never through here.
+    release via ``clear_halt``, never through here. State change + audit event
+    share ONE commit, so a crash can't release the brake without its record.
     """
-    released = _conditional_update(
+    rowcount = _plain_update(
         session,
         update(AgentGuardrails)
         .where(
@@ -197,10 +239,12 @@ def clear(session: Session, *, acknowledged_trip_id: int, source: str) -> bool:
         .values(state="ok", trip_id=None, trip_reason=None, sweep_state=None,
                 updated_at=datetime.now(UTC)),
     )
-    if not released:
+    if rowcount != 1:
+        session.rollback()  # end the no-op write txn
         return False
-    record_event(session, kind="clear", source=source,
-                 reason=f"trip {acknowledged_trip_id} acknowledged and cleared")
+    session.add(_event(kind="clear", source=source,
+                       reason=f"trip {acknowledged_trip_id} acknowledged and cleared"))
+    session.commit()
     return True
 
 
@@ -209,10 +253,11 @@ def halt(session: Session, *, source: str, reason: str = "manual HALT") -> bool:
 
     ``WHERE state == 'ok'``: a tripped brake stays tripped (the trip record --
     trip_id / sweep bookkeeping -- must survive until its own clear). Event on
-    success only; returns False when the state was not 'ok'.
+    success only; returns False when the state was not 'ok'. State change +
+    audit event share ONE commit.
     """
     load_guardrails(session)  # get-or-create so the UPDATE has a target
-    halted = _conditional_update(
+    rowcount = _plain_update(
         session,
         update(AgentGuardrails)
         .where(
@@ -221,15 +266,20 @@ def halt(session: Session, *, source: str, reason: str = "manual HALT") -> bool:
         )
         .values(state="halted", updated_at=datetime.now(UTC)),
     )
-    if not halted:
+    if rowcount != 1:
+        session.rollback()  # end the no-op write txn
         return False
-    record_event(session, kind="halt", source=source, reason=reason)
+    session.add(_event(kind="halt", source=source, reason=reason))
+    session.commit()
     return True
 
 
 def clear_halt(session: Session, *, source: str) -> bool:
-    """Release a manual halt: 'halted' -> 'ok'. Trips don't clear through here."""
-    released = _conditional_update(
+    """Release a manual halt: 'halted' -> 'ok'. Trips don't clear through here.
+
+    State change + audit event share ONE commit.
+    """
+    rowcount = _plain_update(
         session,
         update(AgentGuardrails)
         .where(
@@ -238,9 +288,11 @@ def clear_halt(session: Session, *, source: str) -> bool:
         )
         .values(state="ok", updated_at=datetime.now(UTC)),
     )
-    if not released:
+    if rowcount != 1:
+        session.rollback()  # end the no-op write txn
         return False
-    record_event(session, kind="clear", source=source, reason="HALT cleared")
+    session.add(_event(kind="clear", source=source, reason="HALT cleared"))
+    session.commit()
     return True
 
 
@@ -249,9 +301,11 @@ def edit_limits(session: Session, *, source: str, **limits: object) -> None:
 
     Only the whitelisted limit columns pass (ValueError otherwise), so the
     state columns can never ride through an edit: editing a cap while tripped
-    leaves the brake tripped. Sets exactly the passed keys + ``updated_at`` and
-    appends one 'edit' event whose values_json carries ``{"old": ..., "new":
-    ...}`` for those keys (dates as isoformat).
+    leaves the brake tripped. The four breakers must be POSITIVE when set
+    (None = unset stays legal). Sets exactly the passed keys + ``updated_at``
+    and appends one 'edit' event whose values_json carries ``{"old": ...,
+    "new": ...}`` for those keys (dates as isoformat) -- UPDATE and event
+    share ONE commit.
     """
     unknown = [k for k in limits if k not in _EDITABLE_LIMITS]
     if unknown:
@@ -260,6 +314,14 @@ def edit_limits(session: Session, *, source: str, **limits: object) -> None:
         )
     if not limits:
         raise ValueError("edit_limits: no limits passed")
+    for key in _POSITIVE_LIMITS:
+        if key in limits and limits[key] is not None:
+            value = limits[key]
+            if not isinstance(value, int | float) or value <= 0:
+                raise ValueError(
+                    f"edit_limits: {key} must be a positive number or None "
+                    f"(unset), got {value!r}"
+                )
 
     old = load_guardrails(session)  # get-or-create + the old values for the event
 
@@ -268,18 +330,19 @@ def edit_limits(session: Session, *, source: str, **limits: object) -> None:
 
     old_values = {k: _jsonable(getattr(old, k)) for k in limits}
     new_values = {k: _jsonable(v) for k, v in limits.items()}
-    session.execute(
+    _plain_update(
+        session,
         update(AgentGuardrails)
         .where(AgentGuardrails.id == _canonical_row_id())
-        .values(updated_at=datetime.now(UTC), **limits)
+        .values(updated_at=datetime.now(UTC), **limits),
     )
-    session.commit()
-    record_event(
-        session, kind="edit", source=source,
+    session.add(_event(
+        kind="edit", source=source,
         reason="limits edited: " + ", ".join(sorted(limits)),
         values_json=json.dumps({"old": old_values, "new": new_values},
                                sort_keys=True),
-    )
+    ))
+    session.commit()
 
 
 def record_sweep_outcome(
@@ -290,21 +353,29 @@ def record_sweep_outcome(
     Keys on ``trip_id`` (not blindly on the row) so a sweep finishing late
     never stamps a NEWER trip's bookkeeping; appends one 'sweep' event carrying
     the outcome + detail either way (the sweep DID run -- the Auditor sees it
-    even if the trip was already cleared).
+    even if the trip was already cleared). The outcome vocabulary is validated
+    up front so a typo fails loudly on every backend, not just Azure SQL
+    (sweep_state is String(16)); UPDATE and event share ONE commit.
     """
-    session.execute(
+    if outcome not in _SWEEP_OUTCOMES:
+        raise ValueError(
+            f"record_sweep_outcome: outcome must be one of {_SWEEP_OUTCOMES}, "
+            f"got {outcome!r}"
+        )
+    _plain_update(
+        session,
         update(AgentGuardrails)
         .where(
             AgentGuardrails.id == _canonical_row_id(),
             AgentGuardrails.trip_id == trip_id,
         )
-        .values(sweep_state=outcome, updated_at=datetime.now(UTC))
+        .values(sweep_state=outcome, updated_at=datetime.now(UTC)),
     )
-    session.commit()
-    record_event(
-        session, kind="sweep", source=source, reason=detail,
+    session.add(_event(
+        kind="sweep", source=source, reason=detail,
         values_json=json.dumps({"trip_id": trip_id, "outcome": outcome}),
-    )
+    ))
+    session.commit()
 
 
 # ---------------------------------------------------------------- breaker inputs

@@ -267,6 +267,72 @@ def test_edit_rejects_non_limit_keys(session: Session) -> None:
     assert session.query(AgentGuardrailEvent).count() == 0
 
 
+def test_sweep_outcome_never_stamps_a_newer_trip(session: Session) -> None:
+    """Task 6's stale-sweep guarantee: a sweep finishing late (for an already
+    CLEARED trip) must not stamp the CURRENT trip's bookkeeping -- the outcome
+    keys on trip_id, and the sweep event is still journaled for the Auditor."""
+    old_eid = gr.trip(session, breaker="max_daily_loss_usd", reason="first breach",
+                      source="screen")
+    assert old_eid is not None
+    assert gr.clear(session, acknowledged_trip_id=old_eid, source="cockpit") is True
+    new_eid = gr.trip(session, breaker="max_drawdown_usd", reason="second breach",
+                      source="digest")
+    assert new_eid is not None
+
+    gr.record_sweep_outcome(session, trip_id=old_eid, outcome="complete",
+                            detail="late sweep for the cleared trip",
+                            source="screen")
+    g = gr.load_guardrails(session)
+    assert g.trip_id == new_eid
+    assert g.sweep_state == "pending"       # the NEW trip's sweep is untouched
+    # ... but the sweep DID run -- its event row is journaled regardless.
+    ev = session.query(AgentGuardrailEvent).filter_by(kind="sweep").one()
+    assert json.loads(ev.values_json) == {"trip_id": old_eid, "outcome": "complete"}
+
+
+def test_sweep_outcome_rejects_unknown_vocabulary(session: Session) -> None:
+    eid = gr.trip(session, breaker="max_daily_loss_usd", reason="breach",
+                  source="screen")
+    assert eid is not None
+    for bad in ("done", "complete ", "PARTIAL", ""):
+        with pytest.raises(ValueError):
+            gr.record_sweep_outcome(session, trip_id=eid, outcome=bad,
+                                    detail="x", source="screen")
+    assert gr.load_guardrails(session).sweep_state == "pending"
+    assert session.query(AgentGuardrailEvent).filter_by(kind="sweep").count() == 0
+
+
+def test_record_event_truncates_to_column_bounds(session: Session) -> None:
+    # sqlite never enforces String(N); Azure SQL raises -- and in trip() the
+    # event insert runs BEFORE the state UPDATE, so an overlong value would
+    # keep the brake from engaging in prod ONLY. Truncation is the guard.
+    eid = gr.record_event(
+        session, kind="trip", source="s" * 40, breaker="b" * 40, reason="r" * 300,
+    )
+    ev = session.get(AgentGuardrailEvent, eid)
+    assert ev is not None
+    assert ev.breaker == "b" * 32
+    assert ev.source == "s" * 16
+    assert ev.reason == "r" * 256
+
+
+def test_edit_rejects_non_positive_breaker_values(session: Session) -> None:
+    for bad in ({"max_daily_loss_usd": 0.0}, {"max_daily_loss_usd": -50.0},
+                {"max_trades_per_day": 0}, {"max_drawdown_usd": -1.0},
+                {"loss_streak_halt": -3}):
+        with pytest.raises(ValueError):
+            gr.edit_limits(session, source="cockpit", **bad)
+    assert session.query(AgentGuardrailEvent).count() == 0
+    # None stays allowed (= unset), and the two anchor fields are unconstrained
+    # (a baseline of 0.0 is a legitimate fresh-start anchor).
+    gr.edit_limits(session, source="cockpit", max_daily_loss_usd=None,
+                   hwm_baseline_usd=0.0, hwm_anchor_date=date(2026, 7, 1))
+    g = gr.load_guardrails(session)
+    assert g.max_daily_loss_usd is None
+    assert g.hwm_baseline_usd == 0.0
+    assert g.hwm_anchor_date == date(2026, 7, 1)
+
+
 def test_every_transition_appends_event(session: Session) -> None:
     def event_count() -> int:
         return session.query(AgentGuardrailEvent).count()
