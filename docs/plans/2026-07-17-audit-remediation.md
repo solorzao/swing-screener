@@ -125,6 +125,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 - [x] L9 `conviction_sizing` / `conviction_weight_*` knobs
 - [x] L10 stale `storage/__init__.py` facade
 - [x] L11 `option_review_facts` NOTE annotation (no delete)
+- [x] L12 (extra, found in Phase J review) `db.repo.close_trade` — superseded by the atomic `close_trade_with_event`; guard tests folded onto the survivor. MERGE NOTE vs PR #143: docstring conflict in `close_trade_with_event` + EOF conflict in `tests/db/test_trade_repo.py`; whichever merges second also deletes the then-orphaned `_open_trade_or_raise`/`_apply_close`.
 
 **Phase M — `chore/replay-and-test-structure`**
 - [ ] M1 shared `load_replay_corpus` across the 18 replay scripts (exclusion set decided + documented)
