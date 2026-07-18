@@ -779,8 +779,14 @@ function JournalRow({
           </span>
         ) : (
           <span
-            className={`gex-outcome ${
-              (setup.trade.realized_r ?? 0) >= 0 ? 'gex-outcome-win' : 'gex-outcome-loss'
+            /* null realized_r = closed but ungraded — NEUTRAL, never win-green
+               (the old `?? 0 >= 0` styled an unmeasured close as a win). */
+            className={`gex-outcome${
+              setup.trade.realized_r === null
+                ? ''
+                : setup.trade.realized_r >= 0
+                  ? ' gex-outcome-win'
+                  : ' gex-outcome-loss'
             }`}
             title={`settled ${setup.trade.exit_reason ?? '—'}`}
           >

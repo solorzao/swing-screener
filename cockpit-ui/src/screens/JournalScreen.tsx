@@ -32,7 +32,7 @@ import type {
   NoteKind,
   WeaknessesProfile,
 } from '../lib/api'
-import { dashOr, fmtR } from '../lib/fmt'
+import { dashOr, fmtR, fmtSignedUsd } from '../lib/fmt'
 import { HelpTerm } from '../components/HelpTerm'
 import { PanelBody } from '../components/PanelBody'
 import { Segmented } from '../components/Segmented'
@@ -71,10 +71,12 @@ function isPersonalBook(book: JournalBook): book is CoachBook {
   return PERSONAL_BOOKS.has(book)
 }
 
-/** Format a review's result with its unit ("2R" / "$42"), em dash when null. */
+/** Format a review's result with its unit ("+$42.00" / "+2.00R"), em dash when
+ * null — routed through lib/fmt so a negative renders "−$42.00", never the raw
+ * "$-42", and precision never leaks the float ("0.30000000000000004R"). */
 function fmtResult(result: number | null | undefined, unit: string | undefined): string {
   if (result === null || result === undefined) return '—'
-  return unit === '$' ? `$${result}` : `${result}R`
+  return unit === '$' ? fmtSignedUsd(result) : fmtR(result)
 }
 
 /** The book's slippage vintage as a caption stamp — null = mixed / unstamped. */
@@ -260,8 +262,10 @@ function CurvePanel({ book, wake, scope }: { book: JournalBook; wake: number; sc
         <div className="jr-curve-block">
           <div className="jr-curve-cap">
             <span className="jr-curve-title">underwater · R below peak</span>
-            <span className="jr-curve-val mono jr-down">
-              {mdd === null || mdd === 0 ? '0.00R' : `${MINUS}${mdd.toFixed(2)}R`}
+            {/* null = unmeasured → em dash in the flat tone (the dashOr honesty
+                rule), never a fabricated red 0.00R; a REAL 0 stays 0.00R. */}
+            <span className={`jr-curve-val mono ${mdd === null ? 'jr-flat' : 'jr-down'}`}>
+              {mdd === null ? '—' : mdd === 0 ? '0.00R' : `${MINUS}${mdd.toFixed(2)}R`}
               <span className="jr-curve-sub"> max drawdown</span>
             </span>
           </div>
