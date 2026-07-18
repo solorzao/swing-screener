@@ -742,11 +742,20 @@ function RecordsPanel({ book, wake, scope }: { book: JournalBook; wake: number; 
  * overlay (source=analyst) on click — the confirm gate. */
 function CoachReviewsPanel({ book, wake }: { book: CoachBook; wake: number }) {
   const [bump, setBump] = useState(0)
+  const [confirmError, setConfirmError] = useState<string | null>(null)
   const reviews = usePolling(() => getCoachReviews(book), POLL_MS, wake + bump, book)
   const confirm = (id: number, name: string, kind: string) => {
+    setConfirmError(null)
     postConfirmTag(id, { name, kind }).then(
       () => setBump((b) => b + 1),
-      () => {},
+      // A swallowed rejection looked exactly like success (the proposal button
+      // just sat there) — surface the server's safe detail / unreachable line.
+      (err: unknown) =>
+        setConfirmError(
+          err instanceof ApiError
+            ? err.message
+            : 'backend unreachable — the tag may not have been confirmed',
+        ),
     )
   }
   return (
@@ -757,6 +766,11 @@ function CoachReviewsPanel({ book, wake }: { book: CoachBook; wake: number }) {
           per-trade coaching · {book} — numbers owned by code, prose advisory
         </span>
       </div>
+      {confirmError !== null && (
+        <div className="gex-err" role="alert">
+          {confirmError}
+        </div>
+      )}
       <PanelBody polled={reviews} noun="reviews">
         {(rows: CoachReview[]) =>
           rows.length === 0 ? (
