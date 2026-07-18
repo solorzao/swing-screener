@@ -79,7 +79,8 @@ def test_analyze_ticker_deep_builds_images_first_then_tf_text():
     assert kw["output_config"] == {"effort": "high"}
     assert kw["max_tokens"] == 16000
     tool = kw["tools"][0]
-    assert tool["type"] == "web_search_20250305"
+    # 20260209 = dynamic filtering: search-result tokens are pruned BEFORE billing
+    assert tool["type"] == "web_search_20260209"
     assert tool["name"] == "web_search" and tool["max_uses"] == 3
     content = kw["messages"][0]["content"]
     # both charts come FIRST as image blocks, then a single text block

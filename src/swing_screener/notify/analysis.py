@@ -354,22 +354,48 @@ def _capture_usage(resp: object, model: str) -> Usage | None:
     )
 
 
+# Web-search tool version. web_search_20260209 adds dynamic filtering: search-result
+# tokens are pruned BEFORE they enter billable input context -- the dominant cost term
+# (~400k input tok/run measured 2026-07 under the legacy 20250305 tool). Models that
+# reject this version are degraded to the legacy type by _create_message.
+_WEB_SEARCH_TOOL = "web_search_20260209"
+
+
 def _create_message(client: anthropic.Anthropic, kwargs: dict) -> object:
-    """messages.create, retrying once WITHOUT the reasoning params if the model
-    rejects them. Models differ on the thinking API (opus-4.8 wants adaptive +
-    output_config.effort; older models want budget_tokens), so on a config mismatch
-    we retry plain -- still a real model analysis, not the deterministic narrator.
+    """messages.create with up to one retry PER degrade below -- a single call may
+    need both (an older model can reject the reasoning shape AND the newer
+    web-search tool). Either way the retry is still a real model analysis, not the
+    deterministic narrator:
+
+    - reasoning params: models differ on the thinking API (opus-4.8 wants adaptive +
+      output_config.effort; older models want budget_tokens) -> retry WITHOUT them;
+    - web-search tool: an older SWING_ANALYSIS_MODEL that rejects ``_WEB_SEARCH_TOOL``
+      -> retry with the legacy ``web_search_20250305`` type.
+
+    Each degrade can fire at most once (its trigger state is gone afterwards), so
+    any further BadRequestError re-raises and the loop always terminates.
     """
-    try:
-        return client.messages.create(**kwargs)
-    except anthropic.BadRequestError as exc:
-        msg = str(exc).lower()
-        if any(k in msg for k in ("thinking", "output_config", "effort")) and (
-            "thinking" in kwargs or "output_config" in kwargs
-        ):
-            plain = {k: v for k, v in kwargs.items() if k not in ("thinking", "output_config")}
-            return client.messages.create(**plain)
-        raise
+    while True:
+        try:
+            return client.messages.create(**kwargs)
+        except anthropic.BadRequestError as exc:
+            msg = str(exc).lower()
+            if any(k in msg for k in ("thinking", "output_config", "effort")) and (
+                "thinking" in kwargs or "output_config" in kwargs
+            ):
+                kwargs = {
+                    k: v for k, v in kwargs.items() if k not in ("thinking", "output_config")
+                }
+            elif "web_search" in msg and any(
+                t.get("type") == _WEB_SEARCH_TOOL for t in kwargs.get("tools", [])
+            ):
+                kwargs = dict(kwargs, tools=[
+                    {**t, "type": "web_search_20250305"}
+                    if t.get("type") == _WEB_SEARCH_TOOL else t
+                    for t in kwargs["tools"]
+                ])
+            else:
+                raise
 
 
 class EmptyAnalysisError(ValueError):
@@ -402,7 +428,7 @@ def _analyst_call(
         kwargs["output_config"] = {"effort": effort}
     if web_search:
         kwargs["tools"] = [
-            {"type": "web_search_20250305", "name": "web_search", "max_uses": max_searches}
+            {"type": _WEB_SEARCH_TOOL, "name": "web_search", "max_uses": max_searches}
         ]
     resp = _create_message(client, kwargs)
     usage = _capture_usage(resp, model)
