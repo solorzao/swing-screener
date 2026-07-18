@@ -3,8 +3,8 @@
 Plain ``session``-first functions in the house repo style (mirrors
 ``swing_screener.db.repo``), kept in the journal package because they belong to the
 journal read-model, not the core screener store. ``source`` provenance is a REQUIRED
-keyword on every writer that records it (tag_trade, add_note, add_thesis) -- no
-default -- so an annotation's origin can never be silently lost.
+keyword on every writer that records it (tag_trade, add_note) -- no default -- so an
+annotation's origin can never be silently lost.
 
 Two idempotency rules, deliberate:
 
@@ -15,7 +15,10 @@ Two idempotency rules, deliberate:
   the same tag from the same source twice is one row, but the SAME tag from a
   DIFFERENT source (human vs analyst) is a genuinely distinct application.
 
-Notes and theses are event records -- they accumulate, never dedupe.
+Notes and theses are event records -- they accumulate, never dedupe. There is
+currently NO thesis writer here: the journal_theses table stays (decision #4 of the
+2026-07-17 audit plan -- keeping it avoids a destructive migration) and
+``theses_for_trade`` reads it, but nothing in production records theses yet.
 """
 
 from datetime import date, datetime
@@ -121,30 +124,6 @@ def notes_for_day(session: Session, *, day: date) -> list[JournalNote]:
     """Every note for ``day`` in insertion order (id-ascending)."""
     stmt = select(JournalNote).where(JournalNote.day == day).order_by(JournalNote.id)
     return list(session.scalars(stmt))
-
-
-def add_thesis(
-    session: Session,
-    *,
-    trade_id: int,
-    book: str,
-    event_kind: str,
-    source: str,
-    body: str,
-    snapshot_json: str = "{}",
-    created_at: datetime | None = None,
-) -> JournalThesis:
-    """Record an entry/exit thesis for a trade. ``source`` is required; theses
-    accumulate (a trade may carry both an entry and an exit thesis, and later
-    re-reads)."""
-    thesis = JournalThesis(
-        trade_id=trade_id, book=book, event_kind=event_kind, source=source,
-        body=body, snapshot_json=snapshot_json, created_at=created_at,
-    )
-    session.add(thesis)
-    session.commit()
-    session.refresh(thesis)
-    return thesis
 
 
 def theses_for_trade(
