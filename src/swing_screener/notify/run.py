@@ -83,6 +83,7 @@ from swing_screener.pipeline.insight import (
 )
 from swing_screener.pipeline.regime import MARKET_PROXY, classify_regime
 from swing_screener.pipeline.reflect import load_verdicts, verdicts_filename
+from swing_screener.pipeline.run import _migrate_with_retry, _resolve_db_url
 from swing_screener.settings import (
     load_settings,
     resolve_edge_dir,
@@ -842,14 +843,21 @@ def main() -> None:
     settings = load_settings()  # absolute paths + env-resolved DB URL (container-safe)
     parser = argparse.ArgumentParser(description="Send a swing-screener email digest.")
     parser.add_argument("--kind", choices=["daily", "weekly", "monthly", "exit"], default="daily")
-    parser.add_argument("--db", default=settings.db_url)
+    parser.add_argument("--db", default=None)
     parser.add_argument("--pdf-dir", type=Path, default=settings.pdf_dir)
     parser.add_argument("--force", action="store_true",
                         help="resend even if a digest for this (kind, day) already went out")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
+    # Same startup contract as every other job CLI (pipeline.run, coach_run, audit_run,
+    # ondemand): refuse a throwaway local sqlite in a cloud context, and self-migrate on
+    # Azure SQL -- the morning digest / hourly exit check can be the FIRST job to run
+    # after a CD deploy ships a migration, and must not run new models on the old schema.
+    db_url = _resolve_db_url(args.db)
+    if db_url.startswith("mssql"):  # Azure SQL: Alembic owns the schema, upgrade first
+        _migrate_with_retry(db_url)
     if args.kind == "exit":
-        exit_result = run_exit_check_and_alert(db_url=args.db)
+        exit_result = run_exit_check_and_alert(db_url=db_url)
         log.info("exit check: open=%d exited=%d", exit_result.n_open, exit_result.n_exited)
         return
     # SWING_FORCE_RESEND lets a scheduled container force a resend without changing
@@ -862,7 +870,7 @@ def main() -> None:
     if StrategyConfig().digest_drop_already_ran:
         def latest_closes_fn(tickers: list[str]) -> dict[str, float]:  # noqa: E731
             return latest_closes(tickers, cache_dir=settings.cache_dir)
-    result = send_digest(kind=args.kind, db_url=args.db, pdf_dir=args.pdf_dir, force=force,
+    result = send_digest(kind=args.kind, db_url=db_url, pdf_dir=args.pdf_dir, force=force,
                          latest_closes_fn=latest_closes_fn)
     log.info("digest %s: picks=%d reversals=%d pdf=%s sent=%s",
              args.kind, result.n_picks, result.n_reversals, result.pdf_attached, result.sent)

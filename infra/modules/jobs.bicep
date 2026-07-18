@@ -41,8 +41,12 @@ param acrLoginServer string
 @description('Image repository name within the registry.')
 param imageRepository string = 'swing-screener'
 
+// Default 'latest' -- CD pushes :latest alongside every immutable :<sha> tag. A
+// re-provision that omits imageTag must land on the current code, not roll all
+// ten jobs back to the months-old bootstrap image until the next main push
+// (same template-default-must-match-prod lesson as deepAnalysisEnabled below).
 @description('Image tag to run.')
-param imageTag string = 'bootstrap'
+param imageTag string = 'latest'
 
 // --- Plain (non-secret) environment ---
 @description('mssql SQLAlchemy URL for SWING_DB_URL (Entra MSI auth, no password).')
@@ -63,7 +67,9 @@ param acsSender string
 @description('Key Vault URL (e.g. https://vault.vault.azure.net/) -> KEY_VAULT_URL and the base for secret reference URIs.')
 param keyVaultUrl string
 
-@description('Key Vault secret NAMES (not values), bundled: { anthropic, gmailAddress, gmailPassword, digestTo }.')
+// Exactly the two secrets Key Vault ships (keyvault.bicep's secretNames output):
+// email sends via ACS with the managed identity, so there is no Gmail credential.
+@description('Key Vault secret NAMES (not values), bundled: { anthropic, digestTo }.')
 param secretNames object
 
 @description('Replica timeout (seconds) for the screen job.')

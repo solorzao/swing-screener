@@ -80,14 +80,14 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 - [x] F1 per-kind cooldown + dropped-picks log line
 
 **Phase G — `fix/infra-cd-hardening`**
-- [ ] G1 `notify.run` `_resolve_db_url` + mssql-gated migrate
-- [ ] G2 `market_run` mssql-gated migrate
-- [ ] G3 `imageTag` default `latest` (3 files)
-- [ ] G4 CD single-alembic-head guard
-- [ ] G5 CI push-trigger filter
-- [ ] G6 SQL token out of `GITHUB_ENV`
-- [ ] G7 cockpit DB write grants + runbook
-- [ ] G8 stale bicep secret docs
+- [x] G1 `notify.run` `_resolve_db_url` + mssql-gated migrate
+- [x] G2 `market_run` mssql-gated migrate
+- [x] G3 `imageTag` default `latest` (3 files)
+- [x] G4 CD single-alembic-head guard
+- [x] G5 CI push-trigger filter
+- [x] G6 SQL token out of `GITHUB_ENV`
+- [x] G7 cockpit DB write grants + runbook (**prod manual step**: run the new `db_datawriter` grant from `infra/post-deploy.sql` §2 as the Entra admin)
+- [x] G8 stale bicep secret docs
 
 **Phase H — `fix/fetch-cache-poisoning`**
 - [ ] H1 pre-close truncated frame not written to the day cache
