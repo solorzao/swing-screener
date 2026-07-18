@@ -202,6 +202,22 @@ def test_build_ticker_story_has_sections():
     assert rendered.count("No setup firing on this timeframe.") == 1
 
 
+def test_ticker_story_never_renders_nan_read_values():
+    # Short frames leave the last RSI/ATR NaN (e.g. the 1mo timeframe of a young
+    # listing) -- the PDF heading must show 'n/a', never a literal 'nan'.
+    from dataclasses import replace
+
+    from swing_screener.notify.pdf import build_ticker_story
+
+    report = _ticker_report()
+    nan = float("nan")
+    reads = [replace(report.reads[1], rsi=nan, atr_pct=nan)]
+    story = build_ticker_story(replace(report, reads=reads))
+    rendered = " ".join(getattr(f, "text", "") for f in story)
+    assert "nan" not in rendered.lower()
+    assert "RSI n/a" in rendered and "ATR n/a" in rendered
+
+
 def test_build_ticker_report_pdf_writes_file(tmp_path):
     from swing_screener.notify.pdf import build_ticker_report_pdf
 

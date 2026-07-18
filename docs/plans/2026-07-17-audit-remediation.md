@@ -56,9 +56,9 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 - [ ] B1-verify (post-deploy) one on-demand request processes end-to-end in prod
 
 **Phase C — `fix/nan-hardening`**
-- [ ] C1 `_download` dropna + HA recovery test
-- [ ] C2 NaN guards: detect ATR truthiness / `latest_close` / `avg_dollar_volume` / `_spot_from_ticker`
-- [ ] C3 NaN fundamentals rendered into analyst prompts
+- [x] C1 `_download` dropna + HA recovery test
+- [x] C2 NaN guards: detect ATR truthiness / `latest_close` / `avg_dollar_volume` / `_spot_from_ticker` (+ reversal detector, found in review — dcd88ab)
+- [x] C3 NaN fundamentals rendered into analyst prompts
 
 **Phase D — `fix/auditor-compliance-math`**
 - [ ] D1 cap sums filtered to counting statuses, per account, `n_clamps` surfaced
