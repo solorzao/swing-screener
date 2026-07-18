@@ -30,6 +30,20 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev,cockpit]"
+      # Guard against a future migration branching the chain: alembic MUST have
+      # exactly one head. alembic lives in the optional [azure] extra (not
+      # installed above), so install it standalone -- `alembic heads` walks the
+      # versions scripts only (no env.py, no DB), so the bare package suffices.
+      # grep -c counts head LINES (one per head); a hex revision id can't contain
+      # "head", so the match is unambiguous.
+      #
+      # Duplicated from ci.yml on purpose: THIS job is the only deploy gate, and
+      # a two-headed chain that reached main would otherwise deploy and kill
+      # every mssql job at startup upgrade ("Multiple head revisions").
+      - name: Single alembic head
+        run: |
+          pip install "alembic>=1.13"
+          test "$(python -m alembic heads 2>/dev/null | grep -c head)" -eq 1
       - name: Lint (ruff)
         run: ruff check src tests alembic
       - name: Type check (mypy)
