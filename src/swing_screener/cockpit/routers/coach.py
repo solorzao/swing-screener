@@ -91,7 +91,14 @@ def build_coach_router(
         ).first()
         if row is None:
             return {"items": [], "thin_data": True, "n_reviews": 0, "generated_at": None}
-        payload = json.loads(row.items_json or "{}")
+        raw = json.loads(row.items_json or "{}")
+        # The column default is "[]" (a bare items LIST) while the builder writes
+        # the full dict -- normalize a list into the documented shape (no reviews
+        # counted yet, honestly thin) instead of TypeError-ing into a 500.
+        payload: dict[str, object] = (
+            raw if isinstance(raw, dict)
+            else {"items": raw, "thin_data": True, "n_reviews": 0}
+        )
         payload["generated_at"] = _utc_iso(row.generated_at)
         return payload
 
