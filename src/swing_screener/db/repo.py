@@ -562,17 +562,6 @@ def close_trade_with_event(
     return trade, event
 
 
-def update_trade(session: Session, trade_id: int, **fields: object) -> Trade:
-    trade = session.get(Trade, trade_id)
-    if trade is None:
-        raise ValueError(f"no trade with id {trade_id}")
-    for key, value in fields.items():
-        setattr(trade, key, value)
-    session.commit()
-    session.refresh(trade)
-    return trade
-
-
 def list_universe(session: Session, search: str | None = None) -> list[Universe]:
     stmt = select(Universe).order_by(Universe.ticker)
     if search:

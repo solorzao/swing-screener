@@ -75,11 +75,3 @@ def test_close_trade_with_event_carries_both_rows():
                 s, t.id, exit_date=date(2024, 1, 10), exit_price=1.0,
                 exit_reason="x", event_reason="manual_close", event_message="",
                 created_date=date(2024, 1, 10))
-
-
-def test_update_trade_patches_fields():
-    engine = get_engine("sqlite:///:memory:")
-    with Session(engine) as s:
-        t = repo.add_trade(s, _trade())
-        updated = repo.update_trade(s, t.id, stop=97.0, notes="raised stop")
-        assert updated.stop == 97.0 and updated.notes == "raised stop"
