@@ -477,6 +477,9 @@ class LiveAdapter:
        any failing logs a ``rejected_live`` row and refuses, placing no broker order.
     2. The hard-limit clamp (``_limit_block``): a breach logs a ``skipped`` row and refuses
        BEFORE any broker call -- the venue is never touched on a clamped order.
+    2.5. The zero-qty clamp: an unsized intent (``shares <= 0``) logs a ``skipped`` row
+       with detail ``unsized (0 shares)`` and refuses -- qty<=0 at the venue is a
+       guaranteed 422 reject the log would carry as ``rejected_live`` noise.
     3. A graceful broker boundary: an exception from ``submit_order`` is caught and logged as
        ``rejected_live`` (never propagated); a broker-returned ``rejected`` order likewise.
 
@@ -569,6 +572,18 @@ class LiveAdapter:
             self._log(session, intent, run_date=run_date, key=key,
                       status="skipped", detail=limit_reason)
             return OrderResult(status="skipped", account=LIVE_ACCOUNT, detail=limit_reason)
+
+        # 2.5 The zero-qty clamp: an UNSIZED intent (``size_order`` floored to 0 --
+        #     unconfigured/tiny risk unit, or an 'avoid' conviction) must never reach
+        #     the venue, where qty<=0 is a guaranteed 422 logged as rejected_live
+        #     noise. The dispatch loop filters these before submit; this is the
+        #     adapter's own last line (never trusting the caller). Deliberately NOT
+        #     a "guardrail: ..." detail -- the Auditor greps that prefix.
+        if intent.shares <= 0:
+            detail = "unsized (0 shares)"
+            self._log(session, intent, run_date=run_date, key=key,
+                      status="skipped", detail=detail)
+            return OrderResult(status="skipped", account=LIVE_ACCOUNT, detail=detail)
 
         # 3. Submit to the venue, GRACEFULLY: any broker exception is logged + refused, never
         #    propagated. The idempotency key is the broker's client_order_id, so a re-submit

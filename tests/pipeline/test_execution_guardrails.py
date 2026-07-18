@@ -262,6 +262,30 @@ def test_brake_enforced_on_paper_host_too() -> None:
 
 
 # ---------------------------------------------------------------------------
+# the zero-qty clamp (step 2.5): an unsized intent (size_order floored to 0)
+# never reaches the venue -- qty<=0 is a guaranteed 422 the broker would log
+# as rejected_live noise. The dispatch loop filters these too; this is the
+# adapter's own defensive last line.
+# ---------------------------------------------------------------------------
+def test_zero_share_intent_skips_before_venue() -> None:
+    with _session() as s:
+        broker = FakeBroker(real_money=False)
+        adapter = LiveAdapter(broker, settings=_live_settings(mode="off", allow=False),
+                              gate_ready_fn=_boom)
+        result = adapter.submit(_intent(shares=0, risk_dollars=0.0),
+                                session=s, run_date=RUN, limits=NO_LIMITS)
+
+        assert result.status == "skipped"
+        assert result.account == "live"
+        assert result.detail == "unsized (0 shares)"
+        assert broker.submitted_specs == []            # the venue was never touched
+        row = s.query(ExecutionLog).filter_by(status="skipped").one()
+        assert row.detail == "unsized (0 shares)"
+        # deliberately NOT the "guardrail: ..." prefix the Auditor greps for.
+        assert not row.detail.startswith("guardrail:")
+
+
+# ---------------------------------------------------------------------------
 # the MANDATE: real money may not dispatch with an unset mandatory breaker --
 # even when all three locks pass and every Limits cap is set.
 # ---------------------------------------------------------------------------

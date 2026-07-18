@@ -141,6 +141,7 @@ def test_injected_adapter_gets_one_submit_per_deep_intent_and_renders_ticket(
 
 def test_skipped_result_renders_skip_reason(tmp_path, monkeypatch):
     _enable_deep(monkeypatch)
+    monkeypatch.setenv("SWING_RISK_PER_TRADE_DOLLARS", "300")  # sized -> reaches the adapter
     url = f"sqlite:///{tmp_path / 'skip.sqlite'}"
     _seed(url, n=1)
     sent = []
@@ -157,6 +158,7 @@ def test_skipped_result_renders_skip_reason(tmp_path, monkeypatch):
 
 def test_adapter_raise_never_blocks_the_digest(tmp_path, monkeypatch):
     _enable_deep(monkeypatch)
+    monkeypatch.setenv("SWING_RISK_PER_TRADE_DOLLARS", "300")  # sized -> reaches the adapter
     url = f"sqlite:///{tmp_path / 'raise.sqlite'}"
     _seed(url, n=1)
     sent = []
@@ -171,6 +173,31 @@ def test_adapter_raise_never_blocks_the_digest(tmp_path, monkeypatch):
     assert len(sent) == 1  # the digest email was still sent
     body = sent[-1]["text"].lower()
     assert "order ticket" not in body  # nothing rendered for the failed dispatch
+
+
+def test_zero_share_intent_never_reaches_adapter_and_renders_unsized(tmp_path, monkeypatch):
+    """An UNSIZED intent (no risk unit configured -> size_order floors to 0 shares) is
+    INERT: the dispatch loop must never call submit for it -- a qty<=0 order is a
+    guaranteed venue 422 -- but the digest still renders an honest 'skipped' ticket."""
+    _enable_deep(monkeypatch)
+    # no risk unit, no equity -> resolve_risk_unit 0.0 -> shares floored to 0.
+    monkeypatch.delenv("SWING_RISK_PER_TRADE_DOLLARS", raising=False)
+    monkeypatch.delenv("SWING_ACCOUNT_EQUITY", raising=False)
+    url = f"sqlite:///{tmp_path / 'zero.sqlite'}"
+    _seed(url, n=1)
+    sent = []
+    adapter = _FakeAdapter(OrderResult(
+        status="recorded", account="manual", detail="order ticket recorded"))
+
+    res = run.send_digest(**_insight_kwargs(
+        tmp_path, url, smtp_send=lambda **k: sent.append(k), execution_adapter=adapter))
+
+    assert res.sent is True
+    assert adapter.calls == []  # submit was NEVER called for the unsized intent
+    body = sent[-1]["text"].lower()
+    assert "order ticket" in body   # the synthetic ticket still renders honestly
+    assert "unsized" in body
+    assert "skipped" in body
 
 
 def test_off_mode_does_not_dispatch_or_render_or_log(tmp_path, monkeypatch):

@@ -709,6 +709,18 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         if collected_intents and not isinstance(adapter, NoOpAdapter):
             try:
                 for intent in collected_intents:
+                    if intent.shares <= 0:
+                        # An UNSIZED intent (size_order floored to 0: unconfigured/tiny
+                        # risk unit, or an 'avoid' conviction) is INERT -- qty<=0 at the
+                        # venue is a guaranteed 422 reject. Skip BEFORE the kill-switch
+                        # check (nothing is being armed) and before the adapter, but
+                        # ticket it so the digest renders the skip honestly.
+                        tickets[(intent.ticker, intent.play_type)] = OrderTicketLine(
+                            side=intent.side, shares=intent.shares, ticker=intent.ticker,
+                            limit_price=intent.limit_price, stop=intent.stop,
+                            target=intent.target, status="skipped",
+                            detail="unsized (0 shares)")
+                        continue
                     if _execution_halted(adapter, _mode_reader):
                         log.warning("execution kill switch: halting dispatch for %s %s "
                                     "and pulling entry-side resting orders", kind, run_date)
