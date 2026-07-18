@@ -7,6 +7,7 @@ import itertools
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.engine import Engine
 
@@ -33,6 +34,17 @@ from swing_screener.pipeline.registry import Experiment
 
 STAT_KEYS = {"value", "n", "n_clusters", "ci_low", "ci_high", "cost_level",
              "corpus_id", "facet", "unit", "thin_clusters"}
+
+
+@pytest.fixture(autouse=True)
+def _scrub_gh_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """create_app() reads SWING_GH_TOKEN/REPO at construction; on a dev shell
+    exporting both, every app-building test wires REAL GitHub pollers (live API
+    calls in tests) and the GH heartbeats read "up" instead of the asserted
+    "unknown". Scrub directory-wide; poller tests re-set the vars via
+    monkeypatch.setenv, which runs after this autouse fixture and wins."""
+    monkeypatch.delenv("SWING_GH_TOKEN", raising=False)
+    monkeypatch.delenv("SWING_GH_REPO", raising=False)
 
 def _trade(ticker: str, r: float, *, play_type: str = "reversal",
            strength: str | None = "confirmed", would_surface: bool | None = None,
