@@ -51,12 +51,18 @@ log = logging.getLogger(__name__)
 _STALE_AFTER = timedelta(minutes=30)
 
 
-def _ondemand_already_sent(session: Session, today: date, request_id: int) -> bool:
-    """True if this request's on-demand email already logged (idempotency check)."""
+def _ondemand_already_sent(session: Session, request) -> bool:
+    """True if this request's on-demand email already logged (idempotency check).
+
+    Keyed on the REQUEST's own date (``requested_at.date()``), never the worker's
+    ``today``: a row that crashed after its email and got requeued may retry past
+    midnight, and a today-keyed check would miss yesterday's log row and email
+    twice (2026-07-17 audit M4b). The write below stamps the same date.
+    """
     stmt = select(EmailLog).where(
         EmailLog.kind == "ondemand",
-        EmailLog.run_date == today,
-        EmailLog.alert_key == str(request_id),
+        EmailLog.run_date == request.requested_at.date(),
+        EmailLog.alert_key == str(request.id),
     )
     return session.scalars(stmt).first() is not None
 
@@ -138,16 +144,17 @@ def process_one(session, request, *, settings, cfg, today, now,
 
         recipient = request.recipient or get_secret("DIGEST_TO")
         if recipient:
-            # Idempotent send: one email per request, deduped on its id (mirrors
-            # notify.run's per-(kind, run_date, alert_key) EmailLog guard).
-            if not _ondemand_already_sent(session, today, request.id):
+            # Idempotent send: one email per request, deduped on (request date, id)
+            # -- the request's OWN date, so a cross-midnight retry still matches the
+            # existing log row (mirrors notify.run's EmailLog guard otherwise).
+            if not _ondemand_already_sent(session, request):
                 content = compose_ticker_report_body(report)
                 send = sender or resolve_sender()  # env-driven transport (ACS or SMTP)
                 send(to=recipient, subject=content.subject, text=content.text,
                      html=content.html, attachments=[pdf_path])
                 session.add(EmailLog(
                     sent_at=datetime.now(UTC), kind="ondemand", subject=content.subject,
-                    run_date=today, alert_key=str(request.id)))
+                    run_date=request.requested_at.date(), alert_key=str(request.id)))
                 session.commit()
         else:
             log.warning("no recipient for request %s; completing without email", request.id)

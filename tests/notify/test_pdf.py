@@ -210,3 +210,51 @@ def test_build_ticker_report_pdf_writes_file(tmp_path):
     data = out.read_bytes()
     assert len(data) > 0
     assert data[:4] == b"%PDF"
+
+
+def test_blob_chart_fetch_failure_logs_ticker_and_key(monkeypatch, caplog):
+    """A missing/aged-out blob chart degrades CHARTLESS but never silently: the
+    warning names the ticker and the blob key so an aged-out container is
+    diagnosable from the log (2026-07-17 audit M4a)."""
+    import logging
+
+    from swing_screener.notify import pdf as pdf_mod
+    from swing_screener.notify.pdf import build_story
+
+    monkeypatch.setattr(pdf_mod, "blob_enabled", lambda: True)
+
+    def boom(key):
+        raise FileNotFoundError(f"no blob {key}")
+
+    monkeypatch.setattr(pdf_mod, "download_bytes", boom)
+    with caplog.at_level(logging.WARNING, logger="swing_screener.notify.pdf"):
+        story = build_story([_pick(chart="20260615/AMD_1d_20260615.png")])
+    assert story  # the pick still renders, chartless
+    assert any("AMD" in r.message and "20260615/AMD_1d_20260615.png" in r.message
+               for r in caplog.records), caplog.records
+
+
+def test_ticker_report_blob_chart_failure_logs_ticker_and_key(monkeypatch, caplog):
+    """Same posture on the ticker-report path: the per-timeframe blob fetch failure
+    names the ticker and the key instead of a bare pass."""
+    import dataclasses
+    import logging
+
+    from swing_screener.notify import pdf as pdf_mod
+    from swing_screener.notify.pdf import build_ticker_story
+
+    monkeypatch.setattr(pdf_mod, "blob_enabled", lambda: True)
+
+    def boom(key):
+        raise FileNotFoundError(f"no blob {key}")
+
+    monkeypatch.setattr(pdf_mod, "download_bytes", boom)
+    report = _ticker_report()
+    reads = [dataclasses.replace(report.reads[0], chart_path="20260616/AMD_1d.png"),
+             report.reads[1]]
+    report = dataclasses.replace(report, reads=reads)
+    with caplog.at_level(logging.WARNING, logger="swing_screener.notify.pdf"):
+        story = build_ticker_story(report)
+    assert story
+    assert any("AMD" in r.message and "20260616/AMD_1d.png" in r.message
+               for r in caplog.records), caplog.records

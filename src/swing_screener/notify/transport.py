@@ -32,7 +32,16 @@ def resolve_sender() -> Callable[..., None]:
     endpoint = settings.acs_endpoint
     if not endpoint:
         return smtp.send_email
-    sender = settings.acs_sender or ""
+    sender = settings.acs_sender
+    if not sender:
+        # Binding an empty senderAddress would fail DOWNSTREAM on every send (an
+        # ACS reject long after construction) -- refuse loudly here instead, naming
+        # the missing env (2026-07-17 audit M4d).
+        raise RuntimeError(
+            "SWING_ACS_ENDPOINT is set but SWING_ACS_SENDER is not: the ACS email "
+            "transport needs the configured sender address (a MailFrom address on "
+            "the ACS resource); set SWING_ACS_SENDER or unset SWING_ACS_ENDPOINT "
+            "to fall back to SMTP")
 
     def _send_acs(
         *,

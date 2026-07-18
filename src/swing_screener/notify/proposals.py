@@ -45,9 +45,20 @@ class ProposedOrder:
     play_type: str
 
     def instruction(self) -> str:
-        """The exact, human-placeable Robinhood instruction for this proposal."""
+        """The exact, human-placeable Robinhood instruction for this proposal.
+
+        The verb and the limit bound follow the STORED ``side`` (copied from the
+        ``OrderIntent``, whose vocabulary is ``long``/``short``; ``buy``/``sell``
+        is accepted too): a long/buy fills at or below its limit, a short/sell at
+        or above -- hardcoding "Buy" would render a short ticket as its opposite
+        instruction.
+        """
+        verb, bound = (
+            ("Buy", "<=") if self.side in ("long", "buy") else ("Sell", ">=")
+        )
         return (
-            f"Buy {self.ticker} — limit <= ${self.limit_price:.2f}, {self.shares} shares "
+            f"{verb} {self.ticker} — limit {bound} "
+            f"${self.limit_price:.2f}, {self.shares} shares "
             f"({self.conviction.upper()} conviction); then set stop ${self.stop:.2f}, "
             f"target ${self.target:.2f}"
         )

@@ -130,7 +130,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 - [x] M1 shared `load_replay_corpus` across the 18 replay scripts (exclusion set decided + documented)
 - [x] M2 `tests/cockpit/test_api.py` split per router (moves only)
 - [x] M3 reflect.py drift pair
-- [ ] M4 notify low items (blob logging / dedup key / side-aware instruction / ACS guard / single autonomy_gate)
+- [x] M4 notify low items (blob logging / dedup key / side-aware instruction / ACS guard / single autonomy_gate)
 
 ---
 

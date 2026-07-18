@@ -8,6 +8,7 @@ the section renders without the image rather than crashing.
 """
 
 import io
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +35,8 @@ from swing_screener.storage.blob import blob_enabled, download_bytes
 if TYPE_CHECKING:
     from swing_screener.notify.proposals import ProposedOrder
     from swing_screener.notify.ticker_report import TickerReport
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -174,8 +177,9 @@ def build_story(picks: Sequence[PdfPick]) -> list:
                 try:
                     story.append(_chart_image(download_bytes(p.chart_path)))
                     story.append(Spacer(1, 0.1 * inch))
-                except Exception:
-                    pass
+                except Exception:  # noqa: BLE001 -- degrade chartless, but never silently
+                    log.warning("blob chart fetch failed for %s (key %s); "
+                                "rendering chartless", p.ticker, p.chart_path)
         elif p.chart_path and Path(p.chart_path).exists():
             story.append(_chart_image(p.chart_path))
             story.append(Spacer(1, 0.1 * inch))
@@ -316,8 +320,10 @@ def build_ticker_story(report: "TickerReport") -> list:
                 try:
                     story.append(_chart_image(download_bytes(r.chart_path)))
                     story.append(Spacer(1, 0.1 * inch))
-                except Exception:
-                    pass
+                except Exception:  # noqa: BLE001 -- degrade chartless, but never silently
+                    log.warning("blob chart fetch failed for %s %s (key %s); "
+                                "rendering chartless", report.ticker, r.timeframe,
+                                r.chart_path)
         elif r.chart_path and Path(r.chart_path).exists():
             story.append(_chart_image(r.chart_path))
             story.append(Spacer(1, 0.1 * inch))

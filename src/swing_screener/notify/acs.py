@@ -41,6 +41,12 @@ def send_email_acs(
     identity via ``AZURE_CLIENT_ID``). Tests pass a fake client so azure is never
     imported and the network is never touched.
     """
+    if not sender:
+        # Belt-and-braces behind transport.resolve_sender's construction guard: an
+        # empty senderAddress is a config bug, never a message worth submitting.
+        raise ValueError(
+            "ACS sender address is empty -- set SWING_ACS_SENDER to the configured "
+            "ACS MailFrom address")
     if client is None:
         # Imported LAZILY -- the azure extra is not installed in CI. Isolated
         # here so tests that inject a fake client never import azure.

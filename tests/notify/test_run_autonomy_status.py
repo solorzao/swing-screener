@@ -79,3 +79,51 @@ def test_non_deep_digest_has_no_gate_status_line(tmp_path, monkeypatch):
     assert res.sent is True
     assert "Autonomy gate" not in sent[-1]["text"]   # non-deep digest is unchanged
     assert "Autonomy gate" not in sent[-1]["html"]
+
+
+def test_deep_digest_reads_the_gate_twice_and_exit_alerts_once(tmp_path, monkeypatch):
+    """Seam-count pin (2026-07-17 audit M4e): a deep digest reads the autonomy
+    gate exactly TWICE -- the pre-build earned-nudge-bound snapshot, then ONE
+    shared post-scoring read feeding both the countdown footer and the health
+    line -- and queries pending_exit_alerts exactly ONCE (send_digest threads
+    its list into _emit_pending_exit_alert instead of re-querying)."""
+    from swing_screener.notify import select as sel_mod
+    from swing_screener.pipeline import autonomy as autonomy_mod
+
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS", "1")
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS_TOP_N", "1")
+    monkeypatch.delenv("SWING_DEEP_ANALYSIS_KINDS", raising=False)
+    url = f"sqlite:///{tmp_path / 'count.sqlite'}"
+    _seed(url, n=1)
+    sent = []
+
+    gate_calls: list[int] = []
+    real_gate = autonomy_mod.autonomy_gate
+
+    def counting_gate(*a, **kw):
+        gate_calls.append(1)
+        return real_gate(*a, **kw)
+
+    monkeypatch.setattr(run, "autonomy_gate", counting_gate)
+
+    alert_calls: list[int] = []
+    real_alerts = sel_mod.pending_exit_alerts
+
+    def counting_alerts(*a, **kw):
+        alert_calls.append(1)
+        return real_alerts(*a, **kw)
+
+    monkeypatch.setattr(sel_mod, "pending_exit_alerts", counting_alerts)
+
+    res = run.send_digest(**_kwargs(
+        tmp_path, url, sent,
+        deep_analyze_fn=lambda f, **kw: SignalAnalysis(
+            core_reason=f"deep {f.ticker}", rationale="body"),
+        chart_bytes_loader=lambda p: None,
+        fundamentals_fn=lambda t: Fundamentals(ticker=t, ok=False),
+        news_fn=lambda t: [], market_trend_fn=lambda: None,
+        edge_dir=tmp_path / "noedge"))
+
+    assert res.sent is True
+    assert len(gate_calls) == 2, f"expected 2 gate reads, saw {len(gate_calls)}"
+    assert len(alert_calls) == 1, f"expected 1 exit-alert query, saw {len(alert_calls)}"

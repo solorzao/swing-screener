@@ -284,3 +284,20 @@ def _to_proposal(intent):
         ticker=intent.ticker, side=intent.side, limit_price=intent.limit_price,
         shares=intent.shares, stop=intent.stop, target=intent.target,
         conviction=intent.conviction, play_type=intent.play_type)
+
+
+def test_instruction_respects_the_stored_side():
+    """instruction() used to hardcode "Buy" regardless of the stored side; a short
+    proposal (OrderIntent's side vocabulary is long/short) must render Sell and
+    flip the limit bound (2026-07-17 audit M4c)."""
+    short = ProposedOrder(
+        ticker="AMD", side="short", limit_price=101.0, shares=40, stop=95.0,
+        target=110.0, conviction="high", play_type="continuation")
+    line = short.instruction()
+    assert line.startswith("Sell AMD")
+    assert "limit >= $101.00" in line
+    # the shipped long side still renders the exact Buy instruction
+    long_side = ProposedOrder(
+        ticker="AMD", side="long", limit_price=101.0, shares=40, stop=95.0,
+        target=110.0, conviction="high", play_type="continuation")
+    assert long_side.instruction().startswith("Buy AMD — limit <= $101.00")
