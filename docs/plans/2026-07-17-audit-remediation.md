@@ -119,7 +119,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
   > NOTE: `update_trade` DELETED. `latest_signals` SKIPPED per the zero-reference tripwire: five external test call sites (tests/pipeline/test_run.py:131,234-235; tests/test_storage_blob.py:110,153 — read-back helpers, not its own tests) plus the runnable snippet in docs/running-locally.md:68. Deleting it needs an authorized test-rewrite pass (same shape as L6's).
 - [x] L3 `fetch_universe` + `fetch_vix`
 - [x] L4 `rank_bucket` / `score_bucket` wrappers
-- [ ] L5 `total_unrealized_pl`
+- [x] L5 `total_unrealized_pl`
 - [ ] L6 `analyze_ticker` wrapper (rewrite its 5 test call sites)
 - [ ] L7 `discipline.py` ImportError fallback
 - [ ] L8 `add_thesis` writer (table stays)
