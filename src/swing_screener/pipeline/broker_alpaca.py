@@ -59,6 +59,11 @@ _PAPER_MARKER = "paper-api.alpaca.markets"
 
 _DEFAULT_TIMEOUT = httpx.Timeout(30.0)
 
+#: Max page size for ``GET /v2/orders`` (Alpaca's default is 50, max 500). One response
+#: never carries more than this, so ``list_open_orders`` must page until a short page --
+#: otherwise a busy day's disarm sweep silently misses every order past the boundary.
+_ORDERS_PAGE_LIMIT = 500
+
 #: Alpaca's order-status vocabulary -> ours. Statuses not listed fall back to ``"new"``
 #: (treat-as-open) so the reconciler keeps watching an order in a state we didn't model.
 _STATUS_MAP: dict[str, str] = {
@@ -146,9 +151,40 @@ class AlpacaBroker:
         return self._to_order(self._request_json("GET", f"/v2/orders/{broker_order_id}"))
 
     def list_open_orders(self) -> list[BrokerOrder]:
-        """Every order still working at the venue: ``GET /v2/orders?status=open``."""
-        data = self._request_json("GET", "/v2/orders", params={"status": "open"})
-        return [self._to_order(o) for o in data]
+        """Every order still working at the venue: ``GET /v2/orders?status=open``, PAGED.
+
+        Alpaca caps one response at ``limit`` orders (default 50, max 500); unpaginated,
+        disarm's cancel sweep and stop-protection restore would silently miss every order
+        past the boundary. We ask for the max page in ``direction=asc`` and follow
+        ``after=<last order's submitted_at>`` until a short (or empty) page. Ids are
+        deduped across boundaries (an inclusive cursor may re-serve the boundary order),
+        and a cursor that fails to advance ends the loop rather than re-asking forever.
+        """
+        orders: list[BrokerOrder] = []
+        seen: set[str] = set()
+        after: str | None = None
+        while True:
+            params: dict[str, Any] = {
+                "status": "open",
+                "direction": "asc",
+                "limit": _ORDERS_PAGE_LIMIT,
+            }
+            if after is not None:
+                params["after"] = after
+            data = self._request_json("GET", "/v2/orders", params=params)
+            for raw in data:
+                order_id = str(raw["id"])
+                if order_id in seen:
+                    continue
+                seen.add(order_id)
+                orders.append(self._to_order(raw))
+            if len(data) < _ORDERS_PAGE_LIMIT:
+                break  # a short page is the last page
+            next_after = data[-1].get("submitted_at")
+            if next_after is None or next_after == after:
+                break  # cursor cannot advance; re-asking would loop forever
+            after = next_after
+        return orders
 
     def get_positions(self) -> list[BrokerPosition]:
         """All open positions: ``GET /v2/positions`` (qty/avg_entry_price coerced from strings)."""

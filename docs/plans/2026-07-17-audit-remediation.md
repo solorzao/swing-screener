@@ -49,7 +49,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 **Phase A — `fix/live-money-safety`**
 - [x] A1 account-scoped same-day delete + regression tests
 - [x] A2 ExecutionLog idempotency status upgrade + adapter load-before-act guards
-- [ ] A3 paginated `list_open_orders`
+- [x] A3 paginated `list_open_orders`
 
 **Phase B — `fix/queue-claim-datetime`**
 - [ ] B1 whole-second claim tokens in both claim functions
