@@ -2,6 +2,7 @@ from datetime import datetime
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 from swing_screener.options.autograde import (
     HINT_KEYS,
@@ -100,6 +101,14 @@ def test_machine_and_hint_keys_partition_the_checklist() -> None:
     covered = set(MACHINE_KEYS) | set(HINT_KEYS) | {"chk_pattern_clean", "chk_risk_sized"}
     assert covered == canon
     assert set(MACHINE_KEYS).isdisjoint(HINT_KEYS)
+
+
+def test_direction_must_be_long_or_short() -> None:
+    # "buy" must never be silently graded as short (the is_long fallthrough);
+    # the pure-module contract raises, T2's router turns it into a 422.
+    for bad in ("buy", "Long", "sell", ""):
+        with pytest.raises(ValueError, match="direction"):
+            _run(direction=bad)
 
 
 def test_new_config_knobs_have_documented_defaults() -> None:
@@ -297,6 +306,35 @@ def test_in_progress_last_5m_bar_is_excluded() -> None:
     assert _by_key(_run(bars_5m=bars, now=after))["chk_confirmation_candle"].state == "fail"
 
 
+# ---- 5m index guard --------------------------------------------------------
+
+def test_non_datetime_5m_index_degrades_to_unavailable() -> None:
+    # A RangeIndex would flow into pd.Timestamp(int) -> 1970 stamps -> every bar
+    # reads "complete" with 00:00 facts. All three 5m items must degrade instead.
+    n = 105
+    frame = pd.DataFrame({
+        "open": [100.0] * n, "high": [101.0] * n, "low": [99.0] * n,
+        "close": [100.5] * n, "volume": [1_000_000.0] * n,
+    })  # default RangeIndex
+    g = _run(daily_bars=_uptrend_daily(), bars_5m=frame)
+    by = _by_key(g)
+    for key in ("chk_m5_agrees", "chk_volume_confirming", "chk_confirmation_candle"):
+        assert by[key].state == "unavailable", key
+        assert "not datetimed" in by[key].fact, key
+    assert not any("00:00" in v.fact for v in g.items)
+
+
+def test_m5_fact_derives_bar_floor_from_ema_spans() -> None:
+    # The "need >=N" floor is 2x the slowest EMA span, not a hardcoded 100.
+    cfg = GexConfig(ema_spans=(3, 5, 7))
+    g = autograde(
+        "SPY", "long", "breakout", 100.0, 99.0, 103.0, None,
+        cfg=cfg, daily_bars=_uptrend_daily(),
+        bars_5m=_uptrend_5m(n=10), snapshot=None, now=lambda: _NOW,
+    )
+    assert "14" in _by_key(g)["chk_m5_agrees"].fact  # 7 * 2, not 100
+
+
 # ---- verdict precedence ----------------------------------------------------
 
 def test_full_ticket_is_yes() -> None:
@@ -351,6 +389,12 @@ def test_stop_hint_reads_behind_structure() -> None:
     g = _run(direction="long", stop=147.0, snapshot=_snap(put_wall=148.0),
              bars_5m=_uptrend_5m())
     assert "behind structure" in g.hints[1]
+
+
+def test_stop_hint_says_at_when_stop_equals_the_wall() -> None:
+    # stop exactly ON the put wall is neither below nor above it
+    g = _run(direction="long", stop=148.0, snapshot=_snap(put_wall=148.0), bars_5m=None)
+    assert "at put wall 148.00" in g.hints[1]
 
 
 def test_stop_hint_honest_when_nothing_to_measure() -> None:

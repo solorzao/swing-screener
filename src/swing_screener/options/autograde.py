@@ -115,20 +115,25 @@ def _daily_stack(daily_bars: pd.DataFrame | None, cfg: GexConfig) -> StackState 
     return stack_state(daily_bars["close"], cfg)
 
 
-def _prep_5m(bars_5m: pd.DataFrame | None) -> pd.DataFrame | None:
+def _prep_5m(bars_5m: pd.DataFrame | None) -> tuple[pd.DataFrame | None, str]:
     """Normalize a 5m OHLCV frame to a naive US/Eastern index (yfinance frames are
-    tz-aware, fixtures naive; settle.py normalizes the same way). None when the
-    frame is missing, empty, or not OHLCV. Copies only when a tz conversion is
-    needed, so the caller's frame is never mutated."""
+    tz-aware, fixtures naive; settle.py normalizes the same way). Returns
+    ``(frame, "")``, or ``(None, reason)`` -- the honest per-item fact -- when the
+    frame is missing, empty, not OHLCV, or not datetime-indexed (a RangeIndex
+    would coerce to 1970 stamps and read every bar as "complete": fabrication).
+    Copies only when a tz conversion is needed, so the caller's frame is never
+    mutated."""
     if bars_5m is None or bars_5m.empty:
-        return None
+        return None, "5m bars unavailable — grade by eye"
     if not {"open", "high", "low", "close", "volume"}.issubset(bars_5m.columns):
-        return None
+        return None, "5m bars not OHLCV — grade by eye"
     idx = bars_5m.index
-    if isinstance(idx, pd.DatetimeIndex) and idx.tz is not None:
+    if not isinstance(idx, pd.DatetimeIndex):
+        return None, "5m index not datetimed — grade by eye"
+    if idx.tz is not None:
         bars_5m = bars_5m.copy()
         bars_5m.index = idx.tz_convert("America/New_York").tz_localize(None)
-    return bars_5m
+    return bars_5m, ""
 
 
 def _last_completed_pos(frame: pd.DataFrame, now: datetime) -> int | None:
@@ -186,11 +191,15 @@ def _item_stack_ordered(is_long: bool, daily_bars: pd.DataFrame | None,
                        f"EMA {spans} not {side}-ordered ({f:.2f}/{m:.2f}/{s:.2f})")
 
 
-def _item_m5(is_long: bool, stack: StackState | None,
-             frame5: pd.DataFrame | None, cfg: GexConfig) -> ItemVerdict:
+def _item_m5(is_long: bool, stack: StackState | None, frame5: pd.DataFrame | None,
+             no_5m: str, cfg: GexConfig) -> ItemVerdict:
     key = "chk_m5_agrees"
-    if frame5 is None or len(frame5) < max(cfg.ema_spans) * 2:
-        return ItemVerdict(key, "unavailable", "5m bars unavailable (need ≥100) — grade by eye")
+    if frame5 is None:
+        return ItemVerdict(key, "unavailable", no_5m)
+    floor = max(cfg.ema_spans) * 2  # below this, stack_state can only read tangled
+    if len(frame5) < floor:
+        return ItemVerdict(key, "unavailable",
+                           f"only {len(frame5)} 5m bars (need ≥{floor}) — grade by eye")
     if stack is None:
         return ItemVerdict(key, "unavailable", "daily bias unavailable — can't confirm 5m agreement")
     m5 = stack_state(frame5["close"], cfg)
@@ -238,10 +247,10 @@ def _item_regime(play_type: str, snapshot: _Snapshot | None, snap_today: bool) -
 
 
 def _item_volume(is_long: bool, frame5: pd.DataFrame | None, pos: int | None,
-                 cfg: GexConfig) -> ItemVerdict:
+                 no_5m: str, cfg: GexConfig) -> ItemVerdict:
     key = "chk_volume_confirming"
     if frame5 is None:
-        return ItemVerdict(key, "unavailable", "5m bars unavailable — grade by eye")
+        return ItemVerdict(key, "unavailable", no_5m)
     if pos is None:
         return ItemVerdict(key, "unavailable", "no completed 5m bar yet — grade by eye")
     if pos < cfg.vol_lookback:
@@ -283,12 +292,12 @@ def _item_rr(is_long: bool, entry: float | None, stop: float | None,
 
 
 def _item_confirmation(is_long: bool, frame5: pd.DataFrame | None,
-                       pos: int | None) -> ItemVerdict:
+                       pos: int | None, no_5m: str) -> ItemVerdict:
     # v1 is deliberately simple: the last completed 5m bar closed in the setup's
     # direction. This is the item that separates an A+ from a B.
     key = "chk_confirmation_candle"
     if frame5 is None:
-        return ItemVerdict(key, "unavailable", "5m bars unavailable — grade by eye")
+        return ItemVerdict(key, "unavailable", no_5m)
     if pos is None:
         return ItemVerdict(key, "unavailable", "no completed 5m bar yet — grade by eye")
     o = float(frame5["open"].iloc[pos])
@@ -366,9 +375,12 @@ def _stop_hint(is_long: bool, stop: float | None, snapshot: _Snapshot | None,
 
     def _rel(level: float) -> tuple[bool, str]:
         # "beyond" = the stop sits further from entry than structure: below a long's
-        # support, above a short's resistance.
+        # support, above a short's resistance. Exactly ON the level counts as
+        # protected but reads "at" -- "below the wall" would be a false fact.
         beyond = stop <= level if is_long else stop >= level
-        if is_long:
+        if stop == level:
+            word = "at"
+        elif is_long:
             word = "below" if beyond else "above"
         else:
             word = "above" if beyond else "below"
@@ -414,25 +426,31 @@ def autograde(
     ``unavailable``/``needs_input`` rather than fabricating a verdict. ``now``
     defaults to ``chain._now_eastern`` (naive US/Eastern) and is injectable so the
     same-day snapshot gate and the completed-bar cutoff can be frozen in tests.
+
+    ``direction`` outside {"long", "short"} raises ``ValueError`` -- anything else
+    would silently grade the ticket as short (``checklist.grade``'s posture:
+    raise rather than mis-grade; T2's router turns it into a 422).
     """
+    if direction not in ("long", "short"):
+        raise ValueError(f"direction must be 'long' or 'short', got {direction!r}")
     clock = (now or _now_eastern)()
     today = clock.date()
     is_long = direction == "long"
 
     stack = _daily_stack(daily_bars, cfg)
-    frame5 = _prep_5m(bars_5m)
+    frame5, no_5m = _prep_5m(bars_5m)
     pos = _last_completed_pos(frame5, clock) if frame5 is not None else None
     snap_today = snapshot is not None and _snap_date(snapshot) == today
 
     items = (
         _item_bias(is_long, stack),
         _item_stack_ordered(is_long, daily_bars, cfg),
-        _item_m5(is_long, stack, frame5, cfg),
+        _item_m5(is_long, stack, frame5, no_5m, cfg),
         _item_levels_marked(snapshot, snap_today),
         _item_regime(play_type, snapshot, snap_today),
-        _item_volume(is_long, frame5, pos, cfg),
+        _item_volume(is_long, frame5, pos, no_5m, cfg),
         _item_rr(is_long, entry, stop, target, cfg),
-        _item_confirmation(is_long, frame5, pos),
+        _item_confirmation(is_long, frame5, pos, no_5m),
     )
     hints = (
         _pivot_hint(entry, pivot_level, snapshot, snap_today, cfg),
