@@ -40,6 +40,28 @@ def test_reports_and_breaches_are_kind_scoped(tmp_path: Path):
     assert breaches[0]["severity"] == "alert" and breaches[0]["acknowledged"] is False
 
 
+def test_one_corrupt_findings_row_never_500s_the_lists(tmp_path: Path):
+    """Per-row degrade (the cockpit posture): one corrupt ``findings_json`` row is
+    SKIPPED -- reports and breaches still serve every parseable row, never a 500."""
+    client, engine = _app(tmp_path)
+    _seed(engine)
+    with Session(engine) as s:
+        s.add(SystemAudit(kind="weekly", period_from=date(2026, 7, 13),
+                          period_to=date(2026, 7, 19), severity="info",
+                          findings_json="{not json",
+                          generated_at=datetime(2026, 7, 19, 1, 0)))
+        s.add(SystemAudit(kind="breach", period_from=date(2026, 7, 9),
+                          period_to=date(2026, 7, 9), breach_key="cap:2026-07-09",
+                          severity="alert", findings_json="{not json",
+                          generated_at=datetime(2026, 7, 9, 1, 0)))
+        s.commit()
+    reports = client.get("/api/audit/reports")
+    breaches = client.get("/api/audit/breaches")
+    assert reports.status_code == 200 and breaches.status_code == 200
+    assert [r["period_to"] for r in reports.json()] == ["2026-07-12"]  # good row only
+    assert [b["breach_key"] for b in breaches.json()] == ["cap:2026-07-08"]
+
+
 def test_ack_requires_header_and_sets_flag(tmp_path: Path):
     client, engine = _app(tmp_path)
     bid = _seed(engine)

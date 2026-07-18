@@ -203,6 +203,31 @@ def test_heartbeats_endpoint_returns_states(tmp_path: Path) -> None:
     assert beats["daily digest"]["last"] is not None
 
 
+def test_heartbeats_survive_a_verdicts_sidecar_vanishing_mid_glob(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An in-place sidecar rewrite (reflect's --verdicts-only replaces the file)
+    can vanish a globbed path before its stat -- the per-file guard skips it
+    (events.py's _file_watermark posture) instead of 500ing /api/heartbeats,
+    and the surviving sidecar still feeds the reflection-verdicts beat."""
+    client = _client(tmp_path)  # built BEFORE the stat patch: app setup stats freely
+    (tmp_path / "continuation.verdicts.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "reversal.verdicts.json").write_text("[]", encoding="utf-8")
+    real_stat = Path.stat
+
+    def vanishing_stat(self: Path, **kwargs: object) -> os.stat_result:
+        if self.name == "reversal.verdicts.json":
+            raise FileNotFoundError(str(self))  # rewritten mid-glob
+        return real_stat(self, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "stat", vanishing_stat)
+    r = client.get("/api/heartbeats")
+    assert r.status_code == 200
+    beats = {b["name"]: b for b in r.json()}
+    assert beats["reflection verdicts"]["state"] == "up"   # fresh surviving file
+    assert beats["reflection verdicts"]["last"] is not None
+
+
 def test_heartbeats_wire_the_gh_poller_from_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2204,6 +2229,28 @@ def test_positions_caps_off_mode_counts_the_displayed_rows(
     assert caps["mode"] == "off"
     assert caps["account"] == "research"  # the label field keeps its old meaning
     assert caps["concurrent"]["used"] == 2  # exactly the two rows rendered above
+
+
+def test_positions_caps_off_mode_loss_gauge_excludes_the_shadow_grid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The caps-honesty rule, applied to ``loss_r`` (the same 2026-07 finding the
+    ``concurrent`` gauge already fixed): under mode 'off' nothing enforces the
+    daily-loss cap and OFF_ACCOUNT is merely the research LABEL, so summing it
+    renders the INVISIBLE shadow grid's closes as 'loss used' -- a red gauge
+    with zero corresponding trades on this screen. It must read an honest 0."""
+    monkeypatch.delenv("SWING_EXECUTION_MODE", raising=False)  # default: off
+    client, engine = _positions_client(tmp_path)
+    latest = date(2026, 7, 8)
+    with Session(engine) as s:
+        s.add(_signal_row(run_date=latest))
+        s.add(_live_paper(ticker="R1", account="research", status="closed",
+                          exit_date=latest, realized_r=-3.0))  # shadow-grid close
+        s.commit()
+    caps = client.get("/api/positions").json()["caps"]
+    assert caps["mode"] == "off"
+    assert caps["run_date"] == "2026-07-08"
+    assert caps["loss_r"]["used"] == 0.0  # the invisible book contributes NOTHING
 
 
 def test_account_for_mode_covers_every_settings_mode() -> None:

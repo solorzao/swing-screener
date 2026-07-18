@@ -98,13 +98,13 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 - [x] I1 one migration: `ix_signals_run_date`, `ix_paper_trades_status_account`, `ix_exit_events_created_date`, filtered-unique `import_key`
 
 **Phase J — `fix/cockpit-api-degrade`**
-- [ ] J1 per-row degrade on corrupt JSON rows
-- [ ] J2 weaknesses `items_json` shape
-- [ ] J3 heartbeats sidecar stat guard
-- [ ] J4 GEX POST 503 posture
-- [ ] J5 atomic manual close
-- [ ] J6 `loss_r` gauge research-grid scoping
-- [ ] J7 `spend_rows_since` SQL cutoff
+- [x] J1 per-row degrade on corrupt JSON rows
+- [x] J2 weaknesses `items_json` shape
+- [x] J3 heartbeats sidecar stat guard
+- [x] J4 GEX POST 503 posture
+- [x] J5 atomic manual close
+- [x] J6 `loss_r` gauge research-grid scoping
+- [x] J7 `spend_rows_since` SQL cutoff
 
 **Phase K — `fix/cockpit-ui-polish`**
 - [x] K1 surfaced errors (tag-confirm + acknowledge x2)

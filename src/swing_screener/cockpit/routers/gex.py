@@ -35,6 +35,23 @@ from swing_screener.options.stats import by_grade, lab_summary, open_trade_count
 
 _EASTERN = ZoneInfo("America/New_York")
 
+# The routine yfinance/network failure classes on the build/settle POSTs: the
+# default fetch seams raise RuntimeError after retry exhaustion / empty bars
+# (chain._fetch_chain_raw, run._default_daily/_default_5m), and raw transport
+# errors are OSError subclasses (requests' RequestException is an IOError;
+# sockets and timeouts too). A dead upstream is a 503 wearing the exception
+# CLASS only (preflight.broker_error_detail's leak posture -- fetcher messages
+# can embed hosts and URLs); anything outside this set is a genuine bug and
+# still 500s. SQLAlchemyError is neither, so DB failures keep riding the
+# app-level handler's own 503.
+_UPSTREAM_ERRORS = (OSError, RuntimeError)
+
+
+def _upstream_503(exc: Exception) -> HTTPException:
+    """The upstream-failure wire shape: 503, class name only, never the message."""
+    return HTTPException(
+        status_code=503, detail=f"upstream error ({type(exc).__name__})")
+
 
 def _num(v: float | None) -> float | None:
     """None-safe finite guard: pass None through, null out inf/nan on real values.
@@ -259,9 +276,15 @@ def build_gex_router(
 
     @router.post("/api/gex/plan/build", dependencies=[Depends(_require_cockpit)])
     def build(body: BuildBody, session: Session = Depends(_session)) -> dict[str, object]:
+        """Build the watchlist plans, or analyze one ticker. A routine upstream
+        (yfinance) failure is a 503 with the class name only (``_upstream_503``);
+        the watchlist path already degrades per ticker inside ``run_plan``."""
         if body.ticker:
-            levels, liq = run_analyze(body.ticker, cfg=cfg, snapshotter=snapshotter,
-                                      save=True, session=session)
+            try:
+                levels, liq = run_analyze(body.ticker, cfg=cfg, snapshotter=snapshotter,
+                                          save=True, session=session)
+            except _UPSTREAM_ERRORS as exc:
+                raise _upstream_503(exc) from exc
             action_nonce.bump()
             return {"analyzed": {
                 "underlying": body.ticker, "regime": levels.regime,
@@ -286,8 +309,11 @@ def build_gex_router(
                     thin_reasons=liq.reasons,
                 ),
             }}
-        plans = run_plan(session, cfg=cfg, snapshotter=snapshotter,
-                         daily_bars=daily_bars)  # type: ignore[arg-type]
+        try:
+            plans = run_plan(session, cfg=cfg, snapshotter=snapshotter,
+                             daily_bars=daily_bars)  # type: ignore[arg-type]
+        except _UPSTREAM_ERRORS as exc:
+            raise _upstream_503(exc) from exc
         action_nonce.bump()
         return {"plans": [_plan_dict(p) for p in plans]}
 
@@ -371,10 +397,15 @@ def build_gex_router(
         """Sweep due open lab trades through the CLI's settle path (``run_settle``
         -- same logic, not duplicated). Idempotent: nothing due is still a 200
         with ``settled: 0``, never an error. Trades whose underlying has no bars
-        yet stay open and count in ``open_remaining``; untouched trades whose
-        session is incomplete (intraday sweep) stay open and count in
-        ``skipped_incomplete_session``."""
-        result = run_settle(session, cfg=cfg, bars_fetcher=bars_5m)
+        yet stay open and count in ``open_remaining`` (``run_settle`` degrades
+        per-underlying fetch failures itself); untouched trades whose session
+        is incomplete (intraday sweep) stay open and count in
+        ``skipped_incomplete_session``. An upstream error that ESCAPES the
+        sweep is a 503 with the class name only (``_upstream_503``)."""
+        try:
+            result = run_settle(session, cfg=cfg, bars_fetcher=bars_5m)
+        except _UPSTREAM_ERRORS as exc:
+            raise _upstream_503(exc) from exc
         if result.settled:
             action_nonce.bump()  # only when a write actually landed
         return {

@@ -8,7 +8,8 @@ here that changes config or money; the Auditor reports, the human acts.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterator
+import logging
+from collections.abc import Callable, Iterable, Iterator
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -16,6 +17,8 @@ from sqlalchemy.orm import Session
 
 from swing_screener.cockpit.common import ActionNonce, _require_cockpit, _utc_iso
 from swing_screener.db.models import SystemAudit
+
+log = logging.getLogger(__name__)
 
 
 def _audit_dict(a: SystemAudit) -> dict[str, object]:
@@ -35,6 +38,18 @@ def _audit_dict(a: SystemAudit) -> dict[str, object]:
     }
 
 
+def _audit_dicts(rows: Iterable[SystemAudit]) -> list[dict[str, object]]:
+    """The list form with per-row degrade: a corrupt ``findings_json`` row is
+    skipped (warned, with its id), so one bad row never 500s a whole feed."""
+    out: list[dict[str, object]] = []
+    for a in rows:
+        try:
+            out.append(_audit_dict(a))
+        except ValueError:  # corrupt findings_json: per-row degrade, never a 500
+            log.warning("skipping system audit %s: corrupt findings_json", a.id)
+    return out
+
+
 def build_audit_router(
     *,
     _session: Callable[[], Iterator[Session]],
@@ -50,7 +65,7 @@ def build_audit_router(
             select(SystemAudit).where(SystemAudit.kind == "weekly")
             .order_by(SystemAudit.id.desc())
         )
-        return [_audit_dict(a) for a in rows]
+        return _audit_dicts(rows)
 
     @router.get("/api/audit/breaches")
     def breaches(session: Session = Depends(_session)) -> list[dict[str, object]]:
@@ -59,7 +74,7 @@ def build_audit_router(
             select(SystemAudit).where(SystemAudit.kind == "breach")
             .order_by(SystemAudit.id.desc())
         )
-        return [_audit_dict(a) for a in rows]
+        return _audit_dicts(rows)
 
     @router.post("/api/audit/{audit_id}/ack", dependencies=[Depends(_require_cockpit)])
     def acknowledge(

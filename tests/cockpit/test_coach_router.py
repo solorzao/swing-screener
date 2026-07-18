@@ -69,6 +69,22 @@ def test_confirm_tag_applies_only_a_parked_proposal(tmp_path: Path):
         assert link.source == "analyst"      # confirmed -> analyst provenance
 
 
+def test_one_corrupt_facts_row_never_500s_the_list(tmp_path: Path):
+    """Per-row degrade (the cockpit posture): one corrupt ``facts_json`` row is
+    SKIPPED -- the list still serves every parseable review, never a 500."""
+    client, engine = _app(tmp_path)
+    good = _review(engine)
+    with Session(engine) as s:
+        s.add(JournalReview(identity_key="trade_close:manual_equity:2",
+                            kind="trade_close", book="manual_equity", trade_id=2,
+                            facts_json="{not json", source="analyst",
+                            generated_at=datetime(2026, 7, 12, 11, 0)))
+        s.commit()
+    r = client.get("/api/coach/reviews?book=manual_equity")
+    assert r.status_code == 200
+    assert [row["id"] for row in r.json()] == [good]  # the corrupt row is skipped
+
+
 def test_weaknesses_returns_latest_or_empty(tmp_path: Path):
     client, engine = _app(tmp_path)
     assert client.get("/api/coach/weaknesses").json()["n_reviews"] == 0
@@ -80,3 +96,19 @@ def test_weaknesses_returns_latest_or_empty(tmp_path: Path):
         s.commit()
     body = client.get("/api/coach/weaknesses").json()
     assert body["items"][0]["weakness"] == "exits early" and body["generated_at"]
+
+
+def test_weaknesses_accepts_the_model_default_list_shape(tmp_path: Path):
+    """The WeaknessesProfile column default is ``"[]"`` (a bare items LIST) while
+    the builder writes the full dict -- a row born off column defaults must still
+    serve the documented shape, never TypeError into a 500."""
+    client, engine = _app(tmp_path)
+    with Session(engine) as s:
+        s.add(WeaknessesProfile(generated_at=datetime(2026, 7, 12, 12, 0)))
+        s.commit()
+    r = client.get("/api/coach/weaknesses")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["items"] == []
+    assert body["thin_data"] is True and body["n_reviews"] == 0
+    assert body["generated_at"] is not None

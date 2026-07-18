@@ -3,6 +3,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -89,6 +90,41 @@ def test_build_single_ticker_analyze(tmp_path: Path) -> None:
     an = r.json()["analyzed"]
     assert an["underlying"] == "NVDA"
     assert an["thin_chain"] is True  # 2-strike fixture trips the guard
+
+
+def test_build_upstream_failure_is_a_503_class_name_only(tmp_path: Path) -> None:
+    """A routine yfinance outage on the ad-hoc analyze path must leave as the
+    cockpit's 503 with the exception CLASS only -- fetcher messages embed hosts
+    and URLs (the broker_error_detail leak posture), and a dead upstream is not
+    a server bug."""
+    def dead_snapshotter(ticker: str, cfg: object) -> ChainSnapshot:
+        raise RuntimeError(
+            "chain snapshot failed for NVDA after 3 tries: 502 from "
+            "https://query1.finance.yahoo.com/v7/finance?crumb=s3cret")
+    url = _db_url(tmp_path)
+    get_engine(url)
+    client = TestClient(create_app(
+        url, edge_dir=tmp_path, gex_snapshotter=dead_snapshotter,
+        gex_daily_bars=_fake_daily))
+    r = client.post("/api/gex/plan/build", json={"ticker": "NVDA"}, headers=_HDR)
+    assert r.status_code == 503
+    assert r.json()["detail"] == "upstream error (RuntimeError)"
+    assert "yahoo" not in r.text and "s3cret" not in r.text  # no message on the wire
+
+
+def test_build_genuine_bug_still_500s(tmp_path: Path) -> None:
+    """The 503 posture covers UPSTREAM failure classes only: a genuine bug in a
+    seam (here a TypeError) must still surface as a 500, never masquerade as a
+    dead data source."""
+    def buggy_snapshotter(ticker: str, cfg: object) -> ChainSnapshot:
+        raise TypeError("boom")
+    url = _db_url(tmp_path)
+    get_engine(url)
+    client = TestClient(create_app(
+        url, edge_dir=tmp_path, gex_snapshotter=buggy_snapshotter,
+        gex_daily_bars=_fake_daily), raise_server_exceptions=False)
+    r = client.post("/api/gex/plan/build", json={"ticker": "NVDA"}, headers=_HDR)
+    assert r.status_code == 500
 
 
 def test_grade_and_list_setups(tmp_path: Path) -> None:
@@ -291,6 +327,25 @@ def test_settle_endpoint_sweeps_due_trades_and_is_idempotent(tmp_path: Path) -> 
 def test_settle_requires_cockpit_header(tmp_path: Path) -> None:
     client, _ = _settle_client(tmp_path, _target_hit_bars())
     assert client.post("/api/gex/settle").status_code == 403
+
+
+def test_settle_upstream_failure_is_a_503_class_name_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run_settle already degrades per-underlying fetch failures internally
+    (trades stay open, 200 with settled: 0); this pins the wire posture should
+    an upstream error ESCAPE the sweep: the cockpit's 503 with the class name
+    only, never the message (it can embed hosts and URLs)."""
+    client, _ = _settle_client(tmp_path, _target_hit_bars())
+
+    def dead_settle(*args: object, **kwargs: object) -> object:
+        raise ConnectionError("dial query1.finance.yahoo.com:443: timed out")
+
+    monkeypatch.setattr("swing_screener.cockpit.routers.gex.run_settle", dead_settle)
+    r = client.post("/api/gex/settle", headers=_HDR)
+    assert r.status_code == 503
+    assert r.json()["detail"] == "upstream error (ConnectionError)"
+    assert "yahoo" not in r.text  # no message text on the wire
 
 
 def test_stats_payload_carries_open_trade_count(tmp_path: Path) -> None:

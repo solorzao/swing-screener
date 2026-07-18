@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from swing_screener.db import repo
-from swing_screener.db.models import PaperTrade, Trade
+from swing_screener.db.models import ExitEvent, PaperTrade, Trade
 from swing_screener.db.session import get_engine
 
 
@@ -82,6 +82,39 @@ def test_close_trade_with_event_carries_both_rows():
                 s, t.id, exit_date=date(2024, 1, 10), exit_price=1.0,
                 exit_reason="x", event_reason="manual_close", event_message="",
                 created_date=date(2024, 1, 10))
+
+
+def test_concurrent_close_cannot_overwrite_the_recorded_exit(tmp_path):
+    """The lost-update window: a session that read the trade OPEN (a stale
+    identity map -- exactly what two concurrent cockpit requests hold on Azure
+    SQL) must NOT overwrite an exit another session recorded in between. The
+    close is an atomic ``UPDATE ... WHERE status='open'``: the loser's update
+    matches zero rows and raises AlreadyClosedError (the endpoint's 409), the
+    first close's exit fields and its single ExitEvent stand."""
+    engine = get_engine(f"sqlite:///{(tmp_path / 'race.db').as_posix()}")
+    with Session(engine) as s:
+        tid = repo.add_trade(s, _trade()).id
+    with Session(engine) as s1, Session(engine) as s2:
+        # s1's stale read -- the strong reference matters: the endpoint holds one
+        # (its `pre` local), and without it the weak identity map would GC the
+        # instance and quietly re-select, hiding the very window under test.
+        stale = s1.get(Trade, tid)
+        assert stale is not None and stale.status == "open"
+        repo.close_trade_with_event(
+            s2, tid, exit_date=date(2024, 1, 9), exit_price=108.0,
+            exit_reason="target", event_reason="manual_close",
+            event_message="first close", created_date=date(2024, 1, 9))
+        with pytest.raises(repo.AlreadyClosedError):
+            repo.close_trade_with_event(
+                s1, tid, exit_date=date(2024, 1, 10), exit_price=1.0,
+                exit_reason="x", event_reason="manual_close",
+                event_message="second close", created_date=date(2024, 1, 10))
+    with Session(engine) as s:
+        t = s.get(Trade, tid)
+        assert t.exit_price == 108.0 and t.exit_date == date(2024, 1, 9)
+        assert t.exit_reason == "target"                # the first close stands
+        events = list(s.scalars(select(ExitEvent)))
+        assert [e.message for e in events] == ["first close"]  # exactly ONE event
 
 
 def test_delete_paper_trades_opened_on_only_touches_research():
