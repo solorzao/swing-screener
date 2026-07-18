@@ -57,7 +57,11 @@ def _download(ticker: str, interval: str, period: str) -> pd.DataFrame:
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     df = df.rename(columns=str.lower)
-    return df[_COLS]
+    # One NaN close poisons the HA open recursion for every subsequent bar
+    # (silently killing all detectors for the ticker) -- drop incomplete rows
+    # here so every consumer is covered (the PR #104 class, fixed at the seam).
+    # Volume is deliberately excluded: index tickers (^VIX) have no real volume.
+    return df[_COLS].dropna(subset=["open", "high", "low", "close"])
 
 
 def fetch_bars(ticker: str, interval: str, *, cache_dir: Path, period: str = "5y",

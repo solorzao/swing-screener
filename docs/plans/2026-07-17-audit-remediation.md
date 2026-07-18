@@ -56,7 +56,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 - [ ] B1-verify (post-deploy) one on-demand request processes end-to-end in prod
 
 **Phase C — `fix/nan-hardening`**
-- [ ] C1 `_download` dropna + HA recovery test
+- [x] C1 `_download` dropna + HA recovery test
 - [ ] C2 NaN guards: detect ATR truthiness / `latest_close` / `avg_dollar_volume` / `_spot_from_ticker`
 - [ ] C3 NaN fundamentals rendered into analyst prompts
 

@@ -83,6 +83,57 @@ def test_corrupt_cache_falls_through_to_download(tmp_path, monkeypatch):
     assert pd.read_parquet(cache_file).shape[0] == 3
 
 
+def _yf_frame_with_nan_close(rows: int = 30, nan_at: int = 10) -> pd.DataFrame:
+    """yfinance-shaped frame (capitalized columns) with one NaN close mid-frame --
+    the 2026-07-05 NaN-holiday-close failure class."""
+    idx = pd.date_range("2024-01-01", periods=rows, freq="1D")
+    df = pd.DataFrame(
+        {"Open": [1.0 + i for i in range(rows)], "High": [2.0 + i for i in range(rows)],
+         "Low": [0.5 + i for i in range(rows)], "Close": [1.5 + i for i in range(rows)],
+         "Adj Close": [1.5 + i for i in range(rows)], "Volume": [100.0] * rows}, index=idx,
+    )
+    df.iloc[nan_at, df.columns.get_loc("Close")] = float("nan")
+    return df
+
+
+def test_download_drops_nan_ohlc_rows(monkeypatch):
+    """One NaN close must be dropped at the seam: it would otherwise poison the
+    Heiken-Ashi open recursion for every subsequent bar (NaN never leaves the
+    ha_open[i] = (ha_open[i-1] + ha_close[i-1]) / 2 chain), silently killing all
+    detectors for the ticker forever. Fixed here so every consumer is covered."""
+    frame = _yf_frame_with_nan_close(rows=30, nan_at=10)
+    monkeypatch.setattr(fetch.yf, "download", lambda *a, **k: frame)
+    out = fetch._download("TEST", "1d", "5y")
+    assert not out[["open", "high", "low", "close"]].isna().any().any()
+    assert len(out) == 29  # exactly the NaN row is gone
+    assert frame.index[10] not in out.index
+    # neighbors intact: dropping is per-row, never a truncation
+    assert out.loc[frame.index[9], "close"] == 1.5 + 9
+    assert out.loc[frame.index[11], "close"] == 1.5 + 11
+
+
+def test_download_keeps_rows_with_nan_volume(monkeypatch):
+    """Volume is deliberately NOT in the dropna subset: index tickers (^VIX) have
+    no real volume, and the HA recursion only reads OHLC -- dropping on volume
+    could wipe an otherwise-healthy frame."""
+    frame = _yf_frame_with_nan_close(rows=5, nan_at=2)
+    frame["Volume"] = float("nan")
+    monkeypatch.setattr(fetch.yf, "download", lambda *a, **k: frame)
+    out = fetch._download("^VIX", "1d", "2y")
+    assert len(out) == 4  # only the NaN-close row dropped; NaN volume survives
+
+
+def test_fetch_bars_returns_none_when_every_row_is_nan(tmp_path, monkeypatch):
+    """An all-NaN download now becomes an empty frame at the seam, which trips
+    fetch_bars' 'empty frame' check -> None (per-ticker isolation). That is the
+    correct fail-safe: no cache write, no poisoned frame handed downstream."""
+    frame = _yf_frame_with_nan_close(rows=3, nan_at=0)
+    frame[["Open", "High", "Low", "Close"]] = float("nan")
+    monkeypatch.setattr(fetch.yf, "download", lambda *a, **k: frame)
+    assert fetch.fetch_bars("DEAD", "1d", cache_dir=tmp_path, retries=2) is None
+    assert not (tmp_path / "1d").exists()  # nothing cached
+
+
 def test_avg_dollar_volume_means_close_times_volume():
     from swing_screener.data.fetch import avg_dollar_volume
     df = pd.DataFrame({"close": [10.0, 20.0], "volume": [100.0, 100.0]})
