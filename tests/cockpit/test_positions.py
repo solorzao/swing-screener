@@ -298,6 +298,28 @@ def test_positions_caps_off_mode_counts_the_displayed_rows(
     assert caps["concurrent"]["used"] == 2  # exactly the two rows rendered above
 
 
+def test_positions_caps_off_mode_loss_gauge_excludes_the_shadow_grid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The caps-honesty rule, applied to ``loss_r`` (the same 2026-07 finding the
+    ``concurrent`` gauge already fixed): under mode 'off' nothing enforces the
+    daily-loss cap and OFF_ACCOUNT is merely the research LABEL, so summing it
+    renders the INVISIBLE shadow grid's closes as 'loss used' -- a red gauge
+    with zero corresponding trades on this screen. It must read an honest 0."""
+    monkeypatch.delenv("SWING_EXECUTION_MODE", raising=False)  # default: off
+    client, engine = _positions_client(tmp_path)
+    latest = date(2026, 7, 8)
+    with Session(engine) as s:
+        s.add(_signal_row(run_date=latest))
+        s.add(_live_paper(ticker="R1", account="research", status="closed",
+                          exit_date=latest, realized_r=-3.0))  # shadow-grid close
+        s.commit()
+    caps = client.get("/api/positions").json()["caps"]
+    assert caps["mode"] == "off"
+    assert caps["run_date"] == "2026-07-08"
+    assert caps["loss_r"]["used"] == 0.0  # the invisible book contributes NOTHING
+
+
 def test_account_for_mode_covers_every_settings_mode() -> None:
     """_ACCOUNT_FOR_MODE must stay total over the settings mode set: a mode added in
     settings becomes a failure HERE, not a KeyError-500 inside /api/positions."""

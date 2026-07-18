@@ -31,6 +31,7 @@ from swing_screener.notify.market_body import compose_market_body
 from swing_screener.notify.transport import resolve_sender
 from swing_screener.pipeline.market import MarketFacts, gather_market_facts
 from swing_screener.pipeline.run import _migrate_with_retry
+from swing_screener.settings import load_settings
 
 log = logging.getLogger(__name__)
 
@@ -83,6 +84,11 @@ def _persist(session: Session, facts: MarketFacts, analysis: MarketAnalysis) -> 
         breadth_trend=facts.breadth_trend, breadth_chg_4w=_db_float(facts.breadth_chg_4w),
         recession_prob=_db_float(facts.recession_prob),
         is_deep=analysis.is_deep, core=analysis.core[:512], report=analysis.report,
+        # Spend visibility (E6): the one deep call's APPROXIMATE list-price cost. NULL
+        # when no billed call was captured (deterministic/fallback path) -- never $0.
+        est_cost_usd=(
+            _db_float(analysis.usage.est_cost_usd) if analysis.usage is not None else None
+        ),
         created_at=datetime.now(UTC),
     ))
     session.commit()
@@ -121,7 +127,10 @@ def run_market_report(
 
     # Alembic owns the Azure SQL schema (get_engine does NOT create_all there), so self-migrate --
     # the Sunday run can precede a fresh migration and must not assume another job seeded the table.
-    (migrate_fn or _migrate_with_retry)(db_url)
+    # Gated on mssql like every other entrypoint: locally alembic lives in the [azure] extra and
+    # the create_all-born local.db is unstamped, so an unconditional migrate crashes sqlite runs.
+    if db_url.startswith("mssql"):
+        (migrate_fn or _migrate_with_retry)(db_url)
     engine = get_engine(db_url)
     try:
         with Session(engine) as s:
@@ -132,7 +141,14 @@ def run_market_report(
                      facts.as_of)
             return None
 
-        if cfg.market_report_enabled:
+        # The LLM runs only when BOTH switches agree: StrategyConfig.market_report_enabled
+        # (the code-level constant; config.py stays env-free by design) AND the
+        # SWING_MARKET_REPORT env gate (settings; absent = on, so today's behavior is
+        # unchanged). Env is read at call time via load_settings, the same seam
+        # notify.run uses for its deep-analysis gate -- ops can turn the weekly bill
+        # off without a code change. Either off path still persists + emails the
+        # deterministic read, after the idempotency check above, at $0.
+        if cfg.market_report_enabled and load_settings().market_report_enabled:
             analysis = analyze_market_deep(
                 facts, client=client, model=cfg.market_model,
                 reasoning=cfg.market_reasoning, max_searches=cfg.market_max_searches,
@@ -162,8 +178,6 @@ def run_market_report(
 
 def main() -> None:
     """CLI entry for the weekly Market Weather report (schedule via cron / a CI workflow)."""
-    from swing_screener.settings import load_settings
-
     settings = load_settings()
     parser = argparse.ArgumentParser(description="Send the weekly macro Market Weather report.")
     parser.add_argument("--db", default=settings.db_url)

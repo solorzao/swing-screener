@@ -480,11 +480,11 @@ def _rank_labels(edges: Sequence[int]) -> list[str]:
 def _bucket_trades_by_rank(
     trades: Iterable[PaperTrade], edges: Sequence[int]
 ) -> dict[str, list[PaperTrade]]:
-    """Group trades into rank buckets (inclusive ranges -- see ``rank_bucket``). The
-    single source of the rank-bucket MEMBERSHIP rule, shared by ``rank_bucket`` (which
-    summarizes each group) and the cockpit API (which needs the raw trade lists to
-    stamp each bucket's cost level), mirroring ``_bucket_trades_by_score``. Every
-    label appears even when its group is empty."""
+    """Group trades into rank buckets: inclusive ranges ``1..edges[0]``,
+    ``edges[0]+1..edges[1]``, ..., with a final open-ended ``edges[-1]+1 +`` bucket.
+    The single source of the rank-bucket MEMBERSHIP rule, consumed by the cockpit API
+    (which needs the raw trade lists to stamp each bucket's cost level), mirroring
+    ``_bucket_trades_by_score``. Every label appears even when its group is empty."""
     labels = _rank_labels(edges)
     groups: dict[str, list[PaperTrade]] = {label: [] for label in labels}
     for t in trades:
@@ -495,21 +495,6 @@ def _bucket_trades_by_rank(
                 break
         groups[labels[idx]].append(t)
     return groups
-
-
-def rank_bucket(
-    trades: Iterable[PaperTrade], edges: Sequence[int]
-) -> dict[str, PerformanceSummary]:
-    """Bucket trades by ``rank`` into ranges defined by ``edges`` and summarize each.
-
-    Buckets are inclusive ranges ``1..edges[0]``, ``edges[0]+1..edges[1]``, ...,
-    with a final open-ended ``edges[-1]+1 +`` bucket. Every bucket label appears
-    in the result even when it has no trades.
-    """
-    return {
-        label: summarize(group)
-        for label, group in _bucket_trades_by_rank(trades, edges).items()
-    }
 
 
 # The repo's ONE set of score-calibration band edges, shared by the reflection's
@@ -541,9 +526,9 @@ def _bucket_trades_by_score(
     trades: Iterable[PaperTrade], edges: Sequence[float]
 ) -> dict[str, list[PaperTrade]]:
     """Group trades into score bands (lower-inclusive: a score on an edge falls in the
-    higher band). The single source of the score-band MEMBERSHIP rule, shared by
-    score_bucket (which summarizes each group) and the reflection grader (which needs the
-    raw trade lists)."""
+    higher band). The single source of the score-band MEMBERSHIP rule, consumed by the
+    reflection grader and the cockpit API (both need the raw trade lists). Every band
+    label appears even when its group is empty."""
     labels = _score_labels(edges)
     groups: dict[str, list[PaperTrade]] = {label: [] for label in labels}
     for t in trades:
@@ -554,22 +539,6 @@ def _bucket_trades_by_score(
                 break
         groups[labels[idx]].append(t)
     return groups
-
-
-def score_bucket(
-    trades: Iterable[PaperTrade], edges: Sequence[float]
-) -> dict[str, PerformanceSummary]:
-    """Bucket trades by ``signal_score`` into bands defined by ``edges`` and summarize each.
-
-    The calibration check: a predictive score makes ``expectancy_r`` trend UP across the
-    bands (high-score setups should out-earn low-score ones). A flat or inverted trend
-    means the score isn't separating winners from losers. Every band label appears even
-    when empty; a score exactly on an edge falls into the higher band (lower-inclusive).
-    """
-    return {
-        label: summarize(group)
-        for label, group in _bucket_trades_by_score(trades, edges).items()
-    }
 
 
 def equity_curve(trades: Iterable[PaperTrade]) -> list[tuple[date, float]]:

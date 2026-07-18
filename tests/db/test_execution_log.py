@@ -14,8 +14,10 @@ These tests pin the load-bearing behavior:
   * ``count_open_positions`` counts only OPEN paper trades for that account.
 """
 
+import logging
 from datetime import date
 
+import pytest
 from sqlalchemy.orm import Session
 
 from swing_screener.db import repo
@@ -85,6 +87,115 @@ def test_duplicate_idempotency_key_is_a_noop_returning_first_row() -> None:
         # idempotent: same row back, table still has exactly one row.
         assert again.id == first.id
         assert again.detail == "first ticket"  # the original, not the re-attempt
+        assert s.query(ExecutionLog).count() == 1
+
+
+def test_add_execution_log_upgrades_skipped_to_submitted() -> None:
+    """A ``skipped`` row superseded by a COUNTING write on the same key upgrades in place.
+
+    The untracked-real-money bug: a limit-clamped ``skipped`` row used to swallow a later
+    successful submit's ``submitted_live`` write on the same key -- the broker order was
+    live but the reconciler (which scans ``submitted_live`` only) never saw it. The
+    upgrade must also carry the per-outcome fields: ``broker_order_id`` above all (the
+    reconciler skips a submitted_live row without one), and the order spec (the key
+    hashes the intent identity, not its levels -- a later re-run can carry fresh levels).
+    """
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        first = repo.add_execution_log(s, **_fields(
+            status="skipped", detail="per-day notional cap"))
+        upgraded = repo.add_execution_log(s, **_fields(
+            status="submitted_live", detail="order submitted",
+            broker="fake", broker_order_id="fake-0", broker_status="new",
+            limit_price=121.0, notional=1210.0, stop=111.0,
+        ))
+        assert upgraded.id == first.id                    # same row, not a second insert
+        assert s.query(ExecutionLog).count() == 1
+        got = s.query(ExecutionLog).one()
+        assert got.status == "submitted_live"
+        assert got.detail == "order submitted"
+        assert got.broker_order_id == "fake-0" and got.broker_status == "new"
+        assert got.limit_price == 121.0 and got.notional == 1210.0 and got.stop == 111.0
+
+
+def test_upgrade_refreshes_account_and_mode_for_cross_mode_resubmit() -> None:
+    """A cross-MODE upgrade re-homes the row under the adapter that actually acted.
+
+    The idempotency key excludes the adapter, so a same-day paper clamp then a
+    ``SWING_EXECUTION_MODE=live`` re-submit collide on ONE row. It must land under
+    ``account="live"`` / ``mode="live"`` -- ``execution_logs_for_day`` is account-scoped,
+    so a stale ``account="paper"`` would under-count the live daily-notional cap all day
+    (and the reverse direction would over-count paper's).
+    """
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        repo.add_execution_log(s, **_fields(
+            status="skipped", account="paper", mode="paper", detail="per-day notional cap"))
+        repo.add_execution_log(s, **_fields(
+            status="submitted_live", account="live", mode="live",
+            broker="fake", broker_order_id="fake-0", broker_status="new",
+            detail="order submitted"))
+        got = s.query(ExecutionLog).one()
+        assert got.account == "live" and got.mode == "live"
+        # the live limit sums SEE the working order; paper's no longer count it.
+        live_day = repo.execution_logs_for_day(
+            s, run_date=date(2026, 6, 20), account="live")
+        assert [r.ticker for r in live_day] == ["AMD"]
+        assert repo.execution_logs_for_day(
+            s, run_date=date(2026, 6, 20), account="paper") == []
+
+
+def test_upgrade_refresh_fields_partition_every_column() -> None:
+    """Every ExecutionLog column is REFRESHED on upgrade or explicitly PRESERVED.
+
+    The drift guard: a NEW column must be consciously placed -- refreshed (the
+    outcome/spec/home of the order that actually went out) or preserved (row identity,
+    the key's own hash inputs, plus ``status`` which the upgrade branch sets
+    explicitly). A column in neither, or in both, fails loudly and forces the call.
+    """
+    preserved = {
+        "id", "created_date",                                     # row identity
+        "ticker", "timeframe", "play_type", "run_date", "side",   # the key's hash inputs
+        "idempotency_key",                                        # the key itself
+        "status",                             # set explicitly by the upgrade branch
+    }
+    columns = {c.name for c in ExecutionLog.__table__.columns}
+    refreshed = set(repo._UPGRADE_REFRESH_FIELDS)
+    assert refreshed & preserved == set()
+    assert refreshed | preserved == columns
+
+
+def test_upgrade_warns_loudly_including_rejected_to_counting(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The in-place upgrade is LOUD (a warning names the transition), and the same
+    branch covers ``rejected`` -> counting, not just ``skipped``."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        repo.add_execution_log(s, **_fields(
+            status="rejected", detail="non-positive risk"))
+        with caplog.at_level(logging.WARNING, logger="swing_screener.db.repo"):
+            row = repo.add_execution_log(s, **_fields(
+                status="filled_paper", detail="paper position opened"))
+        assert row.status == "filled_paper"
+        assert any(
+            "upgraded rejected -> filled_paper" in r.getMessage()
+            for r in caplog.records
+        )
+
+
+def test_add_execution_log_never_downgrades_counting_status() -> None:
+    """A COUNTING row is never downgraded by a later non-counting write on the same key."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        first = repo.add_execution_log(s, **_fields(
+            status="filled_paper", detail="paper position opened"))
+        again = repo.add_execution_log(s, **_fields(
+            status="skipped", detail="per-day notional cap"))
+        assert again.id == first.id
+        got = s.query(ExecutionLog).one()
+        assert got.status == "filled_paper"               # never downgraded
+        assert got.detail == "paper position opened"      # nothing refreshed either
         assert s.query(ExecutionLog).count() == 1
 
 

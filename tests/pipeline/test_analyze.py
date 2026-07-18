@@ -5,8 +5,15 @@ from swing_screener.pipeline.analyze import (
     _avg_dollar_volume,
     _quality_tier,
     _volatility_tier,
-    analyze_ticker,
+    analyze_frames,
+    build_frames,
 )
+
+
+def _analyze(ticker, bars_by_tf, cfg):
+    """The signal engine over raw bars: analyze_frames(build_frames(...)) -- the same
+    two-step production takes (pipeline/run.py builds frames once, then analyzes)."""
+    return analyze_frames(ticker, build_frames(bars_by_tf, cfg), cfg)
 
 
 def test_quality_tier_thresholds_locked():
@@ -61,7 +68,7 @@ _NO_EXT_GATE = StrategyConfig(max_extension_atr=0.0)
 
 
 def test_fires_with_zone_score_and_tags(bars):
-    res = analyze_ticker("AAPL", {"1d": _firing(bars)}, _NO_EXT_GATE)
+    res = _analyze("AAPL", {"1d": _firing(bars)}, _NO_EXT_GATE)
     assert len(res) == 1
     r = res[0]
     assert r.ticker == "AAPL" and r.timeframe == "1d" and r.horizon == "medium"
@@ -73,8 +80,8 @@ def test_fires_with_zone_score_and_tags(bars):
 
 
 def test_mtf_alignment_boosts_score(bars):
-    base = analyze_ticker("AAPL", {"1d": _firing(bars)}, _NO_EXT_GATE)[0]
-    aligned = analyze_ticker(
+    base = _analyze("AAPL", {"1d": _firing(bars)}, _NO_EXT_GATE)[0]
+    aligned = _analyze(
         "AAPL", {"1d": _firing(bars), "1wk": _uptrend(bars)}, _NO_EXT_GATE
     )[0]
     assert aligned.mtf_aligned is True
@@ -82,7 +89,7 @@ def test_mtf_alignment_boosts_score(bars):
 
 
 def test_no_fire_returns_empty(bars):
-    res = analyze_ticker("AAPL", {"1d": _uptrend(bars)}, StrategyConfig())
+    res = _analyze("AAPL", {"1d": _uptrend(bars)}, StrategyConfig())
     assert res == []
 
 
@@ -90,8 +97,8 @@ def test_overextended_trigger_is_filtered_by_freshness_gate(bars):
     # The _firing trigger has already run well past the fast EMA (a chase). With the
     # default gate it is suppressed; disabling the gate surfaces it again. This is the
     # "stop suggesting plays that already ran" rule at the screen layer.
-    frames = {"1d": _firing(bars)}
-    assert analyze_ticker("AAPL", frames, StrategyConfig()) == []          # gated out
-    surfaced = analyze_ticker("AAPL", frames, _NO_EXT_GATE)                # gate off
+    raw = {"1d": _firing(bars)}
+    assert _analyze("AAPL", raw, StrategyConfig()) == []          # gated out
+    surfaced = _analyze("AAPL", raw, _NO_EXT_GATE)                # gate off
     assert len(surfaced) == 1
     assert surfaced[0].ctx.extension_atr > StrategyConfig().max_extension_atr

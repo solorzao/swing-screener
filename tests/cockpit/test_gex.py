@@ -3,6 +3,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -89,6 +90,41 @@ def test_build_single_ticker_analyze(tmp_path: Path) -> None:
     an = r.json()["analyzed"]
     assert an["underlying"] == "NVDA"
     assert an["thin_chain"] is True  # 2-strike fixture trips the guard
+
+
+def test_build_upstream_failure_is_a_503_class_name_only(tmp_path: Path) -> None:
+    """A routine yfinance outage on the ad-hoc analyze path must leave as the
+    cockpit's 503 with the exception CLASS only -- fetcher messages embed hosts
+    and URLs (the broker_error_detail leak posture), and a dead upstream is not
+    a server bug."""
+    def dead_snapshotter(ticker: str, cfg: object) -> ChainSnapshot:
+        raise RuntimeError(
+            "chain snapshot failed for NVDA after 3 tries: 502 from "
+            "https://query1.finance.yahoo.com/v7/finance?crumb=s3cret")
+    url = _db_url(tmp_path)
+    get_engine(url)
+    client = TestClient(create_app(
+        url, edge_dir=tmp_path, gex_snapshotter=dead_snapshotter,
+        gex_daily_bars=_fake_daily))
+    r = client.post("/api/gex/plan/build", json={"ticker": "NVDA"}, headers=_HDR)
+    assert r.status_code == 503
+    assert r.json()["detail"] == "upstream error (RuntimeError)"
+    assert "yahoo" not in r.text and "s3cret" not in r.text  # no message on the wire
+
+
+def test_build_genuine_bug_still_500s(tmp_path: Path) -> None:
+    """The 503 posture covers UPSTREAM failure classes only: a genuine bug in a
+    seam (here a TypeError) must still surface as a 500, never masquerade as a
+    dead data source."""
+    def buggy_snapshotter(ticker: str, cfg: object) -> ChainSnapshot:
+        raise TypeError("boom")
+    url = _db_url(tmp_path)
+    get_engine(url)
+    client = TestClient(create_app(
+        url, edge_dir=tmp_path, gex_snapshotter=buggy_snapshotter,
+        gex_daily_bars=_fake_daily), raise_server_exceptions=False)
+    r = client.post("/api/gex/plan/build", json={"ticker": "NVDA"}, headers=_HDR)
+    assert r.status_code == 500
 
 
 def test_grade_and_list_setups(tmp_path: Path) -> None:
@@ -255,10 +291,17 @@ def _settle_client(tmp_path: Path, bars: pd.DataFrame) -> tuple[TestClient, str]
 
 
 def _target_hit_bars() -> pd.DataFrame:
-    idx = pd.date_range("2026-07-13 09:30", periods=3, freq="5min")
+    # A full session on TODAY's ET date (09:30..15:55): the sweep's stale-frame
+    # guard refuses frames that predate the trade's session day, and the lab
+    # stamps opened_at with the real naive-ET clock. Every bar carries the target
+    # touch (and stays clear of the 556.5 stop) so the sweep settles no matter
+    # what wall time the test runs at.
+    day = datetime.now(tz=_EASTERN).date()
+    idx = pd.date_range(f"{day} 09:30", f"{day} 15:55", freq="5min")
+    n = len(idx)
     return pd.DataFrame({
-        "open": [558.0, 559.0, 560.0], "high": [559.0, 566.0, 566.0],
-        "low": [557.5, 558.5, 559.5], "close": [559.0, 565.5, 565.0],
+        "open": [560.0] * n, "high": [566.0] * n,
+        "low": [559.5] * n, "close": [565.0] * n,
     }, index=idx)
 
 
@@ -270,11 +313,11 @@ def test_settle_endpoint_sweeps_due_trades_and_is_idempotent(tmp_path: Path) -> 
                 json={"status": "taken"}, headers=_HDR)
     r = client.post("/api/gex/settle", headers=_HDR)
     assert r.status_code == 200
-    assert r.json() == {"settled": 1, "open_remaining": 0}
+    assert r.json() == {"settled": 1, "skipped_incomplete_session": 0, "open_remaining": 0}
     # idempotent sweep: nothing due is still a 200, not an error
     again = client.post("/api/gex/settle", headers=_HDR)
     assert again.status_code == 200
-    assert again.json() == {"settled": 0, "open_remaining": 0}
+    assert again.json() == {"settled": 0, "skipped_incomplete_session": 0, "open_remaining": 0}
     listed = client.get("/api/gex/setups").json()["setups"]
     assert listed[0]["trade"]["status"] == "closed"
     assert listed[0]["trade"]["exit_reason"] == "target"
@@ -284,6 +327,25 @@ def test_settle_endpoint_sweeps_due_trades_and_is_idempotent(tmp_path: Path) -> 
 def test_settle_requires_cockpit_header(tmp_path: Path) -> None:
     client, _ = _settle_client(tmp_path, _target_hit_bars())
     assert client.post("/api/gex/settle").status_code == 403
+
+
+def test_settle_upstream_failure_is_a_503_class_name_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run_settle already degrades per-underlying fetch failures internally
+    (trades stay open, 200 with settled: 0); this pins the wire posture should
+    an upstream error ESCAPE the sweep: the cockpit's 503 with the class name
+    only, never the message (it can embed hosts and URLs)."""
+    client, _ = _settle_client(tmp_path, _target_hit_bars())
+
+    def dead_settle(*args: object, **kwargs: object) -> object:
+        raise ConnectionError("dial query1.finance.yahoo.com:443: timed out")
+
+    monkeypatch.setattr("swing_screener.cockpit.routers.gex.run_settle", dead_settle)
+    r = client.post("/api/gex/settle", headers=_HDR)
+    assert r.status_code == 503
+    assert r.json()["detail"] == "upstream error (ConnectionError)"
+    assert "yahoo" not in r.text  # no message text on the wire
 
 
 def test_stats_payload_carries_open_trade_count(tmp_path: Path) -> None:

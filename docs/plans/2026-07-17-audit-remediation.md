@@ -47,84 +47,85 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 ### Progress Ledger
 
 **Phase A — `fix/live-money-safety`**
-- [ ] A1 account-scoped same-day delete + regression tests
-- [ ] A2 ExecutionLog idempotency status upgrade + adapter load-before-act guards
-- [ ] A3 paginated `list_open_orders`
+- [x] A1 account-scoped same-day delete + regression tests
+- [x] A2 ExecutionLog idempotency status upgrade + adapter load-before-act guards
+- [x] A3 paginated `list_open_orders`
 
 **Phase B — `fix/queue-claim-datetime`**
-- [ ] B1 whole-second claim tokens in both claim functions
+- [x] B1 whole-second claim tokens in both claim functions
 - [ ] B1-verify (post-deploy) one on-demand request processes end-to-end in prod
 
 **Phase C — `fix/nan-hardening`**
-- [ ] C1 `_download` dropna + HA recovery test
-- [ ] C2 NaN guards: detect ATR truthiness / `latest_close` / `avg_dollar_volume` / `_spot_from_ticker`
-- [ ] C3 NaN fundamentals rendered into analyst prompts
+- [x] C1 `_download` dropna + HA recovery test
+- [x] C2 NaN guards: detect ATR truthiness / `latest_close` / `avg_dollar_volume` / `_spot_from_ticker` (+ reversal detector, found in review — dcd88ab)
+- [x] C3 NaN fundamentals rendered into analyst prompts
 
 **Phase D — `fix/auditor-compliance-math`**
-- [ ] D1 cap sums filtered to counting statuses, per account, `n_clamps` surfaced
-- [ ] D2 `max_daily_loss` graded in realized R
-- [ ] D3 breach-scan window / empty-narrative rows / `would_surface_leaks` overflow
+- [x] D1 cap sums filtered to counting statuses, per account, `n_clamps` surfaced
+- [x] D2 `max_daily_loss` graded in realized R
+- [x] D3 breach-scan window / empty-narrative rows / `would_surface_leaks` overflow
 
 **Phase E — `feat/analyst-cost-optimization`** (strict order E1 → E6)
-- [ ] E1 `_analyst_call` consolidation (behavior-preserving; both analysis test suites green unchanged)
-- [ ] E2 `web_search_20260209` + legacy-retry in `_create_message`
-- [ ] E3a `_MODEL_PRICES` additions + unknown-model fail-safe warning
-- [ ] E3b billed-but-failed usage reaches the spend accumulator
-- [ ] E3c `analyze_ticker_deep` usage capture + `analysis_requests.est_cost_usd` migration
-- [ ] E4 `daily_picks` per-ticker dedup (+ cockpit picks mirror)
-- [ ] E5 bicep reasoning default `medium` + coach/audit on `claude-haiku-4-5` (single model constant per worker)
-- [ ] E6 Market Weather env switch + spend visibility
+- [x] E1 `_analyst_call` consolidation (behavior-preserving; both analysis test suites green unchanged)
+- [x] E2 `web_search_20260209` + legacy-retry in `_create_message`
+- [x] E3a `_MODEL_PRICES` additions + unknown-model fail-safe warning
+- [x] E3b billed-but-failed usage reaches the spend accumulator
+- [x] E3c `analyze_ticker_deep` usage capture + `analysis_requests.est_cost_usd` migration
+- [x] E4 `daily_picks` per-ticker dedup (+ cockpit picks mirror)
+- [x] E5 bicep reasoning default `medium` + coach/audit on `claude-haiku-4-5` (single model constant per worker)
+- [x] E6 Market Weather env switch + spend visibility
 - [ ] E-verify (post-deploy, ~1 week) `analyst_calls.input_tokens` well below the 400k/run baseline
 
 **Phase F — `fix/digest-cooldown-cadence`**
-- [ ] F1 per-kind cooldown + dropped-picks log line
+- [x] F1 per-kind cooldown + dropped-picks log line
 
 **Phase G — `fix/infra-cd-hardening`**
-- [ ] G1 `notify.run` `_resolve_db_url` + mssql-gated migrate
-- [ ] G2 `market_run` mssql-gated migrate
-- [ ] G3 `imageTag` default `latest` (3 files)
-- [ ] G4 CD single-alembic-head guard
-- [ ] G5 CI push-trigger filter
-- [ ] G6 SQL token out of `GITHUB_ENV`
-- [ ] G7 cockpit DB write grants + runbook
-- [ ] G8 stale bicep secret docs
+- [x] G1 `notify.run` `_resolve_db_url` + mssql-gated migrate
+- [x] G2 `market_run` mssql-gated migrate
+- [x] G3 `imageTag` default `latest` (3 files)
+- [x] G4 CD single-alembic-head guard
+- [x] G5 CI push-trigger filter
+- [x] G6 SQL token out of `GITHUB_ENV`
+- [x] G7 cockpit DB write grants + runbook (**prod manual step**: run the new `db_datawriter` grant from `infra/post-deploy.sql` §2 as the Entra admin)
+- [x] G8 stale bicep secret docs
 
 **Phase H — `fix/fetch-cache-poisoning`**
-- [ ] H1 pre-close truncated frame not written to the day cache
-- [ ] H2 GEX settle: eod_flat only on complete sessions; pre-16:00 refusal without `--force`
-- [ ] H3 GEX `--cache-dir` wired through
+- [x] H1 pre-close truncated frame not written to the day cache
+- [x] H2 GEX settle: eod_flat only on complete sessions; pre-16:00 refusal without `--force`
+- [x] H3 GEX `--cache-dir` wired through
 
 **Phase I — `perf/hot-path-indexes`**
-- [ ] I1 one migration: `ix_signals_run_date`, `ix_paper_trades_status_account`, `ix_exit_events_created_date`, filtered-unique `import_key`
+- [x] I1 one migration: `ix_signals_run_date`, `ix_paper_trades_status_account`, `ix_exit_events_created_date`, filtered-unique `import_key`
 
 **Phase J — `fix/cockpit-api-degrade`**
-- [ ] J1 per-row degrade on corrupt JSON rows
-- [ ] J2 weaknesses `items_json` shape
-- [ ] J3 heartbeats sidecar stat guard
-- [ ] J4 GEX POST 503 posture
-- [ ] J5 atomic manual close
-- [ ] J6 `loss_r` gauge research-grid scoping
-- [ ] J7 `spend_rows_since` SQL cutoff
+- [x] J1 per-row degrade on corrupt JSON rows
+- [x] J2 weaknesses `items_json` shape
+- [x] J3 heartbeats sidecar stat guard
+- [x] J4 GEX POST 503 posture
+- [x] J5 atomic manual close
+- [x] J6 `loss_r` gauge research-grid scoping
+- [x] J7 `spend_rows_since` SQL cutoff
 
 **Phase K — `fix/cockpit-ui-polish`**
-- [ ] K1 surfaced errors (tag-confirm + acknowledge x2)
-- [ ] K2 CSV input reset
-- [ ] K3 fmt fixes (fmtResult / null realized_r / null max_drawdown)
-- [ ] K4 keyboard-reachable open-book scroll region
-- [ ] K5 dead CSS refs + dead null-check + time/date helper consolidation (brace-count after every CSS edit)
+- [x] K1 surfaced errors (tag-confirm + acknowledge x2)
+- [x] K2 CSV input reset
+- [x] K3 fmt fixes (fmtResult / null realized_r / null max_drawdown)
+- [x] K4 keyboard-reachable open-book scroll region
+- [x] K5 dead CSS refs + dead null-check + time/date helper consolidation (brace-count after every CSS edit)
 
 **Phase L — `chore/dead-code-sweep`** (one commit per deletion; `git grep` before each)
-- [ ] L1 `cancel_all_orders` (Protocol + both impls)
-- [ ] L2 `latest_signals` + `update_trade`
-- [ ] L3 `fetch_universe` + `fetch_vix`
-- [ ] L4 `rank_bucket` / `score_bucket` wrappers
-- [ ] L5 `total_unrealized_pl`
-- [ ] L6 `analyze_ticker` wrapper (rewrite its 5 test call sites)
-- [ ] L7 `discipline.py` ImportError fallback
-- [ ] L8 `add_thesis` writer (table stays)
-- [ ] L9 `conviction_sizing` / `conviction_weight_*` knobs
-- [ ] L10 stale `storage/__init__.py` facade
-- [ ] L11 `option_review_facts` NOTE annotation (no delete)
+- [x] L1 `cancel_all_orders` (Protocol + both impls)
+- [x] L2 `latest_signals` + `update_trade`
+- [x] L3 `fetch_universe` + `fetch_vix`
+- [x] L4 `rank_bucket` / `score_bucket` wrappers
+- [x] L5 `total_unrealized_pl`
+- [x] L6 `analyze_ticker` wrapper (rewrite its 5 test call sites)
+- [x] L7 `discipline.py` ImportError fallback
+- [x] L8 `add_thesis` writer (table stays)
+- [x] L9 `conviction_sizing` / `conviction_weight_*` knobs
+- [x] L10 stale `storage/__init__.py` facade
+- [x] L11 `option_review_facts` NOTE annotation (no delete)
+- [x] L12 (extra, found in Phase J review) `db.repo.close_trade` — superseded by the atomic `close_trade_with_event`; guard tests folded onto the survivor. MERGE NOTE vs PR #143: docstring conflict in `close_trade_with_event` + EOF conflict in `tests/db/test_trade_repo.py`; whichever merges second also deletes the then-orphaned `_open_trade_or_raise`/`_apply_close`.
 
 **Phase M — `chore/replay-and-test-structure`**
 - [x] M1 shared `load_replay_corpus` across the 18 replay scripts (exclusion set decided + documented)

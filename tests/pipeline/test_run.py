@@ -1,13 +1,13 @@
 import logging
 from collections import Counter
 from datetime import date
+from itertools import count
 from types import SimpleNamespace
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from swing_screener.config import StrategyConfig
-from swing_screener.db import repo
 from swing_screener.db.models import PaperTrade, Signal
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline import run
@@ -19,9 +19,13 @@ from swing_screener.pipeline import run
 _NO_EXT_GATE = StrategyConfig(max_extension_atr=0.0)
 
 
-def _r(tf):
-    """Lightweight SignalResult stand-in: _digest_chart_indices reads only .timeframe."""
-    return SimpleNamespace(timeframe=tf)
+_TICKER_SEQ = count()  # unique default tickers; pass ticker= to build a dup
+
+
+def _r(tf, ticker=None):
+    """Lightweight SignalResult stand-in: _digest_chart_indices reads only
+    .timeframe and .ticker (unique by default -- pass ticker= for a multi-TF dup)."""
+    return SimpleNamespace(timeframe=tf, ticker=ticker or f"T{next(_TICKER_SEQ)}")
 
 
 def test_digest_chart_indices_unions_global_and_per_timeframe_picks():
@@ -43,14 +47,35 @@ def test_digest_chart_indices_over_renders_by_the_cooldown_margin():
     # The digest's repeat cooldown drops stale picks at SEND time and promotes
     # lower-ranked names the evening render can't foresee -- so each cadence renders
     # top_n + _CHART_MARGIN charts (deliberate small waste), and stops there.
-    results = [_r("1wk")] * 15
+    results = [_r("1wk") for _ in range(15)]
     idx = run._digest_chart_indices(results, top_n=5)
     assert idx == list(range(5 + run._CHART_MARGIN))  # margin rendered, 11th+ not
 
 
-def _rev_r(strength, tier="base"):
-    """Lightweight reversal SignalResult stand-in for _reversal_chart_indices."""
-    return SimpleNamespace(strength=strength, conviction_tier=tier, play_type="reversal")
+def test_digest_chart_indices_dedup_mirrors_the_digest_sector_cap():
+    """E4 follow-up: daily_picks dedups by ticker BEFORE its sector cap, so the chart
+    side must choose TICKERS, not raw rows. AAPL firing 1d+1wk (both Tech) used to
+    fill Tech's two chart slots against max_per_sector=2 -- MSFT was never rendered
+    while the digest picked AAPL+MSFT, so MSFT surfaced CHARTLESS (its deep/conviction
+    Opus call ran without vision input and the PDF shipped a silent chartless section)."""
+    sectors = {"AAPL": "Tech", "AAPL2": "Tech", "MSFT": "Tech", "JPM": "Financials"}
+    results = [_r("1d", ticker="AAPL"), _r("1wk", ticker="AAPL"),
+               _r("1d", ticker="MSFT"), _r("1d", ticker="JPM")]
+    idx = run._digest_chart_indices(
+        results, top_n=5, sector_of=lambda r: sectors.get(r.ticker), max_per_sector=2)
+
+    assert 2 in idx  # the digest picks MSFT (AAPL deduped to one Tech slot) -> charted
+    # EVERY row of a chosen ticker is rendered (<=4): a digest-time cooldown drop of
+    # AAPL's 1d row promotes its 1wk row, which a row-wise dedup would leave chartless.
+    assert 0 in idx and 1 in idx
+    assert 3 in idx  # JPM: uncapped sector, within depth
+
+
+def _rev_r(strength, tier="base", ticker=None):
+    """Lightweight reversal SignalResult stand-in for _reversal_chart_indices
+    (.ticker unique by default -- pass ticker= for a multi-TF dup)."""
+    return SimpleNamespace(strength=strength, conviction_tier=tier, play_type="reversal",
+                           ticker=ticker or f"T{next(_TICKER_SEQ)}")
 
 
 def test_reversal_chart_indices_cover_the_digest_eligible_pool():
@@ -80,9 +105,23 @@ def test_reversal_chart_indices_top_up_when_few_are_eligible():
 
 def test_reversal_chart_indices_respect_the_pool_depth():
     cfg = StrategyConfig()
-    results = [_rev_r("confirmed")] * 25
+    results = [_rev_r("confirmed") for _ in range(25)]
     idx = run._reversal_chart_indices(results, cfg, top_n=5, pool_n=20)
     assert idx == list(range(20))     # the whole eligible pool, capped at pool depth
+
+
+def test_reversal_chart_indices_pool_counts_distinct_tickers():
+    """E4 follow-up: reversal_picks holds ONE pool slot per ticker and reaches past
+    raw index pool_n when dups sit inside it -- the chart walk must count DISTINCT
+    tickers the same way, or the pick promoted into the pool ships chartless."""
+    cfg = StrategyConfig()
+    # pool_n=2: GME fires on two timeframes (0,1); AMC (2) and BBBY (3) follow.
+    results = [_rev_r("confirmed", ticker="GME"), _rev_r("confirmed", ticker="GME"),
+               _rev_r("confirmed", ticker="AMC"), _rev_r("confirmed", ticker="BBBY")]
+    idx = run._reversal_chart_indices(results, cfg, top_n=2, pool_n=2)
+    # pool = first 2 DISTINCT tickers (GME, AMC): every GME row + AMC charted;
+    # BBBY -- the 3rd distinct ticker -- sits past the pool, exactly as in the digest.
+    assert idx == [0, 1, 2]
 
 
 def _firing(bars):
@@ -115,6 +154,13 @@ def _write_universe(tmp_path, tickers):
     return p
 
 
+def _signals_for(session, run_date):
+    """One run's signals, rank-ascending (direct query; the repo read-back wrapper
+    was deleted as dead -- 2026-07-17 audit L2)."""
+    return list(session.scalars(
+        select(Signal).where(Signal.run_date == run_date).order_by(Signal.rank)))
+
+
 def test_run_persists_ranked_signals_and_writes_charts(tmp_path, bars, monkeypatch):
     def fake_fetch(ticker, *, cache_dir, today, cfg):
         return {"1d": _firing(bars)} if ticker == "AAPL" else {}
@@ -128,7 +174,7 @@ def test_run_persists_ranked_signals_and_writes_charts(tmp_path, bars, monkeypat
     )
     assert res.n_signals >= 1
     with Session(get_engine(db)) as s:
-        sigs = repo.latest_signals(s, date(2024, 4, 1))
+        sigs = _signals_for(s, date(2024, 4, 1))
         assert any(x.ticker == "AAPL" for x in sigs)
         assert sigs[0].rank == 1
     assert list((tmp_path / "charts").glob("AAPL_1d_*.png"))  # chart written
@@ -231,8 +277,8 @@ def test_run_stamps_extension_and_inherits_first_seen_across_runs(tmp_path, bars
     run.run_screen(today=date(2024, 4, 2), **kw)  # same setup fires again next run
 
     with Session(get_engine(db)) as s:
-        d1 = next(x for x in repo.latest_signals(s, date(2024, 4, 1)) if x.ticker == "AAPL")
-        d2 = next(x for x in repo.latest_signals(s, date(2024, 4, 2)) if x.ticker == "AAPL")
+        d1 = next(x for x in _signals_for(s, date(2024, 4, 1)) if x.ticker == "AAPL")
+        d2 = next(x for x in _signals_for(s, date(2024, 4, 2)) if x.ticker == "AAPL")
     assert d1.first_seen_date == date(2024, 4, 1)            # fresh on the first run
     assert d2.first_seen_date == date(2024, 4, 1)            # streak start carried forward
     assert d1.extension_atr is not None and d1.extension_atr > 0  # freshness metric persisted

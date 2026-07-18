@@ -1,11 +1,14 @@
+import sys
 from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
+import pytest
 from sqlalchemy.orm import Session
 
 from swing_screener.db.models import GexSnapshot, OptionPaperTrade
 from swing_screener.db.session import get_engine
+from swing_screener.options import run as run_mod
 from swing_screener.options.chain import ChainSnapshot
 from swing_screener.options.config import GexConfig
 from swing_screener.options.run import run_analyze, run_import, run_plan
@@ -67,3 +70,76 @@ def test_run_import_without_tag_all_commits_nothing() -> None:
         out = run_import(s, _FIXTURE, tag_all=None)
         assert s.query(OptionPaperTrade).count() == 0
         assert "review" in out.lower()
+
+
+def _settle_argv(monkeypatch, *extra: str) -> None:
+    monkeypatch.delenv("KEY_VAULT_URL", raising=False)
+    monkeypatch.delenv("SWING_REQUIRE_DB", raising=False)
+    monkeypatch.setattr(sys, "argv",
+                        ["gex", "--db", "sqlite:///:memory:", "settle", *extra])
+
+
+def test_settle_cli_refuses_before_close_without_force(monkeypatch) -> None:
+    """An intraday `settle` run would eod_flat-flatten trades at a partial-session
+    price AND pin the day-keyed 5m cache on the partial session -- refuse it
+    outright before 16:00 ET (2026-07-17 audit, H2)."""
+    monkeypatch.setattr(run_mod, "_now_eastern", lambda: datetime(2026, 7, 13, 13, 0))
+    _settle_argv(monkeypatch)
+    with pytest.raises(SystemExit) as excinfo:
+        run_mod.main()
+    msg = str(excinfo.value)
+    assert "16:00" in msg and "--force" in msg
+
+
+def test_settle_cli_force_overrides_pre_close_refusal(monkeypatch) -> None:
+    monkeypatch.setattr(run_mod, "_now_eastern", lambda: datetime(2026, 7, 13, 13, 0))
+    _settle_argv(monkeypatch, "--force")
+    run_mod.main()  # proceeds (empty book settles nothing); no SystemExit
+
+
+def test_settle_cli_weekend_refusal_names_the_weekend(monkeypatch) -> None:
+    # Saturday morning: the intraday-cache rationale would be misleading (there
+    # is no session in progress) -- the refusal must say it's a weekend
+    saturday = datetime(2026, 7, 11, 10, 0)
+    assert saturday.weekday() == 5
+    monkeypatch.setattr(run_mod, "_now_eastern", lambda: saturday)
+    _settle_argv(monkeypatch)
+    with pytest.raises(SystemExit) as excinfo:
+        run_mod.main()
+    assert "weekend" in str(excinfo.value).lower()
+
+
+def test_settle_cli_proceeds_after_close(monkeypatch) -> None:
+    monkeypatch.setattr(run_mod, "_now_eastern", lambda: datetime(2026, 7, 13, 16, 5))
+    _settle_argv(monkeypatch)
+    run_mod.main()  # post-close runs never need --force
+
+
+def test_cache_dir_flag_reaches_the_fetch_path(tmp_path, monkeypatch) -> None:
+    """--cache-dir was parsed but silently ignored -- the default fetchers resolved
+    load_settings().cache_dir instead (2026-07-17 audit, H3). End-to-end through
+    main(): the flag's value must be the cache_dir the fetch seam receives."""
+    url = f"sqlite:///{tmp_path / 'lab.db'}"
+    with Session(get_engine(url)) as s:
+        s.add(OptionPaperTrade(
+            account="options-lab", strategy="gex", underlying="SPY", direction="long",
+            opened_at=datetime(2026, 7, 13, 9, 35), entry=100.0, stop=99.0, target=102.0))
+        s.commit()
+
+    seen: dict[str, object] = {}
+
+    def fake_fetch(ticker, interval, *, cache_dir, **kw):
+        seen["cache_dir"] = cache_dir
+        idx = pd.date_range("2026-07-13 15:45", periods=3, freq="5min")
+        return pd.DataFrame({"open": 100.0, "high": 100.6, "low": 99.6,
+                             "close": 100.5, "volume": 1e6}, index=idx)
+
+    monkeypatch.setattr(run_mod, "fetch_bars", fake_fetch)
+    monkeypatch.setattr(run_mod, "_now_eastern", lambda: datetime(2026, 7, 13, 16, 5))
+    monkeypatch.delenv("KEY_VAULT_URL", raising=False)
+    monkeypatch.delenv("SWING_REQUIRE_DB", raising=False)
+    custom = tmp_path / "custom-cache"
+    monkeypatch.setattr(sys, "argv",
+                        ["gex", "--db", url, "--cache-dir", str(custom), "settle"])
+    run_mod.main()
+    assert seen["cache_dir"] == custom

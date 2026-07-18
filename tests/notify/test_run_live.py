@@ -13,8 +13,8 @@ hit a real API. The load-bearing properties pinned here:
   NoOp resolves with a warning, nothing is submitted (a stray live config can't place an
   order without a broker).
 * The per-submit KILL SWITCH: when ``execution_mode`` is flipped away from ``live`` between
-  submits, the loop stops submitting the rest AND calls ``broker.cancel_all_orders()`` to
-  pull resting orders.
+  submits, the loop stops submitting the rest AND pulls the resting ENTRY orders (per-order
+  ``cancel_order`` on buy-side entries only -- never a blanket cancel).
 
 All offline: the conviction analyzer, chart loader, fundamentals/news fetchers, the market
 regime, AND the broker are injected -- no LLM/blob/yfinance/broker.
@@ -147,7 +147,7 @@ def test_live_without_a_broker_does_not_submit(tmp_path, monkeypatch, caplog):
 
 # ---------------------------------------------------------------------------
 # the KILL SWITCH: flip execution_mode away from live between submits -> the loop
-# halts the remaining submits AND calls cancel_all_orders().
+# halts the remaining submits AND pulls the resting entry orders.
 # ---------------------------------------------------------------------------
 def test_kill_switch_halts_remaining_submits_and_cancels(tmp_path, monkeypatch):
     _enable_deep(monkeypatch, top_n="5")  # so BOTH seeded picks get a deep intent
@@ -176,7 +176,7 @@ def test_kill_switch_halts_remaining_submits_and_cancels(tmp_path, monkeypatch):
     # ONLY the first intent was submitted; the loop halted before the second.
     assert len(submitted) == 1
     # and the kill switch pulled the resting order -> the first order is now canceled.
-    assert broker.list_open_orders() == []  # cancel_all_orders() was called
+    assert broker.list_open_orders() == []  # the resting entry was pulled
 
 
 # ---------------------------------------------------------------------------

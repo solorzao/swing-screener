@@ -8,18 +8,15 @@ report never blocks. The Anthropic client is an injectable seam so tests never h
 """
 
 import logging
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, replace
 
 import anthropic
 
-from swing_screener.config_secrets import get_secret
 from swing_screener.notify.analysis import (
-    _REASONING_EFFORT,
-    _REASONING_MAX_TOKENS,
+    EmptyAnalysisError,
     Usage,
-    _capture_usage,
-    _create_message,
-    _extract_text_and_citations,
+    _analyst_call,
     _format_sources,
 )
 from swing_screener.pipeline.market import MarketFacts
@@ -65,11 +62,31 @@ class MarketAnalysis:
 
 
 def _fmt(x: float | None, nd: int = 2) -> str:
-    return f"{x:.{nd}f}" if x is not None else "n/a"
+    return f"{x:.{nd}f}" if x is not None and math.isfinite(x) else "n/a"
+
+
+def _fin(x: float | None) -> float | None:
+    """A finite float or None -- a NaN/inf fact gets the same treatment as missing."""
+    return x if x is None or math.isfinite(x) else None
+
+
+def _drop_non_finite(f: MarketFacts) -> MarketFacts:
+    """Non-finite fact floats -> None before rendering. PR #104 hardened the computation
+    layer; this is the rendering-layer backstop so a stray NaN/inf can never reach the
+    analyst prompt (or the deterministic fallback report) as a literal 'nan'."""
+    return replace(
+        f,
+        vix=_fin(f.vix), vix_rank=_fin(f.vix_rank),
+        ten_year=_fin(f.ten_year), three_month=_fin(f.three_month),
+        recession_prob=_fin(f.recession_prob), vix_term_ratio=_fin(f.vix_term_ratio),
+        credit_chg_4w=_fin(f.credit_chg_4w), credit_pctile=_fin(f.credit_pctile),
+        cyc_def_chg_4w=_fin(f.cyc_def_chg_4w), breadth_chg_4w=_fin(f.breadth_chg_4w),
+    )
 
 
 def facts_block(f: MarketFacts) -> str:
     """Render the deterministic market facts as a text block (prompt + fallback report)."""
+    f = _drop_non_finite(f)
     rows = [f"- SPY Heiken-Ashi (monthly/weekly/daily): {f.ha_alignment_note} "
             f"[alignment: {f.ha_alignment}]"]
     for tf in ("1mo", "1wk", "1d"):
@@ -157,32 +174,27 @@ def analyze_market_deep(
     web_search: bool = True,
 ) -> MarketAnalysis:
     """Opus macro analyst: weighs the deterministic market facts, web-searches the macro context,
-    and writes the weekly read. Falls back to the deterministic facts report on ANY failure."""
+    and writes the weekly read. Falls back to the deterministic facts report on ANY failure.
+    A failure AFTER the API responded was still BILLED, so the fallback carries the
+    captured usage and market_run persists a real est_cost_usd (E3b symmetry with the
+    other three analysts -- never a dishonest NULL for spent money)."""
+    usage: Usage | None = None  # None only when no billed call happened
     try:
-        client = client or anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
-        kwargs: dict = {
-            "model": model,
-            "max_tokens": _REASONING_MAX_TOKENS.get(reasoning, 16000),
-            "system": _MARKET_SYSTEM,
-            "messages": [{"role": "user", "content": _market_prompt(facts)}],
-        }
-        effort = _REASONING_EFFORT.get(reasoning)
-        if effort is not None:
-            kwargs["thinking"] = {"type": "adaptive"}
-            kwargs["output_config"] = {"effort": effort}
-        if web_search:
-            kwargs["tools"] = [
-                {"type": "web_search_20250305", "name": "web_search", "max_uses": max_searches}
-            ]
-        resp = _create_message(client, kwargs)
-        text, sources = _extract_text_and_citations(resp)
-        if not text.strip():
-            raise ValueError("empty model response")
+        text, sources, usage = _analyst_call(
+            system=_MARKET_SYSTEM,
+            content=[{"type": "text", "text": _market_prompt(facts)}],
+            client=client, model=model, reasoning=reasoning,
+            max_searches=max_searches, web_search=web_search,
+        )
         text = _strip_preamble(text)
         report = text.strip() + (_format_sources(sources) if sources else "")
         return MarketAnalysis(core=_core_line(text), report=report, is_deep=True,
-                              usage=_capture_usage(resp, model))
-    except Exception:
+                              usage=usage)
+    except Exception as exc:
+        # EmptyAnalysisError carries the billed usage; any other post-response
+        # failure left it in `usage` via the unpack above; a failed call -> None.
+        if isinstance(exc, EmptyAnalysisError):
+            usage = exc.usage
         log.warning("market deep analysis failed; using deterministic fallback", exc_info=True)
         det = _deterministic_report(facts)
-        return MarketAnalysis(core=_core_line(det), report=det, is_deep=False)
+        return MarketAnalysis(core=_core_line(det), report=det, is_deep=False, usage=usage)

@@ -73,11 +73,16 @@ def draft_review(
     *,
     prior_weaknesses: str = "",
     client: anthropic.Anthropic | None = None,
-    model: str = "claude-opus-4-8",
+    model: str,
 ) -> DraftResult:
     """Draft one coaching note over ``facts``. Degrades to a deterministic template on
     ANY failure (usage None on that path). ``prior_weaknesses`` is optional feed-forward
-    context (the Weaknesses Profile) the coach may reference."""
+    context (the Weaknesses Profile) the coach may reference.
+
+    ``model`` is REQUIRED, no default: ``coach_run._MODEL`` is the single authoritative
+    model id, passed here AND stamped on the JournalReview row, so the provenance stamp
+    always matches the model actually called (a default here duplicated that constant --
+    a stamp/call mismatch hazard flagged by the 2026-07-17 audit)."""
     try:
         from swing_screener.notify.analysis import _capture_usage  # noqa: PLC0415
 

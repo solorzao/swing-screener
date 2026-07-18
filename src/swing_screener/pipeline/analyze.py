@@ -107,19 +107,6 @@ def build_frames(
     return frames
 
 
-def analyze_ticker(
-    ticker: str,
-    bars_by_tf: dict[str, pd.DataFrame],
-    cfg: StrategyConfig,
-) -> list[SignalResult]:
-    """Run the signal engine across the provided timeframes for one ticker.
-
-    Pure (no I/O). Convenience wrapper that builds the enriched frames and then
-    analyzes them (see analyze_frames).
-    """
-    return analyze_frames(ticker, build_frames(bars_by_tf, cfg), cfg)
-
-
 def analyze_frames(
     ticker: str,
     frames: dict[str, pd.DataFrame],

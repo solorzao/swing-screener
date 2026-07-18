@@ -33,7 +33,7 @@ def main() -> None:
     frames = load_replay_corpus(args.cache_dir, limit=args.limit)
     vix = load_cached_daily("^VIX", args.cache_dir)
     if vix is None:
-        log.error("no ^VIX in cache; run fetch_vix first")
+        log.error('no ^VIX in cache; warm it first: fetch_bars("^VIX", "1d", cache_dir=...)')
         return
     log.info("vix validation: %d tickers, gate max_vix_rank=%.0f ...", len(frames), args.max_vix_rank)
 

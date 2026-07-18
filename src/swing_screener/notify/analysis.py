@@ -9,6 +9,7 @@ nightly pipeline never blocks on the LLM.
 
 import base64
 import logging
+import math
 from dataclasses import dataclass
 
 import anthropic
@@ -306,10 +307,24 @@ def _format_sources(sources: list[tuple[str, str]]) -> str:
 # This is an APPROXIMATE estimate -- it ignores prompt-cache discounts and image
 # tokens -- used only for cost visibility and the Task-2 safety cap, never billing.
 _MODEL_PRICES: dict[str, tuple[float, float]] = {
+    "claude-fable-5": (10.0, 50.0),
     "claude-opus-4-8": (5.0, 25.0),
     "claude-opus-4-7": (5.0, 25.0),
+    "claude-opus-4-6": (5.0, 25.0),
+    "claude-sonnet-5": (3.0, 15.0),
     "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-haiku-4-5": (1.0, 5.0),  # E5 points the coach/auditor here
 }
+# FAIL-SAFE for a model with no row above: charge the MOST EXPENSIVE known rates so
+# the spend cap OVERCOUNTS rather than silently no-ops -- an unnoticed swap to an
+# unpriced (possibly pricier) model is exactly the failure the cap exists to catch.
+# ELEMENTWISE max, not max() over the tuples: a lexicographic max would undercount
+# output rates if a future row wins on input price alone.
+_FALLBACK_PRICES = (
+    max(p[0] for p in _MODEL_PRICES.values()),
+    max(p[1] for p in _MODEL_PRICES.values()),
+)
+_UNPRICED_MODELS_WARNED: set[str] = set()  # warn once per process per model id
 # Web search list price: $10 per 1,000 searches == $0.01 per search (Anthropic docs,
 # web-search tool "Usage and pricing"). Also approximate.
 _WEB_SEARCH_COST_USD = 0.01
@@ -331,8 +346,8 @@ def _capture_usage(resp: object, model: str) -> Usage | None:
 
     GUARDED: a response with no ``usage`` (or ``usage is None``) returns None so the
     capture never crashes the analyst. ``est_cost_usd`` is the approximate list-price
-    estimate (unknown model -> token term 0); web searches always add their per-call
-    cost so a search-heavy unpriced model still shows nonzero spend.
+    estimate; an unknown model prices at ``_FALLBACK_PRICES`` (fail-safe: the spend
+    cap overcounts rather than no-ops) with a once-per-process warning per model id.
     """
     usage = getattr(resp, "usage", None)
     if usage is None:
@@ -340,7 +355,16 @@ def _capture_usage(resp: object, model: str) -> Usage | None:
     in_tok = getattr(usage, "input_tokens", None) or 0
     out_tok = getattr(usage, "output_tokens", None) or 0
     searches = _count_web_searches(usage)
-    in_price, out_price = _MODEL_PRICES.get(model, (0.0, 0.0))
+    prices = _MODEL_PRICES.get(model)
+    if prices is None:
+        if model not in _UNPRICED_MODELS_WARNED:
+            _UNPRICED_MODELS_WARNED.add(model)
+            log.warning(
+                "model %s has no price entry; charging the most expensive known "
+                "rates so the spend cap fails safe", model,
+            )
+        prices = _FALLBACK_PRICES
+    in_price, out_price = prices
     est = (
         in_tok / 1_000_000 * in_price
         + out_tok / 1_000_000 * out_price
@@ -354,22 +378,88 @@ def _capture_usage(resp: object, model: str) -> Usage | None:
     )
 
 
+# Web-search tool version. web_search_20260209 adds dynamic filtering: search-result
+# tokens are pruned BEFORE they enter billable input context -- the dominant cost term
+# (~400k input tok/run measured 2026-07 under the legacy 20250305 tool). Models that
+# reject this version are degraded to the legacy type by _create_message.
+_WEB_SEARCH_TOOL = "web_search_20260209"
+
+
 def _create_message(client: anthropic.Anthropic, kwargs: dict) -> object:
-    """messages.create, retrying once WITHOUT the reasoning params if the model
-    rejects them. Models differ on the thinking API (opus-4.8 wants adaptive +
-    output_config.effort; older models want budget_tokens), so on a config mismatch
-    we retry plain -- still a real model analysis, not the deterministic narrator.
+    """messages.create with up to one retry PER degrade below -- a single call may
+    need both (an older model can reject the reasoning shape AND the newer
+    web-search tool). Either way the retry is still a real model analysis, not the
+    deterministic narrator:
+
+    - reasoning params: models differ on the thinking API (opus-4.8 wants adaptive +
+      output_config.effort; older models want budget_tokens) -> retry WITHOUT them;
+    - web-search tool: an older SWING_ANALYSIS_MODEL that rejects ``_WEB_SEARCH_TOOL``
+      -> retry with the legacy ``web_search_20250305`` type.
+
+    Each degrade can fire at most once (its trigger state is gone afterwards), so
+    any further BadRequestError re-raises and the loop always terminates.
     """
-    try:
-        return client.messages.create(**kwargs)
-    except anthropic.BadRequestError as exc:
-        msg = str(exc).lower()
-        if any(k in msg for k in ("thinking", "output_config", "effort")) and (
-            "thinking" in kwargs or "output_config" in kwargs
-        ):
-            plain = {k: v for k, v in kwargs.items() if k not in ("thinking", "output_config")}
-            return client.messages.create(**plain)
-        raise
+    while True:
+        try:
+            return client.messages.create(**kwargs)
+        except anthropic.BadRequestError as exc:
+            msg = str(exc).lower()
+            if any(k in msg for k in ("thinking", "output_config", "effort")) and (
+                "thinking" in kwargs or "output_config" in kwargs
+            ):
+                kwargs = {
+                    k: v for k, v in kwargs.items() if k not in ("thinking", "output_config")
+                }
+            elif "web_search" in msg and any(
+                t.get("type") == _WEB_SEARCH_TOOL for t in kwargs.get("tools", [])
+            ):
+                kwargs = dict(kwargs, tools=[
+                    {**t, "type": "web_search_20250305"}
+                    if t.get("type") == _WEB_SEARCH_TOOL else t
+                    for t in kwargs["tools"]
+                ])
+            else:
+                raise
+
+
+class EmptyAnalysisError(ValueError):
+    """The model returned no usable text. Carries the captured Usage so callers
+    can still charge billed-but-failed calls against spend ceilings (Task E3b)."""
+
+    def __init__(self, usage: Usage | None) -> None:
+        super().__init__("empty model response")
+        self.usage = usage
+
+
+def _analyst_call(
+    *, system: str, content: list[dict], client: anthropic.Anthropic | None,
+    model: str, reasoning: str, max_searches: int, web_search: bool,
+) -> tuple[str, list[tuple[str, str]], Usage | None]:
+    """One place that owns the analyst call scaffold: client construction, kwargs
+    assembly, thinking/effort wiring, web-search tool config, _create_message,
+    text+citation extraction, usage capture, and the empty-response check.
+    Raises on any failure; each analyst keeps its own deterministic fallback."""
+    client = client or anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
+    kwargs: dict = {
+        "model": model,
+        "max_tokens": _REASONING_MAX_TOKENS.get(reasoning, 16000),
+        "system": system,
+        "messages": [{"role": "user", "content": content}],
+    }
+    effort = _REASONING_EFFORT.get(reasoning)
+    if effort is not None:  # opus-4.8+ adaptive thinking; "none"/unknown omits it
+        kwargs["thinking"] = {"type": "adaptive"}
+        kwargs["output_config"] = {"effort": effort}
+    if web_search:
+        kwargs["tools"] = [
+            {"type": _WEB_SEARCH_TOOL, "name": "web_search", "max_uses": max_searches}
+        ]
+    resp = _create_message(client, kwargs)
+    usage = _capture_usage(resp, model)
+    text, sources = _extract_text_and_citations(resp)
+    if not text.strip():
+        raise EmptyAnalysisError(usage)
+    return text, sources, usage
 
 
 def analyze_signal_deep(
@@ -380,36 +470,28 @@ def analyze_signal_deep(
     """Opus analyst: reads the chart image + facts + fundamentals/news, web-searches
     sentiment/trends, and weighs it all. Falls back to the deterministic rationale on
     ANY failure (missing key, API/tool error, empty reply) so the digest never blocks.
+    A failure AFTER the API responded was still BILLED, so the fallback carries the
+    captured usage and the run-level spend ceiling charges it (E3b).
     """
+    usage: Usage | None = None  # None only when no billed call happened
     try:
-        client = client or anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
-        kwargs: dict = {
-            "model": model,
-            "max_tokens": _REASONING_MAX_TOKENS.get(reasoning, 16000),
-            "system": _DEEP_SYSTEM,
-            "messages": [
-                {"role": "user", "content": _deep_user_content(facts, chart_bytes, context_text)}
-            ],
-        }
-        effort = _REASONING_EFFORT.get(reasoning)
-        if effort is not None:  # opus-4.8+ adaptive thinking; "none"/unknown omits it
-            kwargs["thinking"] = {"type": "adaptive"}
-            kwargs["output_config"] = {"effort": effort}
-        if web_search:
-            kwargs["tools"] = [
-                {"type": "web_search_20250305", "name": "web_search", "max_uses": max_searches}
-            ]
-        resp = _create_message(client, kwargs)
-        text, sources = _extract_text_and_citations(resp)
-        if not text.strip():
-            raise ValueError("empty model response")
+        text, sources, usage = _analyst_call(
+            system=_DEEP_SYSTEM,
+            content=_deep_user_content(facts, chart_bytes, context_text),
+            client=client, model=model, reasoning=reasoning,
+            max_searches=max_searches, web_search=web_search,
+        )
         analysis = _parse(text, facts)
         rationale = analysis.rationale + (_format_sources(sources) if sources else "")
         return SignalAnalysis(
             core_reason=analysis.core_reason, rationale=rationale, is_deep=True,
-            usage=_capture_usage(resp, model),
+            usage=usage,
         )
-    except Exception:
+    except Exception as exc:
+        # EmptyAnalysisError carries the billed usage; any other post-response
+        # failure left it in `usage` via the unpack above; a failed call -> None.
+        if isinstance(exc, EmptyAnalysisError):
+            usage = exc.usage
         log.warning(
             "deep analysis failed for %s %s; using deterministic fallback",
             facts.ticker, facts.timeframe, exc_info=True,
@@ -417,6 +499,7 @@ def analyze_signal_deep(
         return SignalAnalysis(
             core_reason=_deterministic_core(facts),
             rationale=_deterministic_rationale(facts),
+            usage=usage,
         )
 
 
@@ -447,12 +530,19 @@ _TICKER_SYSTEM = (
 )
 
 
+def _fmt_num(x: float, spec: str) -> str:
+    """``format(x, spec)``, or 'n/a' when non-finite. Short frames leave the last
+    RSI/ATR NaN (e.g. the 1mo timeframe of a young listing) -- the analyst must
+    never read a literal 'nan' fact (PR #104's class at the rendering layer)."""
+    return format(x, spec) if math.isfinite(x) else "n/a"
+
+
 def _read_line(read: TimeframeRead) -> str:
     """One deterministic fact line per timeframe read (entry/stop/target if firing)."""
     line = (
         f"- {read.timeframe}: HA {read.ha_trend}, EMA "
         f"{'aligned' if read.ema_aligned else 'not aligned'}, "
-        f"RSI {read.rsi:.0f}, ATR {read.atr_pct:.1%}"
+        f"RSI {_fmt_num(read.rsi, '.0f')}, ATR {_fmt_num(read.atr_pct, '.1%')}"
     )
     if read.setup is not None:
         s = read.setup
@@ -494,12 +584,26 @@ def _ticker_user_content(report: TickerReport, charts: list[bytes]) -> list[dict
     return content
 
 
-def _ticker_fallback(report: TickerReport) -> tuple[str, str, bool]:
-    """Deterministic multi-timeframe summary built purely from the reads."""
+@dataclass(frozen=True)
+class TickerAnalysis:
+    """One on-demand multi-timeframe analyst result (analyze_ticker_deep)."""
+
+    summary: str
+    analysis_text: str
+    is_deep: bool  # True only when the Opus path actually produced this
+    usage: Usage | None = None  # token spend; None only when no billed call happened
+
+
+def _ticker_fallback(report: TickerReport, usage: Usage | None = None) -> TickerAnalysis:
+    """Deterministic multi-timeframe summary built purely from the reads.
+
+    ``usage`` carries the billed spend of a call that responded but then failed
+    (empty reply / post-response error), so the fallback never hides money spent."""
     summary = f"{report.ticker}: multi-timeframe read"
     lines: list[str] = []
     for r in report.reads:
-        line = f"{r.timeframe}: {r.ha_trend}, RSI {r.rsi:.0f}, ATR {r.atr_pct:.1%}"
+        line = (f"{r.timeframe}: {r.ha_trend}, RSI {_fmt_num(r.rsi, '.0f')}, "
+                f"ATR {_fmt_num(r.atr_pct, '.1%')}")
         if r.setup is not None:
             s = r.setup
             line += (
@@ -507,42 +611,32 @@ def _ticker_fallback(report: TickerReport) -> tuple[str, str, bool]:
                 f"stop {s.stop:g}, target {s.target:g})"
             )
         lines.append(line)
-    return summary, "\n".join(lines), False
+    return TickerAnalysis(
+        summary=summary, analysis_text="\n".join(lines), is_deep=False, usage=usage)
 
 
 def analyze_ticker_deep(
     report: TickerReport, *, charts: list[bytes] | None = None, context_text: str = "",
     client: anthropic.Anthropic | None = None, model: str = "claude-opus-4-8",
     reasoning: str = "high", max_searches: int = 4, web_search: bool = True,
-) -> tuple[str, str, bool]:
-    """Return (summary, analysis_text, is_deep). ONE Opus call over the whole
-    multi-timeframe picture: the per-TF deterministic facts + chart images. Falls
-    back to a deterministic multi-TF summary on ANY failure so the worker still
-    produces a report.
+) -> TickerAnalysis:
+    """ONE Opus call over the whole multi-timeframe picture: the per-TF
+    deterministic facts + chart images. Falls back to a deterministic multi-TF
+    summary on ANY failure so the worker still produces a report. A failure AFTER
+    the API responded was still BILLED, so the fallback carries the captured usage
+    (E3c -- this path is uncapped, making the persisted estimate its only cost
+    visibility).
     """
+    usage: Usage | None = None  # None only when no billed call happened
     try:
-        client = client or anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
         content = _ticker_user_content(report, charts or [])
         if context_text:
             content.append({"type": "text", "text": context_text})
-        kwargs: dict = {
-            "model": model,
-            "max_tokens": _REASONING_MAX_TOKENS.get(reasoning, 16000),
-            "system": _TICKER_SYSTEM,
-            "messages": [{"role": "user", "content": content}],
-        }
-        effort = _REASONING_EFFORT.get(reasoning)
-        if effort is not None:  # opus-4.8+ adaptive thinking; "none"/unknown omits it
-            kwargs["thinking"] = {"type": "adaptive"}
-            kwargs["output_config"] = {"effort": effort}
-        if web_search:
-            kwargs["tools"] = [
-                {"type": "web_search_20250305", "name": "web_search", "max_uses": max_searches}
-            ]
-        resp = _create_message(client, kwargs)
-        text, sources = _extract_text_and_citations(resp)
-        if not text.strip():
-            raise ValueError("empty model response")
+        text, sources, usage = _analyst_call(
+            system=_TICKER_SYSTEM, content=content,
+            client=client, model=model, reasoning=reasoning,
+            max_searches=max_searches, web_search=web_search,
+        )
         summary = next(
             (
                 line.split("CORE:", 1)[1].strip()
@@ -552,13 +646,18 @@ def analyze_ticker_deep(
             f"{report.ticker}: multi-timeframe read",
         )
         analysis_text = text.strip() + (_format_sources(sources) if sources else "")
-        return summary, analysis_text, True
-    except Exception:
+        return TickerAnalysis(
+            summary=summary, analysis_text=analysis_text, is_deep=True, usage=usage)
+    except Exception as exc:
+        # EmptyAnalysisError carries the billed usage; any other post-response
+        # failure left it in `usage` via the unpack above; a failed call -> None.
+        if isinstance(exc, EmptyAnalysisError):
+            usage = exc.usage
         log.warning(
             "ticker deep analysis failed for %s; using deterministic fallback",
             report.ticker, exc_info=True,
         )
-        return _ticker_fallback(report)
+        return _ticker_fallback(report, usage=usage)
 
 
 # --- Conviction nudge: the analyst MOVES the deterministic grade, bounded +-1 ---
@@ -690,40 +789,29 @@ def analyze_conviction(
     sentiment/sector context that genuinely bears on the thesis -- the point of the
     "learning participant" seam; citations get appended to the insight.
     """
+    usage: Usage | None = None  # None only when no billed call happened
     try:
-        client = client or anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
-        kwargs: dict = {
-            "model": model,
-            "max_tokens": _REASONING_MAX_TOKENS.get(reasoning, 16000),
-            "system": _CONVICTION_SYSTEM,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": _conviction_user_content(
-                        facts, baseline, playbook_text, chart_bytes, context_text
-                    ),
-                }
-            ],
-        }
-        effort = _REASONING_EFFORT.get(reasoning)
-        if effort is not None:  # opus-4.8+ adaptive thinking; "none"/unknown omits it
-            kwargs["thinking"] = {"type": "adaptive"}
-            kwargs["output_config"] = {"effort": effort}
-        if web_search:
-            kwargs["tools"] = [
-                {"type": "web_search_20250305", "name": "web_search", "max_uses": max_searches}
-            ]
-        resp = _create_message(client, kwargs)
-        text, sources = _extract_text_and_citations(resp)
-        if not text.strip():
-            raise ValueError("empty model response")
+        text, sources, usage = _analyst_call(
+            system=_CONVICTION_SYSTEM,
+            content=_conviction_user_content(
+                facts, baseline, playbook_text, chart_bytes, context_text
+            ),
+            client=client, model=model, reasoning=reasoning,
+            max_searches=max_searches, web_search=web_search,
+        )
         conviction, reason, insight = _parse_conviction(text, baseline, max_step=max_step)
         insight += _format_sources(sources) if sources else ""
         return ConvictionResult(
             conviction=conviction, nudge_reason=reason, insight=insight, is_deep=True,
-            usage=_capture_usage(resp, model),
+            usage=usage,
         )
-    except Exception:
+    except Exception as exc:
+        # A failure AFTER the API responded was still BILLED: EmptyAnalysisError
+        # carries the usage; any other post-response failure left it in `usage`
+        # via the unpack above; a failed call -> None. The fallback keeps it so
+        # the run-level spend ceiling charges billed failures (E3b).
+        if isinstance(exc, EmptyAnalysisError):
+            usage = exc.usage
         log.warning(
             "conviction analysis failed for %s %s; using baseline + deterministic rationale",
             facts.ticker, facts.timeframe, exc_info=True,
@@ -733,4 +821,5 @@ def analyze_conviction(
             nudge_reason="(baseline; analyst unavailable)",
             insight=_deterministic_rationale(facts),
             is_deep=False,
+            usage=usage,
         )

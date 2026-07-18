@@ -2,6 +2,7 @@
 
 from datetime import date, datetime
 
+from sqlalchemy import event
 from sqlalchemy.orm import Session
 
 from swing_screener.cockpit.spend import spend_rows_since
@@ -43,3 +44,31 @@ def test_rows_before_the_window_are_excluded():
                           est_cost_usd=9.0, generated_at=datetime(2026, 6, 1, 11, 0)))
         s.commit()
         assert spend_rows_since(s, _TODAY) == []
+
+
+def test_cutoff_rides_the_sql_where_not_python():
+    """/api/gate polls this constantly against Azure SQL: the date cutoff must
+    reach the database as ``WHERE generated_at >= ...``, never arrive as a
+    full-table scan of journal_reviews / system_audits filtered in Python.
+    Behavior is pinned alongside: old rows out, new rows in."""
+    engine = get_engine("sqlite:///:memory:")
+    statements: list[str] = []
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def _capture(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001, ARG001
+        statements.append(statement)
+
+    with Session(engine) as s:
+        s.add(JournalReview(identity_key="old", kind="trade_close", book="manual_equity",
+                            facts_json="{}", source="analyst", est_cost_usd=9.0,
+                            generated_at=datetime(2026, 6, 1, 10, 0)))
+        s.add(SystemAudit(kind="weekly", period_from=_TODAY, period_to=_TODAY,
+                          est_cost_usd=0.05, generated_at=datetime(2026, 7, 12, 11, 0)))
+        s.commit()
+        statements.clear()
+        rows = spend_rows_since(s, _TODAY)
+    assert rows == [(_TODAY, 0.05)]  # behavior unchanged: the old row is excluded
+    scans = [st for st in statements
+             if "journal_reviews" in st or "system_audits" in st]
+    assert scans, "the three-table union must actually query the journal tables"
+    assert all("generated_at >= ?" in st for st in scans), scans

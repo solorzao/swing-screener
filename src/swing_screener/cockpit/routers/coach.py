@@ -10,6 +10,7 @@ until confirmed; only on confirm is a ``source="analyst"`` tag written to the ov
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable, Iterator
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -20,6 +21,8 @@ from sqlalchemy.orm import Session
 from swing_screener.cockpit.common import ActionNonce, _require_cockpit, _utc_iso
 from swing_screener.db.models import JournalReview, WeaknessesProfile
 from swing_screener.journal.repo import add_tag, tag_trade
+
+log = logging.getLogger(__name__)
 
 _PERSONAL_BOOKS = ("manual_equity", "robinhood")
 
@@ -72,7 +75,13 @@ def build_coach_router(
             select(JournalReview).where(JournalReview.book == book)
             .order_by(JournalReview.id.desc())
         )
-        return [_review_dict(r) for r in rows]
+        out: list[dict[str, object]] = []
+        for r in rows:
+            try:
+                out.append(_review_dict(r))
+            except ValueError:  # corrupt facts_json: per-row degrade, never a 500
+                log.warning("skipping review %s: corrupt facts_json", r.id)
+        return out
 
     @router.get("/api/coach/weaknesses")
     def weaknesses(session: Session = Depends(_session)) -> dict[str, object]:
@@ -82,7 +91,14 @@ def build_coach_router(
         ).first()
         if row is None:
             return {"items": [], "thin_data": True, "n_reviews": 0, "generated_at": None}
-        payload = json.loads(row.items_json or "{}")
+        raw = json.loads(row.items_json or "{}")
+        # The column default is "[]" (a bare items LIST) while the builder writes
+        # the full dict -- normalize a list into the documented shape (no reviews
+        # counted yet, honestly thin) instead of TypeError-ing into a 500.
+        payload: dict[str, object] = (
+            raw if isinstance(raw, dict)
+            else {"items": raw, "thin_data": True, "n_reviews": 0}
+        )
         payload["generated_at"] = _utc_iso(row.generated_at)
         return payload
 

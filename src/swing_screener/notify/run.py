@@ -83,6 +83,7 @@ from swing_screener.pipeline.insight import (
 )
 from swing_screener.pipeline.regime import MARKET_PROXY, classify_regime
 from swing_screener.pipeline.reflect import load_verdicts, verdicts_filename
+from swing_screener.pipeline.run import _migrate_with_retry, _resolve_db_url
 from swing_screener.settings import (
     load_settings,
     resolve_edge_dir,
@@ -97,6 +98,17 @@ log = logging.getLogger(__name__)
 SmtpSend = Callable[..., None]
 
 _PICKERS = {"daily": sel.daily_picks, "weekly": sel.weekly_picks, "monthly": sel.monthly_picks}
+
+# Per-kind staleness-cooldown horizon, denominated in SCREEN RUNS (``select._fresh_enough``
+# walks back over the distinct run_dates actually stored, NOT calendar days). The daily
+# digest keeps the configured ``digest_repeat_cooldown_days`` (default 1 run: pitch once,
+# drop on the next daily screen). Weekly/monthly setups persist across MANY daily screens
+# by nature -- ``first_seen_date`` inherits the streak start -- so sharing the daily
+# horizon silently blanked those digests: by the time the weekly fired, any setup older
+# than ~2 daily screens was already "stale", and an empty weekly digest was
+# indistinguishable from a quiet market. Each cadence gets its own horizon instead:
+# weekly ~ one trading week of daily runs (5), monthly ~ one trading month (21).
+_COOLDOWN_RUNS = {"weekly": 5, "monthly": 21}
 
 
 @dataclass(frozen=True)
@@ -294,6 +306,31 @@ def _warn_chartless(kind: str, signals: list[Signal]) -> None:
                     "(render/selection gap): %s", kind, len(missing), ", ".join(missing))
 
 
+def _log_cooldown_drops(session: Session, kind: str, run_date: date,
+                        picks: list[Signal], max_age: int | None) -> None:
+    """Log how many picks the staleness cooldown removed from a weekly/monthly digest.
+
+    Those cadences have no funnel line, so a cooldown-blanked digest renders exactly
+    like a quiet market -- this count is the only diagnosable trace (the shared-horizon
+    bug that blanked them was invisible precisely because nothing counted). The count is
+    the TRUE surfaced-set loss: re-run the picker without the freshness clause and count
+    the would-have-surfaced picks missing from the sent list. A fresh pick in the
+    unfiltered top-N always makes the filtered top-N too (dropping stale rows only moves
+    it up in rank order), so the difference is exactly the cooldown's drops -- stale
+    candidates below the top-N that would never have surfaced are not counted. That
+    set-comparison argument assumes ranks are unique within a run (the orchestrator
+    assigns them globally), so ``ORDER BY rank`` is a total order and both queries walk
+    the same deterministic candidate sequence.
+    """
+    if max_age is None or kind not in _COOLDOWN_RUNS:
+        return
+    would_surface = _PICKERS[kind](session, run_date, max_age_days=None)
+    kept = {s.id for s in picks}
+    n_dropped = sum(1 for s in would_surface if s.id not in kept)
+    if n_dropped:
+        log.info("cooldown dropped %d pick(s) for %s digest", n_dropped, kind)
+
+
 def _already_sent(session: Session, kind: str, run_date: date) -> bool:
     stmt = select(EmailLog).where(EmailLog.kind == kind, EmailLog.run_date == run_date)
     return session.scalars(stmt).first() is not None
@@ -426,6 +463,8 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
 
         # Staleness cooldown: drop picks whose setup has been on the list too long so the
         # same play isn't re-pitched daily (legacy NULL-first_seen rows always pass).
+        # Weekly/monthly use their own run-denominated horizon (``_COOLDOWN_RUNS``); a
+        # config of None (cooldown disabled) disables it for every cadence.
         cooldown = StrategyConfig().digest_repeat_cooldown_days
         # Sector-diversity cap on the DAILY list only (weekly/monthly stay pure rank), so one
         # hot sector can't fill every slot. Fail-open on unknown sectors; None disables it.
@@ -433,7 +472,9 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
             picks = sel.daily_picks(session, run_date, max_age_days=cooldown,
                                     max_per_sector=StrategyConfig().daily_max_per_sector)
         else:
-            picks = _PICKERS[kind](session, run_date, max_age_days=cooldown)
+            max_age = None if cooldown is None else _COOLDOWN_RUNS[kind]
+            picks = _PICKERS[kind](session, run_date, max_age_days=max_age)
+            _log_cooldown_drops(session, kind, run_date, picks, max_age)
         # Already-ran filter: re-check live actionability so the email never pitches a pick
         # that ran past its entry (or broke its stop) overnight. Done BEFORE the (billable)
         # deep analysis so stale picks never cost an Opus call. No-op when the seam is off.
@@ -810,14 +851,21 @@ def main() -> None:
     settings = load_settings()  # absolute paths + env-resolved DB URL (container-safe)
     parser = argparse.ArgumentParser(description="Send a swing-screener email digest.")
     parser.add_argument("--kind", choices=["daily", "weekly", "monthly", "exit"], default="daily")
-    parser.add_argument("--db", default=settings.db_url)
+    parser.add_argument("--db", default=None)
     parser.add_argument("--pdf-dir", type=Path, default=settings.pdf_dir)
     parser.add_argument("--force", action="store_true",
                         help="resend even if a digest for this (kind, day) already went out")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
+    # Same startup contract as every other job CLI (pipeline.run, coach_run, audit_run,
+    # ondemand): refuse a throwaway local sqlite in a cloud context, and self-migrate on
+    # Azure SQL -- the morning digest / hourly exit check can be the FIRST job to run
+    # after a CD deploy ships a migration, and must not run new models on the old schema.
+    db_url = _resolve_db_url(args.db)
+    if db_url.startswith("mssql"):  # Azure SQL: Alembic owns the schema, upgrade first
+        _migrate_with_retry(db_url)
     if args.kind == "exit":
-        exit_result = run_exit_check_and_alert(db_url=args.db)
+        exit_result = run_exit_check_and_alert(db_url=db_url)
         log.info("exit check: open=%d exited=%d", exit_result.n_open, exit_result.n_exited)
         return
     # SWING_FORCE_RESEND lets a scheduled container force a resend without changing
@@ -830,7 +878,7 @@ def main() -> None:
     if StrategyConfig().digest_drop_already_ran:
         def latest_closes_fn(tickers: list[str]) -> dict[str, float]:  # noqa: E731
             return latest_closes(tickers, cache_dir=settings.cache_dir)
-    result = send_digest(kind=args.kind, db_url=args.db, pdf_dir=args.pdf_dir, force=force,
+    result = send_digest(kind=args.kind, db_url=db_url, pdf_dir=args.pdf_dir, force=force,
                          latest_closes_fn=latest_closes_fn)
     log.info("digest %s: picks=%d reversals=%d pdf=%s sent=%s",
              args.kind, result.n_picks, result.n_reversals, result.pdf_attached, result.sent)

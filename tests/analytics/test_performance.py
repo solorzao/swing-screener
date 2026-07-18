@@ -7,8 +7,6 @@ from swing_screener.analytics.performance import (
     _clustered_ci_low,
     breakdown,
     equity_curve,
-    rank_bucket,
-    score_bucket,
     summarize,
     summary_from_realized,
 )
@@ -173,42 +171,10 @@ def test_lower_bound_penalises_thin_noisy_samples():
     assert summarize(tight).expectancy_ci_low > summarize(noisy).expectancy_ci_low
 
 
-def test_score_bucket_labels_and_assignment():
-    trades = [
-        _pt(score=0.45, realized_r=-1.0, exit_date=date(2024, 1, 1)),  # 0.00-0.50
-        _pt(score=0.55, realized_r=0.0, exit_date=date(2024, 1, 2)),   # 0.50-0.60
-        _pt(score=0.85, realized_r=2.0, exit_date=date(2024, 1, 3)),   # 0.80-1.00
-        _pt(score=0.80, realized_r=1.0, exit_date=date(2024, 1, 4)),   # edge -> higher band
-    ]
-    b = score_bucket(trades, [0.5, 0.6, 0.7, 0.8])
-    assert list(b) == ["0.00-0.50", "0.50-0.60", "0.60-0.70", "0.70-0.80", "0.80-1.00"]
-    assert b["0.00-0.50"].n_closed == 1 and b["0.00-0.50"].expectancy_r == -1.0
-    assert b["0.60-0.70"].n_closed == 0                       # empty band still present
-    assert b["0.80-1.00"].n_closed == 2                       # 0.85 and the on-edge 0.80
-    assert b["0.80-1.00"].expectancy_r == 1.5                 # (2.0 + 1.0) / 2
-
-
-def test_score_bucket_surfaces_a_calibrated_score():
-    # higher score bands earn more -> the score separates winners from losers
-    trades = (
-        [_pt(score=0.45, realized_r=-1.0, exit_date=date(2024, 1, 1)) for _ in range(3)]
-        + [_pt(score=0.85, realized_r=2.0, exit_date=date(2024, 1, 2)) for _ in range(3)]
-    )
-    b = score_bucket(trades, [0.5, 0.6, 0.7, 0.8])
-    assert b["0.80-1.00"].expectancy_r > b["0.00-0.50"].expectancy_r
-
-
 def test_breakdown_by_timeframe():
     b = breakdown(_book(), "timeframe")
     assert set(b.keys()) == {"1d", "1wk"}
     assert b["1wk"].n_closed == 1 and b["1wk"].win_rate == 1.0
-
-
-def test_rank_bucket():
-    rb = rank_bucket(_book(), [2])  # buckets: "1-2", "3+"
-    assert set(rb.keys()) == {"1-2", "3+"}
-    assert rb["1-2"].n_total == 3   # ranks 1, 2, 1
-    assert rb["3+"].n_total == 3    # ranks 3, 4, 5
 
 
 def test_equity_curve_cumulative_in_exit_date_order():

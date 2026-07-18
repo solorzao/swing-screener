@@ -7,13 +7,20 @@ touch. Conventions (pessimistic, matching the equity book):
   * Long: stop = low <= stop, target = high >= target. Short: mirrored.
   * Both levels inside one bar -> stop wins (we cannot see intrabar order, so we
     assume the adverse fill).
-  * Neither level touched across the session -> flat at the last bar's close.
-Stop/target fills land AT the level (structural, not an intrabar guess). Imported
-robinhood trades never settle here -- their book is reconstructed from fills.
+  * Neither level touched across a COMPLETE session -> flat at the last bar's
+    close. When the frame's session is still in progress (or predates the trade's
+    session day), the trade stays OPEN instead -- a closed status is immutable
+    (journal.SettledTradeError), so an intraday eod_flat would permanently
+    mis-grade the trade at a mid-session price (2026-07-17 audit, H2).
+Stop/target fills land AT the level (structural, not an intrabar guess) and are
+NOT gated on session completeness -- a stop that genuinely traded settles.
+Imported robinhood trades never settle here -- their book is reconstructed from
+fills.
 """
 
 import logging
 from dataclasses import dataclass
+from datetime import time
 
 import pandas as pd
 from sqlalchemy import select
@@ -23,11 +30,19 @@ from swing_screener.db.models import OptionPaperTrade
 
 log = logging.getLogger(__name__)
 
+# A 5m frame whose final bar starts at/after 15:55 ET spans the 16:00 close, so its
+# last close is a true session-close price -- safe for the eod_flat fallback.
+# TODO(2026-07-17 audit, H2): like data/fetch.py's close guard, this ignores half-days
+# (a 1pm close leaves trades open until the next full session's bars land -- they then
+# eod_flat at the NEXT session's close). Doing it right needs a market calendar.
+_LAST_SESSION_BAR = time(15, 55)
+
 
 @dataclass
 class SettleResult:
     settled: int
     skipped_no_bars: int
+    skipped_incomplete_session: int = 0
 
 
 def settle_open_trades(
@@ -35,8 +50,13 @@ def settle_open_trades(
 ) -> SettleResult:
     """Close every open options-lab trade against its underlying's completed bars.
 
-    Trades whose underlying has no frame are left open (retried on the next run).
-    Commits at the end, repo-style.
+    Trades whose underlying has no frame are left open (retried on the next run),
+    as are untouched trades whose frame does not cover a complete session for the
+    trade's session day (counted in ``skipped_incomplete_session`` -- only the
+    eod_flat fallback is gated; SAME-DAY stop/target touches always settle). A
+    frame that entirely predates the trade's session day is never walked at all:
+    prior-day touches must not close a trade that had not opened yet (also
+    counted in ``skipped_incomplete_session``). Commits at the end, repo-style.
     """
     stmt = select(OptionPaperTrade).where(
         OptionPaperTrade.account == "options-lab",
@@ -47,6 +67,7 @@ def settle_open_trades(
     )
     settled = 0
     skipped_no_bars = 0
+    skipped_incomplete_session = 0
     for trade in session.scalars(stmt):
         frame = bars_by_underlying.get(trade.underlying)
         if frame is None or frame.empty:
@@ -62,23 +83,53 @@ def settle_open_trades(
             frame = frame.copy()
             frame.index = idx.tz_convert("America/New_York").tz_localize(None)
 
+        last_ts = pd.Timestamp(frame.index[-1])
+        session_day = trade.opened_at.date() if trade.opened_at is not None else last_ts.date()
+
         # Bars from the open onward. If the trade opened after every available bar
-        # (all bars precede it), fall back to the full session so a same-bar entry
-        # still settles rather than lingering open forever.
+        # (all bars precede it) but the frame IS the trade's session day, fall back
+        # to the full session so a same-bar entry still settles rather than
+        # lingering open forever.
         relevant = frame
         if trade.opened_at is not None:
             after_open = frame[frame.index >= trade.opened_at]
             if not after_open.empty:
                 relevant = after_open
+            elif last_ts.date() < session_day:
+                # The whole frame predates the trade's session day: the same-bar-entry
+                # fallback below must not walk it -- a prior-day touch would close the
+                # trade at yesterday's level, BEFORE it opened (closed_at < opened_at,
+                # negative hold_minutes, and closed rows are immutable). The fallback
+                # is only for a SAME-DAY entry stamped after its own bar.
+                skipped_incomplete_session += 1
+                log.info("frame for %s ends %s, before trade %s's session day %s; leaving open",
+                         trade.underlying, last_ts, trade.id, session_day)
+                continue
 
-        _close_trade(trade, relevant)
-        settled += 1
+        # eod_flat fills at the frame's LAST close, so that close must be a real
+        # session-close price (last bar at/after 15:55) on a day no earlier than
+        # the trade's session day (a stale prior-day frame must not flatten
+        # today's trade at yesterday's close).
+        session_complete = (last_ts.date() >= session_day
+                            and last_ts.time() >= _LAST_SESSION_BAR)
+
+        if _close_trade(trade, relevant, allow_eod_flat=session_complete):
+            settled += 1
+        else:
+            skipped_incomplete_session += 1
+            log.info("session incomplete for %s (last bar %s); leaving trade %s open",
+                     trade.underlying, last_ts, trade.id)
 
     session.commit()
-    return SettleResult(settled=settled, skipped_no_bars=skipped_no_bars)
+    return SettleResult(settled=settled, skipped_no_bars=skipped_no_bars,
+                        skipped_incomplete_session=skipped_incomplete_session)
 
 
-def _close_trade(trade: OptionPaperTrade, bars: pd.DataFrame) -> None:
+def _close_trade(trade: OptionPaperTrade, bars: pd.DataFrame, *,
+                 allow_eod_flat: bool = True) -> bool:
+    """Walk the bars and close the trade at the first structural touch. Returns
+    True when the trade was closed; False when nothing touched and the eod_flat
+    fallback is disallowed (incomplete session) -- the trade is left untouched."""
     entry = float(trade.entry)  # type: ignore[arg-type]
     stop = float(trade.stop)  # type: ignore[arg-type]
     target = float(trade.target)  # type: ignore[arg-type]
@@ -110,6 +161,8 @@ def _close_trade(trade: OptionPaperTrade, bars: pd.DataFrame) -> None:
             break
 
     if exit_reason is None:
+        if not allow_eod_flat:
+            return False  # incomplete session: no flattening at a mid-session price
         exit_reason, exit_price = "eod_flat", last_close  # closed_ts is the last bar
 
     risk = abs(entry - stop)
@@ -123,3 +176,4 @@ def _close_trade(trade: OptionPaperTrade, bars: pd.DataFrame) -> None:
     trade.closed_at = closed_at
     if trade.opened_at is not None:
         trade.hold_minutes = int((closed_at - trade.opened_at).total_seconds() // 60)
+    return True

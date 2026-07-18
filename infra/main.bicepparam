@@ -19,7 +19,9 @@ using './main.bicep'
 
 param location = 'eastus'
 param namePrefix = 'swing'
-param imageTag = 'bootstrap'
+// 'latest' tracks CD's most recent push, so a re-provision never rolls the jobs
+// back to the stale bootstrap image; pin an immutable :<sha> for a rollback.
+param imageTag = 'latest'
 
 // --- Azure SQL AAD admin (replace placeholders with real values) ---
 // e.g. an Entra security group that owns the database.

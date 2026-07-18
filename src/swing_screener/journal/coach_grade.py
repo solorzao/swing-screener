@@ -77,7 +77,12 @@ def equity_review_facts(t: Trade) -> TradeReviewFacts:
 
 def option_review_facts(t: OptionPaperTrade) -> TradeReviewFacts:
     """Facts for one real imported Robinhood OPTION episode. Premium P&L in $, hold
-    time, exit reason -- no R, no A+ grade (design SS Boundary)."""
+    time, exit reason -- no R, no A+ grade (design SS Boundary).
+
+    NOTE: not wired -- the coach runner never selects robinhood episodes, so no
+    robinhood coach review has ever been produced. Kept deliberately (2026-07-17
+    audit decision #3): wiring robinhood reviews is a pending product decision,
+    and this is the ready-made facts stamper for it. Covered by its own test."""
     opened = t.opened_at
     closed_at = t.closed_at
     hold_days = (closed_at - opened).days if (opened is not None and closed_at is not None) else None

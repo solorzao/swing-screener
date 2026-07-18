@@ -94,7 +94,7 @@ def test_disarm_cancels_resting_orders_but_never_positions(tmp_path, monkeypatch
 
 
 def test_disarm_cancels_entries_but_keeps_protective_stops(tmp_path, monkeypatch):
-    """THE bug (2026-07-04 review): a blanket cancel_all_orders stripped the bracket's
+    """THE bug (2026-07-04 review): a blanket cancel-all stripped the bracket's
     protective sell legs off the position disarm deliberately leaves open."""
     broker = _armed_bracket_broker()
     _db(tmp_path, monkeypatch)

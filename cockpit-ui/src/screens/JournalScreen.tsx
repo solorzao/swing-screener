@@ -32,7 +32,7 @@ import type {
   NoteKind,
   WeaknessesProfile,
 } from '../lib/api'
-import { dashOr, fmtR } from '../lib/fmt'
+import { dashOr, fmtR, fmtSignedUsd, localTodayIso } from '../lib/fmt'
 import { HelpTerm } from '../components/HelpTerm'
 import { PanelBody } from '../components/PanelBody'
 import { Segmented } from '../components/Segmented'
@@ -71,10 +71,12 @@ function isPersonalBook(book: JournalBook): book is CoachBook {
   return PERSONAL_BOOKS.has(book)
 }
 
-/** Format a review's result with its unit ("2R" / "$42"), em dash when null. */
+/** Format a review's result with its unit ("+$42.00" / "+2.00R"), em dash when
+ * null — routed through lib/fmt so a negative renders "−$42.00", never the raw
+ * "$-42", and precision never leaks the float ("0.30000000000000004R"). */
 function fmtResult(result: number | null | undefined, unit: string | undefined): string {
   if (result === null || result === undefined) return '—'
-  return unit === '$' ? `$${result}` : `${result}R`
+  return unit === '$' ? fmtSignedUsd(result) : fmtR(result)
 }
 
 /** The book's slippage vintage as a caption stamp — null = mixed / unstamped. */
@@ -260,8 +262,10 @@ function CurvePanel({ book, wake, scope }: { book: JournalBook; wake: number; sc
         <div className="jr-curve-block">
           <div className="jr-curve-cap">
             <span className="jr-curve-title">underwater · R below peak</span>
-            <span className="jr-curve-val mono jr-down">
-              {mdd === null || mdd === 0 ? '0.00R' : `${MINUS}${mdd.toFixed(2)}R`}
+            {/* null = unmeasured → em dash in the flat tone (the dashOr honesty
+                rule), never a fabricated red 0.00R; a REAL 0 stays 0.00R. */}
+            <span className={`jr-curve-val mono ${mdd === null ? 'jr-flat' : 'jr-down'}`}>
+              {mdd === null ? '—' : mdd === 0 ? '0.00R' : `${MINUS}${mdd.toFixed(2)}R`}
               <span className="jr-curve-sub"> max drawdown</span>
             </span>
           </div>
@@ -507,16 +511,8 @@ function MistakesPanel({ book, wake, scope }: { book: JournalBook; wake: number;
 
 const NOTE_KINDS: NoteKind[] = ['premarket', 'postmarket', 'adhoc']
 
-/** Today in the LOCAL calendar as YYYY-MM-DD (the note day the form defaults to). */
-function todayIso(): string {
-  const d = new Date()
-  const mm = String(d.getMonth() + 1).padStart(2, '0')
-  const dd = String(d.getDate()).padStart(2, '0')
-  return `${d.getFullYear()}-${mm}-${dd}`
-}
-
 function NotebookPanel({ wake }: { wake: number }) {
-  const [day, setDay] = useState<string>(todayIso)
+  const [day, setDay] = useState<string>(localTodayIso)
   const [localBump, setLocalBump] = useState(0)
   // Notes are DAY-scoped (no book) — paramsKey is the day; a local bump rides the
   // wake param for an immediate refetch after a successful write.
@@ -569,7 +565,7 @@ function NotebookPanel({ wake }: { wake: number }) {
             type="date"
             value={day}
             aria-label="notebook day"
-            onChange={(e) => setDay(e.target.value === '' ? todayIso() : e.target.value)}
+            onChange={(e) => setDay(e.target.value === '' ? localTodayIso() : e.target.value)}
           />
         </label>
       </div>
@@ -742,11 +738,20 @@ function RecordsPanel({ book, wake, scope }: { book: JournalBook; wake: number; 
  * overlay (source=analyst) on click — the confirm gate. */
 function CoachReviewsPanel({ book, wake }: { book: CoachBook; wake: number }) {
   const [bump, setBump] = useState(0)
+  const [confirmError, setConfirmError] = useState<string | null>(null)
   const reviews = usePolling(() => getCoachReviews(book), POLL_MS, wake + bump, book)
   const confirm = (id: number, name: string, kind: string) => {
+    setConfirmError(null)
     postConfirmTag(id, { name, kind }).then(
       () => setBump((b) => b + 1),
-      () => {},
+      // A swallowed rejection looked exactly like success (the proposal button
+      // just sat there) — surface the server's safe detail / unreachable line.
+      (err: unknown) =>
+        setConfirmError(
+          err instanceof ApiError
+            ? err.message
+            : 'backend unreachable — the tag may not have been confirmed',
+        ),
     )
   }
   return (
@@ -757,6 +762,11 @@ function CoachReviewsPanel({ book, wake }: { book: CoachBook; wake: number }) {
           per-trade coaching · {book} — numbers owned by code, prose advisory
         </span>
       </div>
+      {confirmError !== null && (
+        <div className="gex-err" role="alert">
+          {confirmError}
+        </div>
+      )}
       <PanelBody polled={reviews} noun="reviews">
         {(rows: CoachReview[]) =>
           rows.length === 0 ? (

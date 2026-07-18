@@ -31,7 +31,7 @@ from swing_screener.pipeline.broker import (
     BrokerOrderSpec,
     BrokerPosition,
 )
-from swing_screener.pipeline.broker_alpaca import AlpacaBroker
+from swing_screener.pipeline.broker_alpaca import _ORDERS_PAGE_LIMIT, AlpacaBroker
 
 PAPER_HOST = "https://paper-api.alpaca.markets"
 
@@ -45,6 +45,7 @@ def _order_json(
     filled_qty: str = "0",
     filled_avg_price: str | None = None,
     side: str = "buy",
+    submitted_at: str = "2026-07-16T13:00:00.000000Z",
 ) -> dict[str, object]:
     """A trimmed-but-faithful Alpaca order JSON (numbers as STRINGS, like the real API)."""
     return {
@@ -59,6 +60,7 @@ def _order_json(
         "type": "limit",
         "limit_price": "100.00",
         "time_in_force": "day",
+        "submitted_at": submitted_at,
     }
 
 
@@ -210,6 +212,111 @@ def test_list_open_orders_parses_a_list() -> None:
     assert orders[1].filled_qty == 3
 
 
+def _order_page(start: int, count: int) -> list[dict[str, object]]:
+    """``count`` open-order JSONs with unique ids and strictly increasing submitted_at."""
+    return [
+        _order_json(
+            order_id=f"o{start + i}",
+            submitted_at=f"2026-07-16T13:00:00.{start + i:06d}Z",
+        )
+        for i in range(count)
+    ]
+
+
+def test_list_open_orders_paginates_past_a_full_page() -> None:
+    """A FULL page means more may exist: the client must ask again with the cursor
+    (``direction=asc`` + ``after=<last order's submitted_at>``) until a short page.
+    Unpaginated, disarm's cancel sweep would silently miss every order past the
+    boundary."""
+    requests: list[httpx.QueryParams] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v2/orders"
+        requests.append(request.url.params)
+        if len(requests) == 1:
+            return httpx.Response(200, json=_order_page(0, _ORDERS_PAGE_LIMIT))
+        return httpx.Response(200, json=_order_page(_ORDERS_PAGE_LIMIT, 2))
+
+    broker = _broker(handler)
+    orders = broker.list_open_orders()
+
+    assert len(orders) == _ORDERS_PAGE_LIMIT + 2  # both pages, nothing dropped
+    assert [o.broker_order_id for o in orders[:2]] == ["o0", "o1"]
+    assert [o.broker_order_id for o in orders[-2:]] == [
+        f"o{_ORDERS_PAGE_LIMIT}", f"o{_ORDERS_PAGE_LIMIT + 1}"]
+
+    first, second = requests
+    assert first.get("status") == "open"
+    assert first.get("limit") == str(_ORDERS_PAGE_LIMIT)  # never Alpaca's default 50
+    assert first.get("direction") == "asc"
+    assert "after" not in first
+    # the second ask carries the cursor: the LAST order of page one's submitted_at.
+    assert second.get("after") == f"2026-07-16T13:00:00.{_ORDERS_PAGE_LIMIT - 1:06d}Z"
+    assert second.get("status") == "open"
+
+
+def test_list_open_orders_terminates_on_an_exactly_empty_second_page() -> None:
+    """An exactly-limit page followed by an EMPTY page: one more ask, then stop
+    (never spin re-asking with the same cursor)."""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(200, json=_order_page(0, _ORDERS_PAGE_LIMIT))
+        return httpx.Response(200, json=[])
+
+    broker = _broker(handler)
+    orders = broker.list_open_orders()
+    assert len(orders) == _ORDERS_PAGE_LIMIT
+    assert calls["n"] == 2  # the empty page ends the loop
+
+
+def test_list_open_orders_dedupes_a_boundary_duplicate() -> None:
+    """If the venue re-serves the boundary order on the next page (an inclusive
+    cursor), it must not come back twice -- a duplicate would double a cancel or a
+    stop-restore in the disarm path."""
+    calls = {"n": 0}
+    page_one = _order_page(0, _ORDERS_PAGE_LIMIT)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(200, json=page_one)
+        # page two re-serves the boundary order, then one genuinely new order.
+        return httpx.Response(
+            200, json=[page_one[-1], *_order_page(_ORDERS_PAGE_LIMIT, 1)])
+
+    broker = _broker(handler)
+    orders = broker.list_open_orders()
+    ids = [o.broker_order_id for o in orders]
+    assert len(ids) == len(set(ids)) == _ORDERS_PAGE_LIMIT + 1  # boundary id once
+    assert ids[-1] == f"o{_ORDERS_PAGE_LIMIT}"
+
+
+def test_list_open_orders_short_page_check_uses_raw_page_length() -> None:
+    """A FULL page whose first element is the boundary duplicate carries only
+    limit-1 NEW orders: the short-page check must count the RAW response (full ->
+    keep paging), not the deduped additions, or page three is never fetched."""
+    calls = {"n": 0}
+    page_one = _order_page(0, _ORDERS_PAGE_LIMIT)
+    # raw length == limit, but only limit-1 orders survive the dedupe.
+    page_two = [page_one[-1], *_order_page(_ORDERS_PAGE_LIMIT, _ORDERS_PAGE_LIMIT - 1)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(200, json=page_one)
+        if calls["n"] == 2:
+            return httpx.Response(200, json=page_two)
+        return httpx.Response(200, json=_order_page(2 * _ORDERS_PAGE_LIMIT - 1, 1))
+
+    orders = _broker(handler).list_open_orders()
+    ids = [o.broker_order_id for o in orders]
+    assert calls["n"] == 3  # page two was raw-FULL, so a third ask must happen
+    assert len(ids) == len(set(ids)) == 2 * _ORDERS_PAGE_LIMIT
+
+
 # ---------------------------------------------------------------------------
 # get_positions -> GET /v2/positions: coerce qty/avg_entry_price from strings.
 # ---------------------------------------------------------------------------
@@ -236,7 +343,7 @@ def test_get_positions_coerces_string_numbers() -> None:
 
 
 # ---------------------------------------------------------------------------
-# cancel_order / cancel_all_orders -> DELETE.
+# cancel_order -> DELETE by id.
 # ---------------------------------------------------------------------------
 def test_cancel_order_deletes_by_id() -> None:
     seen: dict[str, object] = {}
@@ -250,20 +357,6 @@ def test_cancel_order_deletes_by_id() -> None:
     broker.cancel_order("oid-9")
     assert seen["method"] == "DELETE"
     assert seen["path"] == "/v2/orders/oid-9"
-
-
-def test_cancel_all_orders_deletes_the_collection() -> None:
-    seen: dict[str, object] = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["method"] = request.method
-        seen["path"] = request.url.path
-        return httpx.Response(207, json=[])
-
-    broker = _broker(handler)
-    broker.cancel_all_orders()
-    assert seen["method"] == "DELETE"
-    assert seen["path"] == "/v2/orders"
 
 
 # ---------------------------------------------------------------------------

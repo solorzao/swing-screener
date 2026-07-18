@@ -9,6 +9,7 @@ the section renders without the image rather than crashing.
 
 import io
 import logging
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -283,6 +284,12 @@ def build_digest_pdf(picks: Sequence[PdfPick], out_path: Path, *,
     return out_path
 
 
+def _fmt_num(x: float, spec: str) -> str:
+    """``format(x, spec)``, or 'n/a' when a short frame left the value NaN -- the
+    PDF must never print a literal 'nan' (PR #104's class at the rendering layer)."""
+    return format(x, spec) if math.isfinite(x) else "n/a"
+
+
 def build_ticker_story(report: "TickerReport") -> list:
     """Flowables for a single-ticker multi-timeframe report -- testable without rendering.
 
@@ -310,7 +317,7 @@ def build_ticker_story(report: "TickerReport") -> list:
         heading = (
             f"{r.timeframe} — {r.ha_trend}, "
             f"EMA {'aligned' if r.ema_aligned else 'crossed'}, "
-            f"RSI {r.rsi:.0f}, ATR {r.atr_pct:.1%}"
+            f"RSI {_fmt_num(r.rsi, '.0f')}, ATR {_fmt_num(r.atr_pct, '.1%')}"
         )
         story.append(Paragraph(_xml_escape(heading), styles["Heading3"]))
         if blob_enabled():

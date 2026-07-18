@@ -86,7 +86,7 @@ _DEFAULT_THESIS = {
 _FAMILY: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("market_trend", ("bull", "bear")),
     ("volatility_tier", ("low", "med", "high")),
-    ("score", tuple(_score_labels(SCORE_EDGES))),  # the score_bucket band labels
+    ("score", tuple(_score_labels(SCORE_EDGES))),  # the published score band labels
 )
 _ALPHA = 0.05  # family-wise; one-sided Bonferroni per bucket
 _MARGIN_R = 0.0  # net-of-cost edge must clear this (replay is haircut upstream)
