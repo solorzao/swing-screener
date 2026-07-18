@@ -102,7 +102,7 @@ Sessions WILL get interrupted (usage caps, restarts). This plan is built to surv
 - [x] J2 weaknesses `items_json` shape
 - [x] J3 heartbeats sidecar stat guard
 - [x] J4 GEX POST 503 posture
-- [ ] J5 atomic manual close
+- [x] J5 atomic manual close
 - [ ] J6 `loss_r` gauge research-grid scoping
 - [ ] J7 `spend_rows_since` SQL cutoff
 

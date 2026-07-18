@@ -548,16 +548,36 @@ def close_trade_with_event(
     change-token watermark never moves for that close). One commit carries both
     rows, so the failure mode is all-or-nothing: either both land or the trade is
     still open and a retry succeeds cleanly. Raises exactly like ``close_trade``.
+
+    ATOMIC, not check-then-act: the close is one ``UPDATE ... WHERE
+    status='open'`` -- a ``_open_trade_or_raise`` fetch would re-read this
+    session's identity map, so two concurrent closes (each having read the trade
+    open) would BOTH pass the check and the loser would silently overwrite the
+    recorded exit. Zero rows matched means someone else won (or the id is
+    unknown): re-read the row to raise the same errors ``close_trade`` does --
+    plain ``ValueError`` on an unknown id, ``AlreadyClosedError`` otherwise --
+    and the first close's exit fields stand untouched.
     """
-    trade = _open_trade_or_raise(session, trade_id)
-    _apply_close(trade, exit_date=exit_date, exit_price=exit_price,
-                 exit_reason=exit_reason)
+    matched = session.execute(
+        update(Trade)
+        .where(Trade.id == trade_id, Trade.status == "open")
+        .values(status="closed", exit_date=exit_date, exit_price=exit_price,
+                exit_reason=exit_reason)
+    ).rowcount
+    if matched == 0:
+        session.rollback()  # end the no-op write txn; expire any stale identity map
+        trade = session.get(Trade, trade_id)
+        if trade is None:
+            raise ValueError(f"no trade with id {trade_id}")
+        raise AlreadyClosedError(f"trade {trade_id} is already closed")
     event = ExitEvent(created_date=created_date, is_paper=False, trade_id=trade_id,
                       tier=tier, reason=event_reason, message=event_message,
                       account=account)
     session.add(event)
     session.commit()
-    session.refresh(trade)
+    trade = session.get(Trade, trade_id)
+    if trade is None:  # unreachable: the UPDATE just matched this exact row
+        raise ValueError(f"no trade with id {trade_id}")
     session.refresh(event)
     return trade, event
 
