@@ -543,7 +543,7 @@ The sweep body mirrors the kill-switch block at `notify/run.py:715-729` (`pull_e
 - Modify: `src/swing_screener/journal/audit_compliance.py` (grade guardrail activity), `src/swing_screener/journal/audit_run.py` (breach rules)
 - Test: extend `tests/journal/test_audit_compliance.py` / `test_audit_anomaly.py` siblings
 
-**Failing tests:** (expected) a `DisarmEvent(reason='guardrail:…')` + matching trip event grades info, not breach; (breach) counting live submit on a day whose guardrails state was tripped; trip with no `EmailLog(kind='guardrail')`; `sweep_state='partial'` persisting a full day. Day-granularity only. **Implementation:** follow the `n_clamps` precedent (`audit_compliance.py:32-33`) and the `disarm:{day}` breach key idiom (`audit_run.py:175-195`) with new keys `guardrail-trip:{day}` etc. Commit `feat: auditor grades guardrail conduct`.
+**Failing tests:** (expected) a `DisarmEvent(reason='guardrail:…')` + matching trip event grades info, not breach; kill-switch/halt DisarmEvents (reasons `kill-switch`/`halt`, added in Task 6) also grade expected; (breach) counting live submit on a day whose guardrails state was tripped; trip with no `EmailLog(kind='guardrail')` — EXCEPT trips already cleared (a cockpit clear implies operator awareness; Task 10's emitter deliberately never mails cleared trips — detect via a later `kind='clear'` guardrail event); `sweep_state='partial'` persisting a full day. Day-granularity only. **Implementation:** follow the `n_clamps` precedent (`audit_compliance.py:32-33`) and the `disarm:{day}` breach key idiom (`audit_run.py:175-195`) with new keys `guardrail-trip:{day}` etc. Commit `feat: auditor grades guardrail conduct`.
 
 **Phase 3 boundary:** full suite + ruff + mypy.
 
