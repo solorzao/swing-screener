@@ -23,7 +23,11 @@ All tmp-file sqlite + FakeBroker -- no venue, no network.
 """
 
 import logging
+import os
+import subprocess
+import sys
 from datetime import date
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -108,6 +112,23 @@ def _firing(bars):
         p -= 1.2
     rows.append({"open": p, "high": p + 6.0, "low": p, "close": p + 5.6})
     return bars(rows)
+
+
+def test_pipeline_run_imports_clean_in_a_fresh_interpreter():
+    """The import-cycle canary: run_screen's guardrails import is LAZY because the
+    cycle (replay -> run; guardrails -> preflight -> autonomy -> reflect -> replay)
+    only bites when pipeline.run is the import ROOT -- and pytest collection usually
+    imports notify.run first, which fully initializes reflect before run.py, so a
+    future module-level `from swing_screener.pipeline import guardrails` in run.py
+    would keep the SUITE green while the prod evening-screen job
+    (`python -m swing_screener.pipeline.run`) died on ImportError. A fresh
+    interpreter importing run.py first is the only honest probe."""
+    root = Path(__file__).resolve().parents[2]
+    env = dict(os.environ, PYTHONPATH=str(root / "src"))
+    proc = subprocess.run(
+        [sys.executable, "-c", "import swing_screener.pipeline.run"],
+        env=env, cwd=root, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_evening_stop_out_trips_daily_loss_and_sweeps_with_broker(tmp_path, bars, monkeypatch):
@@ -208,8 +229,17 @@ def test_guardrails_failure_never_blocks_the_screen(tmp_path, bars, monkeypatch,
         return {"1d": _firing(bars)} if ticker == "AAPL" else {}
     monkeypatch.setattr(run, "_fetch_all_timeframes", fake_fetch)
 
-    def _boom(*a, **k):
-        raise RuntimeError("guardrails machinery died")
+    def _boom(session, **kw):
+        # FIRST genuinely poison the transaction (the Task-6 idiom: a failed flush
+        # -- created_at NOT NULL -- leaves the session inactive,
+        # PendingRollbackError on every later use). A bare raise leaves the
+        # session CLEAN, so this test would pass even with the except's rollback
+        # deleted; the poisoned session is what proves apply_universe_metrics
+        # (and the run's tail) survive a genuinely failed transaction.
+        session.add(DisarmEvent(created_at=None,  # type: ignore[arg-type]
+                                reason="boom", orders_cancelled=0))
+        session.flush()
+        raise RuntimeError("unreachable -- the flush above raises")
     # run_screen imports the guardrails module lazily (the replay->run cycle), so
     # patch the module attribute itself -- the call site resolves it at call time.
     monkeypatch.setattr(gp, "respond_to_trip", _boom)

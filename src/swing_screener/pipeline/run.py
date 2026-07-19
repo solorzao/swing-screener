@@ -600,9 +600,12 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
             # Imported HERE, not at module level: pipeline.replay imports THIS
             # module (for _bar_row/_shadow_candidates), so run.py can never
             # module-level-import anything that reaches pipeline.reflect --
-            # and guardrails does, via preflight -> autonomy -> reflect ->
-            # optimize -> replay (the cycle). Same lazy-import posture as
-            # notify.transport's azure seam.
+            # and guardrails does, via preflight -> autonomy -> reflect, which
+            # imports replay BOTH directly and via optimize (the cycle). Same
+            # lazy-import posture as notify.transport's azure seam; the
+            # fresh-interpreter canary in tests/pipeline/test_run_guardrails.py
+            # guards this (the cycle only bites when run.py is the import ROOT,
+            # which pytest collection order usually hides).
             from swing_screener.pipeline import guardrails as gpipe
 
             # The re-run owner: finish a prior trip's pending/partial sweep

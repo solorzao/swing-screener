@@ -520,8 +520,10 @@ def test_dispatch_time_reconcile_trips_on_a_same_morning_stop_out(tmp_path, monk
         logs = list(s.scalars(select(ExecutionLog)))
         assert [(x.ticker, x.status) for x in logs] == [("TSLA", "filled_live")]
     # the fresh broker_close also rides the exit-alert email (is_paper=False,
-    # created today) -- the alert plus the digest, two sends total.
+    # created today): the alert goes out first, then the digest itself.
     assert len(sent) == 2
+    assert "Exit Alert" in sent[0]["subject"]
+    assert "Daily Picks" in sent[1]["subject"]
 
 
 def test_dispatch_time_reconcile_raise_never_blocks_the_digest(tmp_path, monkeypatch):
@@ -532,7 +534,15 @@ def test_dispatch_time_reconcile_raise_never_blocks_the_digest(tmp_path, monkeyp
     _seed(url, n=1)
 
     def _boom(session, broker, *, today):
-        raise RuntimeError("broker poll exploded")
+        # FIRST genuinely poison the transaction (the Task-6 idiom: a failed flush
+        # -- created_at NOT NULL -- leaves the session inactive,
+        # PendingRollbackError on every later use). A bare raise leaves the
+        # session CLEAN, so this test would pass even with the except's rollback
+        # deleted; the poisoned session is what proves the whole digest path
+        # (alerts, picks, the email log) survives a genuinely failed poll.
+        session.add(DisarmEvent(created_at=None, reason="boom", orders_cancelled=0))
+        session.flush()
+        raise RuntimeError("unreachable -- the flush above raises")
     monkeypatch.setattr(run, "reconcile_live", _boom)
     broker = FakeBroker()
     sent = []
