@@ -4,12 +4,10 @@ import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from swing_screener.charts.render import render_chart
@@ -24,7 +22,7 @@ from swing_screener.data.resample import resample_ohlcv
 from swing_screener.data.universe import load_universe
 from swing_screener.db import guardrails_repo, repo
 from swing_screener.notify.select import REVERSAL_POOL_N
-from swing_screener.db.models import EmailLog, Signal
+from swing_screener.db.models import Signal
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.analyze import (
     SignalResult,
@@ -393,22 +391,24 @@ def _screen_trip_emailer(session: Session, *, run_date: date) -> Callable[[int, 
 
     The screen has no digest transport in scope, so the closure resolves one on
     demand: recipient from the DIGEST_TO secret, sender from
-    ``notify.transport.resolve_sender`` (ACS in prod, SMTP fallback) — both
-    imported LAZILY inside the closure. They are cycle-safe today (probed:
-    neither reaches ``pipeline.reflect`` or ``notify.run``), but the guardrails
-    block is a lazy-import zone and the fresh-interpreter canary in
-    tests/pipeline/test_run_guardrails.py pins the module-import surface.
+    ``notify.transport.resolve_sender`` (ACS in prod, SMTP fallback), and the
+    send-then-log body from the SHARED ``notify.alerts.send_guardrail_alert``
+    — the one owner of the ``alert_key=str(trip_event_id)`` dedup contract, so
+    whichever path fires first (this closure, the dispatch loop, the
+    digest-side retry emitter) wins and the others no-op. All three imported
+    LAZILY inside the closure: cycle-safe today (probed — ``notify.alerts``
+    reaches only ``notify.body``/sqlalchemy/``db.models``, never ``notify.run``
+    or ``pipeline.*``), but the guardrails block is a lazy-import zone and the
+    fresh-interpreter canary in tests/pipeline/test_run_guardrails.py pins the
+    module-import surface.
 
-    SEND-then-LOG with the SHARED dedup: ``EmailLog(kind='guardrail',
-    alert_key=str(trip_event_id))`` — the same key the digest-side retry
-    emitter (``notify.run._emit_pending_guardrail_alert``) checks, so whichever
-    path fires first wins and the other no-ops. A failed send leaves NO log row
-    (and ``respond_to_trip`` swallows the raise), so the next digest retries.
-    No recipient configured -> skip quietly; the digest side owns the alert.
+    A failed send leaves NO log row (and ``respond_to_trip`` swallows the
+    raise), so the next digest retries. No recipient configured -> skip
+    quietly; the digest side owns the alert.
     """
     def _emailer(trip_event_id: int, breaker: str, reason: str) -> None:
         from swing_screener.config_secrets import get_secret
-        from swing_screener.notify.alerts import compose_guardrail_alert
+        from swing_screener.notify.alerts import send_guardrail_alert
         from swing_screener.notify.transport import resolve_sender
 
         recipient = get_secret("DIGEST_TO")
@@ -416,22 +416,9 @@ def _screen_trip_emailer(session: Session, *, run_date: date) -> Callable[[int, 
             log.warning("guardrail trip %d: DIGEST_TO not configured; alert email "
                         "deferred to the digest-side emitter", trip_event_id)
             return
-        key = str(trip_event_id)
-        already = session.scalars(select(EmailLog).where(
-            EmailLog.kind == "guardrail", EmailLog.alert_key == key)).first()
-        if already is not None:
-            return
-        email = compose_guardrail_alert(trip_event_id=trip_event_id, breaker=breaker,
-                                        reason=reason, run_date=run_date)
-        send = resolve_sender()
-        send(to=recipient, subject=email.subject, text=email.text, html=email.html,
-             attachments=[])  # SEND FIRST (see docstring)
-        session.add(EmailLog(sent_at=datetime.now(UTC), kind="guardrail",
-                             subject=email.subject, run_date=run_date, alert_key=key))
-        try:
-            session.commit()
-        except IntegrityError:  # lost a concurrent race; the row already exists
-            session.rollback()
+        send_guardrail_alert(session, run_date=run_date, recipient=recipient,
+                             send=resolve_sender(), trip_event_id=trip_event_id,
+                             breaker=breaker, reason=reason)
     return _emailer
 
 

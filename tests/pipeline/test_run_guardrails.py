@@ -230,6 +230,12 @@ def test_evening_screen_trip_emails(tmp_path, bars, monkeypatch):
     the digest-side retry emitter dedups against it next morning."""
     monkeypatch.delenv("SWING_EXECUTION_MODE", raising=False)
     monkeypatch.setenv("DIGEST_TO", "op@example.com")
+    # belt-and-braces: strip every transport credential/endpoint so a missed
+    # injection seam could only ever fail loudly, never attempt a real send on
+    # a transport-configured box.
+    for var in ("GMAIL_ADDRESS", "GMAIL_APP_PASSWORD",
+                "SWING_ACS_ENDPOINT", "SWING_ACS_SENDER"):
+        monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(run, "_fetch_all_timeframes", lambda *a, **k: {})
     sent: list[dict] = []
     # the emailer resolves the transport at CALL time (lazy `from ... import

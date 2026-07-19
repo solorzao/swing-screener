@@ -18,7 +18,7 @@ import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import select
@@ -44,8 +44,9 @@ from swing_screener.notify import market_context
 from swing_screener.notify import select as sel
 from swing_screener.notify.alerts import (
     compose_exit_alert,
-    compose_guardrail_alert,
     compose_live_rejection_alert,
+    guardrail_alert_sent,
+    send_guardrail_alert,
 )
 from swing_screener.notify.analysis import (
     ConvictionResult,
@@ -200,65 +201,20 @@ def _emit_pending_exit_alert(session: Session, run_date: date, recipient: str,
     return True
 
 
-def _guardrail_alert_sent(session: Session, alert_key: str) -> bool:
-    """True if a guardrail alert for this trip event was EVER logged (any run_date).
-
-    Deliberately NOT date-filtered (unlike ``_exit_already_sent``): the trip
-    event id is globally unique, and the retry owner may run on a LATER date
-    than the trip (an evening trip mailed by the next morning's digest) — a
-    date filter would double-send exactly there. The (kind, run_date, alert_key)
-    unique constraint still backs the same-date concurrent race.
-    """
-    stmt = select(EmailLog).where(
-        EmailLog.kind == "guardrail", EmailLog.alert_key == alert_key
-    )
-    return session.scalars(stmt).first() is not None
-
-
-def _send_guardrail_alert(session: Session, *, run_date: date, recipient: str,
-                          send: SmtpSend, trip_event_id: int, breaker: str,
-                          reason: str) -> bool:
-    """Send + log ONE guardrail-trip alert, deduped on ``str(trip_event_id)``.
-
-    The shared body behind BOTH halves of the trip-alert contract: the
-    in-protocol ``_trip_emailer`` (immediacy) and the digest-side
-    ``_emit_pending_guardrail_alert`` (at-least-once) — one alert_key, so
-    whichever fires first wins and the other is a no-op. SEND-then-LOG, the
-    ``_emit_pending_exit_alert`` ordering and rationale: a trip alert is urgent,
-    so we prioritize never LOSING it over strictly preventing a rare duplicate.
-    A failed send leaves NO EmailLog row — and because trip elections happen
-    ONCE, the in-protocol path never retries; the digest-side emitter is the
-    retry owner. Returns True iff an email was sent.
-    """
-    key = str(trip_event_id)
-    if _guardrail_alert_sent(session, key):
-        return False
-    email = compose_guardrail_alert(trip_event_id=trip_event_id, breaker=breaker,
-                                    reason=reason, run_date=run_date)
-    send(to=recipient, subject=email.subject, text=email.text, html=email.html,
-         attachments=[])  # SEND FIRST (see docstring)
-    session.add(EmailLog(sent_at=datetime.now(UTC), kind="guardrail",
-                         subject=email.subject, run_date=run_date, alert_key=key))
-    try:
-        session.commit()
-    except IntegrityError:  # lost the concurrent-replica race; the row already exists
-        session.rollback()
-    return True
-
-
 def _trip_emailer(session: Session, *, run_date: date, recipient: str,
                   send: SmtpSend) -> Callable[[int, str, str], None]:
     """The real ``respond_to_trip`` emailer seam (Task 10) — the IMMEDIACY half.
 
     ``respond_to_trip`` calls it AFTER the sweep outcome is recorded (and also
     when broker was None) and SWALLOWS anything it raises, so the send-then-log
-    dedup lives in ``_send_guardrail_alert``, never in the protocol. Trip
-    reasons arrive pre-formatted from the repo — echoed verbatim.
+    dedup lives in the shared ``alerts.send_guardrail_alert`` (the one owner of
+    the ``alert_key=str(trip_event_id)`` contract), never in the protocol.
+    Trip reasons arrive pre-formatted from the repo — echoed verbatim.
     """
     def _emailer(trip_event_id: int, breaker: str, reason: str) -> None:
-        _send_guardrail_alert(session, run_date=run_date, recipient=recipient,
-                              send=send, trip_event_id=trip_event_id,
-                              breaker=breaker, reason=reason)
+        send_guardrail_alert(session, run_date=run_date, recipient=recipient,
+                             send=send, trip_event_id=trip_event_id,
+                             breaker=breaker, reason=reason)
     return _emailer
 
 
@@ -270,32 +226,44 @@ def _emit_pending_guardrail_alert(session: Session, run_date: date, recipient: s
     in-protocol send that failed: if state=='tripped' and no
     ``EmailLog(kind='guardrail', alert_key=str(trip_id))`` exists, compose +
     send + log on the SAME key the in-protocol emailer uses, so the dedup
-    collapses the two paths. Returns True iff an email was sent.
+    collapses the two paths. A trip the operator CLEARS from the cockpit before
+    any digest runs is deliberately never mailed — clearing implies awareness
+    (Task 14's auditor treats trip-without-EmailLog as a breach and must exempt
+    cleared trips for the same reason). Returns True iff an email was sent.
     """
     g = guardrails_repo.load_guardrails(session)
     if g.state != "tripped" or g.trip_id is None:
         return False
-    if _guardrail_alert_sent(session, str(g.trip_id)):
+    if guardrail_alert_sent(session, str(g.trip_id)):
         return False
     # the trip EVENT carries the breaker name; the row's trip_reason is the
     # same pre-formatted string trip() stamped (fall back to the event's copy).
     trip_event = session.get(AgentGuardrailEvent, g.trip_id)
     breaker = trip_event.breaker if trip_event is not None else ""
     reason = g.trip_reason or (trip_event.reason if trip_event is not None else "")
-    return _send_guardrail_alert(session, run_date=run_date, recipient=recipient,
-                                 send=send, trip_event_id=g.trip_id,
-                                 breaker=breaker, reason=reason)
+    return send_guardrail_alert(session, run_date=run_date, recipient=recipient,
+                                send=send, trip_event_id=g.trip_id,
+                                breaker=breaker, reason=reason)
 
 
 #: the ExecutionLog statuses that mean "the venue did NOT keep the order working".
 _REJECTED_STATUSES = ("rejected_live", "canceled")
 
 
-def _rejected_canceled_ids(session: Session) -> set[int]:
-    """The ids of every rejected/canceled ExecutionLog row — the before/after
-    snapshot pair around a ``reconcile_live`` pass yields THAT pass's flips
-    (the reconcile returns a count, not rows)."""
-    stmt = select(ExecutionLog.id).where(ExecutionLog.status.in_(_REJECTED_STATUSES))
+def _rejected_canceled_ids(session: Session, *, run_date: date) -> set[int]:
+    """The ids of the RECENT rejected/canceled ExecutionLog rows — the
+    before/after snapshot pair around a ``reconcile_live`` pass yields THAT
+    pass's flips (the reconcile returns a count, not rows).
+
+    Bounded to ``created_date >= run_date - 7 days``: the reconcile only flips
+    recent ``submitted_live`` rows (DAY orders die the same session), so an
+    unbounded scan would grow forever with the table while never changing the
+    diff — an old rejected row outside the window is absent from BOTH
+    snapshots, so the set difference is unaffected."""
+    stmt = select(ExecutionLog.id).where(
+        ExecutionLog.status.in_(_REJECTED_STATUSES),
+        ExecutionLog.created_date >= run_date - timedelta(days=7),
+    )
     return set(session.scalars(stmt))
 
 
@@ -308,14 +276,22 @@ def _emit_live_rejection_alert(session: Session, run_date: date, recipient: str,
     Deduped as ``EmailLog(kind='execution')`` keyed on the sha1 of the sorted id
     set — same shape as the exit alert's event-set key, so a re-run over the
     same flips is a no-op while a later pass with NEW flips gets a fresh key.
-    SEND-then-LOG with the same rationale as the exit alert. NOTE: the hourly
-    exit job gains its own reconcile pass in Task 11 and reuses this emitter.
+    SEND-then-LOG with the same rationale as the exit alert — BUT with a weaker
+    retry story on this digest path: a failed send leaves no log row, yet the
+    next pass's before-snapshot already contains the flipped ids, so the diff
+    never re-produces them and the alert is LOST until Task 11's hourly job
+    lands its query-based retry (un-alerted rejected rows joined against
+    EmailLog, not a snapshot diff). NOTE: that Task-11 job reuses this emitter.
     Returns True iff an email was sent.
     """
     if not new_ids:
         return False
+    # NUMERIC id sort (matches ``_exit_alert_key``'s sorted-by-id shape).
+    # Task 11's external EmailLog join MUST rebuild the key with this same
+    # numeric sort — a lexicographic sort of the same ids yields a different
+    # digest and would double-send.
     key = hashlib.sha1(
-        ",".join(sorted(str(i) for i in new_ids)).encode()).hexdigest()
+        ",".join(str(i) for i in sorted(new_ids)).encode()).hexdigest()
     stmt = select(EmailLog).where(
         EmailLog.kind == "execution", EmailLog.alert_key == key)
     if session.scalars(stmt).first() is not None:
@@ -636,18 +612,18 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # own swallow-everything try/except: a dead broker poll must never
         # block the digest (the submit-side clamp stays the hard backstop).
         if exec_mode == "live" and live_broker is not None:
+            # LIVE-REJECTION ALERT capture (Task 10): reconcile_live returns a
+            # count, not rows, so snapshot the rejected/canceled id set before +
+            # after and diff — exactly THIS pass's flips. A venue stop-out is a
+            # fill + broker_close (position truth, the EXIT alert's job), so it
+            # never lands in this diff.
+            new_rejects: set[int] = set()
             try:
-                # LIVE-REJECTION ALERT capture (Task 10): reconcile_live returns
-                # a count, not rows, so snapshot the rejected/canceled id set
-                # before + after and diff — exactly THIS pass's flips. A venue
-                # stop-out is a fill + broker_close (position truth, the EXIT
-                # alert's job), so it never lands in this diff.
-                rejected_before = _rejected_canceled_ids(session)
+                rejected_before = _rejected_canceled_ids(session, run_date=run_date)
                 n_fresh_changes = reconcile_live(session, live_broker, today=run_date)
                 log.info("dispatch-time live reconcile: %d change(s)", n_fresh_changes)
-                _emit_live_rejection_alert(
-                    session, run_date, recipient, send,
-                    _rejected_canceled_ids(session) - rejected_before)
+                new_rejects = (_rejected_canceled_ids(session, run_date=run_date)
+                               - rejected_before)
             except Exception:  # the freshness poll must never block the digest
                 log.warning("dispatch-time live reconcile failed for %s %s",
                             kind, run_date, exc_info=True)
@@ -658,6 +634,21 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                     session.rollback()
                 except Exception:  # noqa: BLE001 -- the email path is the priority
                     log.warning("post-reconcile rollback failed", exc_info=True)
+            # The alert send gets its OWN guard: a dead mail transport must not
+            # masquerade as a failed broker poll in the logs (honest failure
+            # posture) -- and neither may block the digest. A failed send here
+            # is LOST on this path (see _emit_live_rejection_alert's docstring)
+            # until Task 11's query-based hourly retry lands.
+            try:
+                _emit_live_rejection_alert(session, run_date, recipient, send,
+                                           new_rejects)
+            except Exception:  # noqa: BLE001 -- the digest email is the priority
+                log.warning("live rejection alert email failed for %s %s",
+                            kind, run_date, exc_info=True)
+                try:
+                    session.rollback()
+                except Exception:  # noqa: BLE001 -- the email path is the priority
+                    log.warning("post-rejection-alert rollback failed", exc_info=True)
 
         # manual_close events are excluded by pending_exit_alerts BY DESIGN: this is
         # the ALERTS feed (urgent, actionable), not a daily closes ledger -- a future

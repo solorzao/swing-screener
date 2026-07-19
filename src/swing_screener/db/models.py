@@ -237,7 +237,9 @@ class EmailLog(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     sent_at: Mapped[datetime]
-    kind: Mapped[str] = mapped_column(String(32))  # daily / weekly / monthly / exit
+    # daily / weekly / monthly / exit / guardrail (trip alerts, keyed on the trip
+    # event id) / execution (live-rejection alerts, keyed on the flipped-id sha1)
+    kind: Mapped[str] = mapped_column(String(32))
     subject: Mapped[str] = mapped_column(String(256), default="")
     run_date: Mapped[date | None] = mapped_column(default=None)
     alert_key: Mapped[str] = mapped_column(String(64), default="")

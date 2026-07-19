@@ -102,6 +102,9 @@ def test_trip_sends_exactly_one_email(tmp_path):
         assert "GUARDRAIL TRIPPED" in sent[0]["subject"]
         assert BREAKER in sent[0]["subject"]
         assert REASON in sent[0]["text"]          # the pre-formatted reason, verbatim
+        # phone-glance: the REASON (dollar figures) leads the body, so a
+        # lock-screen preview (subject + first line) already answers "why".
+        assert REASON in sent[0]["text"].splitlines()[0]
         row = s.scalars(select(EmailLog).where(EmailLog.kind == "guardrail")).one()
         assert row.alert_key == str(trip_id)
         assert row.run_date == RUN
@@ -202,15 +205,22 @@ def test_rejection_alert_lists_flipped_rows(tmp_path, monkeypatch):
     assert res.sent is True
     rejections = [m for m in sent if "Rejected/Canceled" in m["subject"]]
     assert len(rejections) == 1                   # ONE email for BOTH flips
+    # phone-glance subject: count + tickers ride the preview.
+    assert "2 Live Orders Rejected/Canceled" in rejections[0]["subject"]
+    assert "AMD" in rejections[0]["subject"] and "NVDA" in rejections[0]["subject"]
     body = rejections[0]["text"]
     assert "AMD" in body and "NVDA" in body
     assert "rejected_live" in body and "canceled" in body
+    assert "re-enter manually" in body            # the action line
     with Session(get_engine(url)) as s:
         statuses = {(x.ticker, x.status) for x in s.scalars(select(ExecutionLog))}
         assert statuses == {("AMD", "rejected_live"), ("NVDA", "canceled")}
-        ids = sorted(str(x) for x in s.scalars(select(ExecutionLog.id)))
+        # NUMERIC id sort (the _exit_alert_key shape) -- Task 11's external
+        # EmailLog join must rebuild the key with this same sort.
+        ids = sorted(s.scalars(select(ExecutionLog.id)))
+        key = hashlib.sha1(",".join(str(i) for i in ids).encode()).hexdigest()
         row = s.scalars(select(EmailLog).where(EmailLog.kind == "execution")).one()
-        assert row.alert_key == hashlib.sha1(",".join(ids).encode()).hexdigest()
+        assert row.alert_key == key
         assert row.run_date == RUN
 
 
