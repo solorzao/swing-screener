@@ -29,6 +29,8 @@ References (verified against Alpaca's trading API docs):
   ``time_in_force``, ``limit_price`` (string), ``client_order_id``.
 - order JSON: ``id``, ``client_order_id``, ``symbol``, ``status``, ``filled_qty`` (string),
   ``filled_avg_price`` (string|null).
+- ``GET /v2/orders:by_client_order_id?client_order_id=...``: one order JSON (same shape as
+  ``GET /v2/orders/{id}``); a 404 means the venue knows no order for that client id.
 - ``GET /v2/positions`` JSON: ``symbol``, ``qty`` (string), ``avg_entry_price`` (string).
 - ``GET /v2/account`` JSON: ``cash`` (string), ``buying_power`` (string), ``status`` (e.g.
   ``"ACTIVE"``).
@@ -152,6 +154,27 @@ class AlpacaBroker:
     def get_order(self, broker_order_id: str) -> BrokerOrder:
         """One order's current state: ``GET /v2/orders/{id}``."""
         return self._to_order(self._request_json("GET", f"/v2/orders/{broker_order_id}"))
+
+    def get_order_by_client_id(self, client_order_id: str) -> BrokerOrder | None:
+        """One order looked up by its ``client_order_id`` (OUR idempotency key):
+        ``GET /v2/orders:by_client_order_id?client_order_id=...``.
+
+        The LiveAdapter's orphan-adoption lookup: after a crash between venue accept and
+        the ExecutionLog write, a retried submit's duplicate client id is rejected -- this
+        is how the adapter finds the real order it already owns. A 404 (Alpaca: no order
+        for that client id) returns None; every other HTTP error propagates exactly like
+        ``get_order``'s do (the adoption caller treats any failure as best-effort)."""
+        try:
+            raw = self._request_json(
+                "GET",
+                "/v2/orders:by_client_order_id",
+                params={"client_order_id": client_order_id},
+            )
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return None
+            raise
+        return self._to_order(raw)
 
     def list_open_orders(self) -> list[BrokerOrder]:
         """Every order still working at the venue: ``GET /v2/orders?status=open``, PAGED.

@@ -24,7 +24,7 @@ from swing_screener.db import guardrails_repo
 from swing_screener.db.models import ExecutionLog, PaperTrade
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.broker import BrokerOrder, BrokerOrderSpec, FakeBroker
-from swing_screener.pipeline.execution import LiveAdapter
+from swing_screener.pipeline.execution import LiveAdapter, idempotency_key
 from swing_screener.pipeline.insight import OrderIntent
 from swing_screener.settings import Limits, Settings
 
@@ -353,3 +353,108 @@ def test_bracket_off_falls_back_to_a_plain_limit_entry() -> None:
 
         (spec,) = broker.submitted_specs
         assert spec.stop_loss is None and spec.take_profit is None
+
+
+# ---------------------------------------------------------------------------
+# orphan adoption (Task 9): the crash window (process died between venue accept
+# and the ExecutionLog write) leaves a REAL, fillable venue order with no
+# counting row; the retry's duplicate client_order_id makes the venue REJECT the
+# re-submit. Before giving up as rejected_live, the adapter looks the key up at
+# the venue and ADOPTS a working orphan -- otherwise the reconciler (which scans
+# submitted_live rows only) never materializes the fill and every guardrail
+# counter (trades/day, daily loss, drawdown, streak) silently undercounts.
+# ---------------------------------------------------------------------------
+class _DuplicateRejectingBroker(FakeBroker):
+    """The crash-window venue: ``submit_order`` always raises (the duplicate-id
+    reject); a test that wants the orphan pre-seeds it straight through
+    ``FakeBroker.submit_order`` (the crashed run's order that really landed)."""
+
+    def submit_order(self, spec: BrokerOrderSpec) -> BrokerOrder:
+        raise RuntimeError("client order id must be unique")
+
+
+def _seed_orphan(broker: FakeBroker, key: str) -> BrokerOrder:
+    """Plant the crashed run's venue order under ``key`` (bypassing any override)."""
+    return FakeBroker.submit_order(broker, BrokerOrderSpec(
+        client_order_id=key, symbol="AMD", side="buy", qty=10,
+        order_type="limit", limit_price=101.0, time_in_force="day"))
+
+
+def test_duplicate_client_order_id_adopts_working_orphan() -> None:
+    with _session() as s:
+        broker = _DuplicateRejectingBroker(real_money=False)
+        orphan = _seed_orphan(broker, idempotency_key(_intent(), RUN))
+
+        adapter = LiveAdapter(broker, settings=_live_settings(),
+                              gate_ready_fn=lambda _s: True)
+        result = adapter.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
+
+        assert result.status == "submitted_live"
+        assert result.broker_order_id == orphan.broker_order_id == "fake-0"
+        assert "adopted" in result.detail
+
+        row = s.query(ExecutionLog).one()
+        assert row.status == "submitted_live"       # what the reconciler scans for
+        assert row.broker_order_id == "fake-0"      # the REAL venue id, not None
+        assert row.broker_status == "new"
+        assert "adopted" in row.detail
+
+
+def test_adoption_upgrades_prior_noncounting_row() -> None:
+    with _session() as s:
+        broker = _DuplicateRejectingBroker(real_money=False)
+        adapter = LiveAdapter(broker, settings=_live_settings(),
+                              gate_ready_fn=lambda _s: True)
+
+        # First attempt: NO orphan at the venue -> the adoption lookup finds nothing
+        # (None) and the submit failure lands as the normal, non-counting
+        # rejected_live row -- a genuine failure behaves exactly as today.
+        first = adapter.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
+        assert first.status == "rejected"
+        assert s.query(ExecutionLog).one().status == "rejected_live"
+
+        # The crashed run's order surfaces at the venue; the retry adopts it and the
+        # SAME row (unique key) is upgraded in place -- status + broker id both land.
+        _seed_orphan(broker, idempotency_key(_intent(), RUN))
+        second = adapter.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
+        assert second.status == "submitted_live"
+
+        row = s.query(ExecutionLog).one()           # still ONE row (unique key)
+        assert row.status == "submitted_live"
+        assert row.broker_order_id == "fake-0"
+
+
+def test_canceled_orphan_falls_through_to_rejected_live() -> None:
+    with _session() as s:
+        broker = _DuplicateRejectingBroker(real_money=False)
+        orphan = _seed_orphan(broker, idempotency_key(_intent(), RUN))
+        broker.cancel_order(orphan.broker_order_id)  # the orphan is DEAD at the venue
+
+        adapter = LiveAdapter(broker, settings=_live_settings(),
+                              gate_ready_fn=lambda _s: True)
+        result = adapter.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
+
+        # a canceled orphan is not adoptable -- the truth is the rejection.
+        assert result.status == "rejected"
+        assert result.detail == "broker error (RuntimeError)"
+        assert s.query(ExecutionLog).one().status == "rejected_live"
+
+
+def test_adoption_lookup_failure_falls_through() -> None:
+    class _LookupExplodingBroker(_DuplicateRejectingBroker):
+        def get_order_by_client_id(self, client_order_id: str) -> BrokerOrder | None:
+            raise RuntimeError("lookup transport down")
+
+    with _session() as s:
+        broker = _LookupExplodingBroker(real_money=False)
+        _seed_orphan(broker, idempotency_key(_intent(), RUN))  # adoptable, but unreachable
+
+        adapter = LiveAdapter(broker, settings=_live_settings(),
+                              gate_ready_fn=lambda _s: True)
+        # adoption is BEST-EFFORT recovery: its own failure must never become a new
+        # failure mode -- the submit failure lands exactly as before Task 9.
+        result = adapter.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
+
+        assert result.status == "rejected"
+        assert result.detail == "broker error (RuntimeError)"
+        assert s.query(ExecutionLog).one().status == "rejected_live"

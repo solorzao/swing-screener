@@ -120,6 +120,11 @@ UNSIZED_DETAIL = "unsized (0 shares)"
 # consult (never trusting the caller) both stamp it. Not "guardrail: ..." either --
 # an out-of-scope play type is operator scoping, not a tripped safety rail.
 OUT_OF_SCOPE_DETAIL = "play type not in execution scope"
+# the orphan-adoption detail (the live adapter recovered a venue order whose log write
+# died with the process). A FIXED internal string -- the stored detail reaches the
+# cockpit wire verbatim, so it must never embed exception/venue text (leak posture:
+# anything exception-shaped goes through broker_error_detail's class-name-only wording).
+ADOPTED_ORPHAN_DETAIL = "adopted orphaned venue order"
 
 
 @dataclass(frozen=True)
@@ -490,6 +495,12 @@ class LiveAdapter:
        BEFORE any broker call -- the venue is never touched on a clamped order.
     3. A graceful broker boundary: an exception from ``submit_order`` is caught and logged as
        ``rejected_live`` (never propagated); a broker-returned ``rejected`` order likewise.
+       Before giving up, ORPHAN ADOPTION (``_adopt_orphan``): the crash window (venue
+       accepted, process died before the log write) makes the retry's duplicate
+       ``client_order_id`` a venue reject -- so on any submit exception the adapter asks
+       the venue for an order under the key and, if one is working, logs it
+       ``submitted_live`` with the real broker id (best-effort: any adoption failure
+       falls through to ``rejected_live`` exactly as before).
 
     The settings + gate-readiness seams are injected so tests drive the real-money guard
     without a real gate or DB: ``settings`` defaults to ``load_settings()`` at submit, and
@@ -625,12 +636,21 @@ class LiveAdapter:
                 take_profit=intent.target if bracket else None,
             ))
         except Exception as e:  # noqa: BLE001 -- a venue boundary: any failure must not raise.
+            log.error("broker submit failed for %s", intent.ticker, exc_info=True)
+            # ORPHAN ADOPTION (the crash-window recovery): before giving up as
+            # rejected_live, ask the venue whether an order ALREADY exists under our
+            # key. Deliberately attempted on ANY submit exception -- Alpaca's
+            # duplicate-client_order_id error text is not reliably parseable -- and
+            # harmless universally: on a genuine (non-duplicate) failure the lookup
+            # finds nothing and we fall through to rejected_live exactly as before.
+            adopted = self._adopt_orphan(session, intent, run_date=run_date, key=key)
+            if adopted is not None:
+                return adopted
             # Leak posture: the stored detail reaches the cockpit wire (the Zone E
             # ticker serves ExecutionLog.detail verbatim), and broker/httpx messages
             # embed venue hosts and credentials -- class name only (preflight's
             # broker_error_detail, the one home for this wording); the full
             # traceback goes to the LOG for the operator.
-            log.error("broker submit failed for %s", intent.ticker, exc_info=True)
             detail = broker_error_detail(e)
             self._log(session, intent, run_date=run_date, key=key,
                       status="rejected_live", detail=detail)
@@ -653,6 +673,44 @@ class LiveAdapter:
         return OrderResult(
             status="submitted_live", account=LIVE_ACCOUNT, detail="order submitted",
             broker_order_id=order.broker_order_id,
+        )
+
+    def _adopt_orphan(
+        self, session: Session, intent: OrderIntent, *, run_date: date, key: str
+    ) -> OrderResult | None:
+        """Best-effort recovery for the CRASH WINDOW: the venue accepted a prior submit
+        but the process died before the ExecutionLog write, so the retry's duplicate
+        ``client_order_id`` is rejected -- leaving a real, fillable venue order with NO
+        counting row: invisible to the reconciler (which scans ``submitted_live`` rows
+        only) and to every guardrail counter (trades/day, daily loss, drawdown, streak).
+
+        Looks the key up at the venue (``get_order_by_client_id``); an order that exists
+        and is not terminal-dead (canceled/rejected) is ADOPTED: logged ``submitted_live``
+        with the REAL broker id/status (``add_execution_log``'s upgrade path lifts a prior
+        non-counting row in place), and the reconciler picks the row up on its next pass
+        -- no reconcile changes needed. Returns None (caller falls through to the normal
+        ``rejected_live`` path) when the lookup finds nothing, finds a canceled/rejected
+        order (the truth IS the rejection), or itself fails in ANY way -- adoption is
+        best-effort recovery and must never become a new failure mode."""
+        try:
+            existing = self._broker.get_order_by_client_id(key)
+        except Exception:  # noqa: BLE001 -- best-effort: adoption must never add a failure mode.
+            log.warning(
+                "orphan-adoption lookup failed for %s", intent.ticker, exc_info=True)
+            return None
+        if existing is None or existing.status in ("canceled", "rejected"):
+            return None
+        # A real order is working (or already filled) at the venue under our key:
+        # record the truth, loudly, so the operator sees the crash window was crossed.
+        log.warning(
+            "adopted orphaned venue order %s for %s (status %s)",
+            existing.broker_order_id, intent.ticker, existing.status)
+        self._log(session, intent, run_date=run_date, key=key, status="submitted_live",
+                  detail=ADOPTED_ORPHAN_DETAIL, broker_order_id=existing.broker_order_id,
+                  broker_status=existing.status)
+        return OrderResult(
+            status="submitted_live", account=LIVE_ACCOUNT, detail=ADOPTED_ORPHAN_DETAIL,
+            broker_order_id=existing.broker_order_id,
         )
 
     def _log(

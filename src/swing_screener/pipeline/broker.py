@@ -109,6 +109,7 @@ class BrokerClient(Protocol):
 
     def submit_order(self, spec: BrokerOrderSpec) -> BrokerOrder: ...
     def get_order(self, broker_order_id: str) -> BrokerOrder: ...
+    def get_order_by_client_id(self, client_order_id: str) -> BrokerOrder | None: ...
     def list_open_orders(self) -> list[BrokerOrder]: ...
     def get_positions(self) -> list[BrokerPosition]: ...
     def get_account(self) -> BrokerAccount: ...
@@ -191,6 +192,14 @@ class FakeBroker:
 
     def get_order(self, broker_order_id: str) -> BrokerOrder:
         return self._orders[broker_order_id]
+
+    def get_order_by_client_id(self, client_order_id: str) -> BrokerOrder | None:
+        """The order submitted under ``client_order_id``, or None when the venue knows no
+        such order -- the LiveAdapter's orphan-adoption lookup (recovering a venue order
+        whose ExecutionLog write died with the process). Reads the same idempotency map
+        ``submit_order`` maintains, so it is consistent with the scripted order store."""
+        broker_order_id = self._by_client_id.get(client_order_id)
+        return None if broker_order_id is None else self._orders[broker_order_id]
 
     def list_open_orders(self) -> list[BrokerOrder]:
         """Every order still working at the venue (``new`` / ``partially_filled``)."""

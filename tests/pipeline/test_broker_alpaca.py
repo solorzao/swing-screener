@@ -155,6 +155,58 @@ def test_get_order_parses_a_filled_order_coercing_string_numbers() -> None:
     assert isinstance(order.filled_avg_price, float)
 
 
+# ---------------------------------------------------------------------------
+# get_order_by_client_id -> GET /v2/orders:by_client_order_id (the orphan-adoption
+# lookup): 200 maps like get_order; 404 (no such order) -> None; other errors surface.
+# ---------------------------------------------------------------------------
+def test_alpaca_get_order_by_client_id_maps_order() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        seen["client_order_id"] = request.url.params.get("client_order_id")
+        return httpx.Response(
+            200,
+            json=_order_json(
+                order_id="oid-7", client_order_id="k1", status="filled",
+                filled_qty="10", filled_avg_price="123.45",
+            ),
+        )
+
+    broker = _broker(handler)
+    order = broker.get_order_by_client_id("k1")
+
+    assert seen["method"] == "GET"
+    assert seen["path"] == "/v2/orders:by_client_order_id"
+    assert seen["client_order_id"] == "k1"
+
+    # mapped through _to_order exactly like get_order: status map + string coercion.
+    assert order is not None
+    assert order.broker_order_id == "oid-7"
+    assert order.client_order_id == "k1"
+    assert order.status == "filled"
+    assert order.filled_qty == 10
+    assert order.filled_avg_price == 123.45
+
+
+def test_alpaca_get_order_by_client_id_404_returns_none() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"message": "order not found"})
+
+    assert _broker(handler).get_order_by_client_id("missing-key") is None
+
+
+def test_alpaca_get_order_by_client_id_other_errors_propagate() -> None:
+    """Only a 404 means "no such order"; any other HTTP error surfaces like
+    ``get_order``'s do (the LiveAdapter's best-effort adoption catches it there)."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"message": "boom"})
+
+    with pytest.raises(httpx.HTTPStatusError):
+        _broker(handler).get_order_by_client_id("k1")
+
+
 def test_get_order_filled_avg_price_is_none_when_unfilled() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
