@@ -424,6 +424,41 @@ def test_adoption_upgrades_prior_noncounting_row() -> None:
         assert row.broker_order_id == "fake-0"
 
 
+def test_filled_orphan_adopts_and_reconciler_materializes_the_position() -> None:
+    """The highest-stakes adoption: the crashed submit's order FILLED at the venue --
+    real money is deployed with no counting row. The retry must adopt it ('filled' is
+    deliberately adoptable), and END-TO-END the reconciler's next pass must turn the
+    adopted submitted_live row into the account='live' position at the venue fill
+    price -- the docstring's 'the reconciler picks the row up' claim, pinned."""
+    from swing_screener.pipeline.reconcile import reconcile_live
+
+    with _session() as s:
+        broker = _DuplicateRejectingBroker(real_money=False)
+        orphan = _seed_orphan(broker, idempotency_key(_intent(), RUN))
+        broker.fill(orphan.broker_order_id, 100.5)   # the orphan FILLED (10 shares)
+
+        adapter = LiveAdapter(broker, settings=_live_settings(),
+                              gate_ready_fn=lambda _s: True)
+        result = adapter.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
+
+        assert result.status == "submitted_live"
+        row = s.query(ExecutionLog).one()
+        assert row.status == "submitted_live"
+        assert row.broker_order_id == "fake-0"
+        assert row.broker_status == "filled"         # the venue truth, stamped at adoption
+
+        # ...and the reconciler materializes the adopted row on its next pass.
+        changed = reconcile_live(s, broker, today=RUN)
+        assert changed == 1
+        trade = s.query(PaperTrade).one()
+        assert trade.account == "live"
+        assert trade.status == "open"
+        assert trade.entry_price == 100.5            # the VENUE fill price, not our limit
+        assert trade.qty == 10                       # the broker's filled_qty, stamped
+        assert trade.stop == 94.0 and trade.target == 110.0
+        assert s.query(ExecutionLog).one().status == "filled_live"
+
+
 def test_canceled_orphan_falls_through_to_rejected_live() -> None:
     with _session() as s:
         broker = _DuplicateRejectingBroker(real_money=False)
@@ -440,10 +475,27 @@ def test_canceled_orphan_falls_through_to_rejected_live() -> None:
         assert s.query(ExecutionLog).one().status == "rejected_live"
 
 
+def test_rejected_orphan_falls_through_to_rejected_live() -> None:
+    """The other arm of _UNADOPTABLE_STATUSES: a venue-rejected orphan is just as dead."""
+    with _session() as s:
+        broker = _DuplicateRejectingBroker(real_money=False)
+        orphan = _seed_orphan(broker, idempotency_key(_intent(), RUN))
+        broker.reject(orphan.broker_order_id)
+
+        adapter = LiveAdapter(broker, settings=_live_settings(),
+                              gate_ready_fn=lambda _s: True)
+        result = adapter.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
+
+        assert result.status == "rejected"
+        assert s.query(ExecutionLog).one().status == "rejected_live"
+
+
 def test_adoption_lookup_failure_falls_through() -> None:
     class _LookupExplodingBroker(_DuplicateRejectingBroker):
+        # a DIFFERENT exception type than submit_order's RuntimeError, so the detail
+        # assertion below pins WHICH exception is reported.
         def get_order_by_client_id(self, client_order_id: str) -> BrokerOrder | None:
-            raise RuntimeError("lookup transport down")
+            raise ValueError("lookup transport down")
 
     with _session() as s:
         broker = _LookupExplodingBroker(real_money=False)
@@ -456,5 +508,7 @@ def test_adoption_lookup_failure_falls_through() -> None:
         result = adapter.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
 
         assert result.status == "rejected"
+        # the ORIGINAL submit exception's class is reported, never the lookup's
+        # (RuntimeError from submit_order, not the ValueError the lookup raised).
         assert result.detail == "broker error (RuntimeError)"
         assert s.query(ExecutionLog).one().status == "rejected_live"

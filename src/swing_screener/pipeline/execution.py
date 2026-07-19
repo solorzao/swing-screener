@@ -125,6 +125,15 @@ OUT_OF_SCOPE_DETAIL = "play type not in execution scope"
 # cockpit wire verbatim, so it must never embed exception/venue text (leak posture:
 # anything exception-shaped goes through broker_error_detail's class-name-only wording).
 ADOPTED_ORPHAN_DETAIL = "adopted orphaned venue order"
+# The broker order states an orphan is NOT adopted from: terminal-dead, nothing can fill.
+# "filled" is deliberately ADOPTABLE -- the adopted submitted_live row is exactly what the
+# reconciler materializes into the live position on its next pass. KNOWN residual blind
+# spot: a partially-filled-then-canceled orphan reads "canceled" here and falls through to
+# rejected_live, its filled shares uncounted -- the same canceled-with-fills posture the
+# reconciler itself takes (reconcile._materialize_fills books `canceled` as canceled
+# regardless of filled_qty). Documented, not fixed: closing it belongs to both consumers
+# at once, not to the adoption path alone.
+_UNADOPTABLE_STATUSES = ("canceled", "rejected")
 
 
 @dataclass(frozen=True)
@@ -691,14 +700,20 @@ class LiveAdapter:
         -- no reconcile changes needed. Returns None (caller falls through to the normal
         ``rejected_live`` path) when the lookup finds nothing, finds a canceled/rejected
         order (the truth IS the rejection), or itself fails in ANY way -- adoption is
-        best-effort recovery and must never become a new failure mode."""
+        best-effort recovery and must never become a new failure mode.
+
+        RESIDUAL EXPOSURE: adoption only runs when a retry actually reaches step 3 -- a
+        retry clamped earlier in the ladder (brake / scope / limits), or no retry at all,
+        leaves the orphan unadopted. Bounded by construction: the entry goes out with
+        ``time_in_force="day"`` (an unfilled orphan dies at the close) and the disarm
+        sweep's venue-wide cancels kill it on any trip."""
         try:
             existing = self._broker.get_order_by_client_id(key)
         except Exception:  # noqa: BLE001 -- best-effort: adoption must never add a failure mode.
             log.warning(
                 "orphan-adoption lookup failed for %s", intent.ticker, exc_info=True)
             return None
-        if existing is None or existing.status in ("canceled", "rejected"):
+        if existing is None or existing.status in _UNADOPTABLE_STATUSES:
             return None
         # A real order is working (or already filled) at the venue under our key:
         # record the truth, loudly, so the operator sees the crash window was crossed.

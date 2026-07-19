@@ -124,9 +124,10 @@ class FakeBroker:
     State is two dicts: ``_orders`` (broker_order_id -> BrokerOrder) and ``_positions``
     (symbol -> BrokerPosition). ``submit_order`` is idempotent on ``client_order_id`` and
     assigns ids from an incrementing counter (``fake-0``, ``fake-1``, ...). The protocol
-    reads (``get_order`` / ``list_open_orders`` / ``get_positions``) and the cancels behave
-    like a real venue; the scripting helpers (``fill`` / ``partially_fill`` / ``reject`` /
-    ``close_position``) let a caller drive an order through its lifecycle by hand."""
+    reads (``get_order`` / ``get_order_by_client_id`` / ``list_open_orders`` /
+    ``get_positions``) and the cancels behave like a real venue; the scripting helpers
+    (``fill`` / ``partially_fill`` / ``reject`` / ``close_position``) let a caller drive
+    an order through its lifecycle by hand."""
 
     name = "fake"
 
