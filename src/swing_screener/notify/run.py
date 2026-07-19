@@ -83,6 +83,7 @@ from swing_screener.pipeline.insight import (
     conviction_baseline,
     record_analyst_call,
 )
+from swing_screener.pipeline.reconcile import reconcile_live
 from swing_screener.pipeline.regime import MARKET_PROXY, classify_regime
 from swing_screener.pipeline.reflect import load_verdicts, verdicts_filename
 from swing_screener.pipeline.run import _migrate_with_retry, _resolve_db_url
@@ -477,6 +478,30 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # (tests / backfill) overrides.
         if run_date is None:
             run_date = repo.latest_run_date(session) or date.today()
+
+        # DISPATCH-TIME LIVE REFRESH (Task 7): poll the broker BEFORE any intent
+        # dispatches, so a same-morning venue stop-out is already a CLOSED live
+        # row -- counted by the daily-loss/drawdown breakers in the dispatch
+        # loop's consult below -- instead of realized $ the book only learns
+        # about at the evening screen (the realized-only freshness hole).
+        # reconcile_live commits internally and is idempotent on re-poll. Its
+        # own swallow-everything try/except: a dead broker poll must never
+        # block the digest (the submit-side clamp stays the hard backstop).
+        if exec_mode == "live" and live_broker is not None:
+            try:
+                n_fresh_changes = reconcile_live(session, live_broker, today=run_date)
+                log.info("dispatch-time live reconcile: %d change(s)", n_fresh_changes)
+            except Exception:  # the freshness poll must never block the digest
+                log.warning("dispatch-time live reconcile failed for %s %s",
+                            kind, run_date, exc_info=True)
+                try:
+                    # a failed poll can leave the SHARED session's transaction
+                    # poisoned (PendingRollbackError on every later use) -- and
+                    # the whole digest below still needs it.
+                    session.rollback()
+                except Exception:  # noqa: BLE001 -- the email path is the priority
+                    log.warning("post-reconcile rollback failed", exc_info=True)
+
         # manual_close events are excluded by pending_exit_alerts BY DESIGN: this is
         # the ALERTS feed (urgent, actionable), not a daily closes ledger -- a future
         # "today's closes" section must add its own query, never widen this one.

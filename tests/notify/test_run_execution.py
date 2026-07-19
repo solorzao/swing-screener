@@ -36,9 +36,10 @@ from swing_screener.notify import run
 from swing_screener.notify.analysis import ConvictionResult, SignalAnalysis
 from swing_screener.notify.market_context import Fundamentals
 from swing_screener.pipeline.broker import BrokerOrderSpec, FakeBroker
-from swing_screener.pipeline.execution import UNSIZED_DETAIL, OrderResult
+from swing_screener.pipeline.execution import UNSIZED_DETAIL, LiveAdapter, OrderResult
 from swing_screener.pipeline.insight import OrderIntent
 from swing_screener.pipeline.reflect import Verdict
+from swing_screener.settings import Limits
 
 RUN = date(2026, 6, 15)
 
@@ -463,6 +464,89 @@ def test_outcome_write_failure_never_blocks_the_digest(tmp_path, monkeypatch):
         g = gr.load_guardrails(s)
         assert g.state == "tripped"                        # the brake held
         assert g.sweep_state == "pending"                  # outcome unrecorded -> re-runnable
+
+
+def _overnight_stop_out(url, broker):
+    """Yesterday's live entry: a REAL submitted_live ticket via the LiveAdapter, filled
+    at the venue overnight, then stopped out pre-open: (44 - 99.5) * 10 = -$555 realized
+    -- realized $ the DB knows nothing about until somebody re-polls the broker."""
+    intent = OrderIntent(
+        ticker="TSLA", timeframe="1d", play_type="continuation",
+        entry_floor=99.0, entry_ceiling=101.0, stop=94.0, target=110.0,
+        conviction="high", shares=10, risk_dollars=70.0,
+        edge_played="e", key_risk="", insight="i", side="long", limit_price=101.0)
+    no_limits = Limits(max_daily_notional=None, max_daily_loss=None, max_concurrent=None)
+    with Session(get_engine(url)) as s:
+        adapter = LiveAdapter(broker, gate_ready_fn=lambda _s: True)
+        result = adapter.submit(intent, session=s, run_date=date(2026, 6, 14),
+                                limits=no_limits)
+        s.commit()
+    assert result.broker_order_id is not None
+    broker.fill(result.broker_order_id, price=99.5)   # filled overnight...
+    broker.close_position("TSLA", price=44.0)         # ...stopped out before the digest
+
+
+def test_dispatch_time_reconcile_trips_on_a_same_morning_stop_out(tmp_path, monkeypatch):
+    """The realized-only freshness hole (Task 7): a live order that filled overnight and
+    STOPPED OUT at the venue before the morning digest is materialized + closed by the
+    dispatch-time reconcile, so its realized $ loss trips the daily-loss breaker BEFORE
+    the morning's orders go out -- zero submits that morning."""
+    _live_env(monkeypatch)
+    url = f"sqlite:///{tmp_path / 'freshness.sqlite'}"
+    _seed(url, n=1)
+    broker = FakeBroker()
+    _overnight_stop_out(url, broker)
+    with Session(get_engine(url)) as s:
+        gr.edit_limits(s, source="test", max_daily_loss_usd=50.0)
+    sent = []
+
+    res = run.send_digest(**_insight_kwargs(
+        tmp_path, url, smtp_send=lambda **k: sent.append(k), broker=broker,
+        mode_reader=lambda: "live"))
+
+    assert res.sent is True                            # the digest still went out
+    with Session(get_engine(url)) as s:
+        # the stop-out was materialized + closed BEFORE dispatch (broker truth)...
+        pt = s.scalars(select(PaperTrade).where(PaperTrade.account == "live")).one()
+        assert pt.status == "closed"
+        assert pt.exit_price == 44.0
+        assert pt.exit_date == RUN
+        # ...and its realized loss tripped the daily-loss breaker.
+        g = gr.load_guardrails(s)
+        assert g.state == "tripped"
+        assert g.trip_reason == "max daily loss: $-555.00 <= -$50.00"
+        assert g.sweep_state == "complete"
+        # ZERO submits this morning: the only log is yesterday's, now filled_live.
+        logs = list(s.scalars(select(ExecutionLog)))
+        assert [(x.ticker, x.status) for x in logs] == [("TSLA", "filled_live")]
+    # the fresh broker_close also rides the exit-alert email (is_paper=False,
+    # created today) -- the alert plus the digest, two sends total.
+    assert len(sent) == 2
+
+
+def test_dispatch_time_reconcile_raise_never_blocks_the_digest(tmp_path, monkeypatch):
+    """A dead broker poll at dispatch time is swallowed: the digest still sends and the
+    morning's dispatch proceeds (the submit-side clamp remains the hard backstop)."""
+    _live_env(monkeypatch)
+    url = f"sqlite:///{tmp_path / 'pollboom.sqlite'}"
+    _seed(url, n=1)
+
+    def _boom(session, broker, *, today):
+        raise RuntimeError("broker poll exploded")
+    monkeypatch.setattr(run, "reconcile_live", _boom)
+    broker = FakeBroker()
+    sent = []
+
+    res = run.send_digest(**_insight_kwargs(
+        tmp_path, url, smtp_send=lambda **k: sent.append(k), broker=broker,
+        mode_reader=lambda: "live"))
+
+    assert res.sent is True
+    assert len(sent) == 1                              # the digest email went out
+    with Session(get_engine(url)) as s:
+        # dispatch proceeded normally: today's pick still submitted.
+        logs = list(s.scalars(select(ExecutionLog)))
+        assert [(x.ticker, x.status) for x in logs] == [("AMD", "submitted_live")]
 
 
 def test_off_mode_does_not_dispatch_or_render_or_log(tmp_path, monkeypatch):

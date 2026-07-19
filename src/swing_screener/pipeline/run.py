@@ -20,7 +20,7 @@ from swing_screener.data.fetch import (
 )
 from swing_screener.data.resample import resample_ohlcv
 from swing_screener.data.universe import load_universe
-from swing_screener.db import repo
+from swing_screener.db import guardrails_repo, repo
 from swing_screener.notify.select import REVERSAL_POOL_N
 from swing_screener.db.models import Signal
 from swing_screener.db.session import get_engine
@@ -585,6 +585,61 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
                                    or repo.load_open_live_trades(s)):
             n_reconciled = reconcile_live(s, broker, today=today)
             log.info("live reconcile: %d change(s)", n_reconciled)
+
+        # GUARDRAILS AT THE EVENING RECONCILE (Task 7): the screen is the first
+        # process to see a same-day venue stop-out (the reconcile above just
+        # booked its realized $), so consult the breakers HERE -- not tomorrow
+        # morning, when the digest would otherwise discover the breach only as
+        # its orders were about to go out. Runs AFTER the reconcile's commit, so
+        # no uncommitted work is pending (load_guardrails commits on its
+        # get-or-create; record_disarm_event rolls back first). The whole block
+        # is swallow-everything with a rollback-first except (the dispatch
+        # loop's hardened posture): the screen's core job -- persisting the
+        # day's signals -- must never be blocked by guardrails machinery.
+        try:
+            # Imported HERE, not at module level: pipeline.replay imports THIS
+            # module (for _bar_row/_shadow_candidates), so run.py can never
+            # module-level-import anything that reaches pipeline.reflect --
+            # and guardrails does, via preflight -> autonomy -> reflect ->
+            # optimize -> replay (the cycle). Same lazy-import posture as
+            # notify.transport's azure seam.
+            from swing_screener.pipeline import guardrails as gpipe
+
+            # The re-run owner: finish a prior trip's pending/partial sweep
+            # first. UNCONDITIONAL (state-checked internally) -- runs even with
+            # the mode off; `broker` may be None here (off/paper, or the
+            # secrets-gap path above), which is a quiet no-op.
+            gpipe.resume_incomplete_sweep(s, broker=broker, source="screen")
+            # The consult, mirroring the dispatch loop: evaluation is skipped
+            # ONLY when already 'tripped' (the trip owner ran the response;
+            # re-tripping would just spam trip events). A breach during a
+            # manual HALT still records its trip -- run_date-scoped breakers
+            # evaporate when the date advances.
+            g = guardrails_repo.load_guardrails(s)
+            breach = (None if g.state == "tripped"
+                      else gpipe.evaluate_breakers(s, run_date=today))
+            if breach is not None:
+                # broker=None is fine: the trip persists with
+                # sweep_state='pending' and the digest/hourly cycles own the
+                # sweep retry. NO mail transport in the screen yet -- Task 10
+                # wires the emailer seam.
+                gpipe.respond_to_trip(s, breaker=breach[0], reason=breach[1],
+                                      source="screen", broker=broker,
+                                      emailer=None)
+            # Deliberately NO halted-state sweep block here (unlike the
+            # dispatch loop's kill-switch/halt sweep): the screen dispatches
+            # nothing, so a halted book needs no entry-pull from this path --
+            # the digest's dispatch loop owns that response.
+        except Exception:  # noqa: BLE001 -- guardrails must never block the screen
+            log.warning("evening-screen guardrails evaluation failed",
+                        exc_info=True)
+            try:
+                # a guardrails failure can leave the SHARED session's
+                # transaction poisoned (PendingRollbackError on every later
+                # use) -- and apply_universe_metrics below still needs it.
+                s.rollback()
+            except Exception:  # noqa: BLE001 -- the screen result is the priority
+                log.warning("post-guardrails rollback failed", exc_info=True)
 
         # Enrich the universe rows with the metrics gathered during the loop
         # (one batch UPDATE; None-skips, self-commits).
