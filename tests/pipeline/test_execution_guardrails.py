@@ -25,7 +25,11 @@ from swing_screener.db import repo
 from swing_screener.db.models import ExecutionLog, PaperTrade
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.broker import FakeBroker
-from swing_screener.pipeline.execution import UNSIZED_DETAIL, LiveAdapter
+from swing_screener.pipeline.execution import (
+    OUT_OF_SCOPE_DETAIL,
+    UNSIZED_DETAIL,
+    LiveAdapter,
+)
 from swing_screener.pipeline.insight import OrderIntent
 from swing_screener.settings import Limits, Settings
 
@@ -51,12 +55,15 @@ def _session() -> Session:
     return Session(get_engine("sqlite:///:memory:"))
 
 
-def _live_settings(*, mode: str = "live", allow: bool = True) -> Settings:
+def _live_settings(
+    *, mode: str = "live", allow: bool = True, scope: frozenset[str] | None = None
+) -> Settings:
     """A Settings snapshot with the execution-mode + allow-real-money locks set as asked.
 
-    Only the two fields ``can_arm_real_money`` reads matter; the rest are filler so the
-    frozen dataclass is constructible. Built directly (not via env) so the test controls the
-    locks without monkeypatching the environment."""
+    Only the two fields ``can_arm_real_money`` reads matter (plus the optional
+    ``scope`` = the execute_play_types ceiling for the step-0.6 tests); the rest are
+    filler so the frozen dataclass is constructible. Built directly (not via env) so
+    the test controls the locks without monkeypatching the environment."""
     from pathlib import Path
     return Settings(
         db_url="sqlite:///:memory:", chart_dir=Path("."), cache_dir=Path("."),
@@ -71,6 +78,7 @@ def _live_settings(*, mode: str = "live", allow: bool = True) -> Settings:
         account_equity=None, risk_per_trade_dollars=None, risk_pct=0.01, max_shares=None,
         execution_mode=mode, max_daily_notional=None, max_daily_loss=None,
         max_concurrent=None, broker="alpaca", allow_real_money=allow,
+        execute_play_types=scope,
     )
 
 
@@ -306,6 +314,67 @@ def test_zero_share_clamp_fires_before_brake_and_locks() -> None:
         row = s.query(ExecutionLog).one()
         assert row.status == "skipped"
         assert row.detail == UNSIZED_DETAIL
+
+
+# ---------------------------------------------------------------------------
+# the execution-scope ceiling (step 0.6, Task 8): an out-of-scope play type
+# clamps to a logged 'skipped' row with OUT_OF_SCOPE_DETAIL -- zero broker
+# calls, non-counting (the key upgrades if the operator later widens the
+# scope). The dispatch loop filters these too; this is the adapter's own last
+# line (never trusting the caller). Consulted AFTER the 0.5 brake, BEFORE the
+# real-money guard.
+# ---------------------------------------------------------------------------
+def test_out_of_scope_play_type_skips_before_venue_and_upgrades_on_widen() -> None:
+    with _session() as s:
+        broker = FakeBroker(real_money=False)
+        adapter = LiveAdapter(
+            broker, settings=_live_settings(scope=frozenset({"reversal"})),
+            gate_ready_fn=lambda _s: True)
+        result = adapter.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
+
+        assert result.status == "skipped"
+        assert result.detail == OUT_OF_SCOPE_DETAIL
+        assert broker.submitted_specs == []            # zero broker calls
+        row = s.query(ExecutionLog).one()
+        assert row.status == "skipped"
+        assert row.detail == OUT_OF_SCOPE_DETAIL
+        # non-counting: the skip never loads against the trades/day breaker...
+        assert gr.trades_today(s, run_date=RUN) == 0
+
+        # ...and the key was never burned: the operator widening the scope
+        # upgrades the SAME row in place and places the order.
+        widened = LiveAdapter(
+            broker, settings=_live_settings(scope=frozenset({"continuation"})),
+            gate_ready_fn=lambda _s: True)
+        second = widened.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
+        assert second.status == "submitted_live"
+        assert len(broker.submitted_specs) == 1
+        upgraded = s.query(ExecutionLog).one()
+        assert upgraded.status == "submitted_live"
+
+
+def test_in_scope_play_type_passes_through() -> None:
+    with _session() as s:
+        broker = FakeBroker(real_money=False)
+        adapter = LiveAdapter(
+            broker,
+            settings=_live_settings(scope=frozenset({"continuation", "reversal"})),
+            gate_ready_fn=lambda _s: True)
+        result = adapter.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
+
+        assert result.status == "submitted_live"
+        assert len(broker.submitted_specs) == 1        # the order reached the venue
+
+
+def test_unscoped_none_ceiling_passes_through() -> None:
+    # scope None = unscoped (the default): byte-identical to today's behavior.
+    with _session() as s:
+        broker = FakeBroker(real_money=False)
+        adapter = LiveAdapter(broker, settings=_live_settings(scope=None),
+                              gate_ready_fn=lambda _s: True)
+        result = adapter.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
+
+        assert result.status == "submitted_live"
 
 
 # ---------------------------------------------------------------------------

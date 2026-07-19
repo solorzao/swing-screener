@@ -320,7 +320,7 @@ def build_safety_router(
                      sorted(s.execute_play_types)
                      if s.execute_play_types is not None else None,
                      "execution ceiling: unset = all play types; garbage members "
-                     "are dropped (fail-closed)"),
+                     "are dropped (fail-closed); empty = nothing dispatches"),
             _cfg_row("allow real money", "SWING_BROKER_ALLOW_REAL_MONEY",
                      s.allow_real_money,
                      "one of the three live locks — false blocks live arming"),

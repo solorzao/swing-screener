@@ -131,6 +131,18 @@ def test_execute_play_types_all_garbage_is_empty_set_allow_none(monkeypatch, cap
         s = load_settings()
     assert s.execute_play_types == frozenset()  # allow-NONE: nothing dispatches
     assert "junk" in caplog.text
+    assert "no valid play types" in caplog.text  # the unconditional empty-scope warning
+
+
+def test_execute_play_types_comma_only_is_empty_set_and_warns(monkeypatch, caplog):
+    # "," is non-blank but carries NO members: not unset (None), and there is no
+    # per-member warning to fire -- the empty-scope warning must fire on its own.
+    _clear(monkeypatch)
+    monkeypatch.setenv("SWING_EXECUTE_PLAY_TYPES", ",")
+    with caplog.at_level(logging.WARNING):
+        s = load_settings()
+    assert s.execute_play_types == frozenset()  # fail-closed: allow-NONE
+    assert "no valid play types" in caplog.text
 
 
 # --- resolve_execution (pure) -------------------------------------------------

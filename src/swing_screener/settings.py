@@ -171,17 +171,24 @@ def _parse_play_types(value: str | None) -> frozenset[str] | None:
     if value is None or not value.strip():
         return None
     # Function-level import: this module is the import-light leaf every layer
-    # (db included) pulls in, so a module-level pipeline import here would hand
-    # every settings importer a pipeline edge -- and pipeline.execution imports
-    # db.guardrails_repo, whose charter is never to touch the pipeline layer.
+    # pulls in, so a module-level pipeline import here would hand every settings
+    # importer a pipeline edge -- and guardrails_repo (which imports settings)
+    # must stay pipeline-free so pipeline.execution -> guardrails_repo can never
+    # become a cycle.
     from swing_screener.pipeline.proposed import PLAY_TYPES  # noqa: PLC0415
     members = {m.strip().lower() for m in value.split(",") if m.strip()}
     scope = frozenset(m for m in members if m in PLAY_TYPES)
     for unknown in sorted(members - scope):
         log.warning(
             "Unknown play type %r in SWING_EXECUTE_PLAY_TYPES; dropping it "
-            "(valid: %s). An all-invalid value scopes execution to NOTHING.",
-            unknown, ", ".join(PLAY_TYPES))
+            "(valid: %s).", unknown, ", ".join(PLAY_TYPES))
+    if not scope:
+        # Unconditional whenever a NON-BLANK value leaves nothing valid (an
+        # all-garbage list, or a member-free value like ","): the operator set
+        # the knob, so the allow-NONE outcome must be said out loud.
+        log.warning(
+            "SWING_EXECUTE_PLAY_TYPES=%r contains no valid play types; execution "
+            "scope is EMPTY -- nothing will dispatch.", value)
     return scope
 
 

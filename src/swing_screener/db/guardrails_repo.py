@@ -517,18 +517,20 @@ def breached_breaker(
 
 
 def effective_execution_scope(
-    settings: Settings, session: Session | None = None
+    settings: Settings, *, session: Session | None
 ) -> frozenset[str] | None:
     """The set of play types execution may dispatch, or None = unscoped (all).
 
     Today: purely the env ceiling (``SWING_EXECUTE_PLAY_TYPES``, parsed
-    fail-closed in ``load_settings``). ``session`` is accepted and unused --
-    Task 22 subtracts the cockpit-disabled set here (effective = ceiling -
-    disabled), and threading the session NOW means that lands without touching
-    the dispatch loop again. Lives HERE rather than in settings.py because
-    settings is ORM-free by charter and Task 22's ``disabled_play_types`` is an
-    ``agent_guardrails`` column this module owns (its tighten-only edit walks
-    the same event-audited state machine as every other brake write).
+    fail-closed in ``load_settings``). ``session`` is REQUIRED keyword-only but
+    unused for now -- Task 22 subtracts the cockpit-disabled set here (effective
+    = ceiling - disabled), and forcing every caller to hand a session TODAY
+    means no call site can silently skip that subtraction when it lands. Lives
+    HERE rather than in settings.py because settings stays deliberately
+    import-light (a module-level PLAY_TYPES/ORM import there would hand every
+    settings importer those edges) and because Task 22's ``disabled_play_types``
+    is an ``agent_guardrails`` column this module owns (its tighten-only edit
+    walks the same event-audited state machine as every other brake write).
     """
     return settings.execute_play_types
 

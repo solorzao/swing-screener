@@ -44,6 +44,16 @@ def test_config_execute_play_types_row(tmp_path: Path, monkeypatch) -> None:
     assert row["value"] == ["reversal"]
 
 
+def test_config_execute_play_types_row_shows_resolved_value(
+        tmp_path: Path, monkeypatch) -> None:
+    # The row renders the RESOLVED value, not the raw env: the invalid member is
+    # already dropped by the fail-closed parse.
+    monkeypatch.setenv("SWING_EXECUTE_PLAY_TYPES", "reversal,junk")
+    body = _client(tmp_path).get("/api/config").json()
+    execution = {row["key"]: row["value"] for row in body["sections"][1]["rows"]}
+    assert execution["execute play types"] == ["reversal"]
+
+
 def test_config_execute_play_types_unset_renders_null(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("SWING_EXECUTE_PLAY_TYPES", raising=False)
     body = _client(tmp_path).get("/api/config").json()

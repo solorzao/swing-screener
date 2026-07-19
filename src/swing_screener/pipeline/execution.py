@@ -115,6 +115,11 @@ LIVE_ACCOUNT = "live"
 # (notify/run.py). Deliberately NOT a "guardrail: ..." detail -- the Auditor greps that
 # prefix, and an unsized intent is inert config noise, not a tripped safety rail.
 UNSIZED_DETAIL = "unsized (0 shares)"
+# the execution-scope clamp's log/ticket detail (SWING_EXECUTE_PLAY_TYPES, Task 8),
+# shared the same way: the dispatch loop's filter and the live adapter's own step-0.6
+# consult (never trusting the caller) both stamp it. Not "guardrail: ..." either --
+# an out-of-scope play type is operator scoping, not a tripped safety rail.
+OUT_OF_SCOPE_DETAIL = "play type not in execution scope"
 
 
 @dataclass(frozen=True)
@@ -468,6 +473,13 @@ class LiveAdapter:
        a breached breaker clamps to a logged ``skipped`` row with a ``guardrail: ...``
        detail -- non-counting, so the key is never burned and a later submit (brake
        released) upgrades the row.
+    0.6. The EXECUTION SCOPE ceiling (``guardrails_repo.effective_execution_scope``,
+       Task 8): an intent whose play type is outside the SWING_EXECUTE_PLAY_TYPES
+       ceiling clamps to a logged ``skipped`` row with :data:`OUT_OF_SCOPE_DETAIL` --
+       non-counting, so the key upgrades in place if the operator later widens the
+       scope. The dispatch loop filters these first; this is the adapter's own last
+       line (never trusting the caller), through the SAME seam Task 22's cockpit
+       subtraction lands in.
     1. The REAL-MONEY guard, consulted ONLY when ``broker.is_real_money()`` -- a paper broker
        (Alpaca paper) needs no locks and skips it entirely. For a real-money endpoint it
        demands all THREE arming locks (``can_arm_real_money``: mode=live AND allow_real_money
@@ -545,6 +557,21 @@ class LiveAdapter:
             self._log(session, intent, run_date=run_date, key=key,
                       status="skipped", detail=detail[:512])
             return OrderResult(status="skipped", account=LIVE_ACCOUNT, detail=detail)
+
+        # 0.6 THE EXECUTION SCOPE CEILING (Task 8) -- consulted through the same seam
+        #     as the dispatch loop's filter (Task 22's cockpit subtraction lands in
+        #     that seam, so the session is threaded now). The loop filters these
+        #     first; this is the adapter's own last line (never trusting the
+        #     caller). Out of scope clamps to a logged 'skipped' row -- non-counting,
+        #     so the key is never burned and a later submit (the operator widened
+        #     the scope) upgrades the row in place.
+        scope = guardrails_repo.effective_execution_scope(
+            self._settings or load_settings(), session=session)
+        if scope is not None and intent.play_type not in scope:
+            self._log(session, intent, run_date=run_date, key=key,
+                      status="skipped", detail=OUT_OF_SCOPE_DETAIL)
+            return OrderResult(
+                status="skipped", account=LIVE_ACCOUNT, detail=OUT_OF_SCOPE_DETAIL)
 
         # 1. REAL-MONEY guard -- consulted ONLY for a real-money endpoint. A paper broker
         #    (is_real_money() False) needs no locks and skips this block entirely.

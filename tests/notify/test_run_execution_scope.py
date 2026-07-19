@@ -179,12 +179,13 @@ def test_all_garbage_scope_dispatches_nothing_and_tickets_both(tmp_path, monkeyp
 
 
 def test_effective_execution_scope_is_the_env_ceiling(monkeypatch):
-    """The Task-22 seam: today purely the env ceiling; ``session`` is accepted
-    (and unused) so the cockpit subtraction lands without touching the loop."""
+    """The Task-22 seam: today purely the env ceiling; ``session`` is REQUIRED
+    keyword-only (unused today) so no future caller can silently skip Task 22's
+    cockpit subtraction by omitting it."""
     monkeypatch.setenv("SWING_EXECUTE_PLAY_TYPES", "reversal")
     s = load_settings()
-    assert guardrails_repo.effective_execution_scope(s) == frozenset({"reversal"})
     assert guardrails_repo.effective_execution_scope(
         s, session=None) == frozenset({"reversal"})
     monkeypatch.delenv("SWING_EXECUTE_PLAY_TYPES", raising=False)
-    assert guardrails_repo.effective_execution_scope(load_settings()) is None
+    assert guardrails_repo.effective_execution_scope(
+        load_settings(), session=None) is None

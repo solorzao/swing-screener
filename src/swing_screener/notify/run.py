@@ -68,6 +68,7 @@ from swing_screener.pipeline.broker_alpaca import build_broker
 from swing_screener.pipeline import guardrails as gpipe
 from swing_screener.pipeline.disarm import run_protective_sweep
 from swing_screener.pipeline.execution import (
+    OUT_OF_SCOPE_DETAIL,
     UNSIZED_DETAIL,
     ExecutionAdapter,
     LiveAdapter,
@@ -112,11 +113,6 @@ _PICKERS = {"daily": sel.daily_picks, "weekly": sel.weekly_picks, "monthly": sel
 # indistinguishable from a quiet market. Each cadence gets its own horizon instead:
 # weekly ~ one trading week of daily runs (5), monthly ~ one trading month (21).
 _COOLDOWN_RUNS = {"weekly": 5, "monthly": 21}
-
-# The dispatch loop's skip detail for an intent whose play type is outside the
-# SWING_EXECUTE_PLAY_TYPES execution ceiling (Task 8). Module-level so tests pin
-# the exact wording (the UNSIZED_DETAIL pattern).
-OUT_OF_SCOPE_DETAIL = "play type not in execution scope"
 
 
 @dataclass(frozen=True)
@@ -758,14 +754,17 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # blocks.
         _mode_reader = mode_reader or (lambda: load_settings().execution_mode)
         tickets: dict[tuple[str, str], OrderTicketLine] = {}
-        # EXECUTION SCOPE (Task 8): the ceremony-controlled play-type CEILING,
-        # resolved through the Task-22 seam ONCE per dispatch batch -- the env
-        # half is static for the run, and when Task 22 lands its cockpit-disabled
-        # DB half re-reads HERE, per batch (never per intent), through the same
-        # call. None = unscoped (today's behavior).
-        scope = guardrails_repo.effective_execution_scope(cfg, session)
         if collected_intents and not isinstance(adapter, NoOpAdapter):
             try:
+                # EXECUTION SCOPE (Task 8): the ceremony-controlled play-type
+                # CEILING, resolved through the Task-22 seam once per dispatch
+                # batch -- the env half is static for the run, and when Task 22
+                # lands its cockpit-disabled DB half re-reads HERE, per batch
+                # (never per intent). None = unscoped (today's behavior). Inside
+                # the dispatch gate + try so the off/no-intent path never pays
+                # (or fails on) the future DB read.
+                scope = guardrails_repo.effective_execution_scope(
+                    cfg, session=session)
                 for intent in collected_intents:
                     if intent.shares <= 0:
                         # An UNSIZED intent (size_order floored to 0: unconfigured/tiny
@@ -794,7 +793,8 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                         # adapter runs -> no ExecutionLog row.
                         log.info("skipping out-of-scope intent %s %s (scope: %s)",
                                  intent.ticker, intent.play_type,
-                                 ", ".join(sorted(scope)) or "none")
+                                 ", ".join(sorted(scope))
+                                 or "(empty - no valid play types)")
                         tickets[(intent.ticker, intent.play_type)] = OrderTicketLine(
                             side=intent.side, shares=intent.shares, ticker=intent.ticker,
                             limit_price=intent.limit_price, stop=intent.stop,
