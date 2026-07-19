@@ -20,7 +20,7 @@ from swing_screener.data.fetch import (
 )
 from swing_screener.data.resample import resample_ohlcv
 from swing_screener.data.universe import load_universe
-from swing_screener.db import guardrails_repo, repo
+from swing_screener.db import repo
 from swing_screener.notify.select import REVERSAL_POOL_N
 from swing_screener.db.models import Signal
 from swing_screener.db.session import get_engine
@@ -34,7 +34,14 @@ from swing_screener.pipeline.arms import BASELINE, build_arms
 from swing_screener.pipeline.diversity import cap_by_sector, first_per_ticker
 from swing_screener.pipeline.broker import BrokerClient
 from swing_screener.pipeline.broker_alpaca import build_broker
-from swing_screener.pipeline.reconcile import reconcile_live
+# Module-level ON PURPOSE (Task 11): the old guardrails -> preflight -> autonomy ->
+# reflect -> replay -> run cycle is dissolved (broker_error_detail moved to
+# pipeline.broker), so run.py may finally import its own guardrails at import time.
+# The fresh-interpreter canary in tests/pipeline/test_run_guardrails.py guards this
+# import staying cycle-free (pytest collection order hides an import cycle; only a
+# fresh `import swing_screener.pipeline.run` as the ROOT probes it honestly).
+from swing_screener.pipeline import guardrails as gpipe
+from swing_screener.pipeline.live_sync import maybe_reconcile_live
 from swing_screener.pipeline.regime import MARKET_PROXY, classify_regime
 from swing_screener.pipeline.shadow import (
     FillCandidate,
@@ -397,10 +404,10 @@ def _screen_trip_emailer(session: Session, *, run_date: date) -> Callable[[int, 
     whichever path fires first (this closure, the dispatch loop, the
     digest-side retry emitter) wins and the others no-op. All three imported
     LAZILY inside the closure: cycle-safe today (probed — ``notify.alerts``
-    reaches only ``notify.body``/sqlalchemy/``db.models``, never ``notify.run``
-    or ``pipeline.*``), but the guardrails block is a lazy-import zone and the
-    fresh-interpreter canary in tests/pipeline/test_run_guardrails.py pins the
-    module-import surface.
+    reaches only ``notify.body``/sqlalchemy/``db.*``, never ``notify.run`` or
+    ``pipeline.*``), but notify-side transports stay off run.py's module-import
+    surface on principle, and the fresh-interpreter canary in
+    tests/pipeline/test_run_guardrails.py pins that surface.
 
     A failed send leaves NO log row (and ``respond_to_trip`` swallows the
     raise), so the next digest retries. No recipient configured -> skip
@@ -603,24 +610,16 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
                         window={n: c.reversal_fill_window_bars
                                 for n, c in screen_variants.items()})
         advance_open(s, latest_bars, arms, today=today)
-        # Live book: the bar-stepper above excludes account="live" rows -- the BROKER owns
-        # their fills/exits. Reconcile them here (same cadence) so a broker fill materializes
-        # a live position + a venue close reconciles its exit. Runs in live mode -- AND,
-        # disarm-safety, whenever OPEN live exposure exists even after the mode is flipped
-        # off: disarming used to stop the reconcile precisely when the operator was trying
-        # to reduce risk, leaving the live book dark while positions sat at the venue
-        # (2026-07 review). Broker construction for that path is guarded: missing broker
-        # secrets must degrade to a loud warning, never kill the screen run.
-        if broker is None and settings.broker and repo.load_open_live_trades(s):
-            try:
-                broker = build_broker(settings)
-            except Exception:  # noqa: BLE001 -- a secrets/config gap must not abort the screen
-                log.warning("open LIVE exposure exists but the broker could not be built; "
-                            "live book NOT reconciled this run", exc_info=True)
-        if broker is not None and (settings.execution_mode == "live"
-                                   or repo.load_open_live_trades(s)):
-            n_reconciled = reconcile_live(s, broker, today=today)
-            log.info("live reconcile: %d change(s)", n_reconciled)
+        # Live book: the bar-stepper above excludes account="live" rows -- the BROKER
+        # owns their fills/exits. Reconcile them here (same cadence) so a broker fill
+        # materializes a live position + a venue close reconciles its exit. The
+        # when-it-matters posture (live mode, or open exposure even after a disarm)
+        # and the guarded on-demand broker build live in ``pipeline.live_sync`` --
+        # shared verbatim with the hourly exit job (Task 11). The returned broker is
+        # kept: one built on demand for the disarmed-exposure path must also serve
+        # the guardrails consult below (sweep NOW, not next cycle).
+        _n_reconciled, broker = maybe_reconcile_live(
+            s, today=today, broker=broker, settings=settings)
 
         # GUARDRAILS AT THE EVENING RECONCILE (Task 7): the screen is the first
         # process to see a same-day venue stop-out (the reconcile above just
@@ -633,43 +632,18 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         # loop's hardened posture): the screen's core job -- persisting the
         # day's signals -- must never be blocked by guardrails machinery.
         try:
-            # Imported HERE, not at module level: pipeline.replay imports THIS
-            # module (for _bar_row/_shadow_candidates), so run.py can never
-            # module-level-import anything that reaches pipeline.reflect --
-            # and guardrails does, via preflight -> autonomy -> reflect, which
-            # imports replay BOTH directly and via optimize (the cycle). Same
-            # lazy-import posture as notify.transport's azure seam; the
-            # fresh-interpreter canary in tests/pipeline/test_run_guardrails.py
-            # guards this (the cycle only bites when run.py is the import ROOT,
-            # which pytest collection order usually hides).
-            from swing_screener.pipeline import guardrails as gpipe
-
-            # The re-run owner: finish a prior trip's pending/partial sweep
-            # first. UNCONDITIONAL (state-checked internally) -- runs even with
-            # the mode off; `broker` may be None here (off/paper, or the
-            # secrets-gap path above), which is a quiet no-op.
-            gpipe.resume_incomplete_sweep(s, broker=broker, source="screen")
-            # The consult, mirroring the dispatch loop: evaluation is skipped
-            # ONLY when already 'tripped' (the trip owner ran the response;
-            # re-tripping would just spam trip events). A breach during a
-            # manual HALT still records its trip -- run_date-scoped breakers
-            # evaporate when the date advances.
-            g = guardrails_repo.load_guardrails(s)
-            breach = (None if g.state == "tripped"
-                      else gpipe.evaluate_breakers(s, run_date=today))
-            if breach is not None:
-                # broker=None is fine: the trip persists with
-                # sweep_state='pending' and the digest/hourly cycles own the
-                # sweep retry. The emailer (Task 10) is the minimal on-demand
-                # sender -- built lazily HERE, inside the guardrails lazy-import
-                # zone, never at module import (the reflect/notify.run cycle).
-                gpipe.respond_to_trip(s, breaker=breach[0], reason=breach[1],
-                                      source="screen", broker=broker,
-                                      emailer=_screen_trip_emailer(s, run_date=today))
-            # Deliberately NO halted-state sweep block here (unlike the
-            # dispatch loop's kill-switch/halt sweep): the screen dispatches
-            # nothing, so a halted book needs no entry-pull from this path --
-            # the digest's dispatch loop owns that response.
+            # The shared consult (Task 11): resume -> load -> evaluate-unless-
+            # tripped -> respond, one definition for all three cycles. `broker`
+            # may be None (off/paper, or live_sync's secrets-gap path) -- the
+            # resume no-ops and a fresh trip persists with sweep_state='pending'
+            # for the digest/hourly cycles to finish. The verdict is
+            # deliberately ignored: the screen dispatches nothing, so a
+            # halted/tripped book needs no entry-pull from this path -- the
+            # digest's dispatch loop owns that response. The emailer (Task 10)
+            # is the minimal on-demand sender; its transport resolves lazily
+            # inside the closure, never at module import.
+            gpipe.consult(s, run_date=today, source="screen", broker=broker,
+                          emailer=_screen_trip_emailer(s, run_date=today))
         except Exception:  # noqa: BLE001 -- guardrails must never block the screen
             log.warning("evening-screen guardrails evaluation failed",
                         exc_info=True)

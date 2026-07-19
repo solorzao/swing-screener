@@ -17,27 +17,31 @@ are built ONLY from internally formatted strings — breaker names, the repo's
 pre-formatted reasons (echoed verbatim, never re-derived), recorded ticket
 details — never raw exception text.
 
-Compose functions are pure — no I/O. The ONE exception is the shared
-guardrail-trip emitter at the bottom (:func:`send_guardrail_alert` +
-:func:`guardrail_alert_sent`): it owns the ``alert_key=str(trip_event_id)``
-send-then-log dedup contract for BOTH callers — ``notify.run``'s dispatch loop
-and ``pipeline.run``'s evening screen — so the contract has exactly one owner.
-It lives HERE because this module stays pipeline-import-free (its only imports
-are ``notify.body``, sqlalchemy, and ``db.models``; the send callable is
-injected), which lets ``pipeline.run`` import it lazily without ever touching
-``notify.run`` (the notify.run -> pipeline.run cycle).
+Compose functions are pure — no I/O. The exceptions are the shared EMITTERS at
+the bottom — the guardrail-trip pair (:func:`send_guardrail_alert` +
+:func:`guardrail_alert_sent` + :func:`emit_pending_guardrail_alert`, owning the
+``alert_key=str(trip_event_id)`` send-then-log dedup contract) and the
+live-rejection pair (:func:`send_live_rejection_alert` +
+:func:`pending_rejection_ids`, owning the per-ROW ``alert_key='xlog-{id}'``
+contract) — one owner per contract, shared by every caller: ``notify.run``'s
+dispatch loop, ``pipeline.run``'s evening screen, and ``pipeline.exitcheck``'s
+hourly job. They live HERE because this module stays pipeline-import-free (its
+only imports are ``notify.body``, sqlalchemy, and ``db.*``; the send callable
+is injected), which lets the pipeline jobs import it lazily without ever
+touching ``notify.run`` (the notify.run -> pipeline cycle).
 """
 
 import html
 from collections.abc import Callable, Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Protocol
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from swing_screener.db.models import EmailLog
+from swing_screener.db import guardrails_repo
+from swing_screener.db.models import AgentGuardrailEvent, EmailLog, ExecutionLog
 from swing_screener.notify.body import EmailContent
 
 _BADGE = {"hard": "🔴", "strong": "🟠", "advisory": "🟡"}
@@ -193,4 +197,142 @@ def send_guardrail_alert(session: Session, *, run_date: date, recipient: str,
         session.commit()
     except IntegrityError:  # lost the concurrent-replica race; the row already exists
         session.rollback()
+    return True
+
+
+def emit_pending_guardrail_alert(session: Session, run_date: date, recipient: str,
+                                 send: Callable[..., None]) -> bool:
+    """Send the alert for a tripped book whose trip email never landed — the
+    AT-LEAST-ONCE half (the digest and the hourly exit job are the retry
+    owners, exactly like exit alerts). Covers the evening screen's
+    broker/transport-less trip and any in-protocol send that failed: if
+    state=='tripped' and no ``EmailLog(kind='guardrail',
+    alert_key=str(trip_id))`` exists, compose + send + log on the SAME key the
+    in-protocol emitter uses, so the dedup collapses the paths. A trip the
+    operator CLEARS from the cockpit before any retry cycle runs is
+    deliberately never mailed — clearing implies awareness (Task 14's auditor
+    treats trip-without-EmailLog as a breach and must exempt cleared trips for
+    the same reason). Returns True iff an email was sent.
+    """
+    g = guardrails_repo.load_guardrails(session)
+    if g.state != "tripped" or g.trip_id is None:
+        return False
+    if guardrail_alert_sent(session, str(g.trip_id)):
+        return False
+    # the trip EVENT carries the breaker name; the row's trip_reason is the
+    # same pre-formatted string trip() stamped (fall back to the event's copy).
+    trip_event = session.get(AgentGuardrailEvent, g.trip_id)
+    breaker = trip_event.breaker if trip_event is not None else ""
+    reason = g.trip_reason or (trip_event.reason if trip_event is not None else "")
+    return send_guardrail_alert(session, run_date=run_date, recipient=recipient,
+                                send=send, trip_event_id=g.trip_id,
+                                breaker=breaker, reason=reason)
+
+
+# --- the shared live-rejection emitter (the ONE owner of the per-row contract) --
+
+#: the ExecutionLog statuses that mean "the venue did NOT keep the order working".
+REJECTED_STATUSES = ("rejected_live", "canceled")
+
+#: how far back the rejection queries look. The reconcile only flips RECENT
+#: ``submitted_live`` rows (DAY orders die the same session), so an unbounded
+#: scan would grow forever with the table while never finding older flips.
+_REJECTION_LOOKBACK_DAYS = 7
+
+
+def _rejection_key(log_id: int) -> str:
+    """The per-ROW dedup key for a live-rejection alert: ``xlog-{ExecutionLog.id}``.
+
+    Per ROW, not per set (Task 11): the old sha1-of-the-flipped-id-SET key made
+    coverage undecidable across processes — the digest alerts {5,6}, the hourly
+    retry then finds {5,6,7} un-diffable, computes a DIFFERENT set hash, and
+    re-alerts 5 and 6. With one EmailLog row per alerted ExecutionLog id,
+    coverage is a per-row join and a later pass alerts exactly the uncovered
+    rows. NOTE (one-time deploy seam): rows alerted under the legacy sha1 keys
+    have no per-row coverage, so within the 7-day lookback the hourly job may
+    re-alert them ONCE after this ships — accepted (live execution is not yet
+    armed in prod).
+    """
+    return f"xlog-{log_id}"
+
+
+def recent_rejection_ids(session: Session, *, run_date: date) -> set[int]:
+    """The ids of RECENT rejected/canceled ExecutionLog rows (the lookback window).
+
+    The digest's before/after snapshot pair around a ``reconcile_live`` pass
+    diffs two of these to get THAT pass's flips (the reconcile returns a count,
+    not rows); the hourly retry instead joins the whole recent set against the
+    per-row EmailLog coverage (:func:`pending_rejection_ids`).
+    """
+    stmt = select(ExecutionLog.id).where(
+        ExecutionLog.status.in_(REJECTED_STATUSES),
+        ExecutionLog.created_date >= run_date - timedelta(days=_REJECTION_LOOKBACK_DAYS),
+    )
+    return set(session.scalars(stmt))
+
+
+def _covered_rejection_ids(session: Session, ids: set[int]) -> set[int]:
+    """The subset of ``ids`` already covered by a per-row execution EmailLog row.
+
+    Deliberately NOT date-filtered (the ``guardrail_alert_sent`` posture): the
+    retry owner may run on a later date than the alert that covered a row, and
+    a date filter would double-send exactly there.
+    """
+    if not ids:
+        return set()
+    stmt = select(EmailLog.alert_key).where(
+        EmailLog.kind == "execution",
+        EmailLog.alert_key.in_([_rejection_key(i) for i in ids]),
+    )
+    return {int(key.removeprefix("xlog-")) for key in session.scalars(stmt)}
+
+
+def pending_rejection_ids(session: Session, *, run_date: date) -> set[int]:
+    """Every recent rejected/canceled ExecutionLog id with NO alert coverage.
+
+    The hourly retry owner's query (Task 11): a digest whose rejection send
+    FAILED leaves no coverage rows, and its next cycle's before-snapshot
+    already contains the flipped ids — the diff never re-produces them. This
+    query-based pass re-finds them for as long as they sit uncovered inside
+    the lookback window.
+    """
+    ids = recent_rejection_ids(session, run_date=run_date)
+    return ids - _covered_rejection_ids(session, ids)
+
+
+def send_live_rejection_alert(session: Session, *, run_date: date, recipient: str,
+                              send: Callable[..., None],
+                              candidate_ids: set[int]) -> bool:
+    """ONE email naming every uncovered rejected/canceled row in ``candidate_ids``.
+
+    The single owner of the live-rejection dedup contract, shared by the
+    digest's dispatch-time diff and the hourly query-based retry. Coverage is
+    per ROW (see :func:`_rejection_key`): already-covered ids are dropped, so a
+    partial overlap (digest alerted {5,6}; the hourly finds {5,6,7}) alerts
+    ONLY the new row. SEND-then-LOG, the exit-alert ordering and rationale —
+    a failed send leaves NO coverage rows, so the next hourly pass retries the
+    whole batch. The coverage rows are then inserted ONE COMMIT PER ROW, each
+    IntegrityError-tolerant: a mid-loop failure leaves the earlier rows
+    covered and only the remainder re-alertable (minimal duplication under an
+    at-least-once posture). Returns True iff an email was sent.
+    """
+    new_ids = set(candidate_ids) - _covered_rejection_ids(session, set(candidate_ids))
+    if not new_ids:
+        return False
+    rows = list(session.scalars(
+        select(ExecutionLog).where(ExecutionLog.id.in_(new_ids))
+        .order_by(ExecutionLog.id)))
+    if not rows:  # defensive: ids that vanished can't compose an honest alert
+        return False
+    email = compose_live_rejection_alert(rows, run_date)
+    send(to=recipient, subject=email.subject, text=email.text, html=email.html,
+         attachments=[])  # SEND FIRST (see docstring)
+    for row in rows:
+        session.add(EmailLog(sent_at=datetime.now(UTC), kind="execution",
+                             subject=email.subject, run_date=run_date,
+                             alert_key=_rejection_key(row.id)))
+        try:
+            session.commit()
+        except IntegrityError:  # lost the concurrent-replica race; the row already exists
+            session.rollback()
     return True

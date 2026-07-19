@@ -30,9 +30,8 @@ from sqlalchemy.orm import Session
 
 from swing_screener.db import guardrails_repo, repo
 from swing_screener.db.models import AgentGuardrailEvent, DisarmEvent
-from swing_screener.pipeline.broker import BrokerClient, BrokerOrder
+from swing_screener.pipeline.broker import BrokerClient, BrokerOrder, broker_error_detail
 from swing_screener.pipeline.disarm import run_protective_sweep
-from swing_screener.pipeline.preflight import broker_error_detail
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +56,49 @@ def evaluate_breakers(session: Session, *, run_date: date) -> tuple[str, str] | 
     can never disagree about a breach."""
     g = guardrails_repo.load_guardrails(session)
     return guardrails_repo.breached_breaker(session, g, run_date=run_date)
+
+
+def consult(
+    session: Session, *, run_date: date, source: str,
+    broker: BrokerClient | None,
+    emailer: Callable[[int, str, str], None] | None = None,
+) -> str | None:
+    """The shared guardrails consult: resume -> load -> evaluate-unless-tripped ->
+    respond. ONE definition for all three cycles -- the digest dispatch loop, the
+    evening screen, and the hourly exit check -- so they can never drift on the
+    skip-when-tripped rule or the ordered trip protocol (Task 11; the quadruplet
+    used to be copy-pasted at each site).
+
+    Ordered exactly like the dispatch loop this generalizes:
+
+    1. ``resume_incomplete_sweep`` -- the re-run owner finishes a prior trip's
+       pending/partial sweep first (state-checked internally; ``broker`` None is
+       a quiet no-op).
+    2. Load state; evaluation is skipped ONLY when already 'tripped' (the trip
+       owner ran the response; re-tripping would just spam trip events). A
+       breach during a manual HALT still records its trip: run_date-scoped
+       breakers evaporate when the date advances, and the repo election
+       deliberately lets a trip overwrite 'halted'.
+    3. On a breach: ``respond_to_trip`` runs the full ordered protocol
+       (persist-first, sweep, outcome, mail; ``broker`` None defers the sweep to
+       the next cycle's resume, ``emailer`` None skips the mail step).
+
+    Returns the BLOCKING state -- ``'tripped'`` (a fresh breach responded to
+    here, or an already-tripped book) or ``'halted'`` -- or None when dispatch
+    may proceed. Any response BEYOND the protocol stays with the caller: the
+    dispatch loop breaks its batch and runs the manual-HALT sweep on
+    ``'halted'``; the screen and the hourly job dispatch nothing, so they call
+    this bare and ignore the verdict.
+    """
+    resume_incomplete_sweep(session, broker=broker, source=source)
+    g = guardrails_repo.load_guardrails(session)
+    breach = (None if g.state == "tripped"
+              else evaluate_breakers(session, run_date=run_date))
+    if breach is not None:
+        respond_to_trip(session, breaker=breach[0], reason=breach[1],
+                        source=source, broker=broker, emailer=emailer)
+        return "tripped"
+    return g.state if g.state != "ok" else None
 
 
 def respond_to_trip(

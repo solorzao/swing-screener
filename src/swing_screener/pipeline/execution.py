@@ -83,9 +83,8 @@ from swing_screener.db.repo import (
     save_paper_trades,
 )
 from swing_screener.pipeline.arms import BASELINE
-from swing_screener.pipeline.broker import BrokerClient, BrokerOrderSpec
+from swing_screener.pipeline.broker import BrokerClient, BrokerOrderSpec, broker_error_detail
 from swing_screener.pipeline.insight import OrderIntent
-from swing_screener.pipeline.preflight import broker_error_detail
 from swing_screener.pipeline.variants import DEFAULT_VARIANT
 from swing_screener.settings import (
     Limits,

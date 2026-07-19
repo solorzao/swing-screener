@@ -116,18 +116,40 @@ def _firing(bars):
 
 
 def test_pipeline_run_imports_clean_in_a_fresh_interpreter():
-    """The import-cycle canary: run_screen's guardrails import is LAZY because the
-    cycle (replay -> run; guardrails -> preflight -> autonomy -> reflect -> replay)
-    only bites when pipeline.run is the import ROOT -- and pytest collection usually
-    imports notify.run first, which fully initializes reflect before run.py, so a
-    future module-level `from swing_screener.pipeline import guardrails` in run.py
-    would keep the SUITE green while the prod evening-screen job
-    (`python -m swing_screener.pipeline.run`) died on ImportError. A fresh
-    interpreter importing run.py first is the only honest probe."""
+    """The import-cycle canary -- now guarding the DE-LAZIED import (Task 11).
+
+    run.py imports pipeline.guardrails at MODULE level, legal only because the
+    old cycle (replay -> run; guardrails -> preflight -> autonomy -> reflect ->
+    replay) was dissolved by moving ``broker_error_detail`` from preflight to
+    the leaf ``pipeline.broker`` (guardrails no longer touches preflight). A
+    regression -- any new run.py-module-surface import that reaches
+    ``pipeline.reflect``/``replay`` -- only bites when pipeline.run is the
+    import ROOT, and pytest collection usually imports notify.run first, which
+    fully initializes reflect before run.py: the SUITE would stay green while
+    the prod evening-screen job (`python -m swing_screener.pipeline.run`) died
+    on ImportError. A fresh interpreter importing run.py first is the only
+    honest probe."""
     root = Path(__file__).resolve().parents[2]
     env = dict(os.environ, PYTHONPATH=str(root / "src"))
     proc = subprocess.run(
         [sys.executable, "-c", "import swing_screener.pipeline.run"],
+        env=env, cwd=root, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_guardrails_import_no_longer_reaches_preflight():
+    """The cycle-severance pin (Task 11): ``pipeline.guardrails`` as the import
+    ROOT must resolve WITHOUT initializing ``pipeline.preflight`` -- the edge
+    whose removal (broker_error_detail now lives in pipeline.broker) is what
+    makes run.py's module-level guardrails import legal. If someone re-adds a
+    guardrails -> preflight import, this fails before the prod job does."""
+    root = Path(__file__).resolve().parents[2]
+    env = dict(os.environ, PYTHONPATH=str(root / "src"))
+    probe = ("import sys; import swing_screener.pipeline.guardrails; "
+             "assert 'swing_screener.pipeline.preflight' not in sys.modules, "
+             "'guardrails reached preflight again (the replay<->run cycle edge)'")
+    proc = subprocess.run(
+        [sys.executable, "-c", probe],
         env=env, cwd=root, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
 

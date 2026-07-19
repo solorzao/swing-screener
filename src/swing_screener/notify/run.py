@@ -18,7 +18,7 @@ import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from sqlalchemy import select
@@ -33,9 +33,7 @@ from swing_screener.data.quotes import latest_closes
 from swing_screener.data.universe import names_by_ticker
 from swing_screener.db import guardrails_repo, repo
 from swing_screener.db.models import (
-    AgentGuardrailEvent,
     EmailLog,
-    ExecutionLog,
     ExitEvent,
     Signal,
 )
@@ -44,9 +42,10 @@ from swing_screener.notify import market_context
 from swing_screener.notify import select as sel
 from swing_screener.notify.alerts import (
     compose_exit_alert,
-    compose_live_rejection_alert,
-    guardrail_alert_sent,
+    emit_pending_guardrail_alert,
+    recent_rejection_ids,
     send_guardrail_alert,
+    send_live_rejection_alert,
 )
 from swing_screener.notify.analysis import (
     ConvictionResult,
@@ -220,51 +219,20 @@ def _trip_emailer(session: Session, *, run_date: date, recipient: str,
 
 def _emit_pending_guardrail_alert(session: Session, run_date: date, recipient: str,
                                   send: SmtpSend) -> bool:
-    """Send the alert for a tripped book whose trip email never landed — the
-    AT-LEAST-ONCE half (the digest is the retry owner, exactly like exit
-    alerts). Covers the evening screen's broker/transport-less trip and any
-    in-protocol send that failed: if state=='tripped' and no
-    ``EmailLog(kind='guardrail', alert_key=str(trip_id))`` exists, compose +
-    send + log on the SAME key the in-protocol emailer uses, so the dedup
-    collapses the two paths. A trip the operator CLEARS from the cockpit before
-    any digest runs is deliberately never mailed — clearing implies awareness
-    (Task 14's auditor treats trip-without-EmailLog as a breach and must exempt
-    cleared trips for the same reason). Returns True iff an email was sent.
-    """
-    g = guardrails_repo.load_guardrails(session)
-    if g.state != "tripped" or g.trip_id is None:
-        return False
-    if guardrail_alert_sent(session, str(g.trip_id)):
-        return False
-    # the trip EVENT carries the breaker name; the row's trip_reason is the
-    # same pre-formatted string trip() stamped (fall back to the event's copy).
-    trip_event = session.get(AgentGuardrailEvent, g.trip_id)
-    breaker = trip_event.breaker if trip_event is not None else ""
-    reason = g.trip_reason or (trip_event.reason if trip_event is not None else "")
-    return send_guardrail_alert(session, run_date=run_date, recipient=recipient,
-                                send=send, trip_event_id=g.trip_id,
-                                breaker=breaker, reason=reason)
-
-
-#: the ExecutionLog statuses that mean "the venue did NOT keep the order working".
-_REJECTED_STATUSES = ("rejected_live", "canceled")
+    """The digest's guardrail-trip retry pass — a thin delegate to the shared
+    ``notify.alerts.emit_pending_guardrail_alert`` (moved there in Task 11 so
+    the hourly exit job, a pipeline module that must never import THIS module,
+    shares the same at-least-once emitter and dedup key)."""
+    return emit_pending_guardrail_alert(session, run_date, recipient, send)
 
 
 def _rejected_canceled_ids(session: Session, *, run_date: date) -> set[int]:
     """The ids of the RECENT rejected/canceled ExecutionLog rows — the
     before/after snapshot pair around a ``reconcile_live`` pass yields THAT
-    pass's flips (the reconcile returns a count, not rows).
-
-    Bounded to ``created_date >= run_date - 7 days``: the reconcile only flips
-    recent ``submitted_live`` rows (DAY orders die the same session), so an
-    unbounded scan would grow forever with the table while never changing the
-    diff — an old rejected row outside the window is absent from BOTH
-    snapshots, so the set difference is unaffected."""
-    stmt = select(ExecutionLog.id).where(
-        ExecutionLog.status.in_(_REJECTED_STATUSES),
-        ExecutionLog.created_date >= run_date - timedelta(days=7),
-    )
-    return set(session.scalars(stmt))
+    pass's flips (the reconcile returns a count, not rows). A thin delegate to
+    the shared ``notify.alerts.recent_rejection_ids`` (the window rationale
+    lives there)."""
+    return recent_rejection_ids(session, run_date=run_date)
 
 
 def _emit_live_rejection_alert(session: Session, run_date: date, recipient: str,
@@ -272,45 +240,17 @@ def _emit_live_rejection_alert(session: Session, run_date: date, recipient: str,
     """One email naming every live order the venue just rejected/canceled.
 
     ``new_ids`` are the ExecutionLog ids a reconcile pass flipped to
-    ``rejected_live``/``canceled`` (the caller's before/after set diff).
-    Deduped as ``EmailLog(kind='execution')`` keyed on the sha1 of the sorted id
-    set — same shape as the exit alert's event-set key, so a re-run over the
-    same flips is a no-op while a later pass with NEW flips gets a fresh key.
-    SEND-then-LOG with the same rationale as the exit alert — BUT with a weaker
-    retry story on this digest path: a failed send leaves no log row, yet the
-    next pass's before-snapshot already contains the flipped ids, so the diff
-    never re-produces them and the alert is LOST until Task 11's hourly job
-    lands its query-based retry (un-alerted rejected rows joined against
-    EmailLog, not a snapshot diff). NOTE: that Task-11 job reuses this emitter.
+    ``rejected_live``/``canceled`` (the caller's before/after set diff). A thin
+    delegate to the shared ``notify.alerts.send_live_rejection_alert``, which
+    owns the per-ROW ``alert_key='xlog-{id}'`` dedup (Task 11: the old
+    sha1-of-the-set key made a partial overlap re-alert already-covered rows).
+    SEND-then-LOG: a failed send leaves no coverage rows — and the hourly exit
+    job's query-based pass (``alerts.pending_rejection_ids``) is the retry
+    owner, since this digest path's next-cycle diff never re-produces the ids.
     Returns True iff an email was sent.
     """
-    if not new_ids:
-        return False
-    # NUMERIC id sort (matches ``_exit_alert_key``'s sorted-by-id shape).
-    # Task 11's external EmailLog join MUST rebuild the key with this same
-    # numeric sort — a lexicographic sort of the same ids yields a different
-    # digest and would double-send.
-    key = hashlib.sha1(
-        ",".join(str(i) for i in sorted(new_ids)).encode()).hexdigest()
-    stmt = select(EmailLog).where(
-        EmailLog.kind == "execution", EmailLog.alert_key == key)
-    if session.scalars(stmt).first() is not None:
-        return False
-    rows = list(session.scalars(
-        select(ExecutionLog).where(ExecutionLog.id.in_(new_ids))
-        .order_by(ExecutionLog.id)))
-    if not rows:  # defensive: ids that vanished can't compose an honest alert
-        return False
-    email = compose_live_rejection_alert(rows, run_date)
-    send(to=recipient, subject=email.subject, text=email.text, html=email.html,
-         attachments=[])  # SEND FIRST (see docstring)
-    session.add(EmailLog(sent_at=datetime.now(UTC), kind="execution",
-                         subject=email.subject, run_date=run_date, alert_key=key))
-    try:
-        session.commit()
-    except IntegrityError:  # lost the concurrent-replica race; the row already exists
-        session.rollback()
-    return True
+    return send_live_rejection_alert(session, run_date=run_date, recipient=recipient,
+                                     send=send, candidate_ids=new_ids)
 
 
 def _load_chart_bytes(chart_path: str | None) -> bytes | None:
@@ -637,8 +577,9 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
             # The alert send gets its OWN guard: a dead mail transport must not
             # masquerade as a failed broker poll in the logs (honest failure
             # posture) -- and neither may block the digest. A failed send here
-            # is LOST on this path (see _emit_live_rejection_alert's docstring)
-            # until Task 11's query-based hourly retry lands.
+            # leaves no coverage rows, and THIS path's next-cycle diff never
+            # re-produces the ids -- the hourly exit job's query-based pass
+            # (alerts.pending_rejection_ids) is the retry owner (Task 11).
             try:
                 _emit_live_rejection_alert(session, run_date, recipient, send,
                                            new_rejects)
@@ -981,40 +922,35 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                     # THE GUARDRAILS BRAKE (Task 6) -- LiveAdapter only, mirroring the
                     # kill switch's isinstance gate: only the live path arms a venue.
                     # Re-read FRESH per intent (a cockpit HALT / another process's trip
-                    # can land mid-loop). Breach evaluation is skipped ONLY when state
-                    # is already 'tripped' -- the trip owner already ran the response
-                    # (resume_incomplete_sweep is the re-run owner for a pending/
-                    # partial sweep). A breach DURING a manual HALT still records its
-                    # trip (2026-07-18 red-team): run_date-scoped breakers (daily
-                    # loss, trades/day) evaporate when the date advances, and the repo
-                    # election deliberately lets a trip overwrite 'halted' -- so
-                    # respond_to_trip runs the full ordered protocol (persist-first,
-                    # sweep, outcome, the Task-10 alert email) from BOTH 'ok' and
-                    # 'halted'. The submit-side brake in LiveAdapter stays the hard
-                    # backstop; this consult is the RESPONSE trigger.
+                    # can land mid-loop) via the shared ``gpipe.consult`` (Task 11:
+                    # resume -> load -> evaluate-unless-tripped -> respond, one
+                    # definition across the digest loop / evening screen / hourly
+                    # job -- the skip-when-tripped and halted-still-trips rules live
+                    # in its docstring now). 'tripped' back means a fresh breach ran
+                    # the full ordered protocol (persist-first, sweep, outcome, the
+                    # Task-10 alert email) OR the book was already tripped; 'halted'
+                    # means a pure manual HALT with no breach. The submit-side brake
+                    # in LiveAdapter stays the hard backstop; this consult is the
+                    # RESPONSE trigger. The extra blocking-state response below --
+                    # halt the batch + the manual-HALT protective sweep -- is the
+                    # dispatch loop's OWN posture, deliberately kept outside consult
+                    # (the screen and the hourly job dispatch nothing).
                     if isinstance(adapter, LiveAdapter):
-                        gpipe.resume_incomplete_sweep(
-                            session, broker=live_broker, source="digest")
-                        g = guardrails_repo.load_guardrails(session)
-                        breach = (None if g.state == "tripped"
-                                  else gpipe.evaluate_breakers(session, run_date=run_date))
-                        if breach is not None:
-                            gpipe.respond_to_trip(
-                                session, breaker=breach[0], reason=breach[1],
-                                source="digest", broker=live_broker,
-                                emailer=_trip_emailer(
-                                    session, run_date=run_date,
-                                    recipient=recipient, send=send))
-                        if breach is not None or g.state != "ok":
+                        blocked = gpipe.consult(
+                            session, run_date=run_date, source="digest",
+                            broker=live_broker,
+                            emailer=_trip_emailer(
+                                session, run_date=run_date,
+                                recipient=recipient, send=send))
+                        if blocked is not None:
                             log.warning("guardrails brake: halting dispatch for %s %s",
                                         kind, run_date)
-                            if (g.state == "halted" and breach is None
-                                    and live_broker is not None):
+                            if blocked == "halted" and live_broker is not None:
                                 # pure manual HALT (no breach): same protective sweep
                                 # as the kill switch, but NO trip is recorded (there
                                 # is nothing to trip on). A halted+breach run took
-                                # the respond_to_trip path above instead -- its sweep
-                                # supersedes this one.
+                                # the respond_to_trip path inside consult instead --
+                                # its sweep supersedes this one.
                                 entries, restored, unprotected = run_protective_sweep(
                                     live_broker,
                                     lambda sym: repo.latest_recorded_stop(session, sym),

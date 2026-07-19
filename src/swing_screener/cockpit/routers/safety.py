@@ -25,13 +25,9 @@ from swing_screener.cockpit.spend import spend_rows_since
 from swing_screener.db.models import DisarmEvent
 from swing_screener.db.repo import latest_recorded_stop
 from swing_screener.pipeline.autonomy import autonomy_gate, gate_countdown
-from swing_screener.pipeline.broker import BrokerClient, BrokerOrder
+from swing_screener.pipeline.broker import BrokerClient, BrokerOrder, broker_error_detail
 from swing_screener.pipeline.disarm import ensure_stop_protection, pull_entry_orders
-from swing_screener.pipeline.preflight import (
-    PreflightReport,
-    broker_error_detail,
-    preflight,
-)
+from swing_screener.pipeline.preflight import PreflightReport, preflight
 from swing_screener.config import StrategyConfig
 from swing_screener.options.config import GexConfig
 from swing_screener.settings import (

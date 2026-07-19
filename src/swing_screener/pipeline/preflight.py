@@ -30,7 +30,14 @@ from sqlalchemy.orm import Session
 
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.autonomy import autonomy_gate
-from swing_screener.pipeline.broker import BrokerAccount, BrokerClient
+
+# ``broker_error_detail`` MOVED to ``pipeline.broker`` (Task 11): it is a pure leaf
+# helper, and homing it here handed every consumer preflight's whole autonomy ->
+# reflect -> replay import chain -- the edge that closed the replay<->run cycle.
+# The import below keeps ``from swing_screener.pipeline.preflight import
+# broker_error_detail`` working for external callers (a deprecated re-export);
+# repoint new code at ``swing_screener.pipeline.broker``.
+from swing_screener.pipeline.broker import BrokerAccount, BrokerClient, broker_error_detail
 from swing_screener.pipeline.broker_alpaca import build_broker
 from swing_screener.settings import (
     Settings,
@@ -64,15 +71,6 @@ class PreflightReport:
 
     go: bool
     checks: list[PreflightCheck]
-
-
-def broker_error_detail(exc: BaseException) -> str:
-    """The ONLY wording a broker failure may wear on a checklist line or an HTTP detail:
-    the exception CLASS name, never the message -- broker/httpx messages embed venue
-    hosts, URLs, and credentials, and these details reach the cockpit wire verbatim.
-    Operator debuggability belongs in the LOG (callers log with ``exc_info``), never in
-    the detail. Shared with ``cockpit.api`` so the leak posture has exactly one home."""
-    return f"broker error ({type(exc).__name__})"
 
 
 def _check_config(settings: Settings) -> PreflightCheck:

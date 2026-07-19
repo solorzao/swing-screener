@@ -16,15 +16,16 @@ The load-bearing properties proven here:
   covered by a full ``send_digest`` run.
 * A dead mailer never aborts the sweep (the trip protocol's swallow posture).
 * REJECTIONS: the dispatch-time reconcile's ``rejected_live``/``canceled``
-  status flips ride ONE ``kind='execution'`` email keyed on the sha1 of the
-  flipped-id set; re-runs flip nothing new and the emitter dedups on the key.
-  A venue stop-out is a CLOSE (fill + broker_close -> the EXIT alert), never a
+  status flips ride ONE ``kind='execution'`` email with one coverage EmailLog
+  row PER alerted ExecutionLog id (``alert_key='xlog-{id}'`` -- Task 11
+  replaced the sha1-of-the-set key, whose partial overlaps re-alerted covered
+  rows); re-runs flip nothing new and the emitter dedups per row. A venue
+  stop-out is a CLOSE (fill + broker_close -> the EXIT alert), never a
   rejection -- the two kinds are disjoint by construction.
 
 All tmp-file sqlite + FakeBroker + injected send spies -- no venue, no SMTP.
 """
 
-import hashlib
 from datetime import date, timedelta
 
 from sqlalchemy import select
@@ -189,7 +190,7 @@ def test_trip_email_failure_never_aborts_sweep(tmp_path):
 def test_rejection_alert_lists_flipped_rows(tmp_path, monkeypatch):
     """Two working live orders die at the venue (one rejected, one canceled): the
     dispatch-time reconcile flips both logs and ONE kind='execution' email names
-    both tickers, keyed on the sha1 of the flipped-id set."""
+    both tickers, with one per-row coverage EmailLog row per flipped id."""
     monkeypatch.setenv("SWING_EXECUTION_MODE", "live")
     monkeypatch.delenv("SWING_DEEP_ANALYSIS", raising=False)
     url = f"sqlite:///{tmp_path / 'reject.sqlite'}"
@@ -215,13 +216,13 @@ def test_rejection_alert_lists_flipped_rows(tmp_path, monkeypatch):
     with Session(get_engine(url)) as s:
         statuses = {(x.ticker, x.status) for x in s.scalars(select(ExecutionLog))}
         assert statuses == {("AMD", "rejected_live"), ("NVDA", "canceled")}
-        # NUMERIC id sort (the _exit_alert_key shape) -- Task 11's external
-        # EmailLog join must rebuild the key with this same sort.
-        ids = sorted(s.scalars(select(ExecutionLog.id)))
-        key = hashlib.sha1(",".join(str(i) for i in ids).encode()).hexdigest()
-        row = s.scalars(select(EmailLog).where(EmailLog.kind == "execution")).one()
-        assert row.alert_key == key
-        assert row.run_date == RUN
+        # Per-ROW coverage (Task 11): one EmailLog row per alerted ExecutionLog
+        # id, keyed 'xlog-{id}' -- the hourly retry's coverage join reads these,
+        # and a partial overlap alerts only the uncovered rows.
+        ids = set(s.scalars(select(ExecutionLog.id)))
+        rows = list(s.scalars(select(EmailLog).where(EmailLog.kind == "execution")))
+        assert {r.alert_key for r in rows} == {f"xlog-{i}" for i in ids}
+        assert all(r.run_date == RUN for r in rows)
 
 
 def test_rejection_alert_dedups_on_rerun(tmp_path, monkeypatch):

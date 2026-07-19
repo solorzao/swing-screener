@@ -238,7 +238,8 @@ class EmailLog(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     sent_at: Mapped[datetime]
     # daily / weekly / monthly / exit / guardrail (trip alerts, keyed on the trip
-    # event id) / execution (live-rejection alerts, keyed on the flipped-id sha1)
+    # event id) / execution (live-rejection alerts, one coverage row PER alerted
+    # ExecutionLog id, keyed 'xlog-{id}' -- Task 11's at-least-once retry joins on it)
     kind: Mapped[str] = mapped_column(String(32))
     subject: Mapped[str] = mapped_column(String(256), default="")
     run_date: Mapped[date | None] = mapped_column(default=None)

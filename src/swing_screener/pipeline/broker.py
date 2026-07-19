@@ -26,6 +26,21 @@ from typing import Protocol
 _OPEN_STATUSES = ("new", "partially_filled")
 
 
+def broker_error_detail(exc: BaseException) -> str:
+    """The ONLY wording a broker failure may wear on a checklist line, a recorded
+    ticket detail, or an HTTP detail: the exception CLASS name, never the message --
+    broker/httpx messages embed venue hosts, URLs, and credentials, and these details
+    reach the cockpit wire verbatim. Operator debuggability belongs in the LOG
+    (callers log with ``exc_info``), never in the detail. Lives HERE -- the leaf
+    broker-contract module -- so every consumer (the preflight checklist, the
+    execution adapters, the guardrails sweep, the cockpit routers) shares one home
+    WITHOUT dragging in preflight's autonomy -> reflect -> replay import chain: the
+    old ``preflight.py`` home gave ``guardrails -> preflight`` an edge that closed
+    the replay<->run import cycle and forced ``pipeline.run`` to lazy-import its own
+    guardrails (dissolved in Task 11)."""
+    return f"broker error ({type(exc).__name__})"
+
+
 @dataclass(frozen=True)
 class BrokerOrderSpec:
     """The request side: one fully-specified order to submit to a broker.
