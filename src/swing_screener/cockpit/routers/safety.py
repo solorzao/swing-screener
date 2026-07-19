@@ -316,6 +316,11 @@ def build_safety_router(
                      "off | manual | paper | live — unknown coerces to off (fail-safe)"),
             _cfg_row("broker", "SWING_BROKER", s.broker or None,
                      "venue for brackets/DISARM; unset = lamps UNKNOWN, DISARM disabled"),
+            _cfg_row("execute play types", "SWING_EXECUTE_PLAY_TYPES",
+                     sorted(s.execute_play_types)
+                     if s.execute_play_types is not None else None,
+                     "execution ceiling: unset = all play types; garbage members "
+                     "are dropped (fail-closed)"),
             _cfg_row("allow real money", "SWING_BROKER_ALLOW_REAL_MONEY",
                      s.allow_real_money,
                      "one of the three live locks — false blocks live arming"),

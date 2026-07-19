@@ -35,6 +35,22 @@ def test_config_sections_and_shape(tmp_path: Path, monkeypatch) -> None:
     assert execution["execution mode"] == "paper"
 
 
+def test_config_execute_play_types_row(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("SWING_EXECUTE_PLAY_TYPES", "reversal")
+    body = _client(tmp_path).get("/api/config").json()
+    execution = {row["key"]: row for row in body["sections"][1]["rows"]}
+    row = execution["execute play types"]
+    assert row["env"] == "SWING_EXECUTE_PLAY_TYPES"
+    assert row["value"] == ["reversal"]
+
+
+def test_config_execute_play_types_unset_renders_null(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("SWING_EXECUTE_PLAY_TYPES", raising=False)
+    body = _client(tmp_path).get("/api/config").json()
+    execution = {row["key"]: row["value"] for row in body["sections"][1]["rows"]}
+    assert execution["execute play types"] is None  # unset = all play types
+
+
 def test_config_never_echoes_secrets(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-secret-xyz")
     monkeypatch.setenv("DIGEST_TO", "someone@example.com")

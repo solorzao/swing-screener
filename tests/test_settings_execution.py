@@ -13,7 +13,7 @@ from swing_screener.settings import Limits, load_settings, resolve_execution
 
 _KEYS = [
     "SWING_EXECUTION_MODE", "SWING_MAX_DAILY_NOTIONAL", "SWING_MAX_DAILY_LOSS",
-    "SWING_MAX_CONCURRENT",
+    "SWING_MAX_CONCURRENT", "SWING_EXECUTE_PLAY_TYPES",
 ]
 
 
@@ -86,6 +86,51 @@ def test_execution_caps_garbage_falls_back_to_none(monkeypatch):
     assert s.max_daily_notional is None       # unparseable float -> None
     assert s.max_daily_loss is None
     assert s.max_concurrent is None           # unparseable int -> None
+
+
+# --- SWING_EXECUTE_PLAY_TYPES (the execution-scope ceiling, Task 8) ------------
+def test_execute_play_types_unset_is_none_allow_all(monkeypatch):
+    _clear(monkeypatch)
+    assert load_settings().execute_play_types is None  # unscoped = today's behavior
+
+
+def test_execute_play_types_empty_and_whitespace_are_none(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("SWING_EXECUTE_PLAY_TYPES", "")
+    assert load_settings().execute_play_types is None
+    monkeypatch.setenv("SWING_EXECUTE_PLAY_TYPES", "   ")
+    assert load_settings().execute_play_types is None
+
+
+def test_execute_play_types_single_member(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("SWING_EXECUTE_PLAY_TYPES", "reversal")
+    assert load_settings().execute_play_types == frozenset({"reversal"})
+
+
+def test_execute_play_types_case_and_space_insensitive(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("SWING_EXECUTE_PLAY_TYPES", "REVERSAL, continuation")
+    assert load_settings().execute_play_types == frozenset({"reversal", "continuation"})
+
+
+def test_execute_play_types_drops_invalid_member_and_warns(monkeypatch, caplog):
+    _clear(monkeypatch)
+    monkeypatch.setenv("SWING_EXECUTE_PLAY_TYPES", "reversal,junk")
+    with caplog.at_level(logging.WARNING):
+        s = load_settings()
+    assert s.execute_play_types == frozenset({"reversal"})  # dropped, never widened
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+    assert "junk" in caplog.text
+
+
+def test_execute_play_types_all_garbage_is_empty_set_allow_none(monkeypatch, caplog):
+    _clear(monkeypatch)
+    monkeypatch.setenv("SWING_EXECUTE_PLAY_TYPES", "junk")
+    with caplog.at_level(logging.WARNING):
+        s = load_settings()
+    assert s.execute_play_types == frozenset()  # allow-NONE: nothing dispatches
+    assert "junk" in caplog.text
 
 
 # --- resolve_execution (pure) -------------------------------------------------

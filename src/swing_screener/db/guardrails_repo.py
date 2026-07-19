@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from swing_screener.db.models import AgentGuardrailEvent, AgentGuardrails, ExitEvent, PaperTrade
 from swing_screener.db.repo import execution_logs_for_day
+from swing_screener.settings import Settings
 
 log = logging.getLogger(__name__)
 
@@ -513,6 +514,23 @@ def breached_breaker(
         if s >= g.loss_streak_halt:
             return "loss_streak_halt", f"loss streak: {s} >= {g.loss_streak_halt}"
     return None
+
+
+def effective_execution_scope(
+    settings: Settings, session: Session | None = None
+) -> frozenset[str] | None:
+    """The set of play types execution may dispatch, or None = unscoped (all).
+
+    Today: purely the env ceiling (``SWING_EXECUTE_PLAY_TYPES``, parsed
+    fail-closed in ``load_settings``). ``session`` is accepted and unused --
+    Task 22 subtracts the cockpit-disabled set here (effective = ceiling -
+    disabled), and threading the session NOW means that lands without touching
+    the dispatch loop again. Lives HERE rather than in settings.py because
+    settings is ORM-free by charter and Task 22's ``disabled_play_types`` is an
+    ``agent_guardrails`` column this module owns (its tighten-only edit walks
+    the same event-audited state machine as every other brake write).
+    """
+    return settings.execute_play_types
 
 
 def guardrails_mandate_ok(session: Session) -> tuple[bool, str]:

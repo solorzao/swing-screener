@@ -113,6 +113,11 @@ _PICKERS = {"daily": sel.daily_picks, "weekly": sel.weekly_picks, "monthly": sel
 # weekly ~ one trading week of daily runs (5), monthly ~ one trading month (21).
 _COOLDOWN_RUNS = {"weekly": 5, "monthly": 21}
 
+# The dispatch loop's skip detail for an intent whose play type is outside the
+# SWING_EXECUTE_PLAY_TYPES execution ceiling (Task 8). Module-level so tests pin
+# the exact wording (the UNSIZED_DETAIL pattern).
+OUT_OF_SCOPE_DETAIL = "play type not in execution scope"
+
 
 @dataclass(frozen=True)
 class DigestResult:
@@ -753,6 +758,12 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # blocks.
         _mode_reader = mode_reader or (lambda: load_settings().execution_mode)
         tickets: dict[tuple[str, str], OrderTicketLine] = {}
+        # EXECUTION SCOPE (Task 8): the ceremony-controlled play-type CEILING,
+        # resolved through the Task-22 seam ONCE per dispatch batch -- the env
+        # half is static for the run, and when Task 22 lands its cockpit-disabled
+        # DB half re-reads HERE, per batch (never per intent), through the same
+        # call. None = unscoped (today's behavior).
+        scope = guardrails_repo.effective_execution_scope(cfg, session)
         if collected_intents and not isinstance(adapter, NoOpAdapter):
             try:
                 for intent in collected_intents:
@@ -771,6 +782,24 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                             limit_price=intent.limit_price, stop=intent.stop,
                             target=intent.target, status="skipped",
                             detail=UNSIZED_DETAIL)
+                        continue
+                    if scope is not None and intent.play_type not in scope:
+                        # OUT OF SCOPE (Task 8): the play type is outside the
+                        # SWING_EXECUTE_PLAY_TYPES ceiling, so the intent is
+                        # INERT -- same reasoning as the unsized skip above:
+                        # nothing is being armed, so this sits BEFORE the
+                        # kill-switch/guardrails consults (no live machinery
+                        # for an intent that may never submit). Ticketed so the
+                        # digest renders the skip honestly; logged because no
+                        # adapter runs -> no ExecutionLog row.
+                        log.info("skipping out-of-scope intent %s %s (scope: %s)",
+                                 intent.ticker, intent.play_type,
+                                 ", ".join(sorted(scope)) or "none")
+                        tickets[(intent.ticker, intent.play_type)] = OrderTicketLine(
+                            side=intent.side, shares=intent.shares, ticker=intent.ticker,
+                            limit_price=intent.limit_price, stop=intent.stop,
+                            target=intent.target, status="skipped",
+                            detail=OUT_OF_SCOPE_DETAIL)
                         continue
                     if _execution_halted(adapter, _mode_reader):
                         log.warning("execution kill switch: halting dispatch for %s %s "
