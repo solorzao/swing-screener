@@ -37,6 +37,7 @@ from swing_screener.db import guardrails_repo as gr
 from swing_screener.db.models import (
     AgentGuardrailEvent,
     DisarmEvent,
+    EmailLog,
     PaperTrade,
     Signal,
 )
@@ -136,6 +137,9 @@ def test_evening_stop_out_trips_daily_loss_and_sweeps_with_broker(tmp_path, bars
     stop-out's realized loss, and the breaker consult right after it trips on that loss
     -- with the broker already in scope, the trip's sweep runs to 'complete'."""
     monkeypatch.setenv("SWING_EXECUTION_MODE", "live")
+    # hermeticity: with no DIGEST_TO the trip's real emailer (Task 10) skips the
+    # send -- a developer's exported DIGEST_TO must never make a test touch SMTP.
+    monkeypatch.delenv("DIGEST_TO", raising=False)
     monkeypatch.setattr(run, "_fetch_all_timeframes", lambda *a, **k: {})  # empty screen
 
     url = f"sqlite:///{tmp_path / 'eveningtrip.sqlite'}"
@@ -167,6 +171,7 @@ def test_off_mode_breach_trips_with_pending_sweep_and_no_broker(tmp_path, bars, 
     mode-gated) and the trip persists with sweep_state='pending' -- the digest/hourly
     cycles own the sweep retry (respond_to_trip's broker=None contract)."""
     monkeypatch.delenv("SWING_EXECUTION_MODE", raising=False)  # default off -> no broker
+    monkeypatch.delenv("DIGEST_TO", raising=False)  # no recipient -> the trip email skips
     monkeypatch.setattr(run, "_fetch_all_timeframes", lambda *a, **k: {})
 
     url = f"sqlite:///{tmp_path / 'offtrip.sqlite'}"
@@ -216,6 +221,41 @@ def test_already_tripped_book_resumes_sweep_without_second_trip(tmp_path, bars, 
         # tripped -> evaluation skipped -> NO second trip event despite the live breach.
         assert s.query(AgentGuardrailEvent).filter_by(kind="trip").count() == 1
     assert broker.list_open_orders() == []       # the resting entry was pulled
+
+
+def test_evening_screen_trip_emails(tmp_path, bars, monkeypatch):
+    """Task 10: the evening screen's trip carries a REAL minimal sender -- one
+    guardrail alert email (transport resolved lazily inside the trip path),
+    send-then-logged as EmailLog(kind='guardrail', alert_key=str(trip id)) so
+    the digest-side retry emitter dedups against it next morning."""
+    monkeypatch.delenv("SWING_EXECUTION_MODE", raising=False)
+    monkeypatch.setenv("DIGEST_TO", "op@example.com")
+    monkeypatch.setattr(run, "_fetch_all_timeframes", lambda *a, **k: {})
+    sent: list[dict] = []
+    # the emailer resolves the transport at CALL time (lazy `from ... import
+    # resolve_sender` inside the closure), so patching the module attribute is
+    # the injection seam -- no SMTP/ACS is ever touched.
+    monkeypatch.setattr("swing_screener.notify.transport.resolve_sender",
+                        lambda: (lambda **kw: sent.append(kw)))
+
+    url = f"sqlite:///{tmp_path / 'tripmail.sqlite'}"
+    with Session(get_engine(url)) as s:
+        s.add(_closed_live_trade(ticker="LOSE", exit_date=TODAY))
+        s.commit()
+        gr.edit_limits(s, source="test", max_daily_loss_usd=50.0)
+
+    run.run_screen(today=TODAY, **_kwargs(tmp_path, url))
+
+    assert len(sent) == 1                        # exactly one alert
+    assert sent[0]["to"] == "op@example.com"
+    assert "GUARDRAIL TRIPPED" in sent[0]["subject"]
+    assert "max daily loss: $-60.00 <= -$50.00" in sent[0]["text"]
+    with Session(get_engine(url)) as s:
+        g = gr.load_guardrails(s)
+        assert g.state == "tripped"
+        row = s.scalars(select(EmailLog).where(EmailLog.kind == "guardrail")).one()
+        assert row.alert_key == str(g.trip_id)
+        assert row.run_date == TODAY
 
 
 def test_guardrails_failure_never_blocks_the_screen(tmp_path, bars, monkeypatch, caplog):

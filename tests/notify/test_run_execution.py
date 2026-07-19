@@ -458,7 +458,10 @@ def test_outcome_write_failure_never_blocks_the_digest(tmp_path, monkeypatch):
         mode_reader=lambda: "live"))
 
     assert res.sent is True                                # the digest still went out
-    assert len(sent) == 1
+    # two sends (Task 10): the trip's guardrail alert (the emailer runs AFTER
+    # the outcome-write attempt, on the rolled-back-clean session) + the digest.
+    assert len(sent) == 2
+    assert "GUARDRAIL TRIPPED" in sent[0]["subject"]
     assert broker.list_open_orders() == []                 # the sweep itself ran
     with Session(get_engine(url)) as s:
         g = gr.load_guardrails(s)
@@ -519,11 +522,15 @@ def test_dispatch_time_reconcile_trips_on_a_same_morning_stop_out(tmp_path, monk
         # ZERO submits this morning: the only log is yesterday's, now filled_live.
         logs = list(s.scalars(select(ExecutionLog)))
         assert [(x.ticker, x.status) for x in logs] == [("TSLA", "filled_live")]
-    # the fresh broker_close also rides the exit-alert email (is_paper=False,
-    # created today): the alert goes out first, then the digest itself.
-    assert len(sent) == 2
+    # THREE distinct sends, three distinct kinds (Task 10): the fresh
+    # broker_close rides the EXIT alert (a stop-out is a FILL + CLOSE --
+    # position truth -- so it never triggers the live-REJECTION alert, which
+    # fires only on rejected_live/canceled ORDER flips); the dispatch loop's
+    # trip then sends the GUARDRAIL alert; the digest itself goes last.
+    assert len(sent) == 3
     assert "Exit Alert" in sent[0]["subject"]
-    assert "Daily Picks" in sent[1]["subject"]
+    assert "GUARDRAIL TRIPPED" in sent[1]["subject"]
+    assert "Daily Picks" in sent[2]["subject"]
 
 
 def test_dispatch_time_reconcile_raise_never_blocks_the_digest(tmp_path, monkeypatch):

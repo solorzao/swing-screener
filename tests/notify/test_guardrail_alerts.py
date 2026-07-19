@@ -1,0 +1,265 @@
+"""Guardrail-trip + live-rejection alert emails (Task 10).
+
+Two new standalone alert kinds, both send-then-log with an ``EmailLog`` dedup
+row (the ``_emit_pending_exit_alert`` ordering: a failed send leaves NO log row,
+so the retry owner re-sends; the pre-check makes a sequential re-run a no-op).
+
+The load-bearing properties proven here:
+
+* IMMEDIACY: ``respond_to_trip`` with the real ``_trip_emailer`` sends exactly
+  ONE alert and logs ``EmailLog(kind='guardrail', alert_key=str(trip_event_id))``;
+  the digest-side retry emitter then no-ops on the same key.
+* AT-LEAST-ONCE: a raising send leaves NO log row, and the digest-side emitter
+  (``_emit_pending_guardrail_alert``, the retry owner -- elections happen once
+  per trip, so the in-protocol path never retries) sends on a later cycle.
+* The broker-None evening-trip case (tripped state, no mail ever sent) is
+  covered by a full ``send_digest`` run.
+* A dead mailer never aborts the sweep (the trip protocol's swallow posture).
+* REJECTIONS: the dispatch-time reconcile's ``rejected_live``/``canceled``
+  status flips ride ONE ``kind='execution'`` email keyed on the sha1 of the
+  flipped-id set; re-runs flip nothing new and the emitter dedups on the key.
+  A venue stop-out is a CLOSE (fill + broker_close -> the EXIT alert), never a
+  rejection -- the two kinds are disjoint by construction.
+
+All tmp-file sqlite + FakeBroker + injected send spies -- no venue, no SMTP.
+"""
+
+import hashlib
+from datetime import date, timedelta
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from swing_screener.db import guardrails_repo as gr
+from swing_screener.db import repo
+from swing_screener.db.models import EmailLog, ExecutionLog
+from swing_screener.db.session import get_engine
+from swing_screener.notify import run
+from swing_screener.pipeline import guardrails as gp
+from swing_screener.pipeline.broker import BrokerOrderSpec, FakeBroker
+from swing_screener.pipeline.execution import LiveAdapter
+from swing_screener.pipeline.insight import OrderIntent
+from swing_screener.settings import Limits
+
+RUN = date(2026, 6, 15)
+BREAKER = "max_daily_loss_usd"
+REASON = "max daily loss: $-60.00 <= -$50.00"
+NO_LIMITS = Limits(max_daily_notional=None, max_daily_loss=None, max_concurrent=None)
+
+
+def _spy():
+    sent: list[dict] = []
+    return sent, (lambda **kw: sent.append(kw))
+
+
+def _dead_send(**kw):
+    raise RuntimeError("smtp down")
+
+
+def _entry_spec(key: str, symbol: str) -> BrokerOrderSpec:
+    return BrokerOrderSpec(client_order_id=key, symbol=symbol, side="buy", qty=10,
+                           order_type="limit", limit_price=100.0, time_in_force="day")
+
+
+def _submit_live(url: str, broker: FakeBroker, ticker: str) -> str:
+    """One REAL submitted_live ExecutionLog via the LiveAdapter (the reconcile's input)."""
+    intent = OrderIntent(
+        ticker=ticker, timeframe="1d", play_type="continuation",
+        entry_floor=99.0, entry_ceiling=101.0, stop=94.0, target=110.0,
+        conviction="high", shares=10, risk_dollars=70.0,
+        edge_played="e", key_risk="", insight="i", side="long", limit_price=101.0)
+    with Session(get_engine(url)) as s:
+        adapter = LiveAdapter(broker, gate_ready_fn=lambda _s: True)
+        result = adapter.submit(intent, session=s, run_date=date(2026, 6, 14),
+                                limits=NO_LIMITS)
+        s.commit()
+    assert result.broker_order_id is not None
+    return result.broker_order_id
+
+
+def _digest_kwargs(tmp_path, url, sent, **extra):
+    return dict(kind="daily", db_url=url, run_date=RUN, to="me@example.com",
+                pdf_dir=tmp_path / "digests", smtp_send=lambda **k: sent.append(k),
+                **extra)
+
+
+# --- guardrail-trip alerts ---------------------------------------------------
+
+
+def test_trip_sends_exactly_one_email(tmp_path):
+    """respond_to_trip with the real emailer: ONE send, EmailLog kind='guardrail'
+    keyed str(trip_event_id) -- and the digest-side retry emitter then no-ops on
+    the same key (immediacy + at-least-once collapse onto one dedup row)."""
+    url = f"sqlite:///{tmp_path / 'trip.sqlite'}"
+    sent, send = _spy()
+    with Session(get_engine(url)) as s:
+        emailer = run._trip_emailer(s, run_date=RUN, recipient="me@example.com", send=send)
+        trip_id = gp.respond_to_trip(s, breaker=BREAKER, reason=REASON,
+                                     source="digest", broker=FakeBroker(), emailer=emailer)
+        assert trip_id is not None
+        assert len(sent) == 1
+        assert sent[0]["to"] == "me@example.com"
+        assert "GUARDRAIL TRIPPED" in sent[0]["subject"]
+        assert BREAKER in sent[0]["subject"]
+        assert REASON in sent[0]["text"]          # the pre-formatted reason, verbatim
+        row = s.scalars(select(EmailLog).where(EmailLog.kind == "guardrail")).one()
+        assert row.alert_key == str(trip_id)
+        assert row.run_date == RUN
+        # the digest-side emitter sees the log row -> no second send.
+        assert run._emit_pending_guardrail_alert(s, RUN, "me@example.com", send) is False
+        assert len(sent) == 1
+
+
+def test_trip_email_failure_leaves_no_log_row(tmp_path):
+    """SEND-then-LOG: a dead transport leaves NO EmailLog row, so the digest-side
+    emitter retries on the next cycle (a later run_date -- the dedup is keyed on
+    the trip id, NOT the date) and succeeds."""
+    url = f"sqlite:///{tmp_path / 'tripfail.sqlite'}"
+    sent, send = _spy()
+    with Session(get_engine(url)) as s:
+        emailer = run._trip_emailer(s, run_date=RUN, recipient="me@example.com",
+                                    send=_dead_send)
+        trip_id = gp.respond_to_trip(s, breaker=BREAKER, reason=REASON,
+                                     source="digest", broker=FakeBroker(), emailer=emailer)
+        assert trip_id is not None                # the protocol survived the dead mailer
+        assert s.query(EmailLog).count() == 0     # no row -> the retry stays armed
+        # the NEXT cycle's digest owns the retry.
+        assert run._emit_pending_guardrail_alert(
+            s, RUN + timedelta(days=1), "me@example.com", send) is True
+        assert len(sent) == 1
+        assert "GUARDRAIL TRIPPED" in sent[0]["subject"]
+        row = s.scalars(select(EmailLog).where(EmailLog.kind == "guardrail")).one()
+        assert row.alert_key == str(trip_id)
+
+
+def test_digest_side_emitter_covers_unmailed_trip(tmp_path, monkeypatch):
+    """The broker-None evening-trip case: the screen tripped (sweep deferred, no
+    mail ever sent); the next digest RUN itself sends the alert from its alert
+    section -- the digest is the retry owner, exactly like exit alerts."""
+    monkeypatch.delenv("SWING_EXECUTION_MODE", raising=False)
+    monkeypatch.delenv("SWING_DEEP_ANALYSIS", raising=False)
+    url = f"sqlite:///{tmp_path / 'digestretry.sqlite'}"
+    with Session(get_engine(url)) as s:
+        trip_id = gr.trip(s, breaker=BREAKER, reason=REASON, source="screen")
+        assert trip_id is not None
+        assert gr.load_guardrails(s).sweep_state == "pending"
+    sent: list[dict] = []
+
+    res = run.send_digest(**_digest_kwargs(tmp_path, url, sent))
+
+    assert res.sent is True
+    subjects = [m["subject"] for m in sent]
+    assert any("GUARDRAIL TRIPPED" in x for x in subjects)
+    assert any("Daily Picks" in x for x in subjects)
+    with Session(get_engine(url)) as s:
+        row = s.scalars(select(EmailLog).where(EmailLog.kind == "guardrail")).one()
+        assert row.alert_key == str(trip_id)
+
+    # a re-run dedups on the EmailLog row: no second guardrail alert.
+    sent2: list[dict] = []
+    run.send_digest(**_digest_kwargs(tmp_path, url, sent2))
+    assert [m for m in sent2 if "GUARDRAIL TRIPPED" in m["subject"]] == []
+
+
+def test_trip_email_failure_never_aborts_sweep(tmp_path):
+    """The mail seam is step 4 of the ordered protocol: a raising send must leave
+    the trip persisted and the sweep outcome recorded ('complete' -- the broker
+    was in scope and its resting entry was pulled)."""
+    url = f"sqlite:///{tmp_path / 'sweep.sqlite'}"
+    broker = FakeBroker()
+    broker.submit_order(_entry_spec("rest-1", "TSLA"))    # a resting entry to pull
+    with Session(get_engine(url)) as s:
+        emailer = run._trip_emailer(s, run_date=RUN, recipient="me@example.com",
+                                    send=_dead_send)
+        trip_id = gp.respond_to_trip(s, breaker=BREAKER, reason=REASON,
+                                     source="digest", broker=broker, emailer=emailer)
+        assert trip_id is not None
+        g = gr.load_guardrails(s)
+        assert g.state == "tripped"
+        assert g.sweep_state == "complete"        # outcome recorded BEFORE the mail attempt
+    assert broker.list_open_orders() == []        # the sweep really ran
+
+
+# --- live-rejection alerts ---------------------------------------------------
+
+
+def test_rejection_alert_lists_flipped_rows(tmp_path, monkeypatch):
+    """Two working live orders die at the venue (one rejected, one canceled): the
+    dispatch-time reconcile flips both logs and ONE kind='execution' email names
+    both tickers, keyed on the sha1 of the flipped-id set."""
+    monkeypatch.setenv("SWING_EXECUTION_MODE", "live")
+    monkeypatch.delenv("SWING_DEEP_ANALYSIS", raising=False)
+    url = f"sqlite:///{tmp_path / 'reject.sqlite'}"
+    broker = FakeBroker()
+    oid_a = _submit_live(url, broker, "AMD")
+    oid_b = _submit_live(url, broker, "NVDA")
+    broker.reject(oid_a)                          # venue reject  -> rejected_live
+    broker.cancel_order(oid_b)                    # venue cancel  -> canceled
+    sent: list[dict] = []
+
+    res = run.send_digest(**_digest_kwargs(tmp_path, url, sent, broker=broker))
+
+    assert res.sent is True
+    rejections = [m for m in sent if "Rejected/Canceled" in m["subject"]]
+    assert len(rejections) == 1                   # ONE email for BOTH flips
+    body = rejections[0]["text"]
+    assert "AMD" in body and "NVDA" in body
+    assert "rejected_live" in body and "canceled" in body
+    with Session(get_engine(url)) as s:
+        statuses = {(x.ticker, x.status) for x in s.scalars(select(ExecutionLog))}
+        assert statuses == {("AMD", "rejected_live"), ("NVDA", "canceled")}
+        ids = sorted(str(x) for x in s.scalars(select(ExecutionLog.id)))
+        row = s.scalars(select(EmailLog).where(EmailLog.kind == "execution")).one()
+        assert row.alert_key == hashlib.sha1(",".join(ids).encode()).hexdigest()
+        assert row.run_date == RUN
+
+
+def test_rejection_alert_dedups_on_rerun(tmp_path, monkeypatch):
+    """A forced digest re-run re-polls the broker but flips nothing new (the
+    reconcile's status-transition guard) -> no second rejection email; and the
+    emitter itself no-ops on the logged key even when handed the SAME id set."""
+    monkeypatch.setenv("SWING_EXECUTION_MODE", "live")
+    monkeypatch.delenv("SWING_DEEP_ANALYSIS", raising=False)
+    url = f"sqlite:///{tmp_path / 'rerun.sqlite'}"
+    broker = FakeBroker()
+    broker.reject(_submit_live(url, broker, "AMD"))
+    sent: list[dict] = []
+    run.send_digest(**_digest_kwargs(tmp_path, url, sent, broker=broker))
+    assert len([m for m in sent if "Rejected/Canceled" in m["subject"]]) == 1
+
+    sent2: list[dict] = []
+    run.send_digest(**_digest_kwargs(tmp_path, url, sent2, broker=broker, force=True))
+    assert [m for m in sent2 if "Rejected/Canceled" in m["subject"]] == []
+
+    with Session(get_engine(url)) as s:
+        ids = set(s.scalars(select(ExecutionLog.id)))
+        sent3, send3 = _spy()
+        assert run._emit_live_rejection_alert(s, RUN, "me@example.com", send3, ids) is False
+        assert sent3 == []
+        assert s.query(EmailLog).filter_by(kind="execution").count() == 1
+
+
+def test_rejection_send_failure_leaves_no_log_row_then_retry_succeeds(tmp_path):
+    """The emitter honors SEND-then-LOG too: a dead transport leaves no
+    kind='execution' row, so a later caller with the SAME flipped-id set (the
+    Task-11 hourly job reuses this emitter) re-sends and logs."""
+    url = f"sqlite:///{tmp_path / 'rejectfail.sqlite'}"
+    with Session(get_engine(url)) as s:
+        row = repo.add_execution_log(
+            s, created_date=RUN, ticker="AMD", timeframe="1d",
+            play_type="continuation", run_date=RUN, account="live", mode="live",
+            side="buy", limit_price=100.0, shares=10, stop=95.0, target=110.0,
+            risk_dollars=50.0, notional=1000.0, status="rejected_live",
+            detail="insufficient buying power", idempotency_key="k-amd")
+        new_ids = {row.id}
+        try:
+            run._emit_live_rejection_alert(s, RUN, "me@example.com", _dead_send, new_ids)
+        except RuntimeError:
+            pass                                  # send_digest's reconcile guard swallows this
+        assert s.query(EmailLog).count() == 0     # no row -> retry stays armed
+        sent, send = _spy()
+        assert run._emit_live_rejection_alert(s, RUN, "me@example.com", send, new_ids) is True
+        assert len(sent) == 1
+        assert "AMD" in sent[0]["text"]
+        assert "insufficient buying power" in sent[0]["text"]
+        assert s.query(EmailLog).filter_by(kind="execution").count() == 1
