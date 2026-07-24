@@ -1,7 +1,7 @@
 """Journal v2 read-model producers for the personal books (manual_equity, robinhood)
 and the boundary-isolation guarantee (design SS Boundary)."""
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy.orm import Session
 
@@ -27,8 +27,8 @@ def _trade(*, ticker="AMD", entry=100.0, stop=95.0, target=110.0,
     )
 
 
-def _robin(*, underlying="SPY", pnl=42.0, opened=datetime(2026, 7, 1, 10, 0),
-           closed=datetime(2026, 7, 1, 15, 0), account="robinhood"):
+def _robin(*, underlying="SPY", pnl=42.0, opened=datetime(2026, 7, 1, 10, 0, tzinfo=UTC),
+           closed=datetime(2026, 7, 1, 15, 0, tzinfo=UTC), account="robinhood"):
     return OptionPaperTrade(
         account=account, strategy="gex", underlying=underlying, direction="long",
         opened_at=opened, closed_at=closed, premium_pnl=pnl, status="closed",

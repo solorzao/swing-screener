@@ -1,10 +1,11 @@
 import smtplib
+from typing import ClassVar
 
 from swing_screener.notify import smtp
 
 
 class _FakeSMTP:
-    instances: list["_FakeSMTP"] = []
+    instances: ClassVar[list["_FakeSMTP"]] = []
 
     def __init__(self, host, port):
         self.host, self.port = host, port

@@ -66,8 +66,8 @@ def test_state_machine_assumes_utc_for_naive_last() -> None:
     # notify/run.py stamps datetime.now(UTC)) -- a naive `last` must be read as UTC,
     # never crash on aware-vs-naive subtraction.
     period, grace = timedelta(hours=24), timedelta(hours=1)
-    naive_up = datetime(2026, 7, 5, 12, 0)     # 4h before NOW, tzinfo dropped
-    naive_down = datetime(2026, 7, 3, 12, 0)   # 52h before NOW
+    naive_up = datetime(2026, 7, 5, 12, 0)  # noqa: DTZ001 -- intentional naive last (4h before NOW, tzinfo dropped)
+    naive_down = datetime(2026, 7, 3, 12, 0)  # noqa: DTZ001 -- intentional naive last (52h before NOW)
     assert beat_state(naive_up, NOW, period, grace) == "up"
     assert beat_state(naive_down, NOW, period, grace) == "down"
 
@@ -344,4 +344,4 @@ def test_holiday_list_covers_the_current_year() -> None:
     the list needs its annual refresh -- and the GH · CI beat surfaces that red in
     the cockpit itself. False lights erode trust in silence; this converts ~10
     false LATE lamps a year into one failing test."""
-    assert max(d.year for d in _MARKET_HOLIDAYS) >= date.today().year
+    assert max(d.year for d in _MARKET_HOLIDAYS) >= datetime.now(UTC).date().year

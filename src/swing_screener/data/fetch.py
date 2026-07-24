@@ -3,7 +3,8 @@ import logging
 import math
 import random
 import time
-from datetime import date, datetime, time as dt_time
+from datetime import UTC, date, datetime
+from datetime import time as dt_time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -111,12 +112,12 @@ def fetch_bars(ticker: str, interval: str, *, cache_dir: Path, period: str = "5y
     ~500-ticker universe, retries do not fire in lockstep -- a synchronized retry
     storm looks bot-like and worsens rate-limiting (a real risk from Azure
     datacenter IPs; see the deploy runbook's yfinance go/no-go gate)."""
-    today = today or date.today()
+    today = today or datetime.now(UTC).date()
     cache_file = _cache_path(cache_dir, interval, ticker, today)
     if cache_file.exists():
         try:
             return pd.read_parquet(cache_file)
-        except Exception as err:  # corrupt/partial cache: fall through to a re-download
+        except Exception as err:  # noqa: BLE001 -- corrupt/partial cache: fall through to a re-download
             log.warning("cache read failed for %s %s, re-fetching: %s", ticker, interval, err)
 
     last_err: Exception | None = None
@@ -142,7 +143,7 @@ def fetch_bars(ticker: str, interval: str, *, cache_dir: Path, period: str = "5y
             cache_file.parent.mkdir(parents=True, exist_ok=True)
             df.to_parquet(cache_file)
             return df
-        except Exception as err:  # isolation is the whole point: never propagate
+        except Exception as err:  # noqa: BLE001 -- isolation is the whole point: never propagate
             last_err = err
             if attempt < retries - 1:  # don't sleep after the final attempt
                 time.sleep(backoff * (2 ** attempt) + random.uniform(0, jitter))
@@ -185,12 +186,12 @@ def fetch_market_cap(ticker: str, *, cache_dir: Path, today: date | None = None,
                      jitter: float = 0.5) -> float | None:
     """Market cap for one ticker, cached per (ticker, day). None on persistent failure or
     when fast_info has no market cap. Never raises (per-ticker isolation)."""
-    today = today or date.today()
+    today = today or datetime.now(UTC).date()
     cache_file = Path(cache_dir) / "marketcap" / f"{ticker}_{today:%Y%m%d}.json"
     if cache_file.exists():
         try:
             return json.loads(cache_file.read_text())["market_cap"]  # type: ignore[no-any-return]
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 -- corrupt cache: fall through to a re-fetch
             log.warning("market-cap cache read failed for %s: %s", ticker, err)
     last_err: Exception | None = None
     for attempt in range(retries):
@@ -200,7 +201,7 @@ def fetch_market_cap(ticker: str, *, cache_dir: Path, today: date | None = None,
                 cache_file.parent.mkdir(parents=True, exist_ok=True)
                 cache_file.write_text(json.dumps({"market_cap": mc}))
             return mc  # a clean None (no market cap) is returned but not cached
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 -- per-ticker isolation: never propagate
             last_err = err
             if attempt < retries - 1:
                 time.sleep(backoff * (2 ** attempt) + random.uniform(0, jitter))
@@ -223,7 +224,7 @@ def fetch_sector(ticker: str, *, cache_dir: Path, today: date | None = None,
     """GICS sector for one ticker, cached per (ticker, day). None on persistent failure or
     when ``.info`` has no sector. Never raises (per-ticker isolation). Sector is sticky in
     the DB (apply_universe_metrics skips None), so a transient failure keeps the prior value."""
-    today = today or date.today()
+    today = today or datetime.now(UTC).date()
     cache_file = Path(cache_dir) / "sector" / f"{ticker}_{today:%Y%m%d}.json"
     if cache_file.exists():
         try:

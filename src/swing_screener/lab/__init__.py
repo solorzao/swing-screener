@@ -15,7 +15,7 @@ from swing_screener.lab.report import lab_facts_text
 
 __all__ = [
     "LAB_TIMEFRAMES",
-    "fetch_lab_frame",
     "build_lab_payload",
+    "fetch_lab_frame",
     "lab_facts_text",
 ]

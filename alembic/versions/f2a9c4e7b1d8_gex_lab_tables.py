@@ -13,16 +13,15 @@ GEX profile is display-only Text. broker_fills.import_hash and
 option_paper_trades.import_key are unique -- the two import idempotency keys.
 """
 from collections.abc import Sequence
-from typing import Union
 
 import sqlalchemy as sa
 
 from alembic import op
 
 revision: str = "f2a9c4e7b1d8"
-down_revision: Union[str, Sequence[str], None] = "e4b8a2d6f1c9"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "e4b8a2d6f1c9"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

@@ -1,5 +1,5 @@
 import sys
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -24,7 +24,7 @@ def _fake_snapshotter(ticker: str, cfg: GexConfig) -> ChainSnapshot:
          "open_interest": 40_000, "iv": 0.25},
     ])
     return ChainSnapshot(underlying=ticker, spot=100.0,
-                         asof=datetime(2026, 7, 13, 9, 10), frame=frame)
+                         asof=datetime(2026, 7, 13, 9, 10, tzinfo=UTC), frame=frame)
 
 
 def _fake_daily(ticker: str) -> pd.DataFrame:
@@ -83,7 +83,7 @@ def test_settle_cli_refuses_before_close_without_force(monkeypatch) -> None:
     """An intraday `settle` run would eod_flat-flatten trades at a partial-session
     price AND pin the day-keyed 5m cache on the partial session -- refuse it
     outright before 16:00 ET (2026-07-17 audit, H2)."""
-    monkeypatch.setattr(run_mod, "_now_eastern", lambda: datetime(2026, 7, 13, 13, 0))
+    monkeypatch.setattr(run_mod, "_now_eastern", lambda: datetime(2026, 7, 13, 13, 0, tzinfo=UTC))
     _settle_argv(monkeypatch)
     with pytest.raises(SystemExit) as excinfo:
         run_mod.main()
@@ -92,7 +92,7 @@ def test_settle_cli_refuses_before_close_without_force(monkeypatch) -> None:
 
 
 def test_settle_cli_force_overrides_pre_close_refusal(monkeypatch) -> None:
-    monkeypatch.setattr(run_mod, "_now_eastern", lambda: datetime(2026, 7, 13, 13, 0))
+    monkeypatch.setattr(run_mod, "_now_eastern", lambda: datetime(2026, 7, 13, 13, 0, tzinfo=UTC))
     _settle_argv(monkeypatch, "--force")
     run_mod.main()  # proceeds (empty book settles nothing); no SystemExit
 
@@ -100,7 +100,7 @@ def test_settle_cli_force_overrides_pre_close_refusal(monkeypatch) -> None:
 def test_settle_cli_weekend_refusal_names_the_weekend(monkeypatch) -> None:
     # Saturday morning: the intraday-cache rationale would be misleading (there
     # is no session in progress) -- the refusal must say it's a weekend
-    saturday = datetime(2026, 7, 11, 10, 0)
+    saturday = datetime(2026, 7, 11, 10, 0, tzinfo=UTC)
     assert saturday.weekday() == 5
     monkeypatch.setattr(run_mod, "_now_eastern", lambda: saturday)
     _settle_argv(monkeypatch)
@@ -110,7 +110,7 @@ def test_settle_cli_weekend_refusal_names_the_weekend(monkeypatch) -> None:
 
 
 def test_settle_cli_proceeds_after_close(monkeypatch) -> None:
-    monkeypatch.setattr(run_mod, "_now_eastern", lambda: datetime(2026, 7, 13, 16, 5))
+    monkeypatch.setattr(run_mod, "_now_eastern", lambda: datetime(2026, 7, 13, 16, 5, tzinfo=UTC))
     _settle_argv(monkeypatch)
     run_mod.main()  # post-close runs never need --force
 
@@ -123,7 +123,7 @@ def test_cache_dir_flag_reaches_the_fetch_path(tmp_path, monkeypatch) -> None:
     with Session(get_engine(url)) as s:
         s.add(OptionPaperTrade(
             account="options-lab", strategy="gex", underlying="SPY", direction="long",
-            opened_at=datetime(2026, 7, 13, 9, 35), entry=100.0, stop=99.0, target=102.0))
+            opened_at=datetime(2026, 7, 13, 9, 35, tzinfo=UTC), entry=100.0, stop=99.0, target=102.0))
         s.commit()
 
     seen: dict[str, object] = {}
@@ -135,7 +135,7 @@ def test_cache_dir_flag_reaches_the_fetch_path(tmp_path, monkeypatch) -> None:
                              "close": 100.5, "volume": 1e6}, index=idx)
 
     monkeypatch.setattr(run_mod, "fetch_bars", fake_fetch)
-    monkeypatch.setattr(run_mod, "_now_eastern", lambda: datetime(2026, 7, 13, 16, 5))
+    monkeypatch.setattr(run_mod, "_now_eastern", lambda: datetime(2026, 7, 13, 16, 5, tzinfo=UTC))
     monkeypatch.delenv("KEY_VAULT_URL", raising=False)
     monkeypatch.delenv("SWING_REQUIRE_DB", raising=False)
     custom = tmp_path / "custom-cache"

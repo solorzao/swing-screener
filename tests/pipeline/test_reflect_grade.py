@@ -143,7 +143,7 @@ def test_mc_correction_has_teeth_naive_passes_corrected_fails():
 def test_distinct_ticker_floor_keeps_thin_edge_a_hunch():
     # 5 distinct tickers (< 8), 30 closed, every trade +2R -- an enormous, consistent edge.
     forward = _spread_book([2.0] * 5, per=6)   # 5 tickers, 30 closed
-    eff, n_closed, n_clusters, exp, thin = _bucket_bound(forward, _family_size())
+    _eff, n_closed, n_clusters, _exp, thin = _bucket_bound(forward, _family_size())
     assert n_clusters < _CLUSTER_FLOOR
     assert thin                                # bootstrap couldn't run -> IID fallback, thin
     assert n_closed >= 20                       # depth alone is not enough

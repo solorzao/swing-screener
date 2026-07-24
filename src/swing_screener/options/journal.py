@@ -172,7 +172,7 @@ def list_setups(session: Session, *, day: date | None) -> list[OptionSetup]:
     ``[day 00:00, day+1)``."""
     stmt = select(OptionSetup).order_by(OptionSetup.ts.desc())
     if day is not None:
-        start = datetime(day.year, day.month, day.day)
+        start = datetime(day.year, day.month, day.day)  # noqa: DTZ001 -- naive US/Eastern lab-clock convention (see module docstring)
         stmt = stmt.where(
             OptionSetup.ts >= start,
             OptionSetup.ts < start + timedelta(days=1),
@@ -187,7 +187,7 @@ def list_recent_setups(
     newest-first -- the cockpit's bounded 'recent' window, never an unpaginated
     full-table read. ``end_day`` is the caller's lab-clock today (naive-Eastern
     convention, module docstring), passed in so this module stays clock-free."""
-    end = datetime(end_day.year, end_day.month, end_day.day) + timedelta(days=1)
+    end = datetime(end_day.year, end_day.month, end_day.day) + timedelta(days=1)  # noqa: DTZ001 -- naive US/Eastern lab-clock convention (see module docstring)
     stmt = (
         select(OptionSetup)
         .where(OptionSetup.ts >= end - timedelta(days=days), OptionSetup.ts < end)

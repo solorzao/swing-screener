@@ -4,8 +4,8 @@ Screener Performance parity -- KPIs, leaderboard, arms A/B, breakdowns."""
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
-from fastapi.testclient import TestClient
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from swing_screener.analytics.performance import COST_STAMPED_FROM, SCORE_STAMPED_FROM
@@ -15,11 +15,10 @@ from swing_screener.db.models import (
 )
 from swing_screener.db.session import get_engine
 from tests.cockpit.conftest import (
+    STAT_KEYS,
     _client,
     _db_url,
-    STAT_KEYS,
 )
-
 
 # --- /api/stats/performance (Streamlit Screener Performance parity) -----------------
 
@@ -277,7 +276,7 @@ def test_performance_window_cuts_after_arm_filter(tmp_path: Path) -> None:
     leaderboard at any window, and the window scopes ONLY the leaderboard (KPIs,
     breakdowns, and the equity curve are windowless, mirroring the page)."""
     url = _db_url(tmp_path)
-    today = date.today()
+    today = datetime.now(UTC).date()
     _seed(url, [
         _perf_trade("AAA", 1.0, opened_date=today - timedelta(days=10),
                     exit_date=today - timedelta(days=5)),

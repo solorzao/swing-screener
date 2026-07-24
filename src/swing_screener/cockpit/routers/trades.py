@@ -149,7 +149,7 @@ def _write_close_review(session: Session, trade: Trade) -> None:
         create_coach_draft_request(
             session, review_id=review.id, requested_at=datetime.now(UTC)
         )
-    except Exception:  # noqa: BLE001 -- review is best-effort; the close must still return
+    except Exception:
         log.warning("coach close-review write failed for trade %s", trade.id, exc_info=True)
         session.rollback()
 
@@ -240,7 +240,7 @@ def build_trades_router(
             override = _override_note(body, sig)
         trade = add_trade(session, Trade(
             ticker=body.ticker, timeframe=body.timeframe, horizon=body.horizon,
-            entry_date=date.today(), entry_price=body.entry_price, size=body.size,
+            entry_date=datetime.now(UTC).date(), entry_price=body.entry_price, size=body.size,
             stop=body.stop, target=body.target, notes=body.notes,
             signal_id=body.signal_id, override=override,
             emotional_state=body.emotional_state,
@@ -274,18 +274,18 @@ def build_trades_router(
         pre = session.get(Trade, trade_id)  # for exit_date bounds + the event message
         if pre is None:
             raise HTTPException(status_code=404, detail=f"no trade with id {trade_id}")
-        exit_date = body.exit_date if body.exit_date is not None else date.today()
+        exit_date = body.exit_date if body.exit_date is not None else datetime.now(UTC).date()
         if exit_date < pre.entry_date:
             raise HTTPException(
                 status_code=422, detail="exit_date is before the trade's entry_date")
-        if exit_date > date.today():
+        if exit_date > datetime.now(UTC).date():
             raise HTTPException(status_code=422, detail="exit_date is in the future")
         try:
             trade, _event = close_trade_with_event(
                 session, trade_id, exit_date=exit_date, exit_price=body.exit_price,
                 exit_reason=body.exit_reason, event_reason="manual_close",
                 event_message=f"{pre.ticker} closed manually @ {body.exit_price:g}",
-                created_date=date.today(),
+                created_date=datetime.now(UTC).date(),
             )
         except AlreadyClosedError as exc:  # BEFORE ValueError: it subclasses it
             raise HTTPException(status_code=409, detail=str(exc)) from exc

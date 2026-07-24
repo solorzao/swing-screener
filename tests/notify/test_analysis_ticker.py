@@ -8,7 +8,7 @@ even on a billed-but-failed reply), and the deterministic multi-timeframe
 fallback on ANY failure.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from swing_screener.notify.analysis import TickerAnalysis, Usage, analyze_ticker_deep
 from swing_screener.notify.ticker_report import TickerReport, TimeframeRead
@@ -50,7 +50,7 @@ def _report(reads=None):
     return TickerReport(
         ticker="AAPL",
         name="Apple Inc",
-        run_at=datetime(2026, 6, 16, 12, 0, 0),
+        run_at=datetime(2026, 6, 16, 12, 0, 0, tzinfo=UTC),
         reads=reads if reads is not None else [
             TimeframeRead(
                 timeframe="1d", ha_trend="bullish", ema_aligned=True,

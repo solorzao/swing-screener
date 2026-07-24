@@ -13,16 +13,15 @@ Local sqlite gets this table for free via get_engine's create_all; this
 migration is the Azure SQL path.
 """
 from collections.abc import Sequence
-from typing import Union
 
 import sqlalchemy as sa
 
 from alembic import op
 
 revision: str = "c1d7f3e9a5b2"
-down_revision: Union[str, Sequence[str], None] = "f3c9a1e6b4d2"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "f3c9a1e6b4d2"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

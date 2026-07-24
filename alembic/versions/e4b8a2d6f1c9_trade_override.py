@@ -18,16 +18,15 @@ column (Azure SQL renders VARCHAR(n), never (max)); not indexed -- it is read
 per-trade, never sliced.
 """
 from collections.abc import Sequence
-from typing import Union
 
 import sqlalchemy as sa
 
 from alembic import op
 
 revision: str = "e4b8a2d6f1c9"
-down_revision: Union[str, Sequence[str], None] = "d7e4b2f9a1c6"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "d7e4b2f9a1c6"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

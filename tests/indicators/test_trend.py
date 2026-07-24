@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
-from swing_screener.indicators.trend import ema, atr, rsi, macd_histogram
+
+from swing_screener.indicators.trend import atr, ema, macd_histogram, rsi
 
 
 def test_ema_matches_pandas_ewm(bars):

@@ -18,16 +18,15 @@ early_exit, no_setup, revenge) as ``kind="mistake"`` tags so the mistake-cost re
 has a shared vocabulary from day one; the downgrade drops all four tables.
 """
 from collections.abc import Sequence
-from typing import Union
 
 import sqlalchemy as sa
 
 from alembic import op
 
 revision: str = "a4e7c1b9f2d6"
-down_revision: Union[str, Sequence[str], None] = "f2a9c4e7b1d8"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "f2a9c4e7b1d8"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 # The seeded mistake vocabulary (kind="mistake"). Bulk-inserted at upgrade so the

@@ -7,7 +7,7 @@ import logging
 import threading
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, replace
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -22,8 +22,10 @@ from swing_screener.cockpit.common import (
 )
 from swing_screener.cockpit.livedata import BrokerSnapshot, Snapshot
 from swing_screener.cockpit.spend import spend_rows_since
+from swing_screener.config import StrategyConfig
 from swing_screener.db.models import DisarmEvent
 from swing_screener.db.repo import latest_recorded_stop
+from swing_screener.options.config import GexConfig
 from swing_screener.pipeline.autonomy import autonomy_gate, gate_countdown
 from swing_screener.pipeline.broker import BrokerClient, BrokerOrder
 from swing_screener.pipeline.disarm import ensure_stop_protection, pull_entry_orders
@@ -32,8 +34,6 @@ from swing_screener.pipeline.preflight import (
     broker_error_detail,
     preflight,
 )
-from swing_screener.config import StrategyConfig
-from swing_screener.options.config import GexConfig
 from swing_screener.settings import (
     load_settings,
     real_money_limits_ok,
@@ -41,7 +41,6 @@ from swing_screener.settings import (
     resolve_execution,
     resolve_risk_unit,
 )
-
 
 log = logging.getLogger(__name__)
 
@@ -60,11 +59,11 @@ def _record_disarm(session: Session, *, reason: str, orders_cancelled: int) -> N
         session.add(DisarmEvent(
             created_at=datetime.now(UTC), reason=reason, orders_cancelled=orders_cancelled))
         session.commit()
-    except Exception:  # noqa: BLE001 -- audit logging is best-effort; the disarm stands
+    except Exception:
         log.warning("failed to persist DisarmEvent", exc_info=True)
         try:
             session.rollback()
-        except Exception:  # noqa: BLE001 -- a dead session must not mask the response either
+        except Exception:
             log.warning("DisarmEvent rollback also failed", exc_info=True)
 
 
@@ -109,7 +108,7 @@ def build_safety_router(
         already-polled endpoint so the always-visible masthead needs no extra poll.
         """
         report = autonomy_gate(session, edge_dir=resolve_edge_dir(edge_dir))
-        today = date.today()
+        today = datetime.now(UTC).date()
         # union across analyst calls + Journal v2 coach/audit spend (NULL costs -> 0.0)
         spend_today = sum(
             (c or 0.0) for d, c in spend_rows_since(session, today) if d == today
@@ -247,7 +246,7 @@ def build_safety_router(
         broker_error: str | None = None
         try:
             broker = resolved_broker_factory()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- best-effort broker init; error surfaced in report
             broker = None
             broker_error = broker_error_detail(exc)
         report = preflight(session, settings, broker=broker,

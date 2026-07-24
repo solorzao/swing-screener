@@ -1,6 +1,6 @@
 """/api/journal/records dispatches personal books to their own producers."""
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -33,8 +33,8 @@ def test_robinhood_records_are_dollar_unit(tmp_path: Path):
     client, engine = _app(tmp_path)
     with Session(engine) as s:
         s.add(OptionPaperTrade(account="robinhood", strategy="gex", underlying="SPY",
-                               direction="long", opened_at=datetime(2026, 7, 1, 10, 0),
-                               closed_at=datetime(2026, 7, 1, 15, 0), premium_pnl=42.0,
+                               direction="long", opened_at=datetime(2026, 7, 1, 10, 0, tzinfo=UTC),
+                               closed_at=datetime(2026, 7, 1, 15, 0, tzinfo=UTC), premium_pnl=42.0,
                                status="closed"))
         s.commit()
     rows = client.get("/api/journal/records?book=robinhood").json()["records"]

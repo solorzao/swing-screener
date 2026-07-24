@@ -4,12 +4,12 @@ import matplotlib
 
 matplotlib.use("Agg")  # headless: must be set before pyplot is imported
 
-import mplfinance as mpf  # noqa: E402  (import after backend is set)
-import pandas as pd  # noqa: E402
+import mplfinance as mpf
+import pandas as pd
 
-from swing_screener.signals.detect import PullbackContext  # noqa: E402
-from swing_screener.signals.entry_zone import EntryZone  # noqa: E402
-from swing_screener.signals.reversal import ReversalContext  # noqa: E402
+from swing_screener.signals.detect import PullbackContext
+from swing_screener.signals.entry_zone import EntryZone
+from swing_screener.signals.reversal import ReversalContext
 
 
 def render_chart(frame: pd.DataFrame, ctx: PullbackContext | ReversalContext,

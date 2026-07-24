@@ -16,11 +16,11 @@ import logging
 import pytest
 
 from swing_screener.notify.analysis import (
+    _MODEL_PRICES,
     ConvictionResult,
     SignalAnalysis,
     SignalFacts,
     Usage,
-    _MODEL_PRICES,
     analyze_conviction,
     analyze_signal_deep,
 )

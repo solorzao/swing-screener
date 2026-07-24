@@ -14,13 +14,12 @@ from swing_screener.db.models import (
 )
 from swing_screener.storage import blob
 from tests.cockpit.conftest import (
-    _analysis_row,
     _AZURE_URL,
-    _client_and_engine,
     _HDR,
+    _analysis_row,
+    _client_and_engine,
     _signal_row,
 )
-
 
 # ---- deep analysis: POST/GET /api/analysis + the chart/PDF byte proxies ----
 
@@ -91,12 +90,12 @@ def test_analysis_list_shape_order_and_manual_worker(tmp_path: Path) -> None:
     client, engine = _client_and_engine(tmp_path)
     with Session(engine) as s:
         s.add(_analysis_row(
-            ticker="OLD", requested_at=datetime(2026, 7, 9, 12, 0), status="done",
-            started_at=datetime(2026, 7, 9, 12, 5),
-            finished_at=datetime(2026, 7, 9, 12, 9), summary="looks fine",
+            ticker="OLD", requested_at=datetime(2026, 7, 9, 12, 0, tzinfo=UTC), status="done",
+            started_at=datetime(2026, 7, 9, 12, 5, tzinfo=UTC),
+            finished_at=datetime(2026, 7, 9, 12, 9, tzinfo=UTC), summary="looks fine",
             pdf_blob_key="20260709/OLD_report.pdf",
             chart_blob_keys="a.png, b.png,,"))  # split, strip, drop empties -> 2
-        s.add(_analysis_row(ticker="NEW", requested_at=datetime(2026, 7, 10, 12, 0)))
+        s.add(_analysis_row(ticker="NEW", requested_at=datetime(2026, 7, 10, 12, 0, tzinfo=UTC)))
         s.commit()
     r = client.get("/api/analysis")
     assert r.status_code == 200
@@ -164,7 +163,7 @@ def test_analysis_list_limit_bounds(tmp_path: Path) -> None:
     with Session(engine) as s:
         for i in range(3):
             s.add(_analysis_row(ticker=f"T{i}",
-                                requested_at=datetime(2026, 7, 10, 12, i)))
+                                requested_at=datetime(2026, 7, 10, 12, i, tzinfo=UTC)))
         s.commit()
     assert client.get("/api/analysis?limit=0").status_code == 422
     assert client.get("/api/analysis?limit=201").status_code == 422

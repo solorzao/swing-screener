@@ -1,6 +1,6 @@
 from swing_screener.config import StrategyConfig
-from swing_screener.signals.frame import build_frame
 from swing_screener.signals.detect import detect_last_bar
+from swing_screener.signals.frame import build_frame
 
 
 def _uptrend_then_pullback_then_trigger(bars):
@@ -179,7 +179,7 @@ def test_cont_confirm_window_fires_exactly_once(bars):
 
     import pandas as pd
 
-    df, flip_high = _flip_then_pause_then_breakout(bars)
+    df, _flip_high = _flip_then_pause_then_breakout(bars)
     last = float(df.iloc[-1]["close"])
     extra = pd.DataFrame(
         [{"open": last, "high": last + 1.5, "low": last - 0.2, "close": last + 1.0,

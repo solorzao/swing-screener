@@ -210,9 +210,9 @@ def _write_breach(session: Session, *, day: date, breach_key: str, severity: str
 
 
 def _build_client() -> anthropic.Anthropic | None:
-    from swing_screener.config_secrets import get_secret  # noqa: PLC0415
+    from swing_screener.config_secrets import get_secret
     try:
-        import anthropic  # noqa: PLC0415
+        import anthropic
 
         return anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
     except Exception:  # noqa: BLE001

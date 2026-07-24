@@ -12,7 +12,7 @@ from typing import TypeVar
 T = TypeVar("T")
 
 
-def first_per_ticker(rows: Iterable[T], ticker_of: Callable[[T], str]) -> list[T]:
+def first_per_ticker[T](rows: Iterable[T], ticker_of: Callable[[T], str]) -> list[T]:
     """Keep only the FIRST row per ticker, preserving the input order.
 
     Callers iterate in rank/score order, so the kept row is the ticker's BEST one.
@@ -33,7 +33,7 @@ def first_per_ticker(rows: Iterable[T], ticker_of: Callable[[T], str]) -> list[T
     return out
 
 
-def cap_by_sector(
+def cap_by_sector[T](
     items: Iterable[T],
     sector_of: Callable[[T], str | None],
     *,

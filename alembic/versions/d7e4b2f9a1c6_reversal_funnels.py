@@ -14,16 +14,15 @@ re-records instead of duplicating. Standalone table -- no FKs. Strings stay boun
 so Azure SQL can index them (NVARCHAR(max) is un-indexable).
 """
 from collections.abc import Sequence
-from typing import Union
 
 import sqlalchemy as sa
 
 from alembic import op
 
 revision: str = "d7e4b2f9a1c6"
-down_revision: Union[str, Sequence[str], None] = "c8f3a6d1e9b4"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "c8f3a6d1e9b4"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

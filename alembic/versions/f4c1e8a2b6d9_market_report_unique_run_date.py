@@ -11,14 +11,13 @@ concurrent-replica race. Existing duplicates are collapsed first (keeping the ea
 row per run_date) so the index can be created on a table that already carries the dupes.
 """
 from collections.abc import Sequence
-from typing import Union
 
 from alembic import op
 
 revision: str = "f4c1e8a2b6d9"
-down_revision: Union[str, Sequence[str], None] = "e2b7a9d4c1f8"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "e2b7a9d4c1f8"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

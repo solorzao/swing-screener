@@ -26,9 +26,8 @@ def nearest_resistance(highs: Sequence[float], above: float, width: int) -> floa
     candidates: list[float] = []
     for i in range(width, len(highs) - width):
         h = highs[i]
-        if all(h > highs[i - k] and h > highs[i + k] for k in range(1, width + 1)):
-            if h > above:
-                candidates.append(h)
+        if all(h > highs[i - k] and h > highs[i + k] for k in range(1, width + 1)) and h > above:
+            candidates.append(h)
     if not candidates:
         return None
     return min(candidates)

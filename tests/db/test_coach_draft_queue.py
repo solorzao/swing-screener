@@ -14,7 +14,7 @@ from swing_screener.db.repo import (
 )
 from swing_screener.db.session import get_engine
 
-_T0 = datetime(2026, 7, 12, 14, 0, 0)
+_T0 = datetime(2026, 7, 12, 14, 0, 0)  # noqa: DTZ001 -- naive fixture compared to sqlite round-tripped naive values
 
 
 def test_enqueue_then_claim_flips_to_running():
@@ -58,7 +58,7 @@ def test_claim_stamps_microsecond_free_token():
         req = create_coach_draft_request(s, review_id=9, requested_at=_T0)
         req_id = req.id
         claimed = claim_queued_coach_drafts(
-            s, now=datetime(2026, 7, 17, 12, 0, 0, 123456))
+            s, now=datetime(2026, 7, 17, 12, 0, 0, 123456))  # noqa: DTZ001 -- naive fixture compared to sqlite round-tripped naive values
         assert [c.review_id for c in claimed] == [9]
         assert claimed[0].started_at.microsecond == 0
     # Fresh session (not the identity-mapped object above): what actually got STORED
@@ -66,7 +66,7 @@ def test_claim_stamps_microsecond_free_token():
     with Session(engine) as s2:
         stored = s2.get(CoachDraftRequest, req_id)
         assert stored is not None
-        assert stored.started_at == datetime(2026, 7, 17, 12, 0, 0)
+        assert stored.started_at == datetime(2026, 7, 17, 12, 0, 0)  # noqa: DTZ001 -- naive fixture compared to sqlite round-tripped naive value
 
 
 def test_sequential_claims_keep_their_own_rows():

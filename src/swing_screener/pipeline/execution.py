@@ -60,9 +60,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Protocol
 
-from sqlalchemy.orm import Session
-
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from swing_screener.db.models import PaperTrade
 from swing_screener.db.repo import (
@@ -505,13 +504,13 @@ class LiveAdapter:
                 stop_loss=intent.stop if bracket else None,
                 take_profit=intent.target if bracket else None,
             ))
-        except Exception as e:  # noqa: BLE001 -- a venue boundary: any failure must not raise.
+        except Exception as e:
             # Leak posture: the stored detail reaches the cockpit wire (the Zone E
             # ticker serves ExecutionLog.detail verbatim), and broker/httpx messages
             # embed venue hosts and credentials -- class name only (preflight's
             # broker_error_detail, the one home for this wording); the full
             # traceback goes to the LOG for the operator.
-            log.error("broker submit failed for %s", intent.ticker, exc_info=True)
+            log.exception("broker submit failed for %s", intent.ticker)
             detail = broker_error_detail(e)
             self._log(session, intent, run_date=run_date, key=key,
                       status="rejected_live", detail=detail)

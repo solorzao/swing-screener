@@ -62,7 +62,6 @@ from swing_screener.notify.proposals import (
 )
 from swing_screener.notify.transport import resolve_sender
 from swing_screener.pipeline.autonomy import autonomy_gate, gate_status_line
-from swing_screener.pipeline.health import health_line
 from swing_screener.pipeline.broker import BrokerClient
 from swing_screener.pipeline.broker_alpaca import build_broker
 from swing_screener.pipeline.disarm import ensure_stop_protection, pull_entry_orders
@@ -75,14 +74,15 @@ from swing_screener.pipeline.execution import (
     PaperAdapter,
 )
 from swing_screener.pipeline.exitcheck import ExitCheckResult, LatestBarsFn, run_exit_check
+from swing_screener.pipeline.health import health_line
 from swing_screener.pipeline.insight import (
     OrderIntent,
     build_order_intent,
     conviction_baseline,
     record_analyst_call,
 )
-from swing_screener.pipeline.regime import MARKET_PROXY, classify_regime
 from swing_screener.pipeline.reflect import load_verdicts, verdicts_filename
+from swing_screener.pipeline.regime import MARKET_PROXY, classify_regime
 from swing_screener.pipeline.run import _migrate_with_retry, _resolve_db_url
 from swing_screener.settings import (
     load_settings,
@@ -454,7 +454,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # date.today() would query a run_date with no signals. An explicit run_date
         # (tests / backfill) overrides.
         if run_date is None:
-            run_date = repo.latest_run_date(session) or date.today()
+            run_date = repo.latest_run_date(session) or datetime.now(UTC).date()
         # manual_close events are excluded by pending_exit_alerts BY DESIGN: this is
         # the ALERTS feed (urgent, actionable), not a daily closes ledger -- a future
         # "today's closes" section must add its own query, never widen this one.
@@ -797,7 +797,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # store's true newest screen.
         health_status = health_line(
             latest_run_date=repo.latest_run_date(session),
-            today=date.today(),
+            today=datetime.now(UTC).date(),
             execution_mode=exec_mode,
             gate_ready=post_gate.ready,  # the shared post-scoring read above
         )
@@ -832,7 +832,7 @@ def run_exit_check_and_alert(*, db_url: str, run_date: date | None = None, to: s
     deduped per exit-event-SET so a later hour with a NEW exit still alerts.
     """
     send = smtp_send or resolve_sender()  # env-driven transport (ACS or SMTP)
-    run_date = run_date or date.today()
+    run_date = run_date or datetime.now(UTC).date()
     recipient = to or get_secret("DIGEST_TO")
     if not recipient:
         raise RuntimeError("no recipient: set DIGEST_TO or pass to=")
@@ -876,7 +876,7 @@ def main() -> None:
     # Config-gated + fail-open; off -> None, so the digest is byte-for-byte today's behavior.
     latest_closes_fn: Callable[[list[str]], dict[str, float]] | None = None
     if StrategyConfig().digest_drop_already_ran:
-        def latest_closes_fn(tickers: list[str]) -> dict[str, float]:  # noqa: E731
+        def latest_closes_fn(tickers: list[str]) -> dict[str, float]:
             return latest_closes(tickers, cache_dir=settings.cache_dir)
     result = send_digest(kind=args.kind, db_url=db_url, pdf_dir=args.pdf_dir, force=force,
                          latest_closes_fn=latest_closes_fn)

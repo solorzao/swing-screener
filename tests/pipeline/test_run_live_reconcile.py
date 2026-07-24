@@ -67,9 +67,9 @@ def test_live_run_reconciles_a_broker_fill_into_a_live_position(tmp_path, bars, 
     oid = _submit_live_order(url, broker)
     broker.fill(oid, price=99.5)  # the venue fills at 99.5 (!= the intent's 101.0 limit)
 
-    kw = dict(universe_path=_write_universe(tmp_path, ["ZZZ"]), db_url=url,
-              cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts", cfg=_NO_EXT_GATE,
-              broker=broker)
+    kw = {"universe_path": _write_universe(tmp_path, ["ZZZ"]), "db_url": url,
+              "cache_dir": tmp_path / "cache", "chart_dir": tmp_path / "charts", "cfg": _NO_EXT_GATE,
+              "broker": broker}
     run.run_screen(today=date(2024, 4, 2), **kw)
 
     with Session(get_engine(url)) as s:
@@ -106,9 +106,9 @@ def test_same_day_rerun_keeps_the_live_position(tmp_path, bars, monkeypatch):
     oid = _submit_live_order(url, broker)
     broker.fill(oid, price=99.5)
 
-    kw = dict(universe_path=_write_universe(tmp_path, ["ZZZ"]), db_url=url,
-              cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts", cfg=_NO_EXT_GATE,
-              broker=broker)
+    kw = {"universe_path": _write_universe(tmp_path, ["ZZZ"]), "db_url": url,
+              "cache_dir": tmp_path / "cache", "chart_dir": tmp_path / "charts", "cfg": _NO_EXT_GATE,
+              "broker": broker}
     run.run_screen(today=date(2024, 4, 2), **kw)
     run.run_screen(today=date(2024, 4, 2), **kw)  # the retry: same date, log already terminal
 

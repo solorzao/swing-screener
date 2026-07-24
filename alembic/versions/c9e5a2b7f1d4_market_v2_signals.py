@@ -8,16 +8,15 @@ Persists the five v2 signals (VIX term structure, HY credit, cyclicals/defensive
 equal-weight breadth, recession probability) on the weekly snapshot for history.
 """
 from collections.abc import Sequence
-from typing import Union
 
 import sqlalchemy as sa
 
 from alembic import op
 
 revision: str = "c9e5a2b7f1d4"
-down_revision: Union[str, Sequence[str], None] = "b8d4f1a6c3e2"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "b8d4f1a6c3e2"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 _COLS = (
     ("vix_term_ratio", sa.Float()),

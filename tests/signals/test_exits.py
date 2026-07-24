@@ -1,7 +1,7 @@
 import pandas as pd
 
 from swing_screener.config import StrategyConfig
-from swing_screener.signals.exits import evaluate_exit, OpenTrade
+from swing_screener.signals.exits import OpenTrade, evaluate_exit
 from swing_screener.signals.frame import build_frame
 
 CFG = StrategyConfig()

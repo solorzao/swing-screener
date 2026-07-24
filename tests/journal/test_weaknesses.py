@@ -1,6 +1,9 @@
 """Weaknesses Profile builder: recurring flags become items with (book, trade_id)
 evidence; sparse corpora are stamped thin_data; the row is staleness-stamped."""
 
+# ruff: noqa: DTZ001 -- naive datetime fixtures: generated_at is stored in a
+# tz-naive JournalReview column and round-tripped through SQLite, then compared
+# in build_profile; tz-aware values raise aware/naive TypeErrors.
 import json
 from datetime import datetime
 
