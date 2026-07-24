@@ -158,10 +158,12 @@ param analysisMaxSearches string = '2'
 param deepAnalysisMaxUsd string = '2.50'
 
 // Route the digest's per-pick conviction calls through the Message Batches API (50% off
-// all tokens) instead of synchronous calls. Default '0' (OFF) -- opt-in: it trades up to
-// ~1h added email latency (batches are async) for the discount. Set '1' to enable.
+// all tokens) instead of synchronous calls. Default '1' (ON) since 2026-07-24 -- the
+// template default MUST match the intended prod state. It trades up to ~1h added email
+// latency (batches are async) for the ~50% token discount; a slow/failed batch falls its
+// picks back to the deterministic narrator, so the digest always sends. Set '0' to revert.
 @description('Batch the digest deep-analysis conviction calls (SWING_DEEP_ANALYSIS_BATCH).')
-param deepAnalysisBatch string = '0'
+param deepAnalysisBatch string = '1'
 
 // The weekly Market Weather LLM read: ONE deep call per Sunday run. The code-level
 // switch (StrategyConfig.market_report_enabled) is ON and market_run ANDs this env
