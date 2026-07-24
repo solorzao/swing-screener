@@ -10,11 +10,13 @@ nightly pipeline never blocks on the LLM.
 import base64
 import logging
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import anthropic
 
 from swing_screener.config_secrets import get_secret
+from swing_screener.notify.batch import submit_and_poll
 from swing_screener.notify.ticker_report import TickerReport, TimeframeRead
 from swing_screener.pipeline.insight import _CONVICTIONS
 
@@ -436,25 +438,20 @@ class EmptyAnalysisError(ValueError):
         self.usage = usage
 
 
-def _analyst_call(
-    *, system: str, content: list[dict], client: anthropic.Anthropic | None,
-    model: str, reasoning: str, max_searches: int, web_search: bool,
-) -> tuple[str, list[tuple[str, str]], Usage | None]:
-    """One place that owns the analyst call scaffold: client construction, kwargs
-    assembly, thinking/effort wiring, web-search tool config, _create_message,
-    text+citation extraction, usage capture, and the empty-response check.
-    Raises on any failure; each analyst keeps its own deterministic fallback."""
-    client = client or anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
+def _analyst_kwargs(
+    *, system: str, content: list[dict], model: str, reasoning: str,
+    max_searches: int, web_search: bool,
+) -> dict:
+    """Assemble the ``messages.create`` kwargs for ONE analyst call. Shared by the
+    synchronous path (``_analyst_call``) and the Batch path (``analyze_convictions_batched``)
+    so both send a byte-identical request -- the thinking/effort wiring and the
+    web-search tool config live in ONE place, not two."""
     kwargs: dict = {
         "model": model,
         "max_tokens": _REASONING_MAX_TOKENS.get(reasoning, 16000),
         "system": system,
         "messages": [{"role": "user", "content": content}],
     }
-    if kwargs["max_tokens"] > 16000:
-        # xhigh/max effort can outlive the SDK's default window; an explicit
-        # timeout also suppresses its large-max_tokens non-streaming guard.
-        client = client.with_options(timeout=900.0)
     effort = _REASONING_EFFORT.get(reasoning)
     if effort is not None:  # opus-4.8+ adaptive thinking; "none"/unknown omits it
         kwargs["thinking"] = {"type": "adaptive"}
@@ -463,12 +460,42 @@ def _analyst_call(
         kwargs["tools"] = [
             {"type": _WEB_SEARCH_TOOL, "name": "web_search", "max_uses": max_searches}
         ]
-    resp = _create_message(client, kwargs)
+    return kwargs
+
+
+def _parse_analyst_response(
+    resp: object, model: str,
+) -> tuple[str, list[tuple[str, str]], Usage | None]:
+    """Extract (text, citations, usage) from an analyst response -- from a synchronous
+    ``messages.create`` OR a Batch result message (same content-block shape). Raises
+    ``EmptyAnalysisError`` (carrying the billed usage) when no usable text came back,
+    so callers charge the billed-but-empty call and fall back to the narrator."""
     usage = _capture_usage(resp, model)
     text, sources = _extract_text_and_citations(resp)
     if not text.strip():
         raise EmptyAnalysisError(usage)
     return text, sources, usage
+
+
+def _analyst_call(
+    *, system: str, content: list[dict], client: anthropic.Anthropic | None,
+    model: str, reasoning: str, max_searches: int, web_search: bool,
+) -> tuple[str, list[tuple[str, str]], Usage | None]:
+    """One place that owns the SYNCHRONOUS analyst call: client construction, kwargs
+    assembly (``_analyst_kwargs``), the >16k-max_tokens timeout override, the
+    ``_create_message`` degrade retries, and response parsing (``_parse_analyst_response``).
+    Raises on any failure; each analyst keeps its own deterministic fallback."""
+    client = client or anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
+    kwargs = _analyst_kwargs(
+        system=system, content=content, model=model, reasoning=reasoning,
+        max_searches=max_searches, web_search=web_search,
+    )
+    if kwargs["max_tokens"] > 16000:
+        # xhigh/max effort can outlive the SDK's default window; an explicit
+        # timeout also suppresses its large-max_tokens non-streaming guard.
+        client = client.with_options(timeout=900.0)
+    resp = _create_message(client, kwargs)
+    return _parse_analyst_response(resp, model)
 
 
 def analyze_signal_deep(
@@ -926,3 +953,99 @@ def analyze_conviction(
             is_deep=False,
             usage=usage,
         )
+
+
+# --- Batched conviction analysis (Message Batches API, 50% off) ---------------
+# The digest is a scheduled email, not interactive, so its per-pick conviction calls
+# can go through the Batch API (see notify.batch). analyze_convictions_batched is the
+# drop-in batch analog of calling analyze_conviction once per pick; run.py wires it in
+# behind SWING_DEEP_ANALYSIS_BATCH (default off) -- see the PR's integration note.
+
+
+@dataclass(frozen=True)
+class ConvictionInput:
+    """One pick's inputs to a batched conviction call. ``custom_id`` maps the batch
+    result back to the pick; the rest mirror ``analyze_conviction``'s per-pick args."""
+
+    custom_id: str
+    facts: SignalFacts
+    baseline: str
+    playbook_text: str
+    context_text: str = ""
+    chart_bytes: bytes | None = None
+    max_step: int = 1
+
+
+def _conviction_from_response(
+    resp: object | None, item: ConvictionInput, model: str,
+) -> ConvictionResult:
+    """Turn ONE batch result message into a ConvictionResult, mirroring
+    ``analyze_conviction``'s parse + deterministic fallback EXACTLY. ``resp is None``
+    (the request errored / expired, or the batch timed out) or any parse failure ->
+    baseline conviction + deterministic rationale, carrying any billed usage."""
+    usage: Usage | None = None
+    try:
+        if resp is None:
+            raise EmptyAnalysisError(None)
+        text, sources, usage = _parse_analyst_response(resp, model)
+        conviction, reason, insight = _parse_conviction(
+            text, item.baseline, max_step=item.max_step)
+        insight += _format_sources(sources) if sources else ""
+        return ConvictionResult(
+            conviction=conviction, nudge_reason=reason, insight=insight, is_deep=True,
+            usage=usage,
+        )
+    except Exception as exc:
+        if isinstance(exc, EmptyAnalysisError):
+            usage = exc.usage
+        log.warning(
+            "batched conviction failed for %s %s; using baseline + deterministic rationale",
+            item.facts.ticker, item.facts.timeframe, exc_info=True,
+        )
+        return ConvictionResult(
+            conviction=item.baseline,
+            nudge_reason="(baseline; analyst unavailable)",
+            insight=_deterministic_rationale(item.facts),
+            is_deep=False,
+            usage=usage,
+        )
+
+
+def analyze_convictions_batched(
+    items: list[ConvictionInput], *, client: anthropic.Anthropic | None = None,
+    model: str = "claude-opus-4-8", reasoning: str = "high", max_searches: int = 4,
+    web_search: bool = True,
+    runner: Callable[..., dict[str, object | None]] = submit_and_poll,
+) -> dict[str, ConvictionResult]:
+    """Batch analog of calling ``analyze_conviction`` once per item -- 50% off ALL tokens
+    (input + thinking output), since the Message Batches API bills at half rate. Submits
+    ONE batch of every ``item`` (each a byte-identical request to what ``analyze_conviction``
+    would send, via ``_analyst_kwargs``) and returns ``{custom_id: ConvictionResult}``, with
+    the SAME per-pick deterministic fallback ``analyze_conviction`` uses on any failure /
+    empty reply / batch timeout.
+
+    ``runner`` is the transport seam (default ``notify.batch.submit_and_poll``) so tests
+    inject a fake batch. Empty ``items`` -> no API call, empty result.
+    """
+    if not items:
+        return {}
+    client = client or anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
+    requests = [
+        (
+            it.custom_id,
+            _analyst_kwargs(
+                system=_CONVICTION_SYSTEM,
+                content=_conviction_user_content(
+                    it.facts, it.baseline, it.playbook_text, it.chart_bytes, it.context_text,
+                ),
+                model=model, reasoning=reasoning, max_searches=max_searches,
+                web_search=web_search,
+            ),
+        )
+        for it in items
+    ]
+    responses = runner(client, requests)
+    return {
+        it.custom_id: _conviction_from_response(responses.get(it.custom_id), it, model)
+        for it in items
+    }
