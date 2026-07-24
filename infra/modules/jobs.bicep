@@ -117,8 +117,14 @@ param digestTimeoutSeconds int = 1800
 @description('Master switch for deep analysis: "1"/"true" on, anything else off.')
 param deepAnalysisEnabled string = '1'
 
+// Sonnet 5 ($3/$15 per MTok) replaces Opus 4.8 ($5/$25) for the digest analyst
+// (2026-07-23 cost audit): ~40% cheaper both directions on the recurring ~$50/mo
+// deep-analysis pool, and it keeps ALL top_n picks (unlike a top-N cut). The
+// conviction nudge is a bounded, code-clamped +/-1 decision, so the tier drop
+// trades a little rationale nuance, not correctness. On-demand + the TICKER LAB
+// run in the cockpit process (settings.py default), which stays on Opus.
 @description('Model id for the analysis call.')
-param analysisModel string = 'claude-opus-4-8'
+param analysisModel string = 'claude-sonnet-5'
 
 // Extended thinking bills as OUTPUT tokens at the opus $25/MTok rate, making the
 // thinking budget the digest's dominant output cost -- 'medium' halves that term vs
@@ -133,8 +139,12 @@ param deepAnalysisTopN string = '5'
 @description('Which digest kinds get deep analysis (comma list).')
 param deepAnalysisKinds string = 'daily,weekly,monthly'
 
+// Cut 4 -> 2 (2026-07-23 cost audit). The agentic web-search loop re-injects
+// growing result context each round (uncached), so it is the dominant INPUT term;
+// halving searches cuts both the ~$0.01/search server fee and that re-billed input.
+// Trade: fewer sourced citations per pick; 2 searches still ground each analysis.
 @description('Max web searches per deep-analysis call (cost cap).')
-param analysisMaxSearches string = '4'
+param analysisMaxSearches string = '2'
 
 // The per-RUN dollar ceiling pairs with the ON-by-default master switch above: once a
 // digest run's accumulated deep-analysis spend reaches it, remaining picks fall back to
