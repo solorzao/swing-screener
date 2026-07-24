@@ -112,6 +112,87 @@ def test_insight_engine_renders_order_intent_and_records_call(tmp_path, monkeypa
         assert rows[0].play_type == "continuation"
 
 
+def test_batch_mode_uses_batched_analyzer_not_per_pick(tmp_path, monkeypatch):
+    """With SWING_DEEP_ANALYSIS_BATCH=1, the top-N playbook picks are analyzed via the
+    Batch analog (analyze_convictions_batched), NOT the per-pick synchronous conviction
+    call -- and the rest of the pipeline (order intent, AnalystCall row) is unchanged."""
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS", "1")
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS_TOP_N", "1")
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS_BATCH", "1")  # opt in to the Batch path
+    monkeypatch.delenv("SWING_DEEP_ANALYSIS_KINDS", raising=False)
+    monkeypatch.setenv("SWING_RISK_PER_TRADE_DOLLARS", "300")
+    url = f"sqlite:///{tmp_path / 'batch.sqlite'}"
+    _seed(url, n=1)  # one pick, all deep -> no non-deep analyze_signal path in play
+    edge = _edge_dir(tmp_path)
+
+    batched_calls, conv_calls, sent = [], [], []
+
+    def fake_batched(items, **kw):
+        batched_calls.append([it.custom_id for it in items])
+        return {it.custom_id: ConvictionResult(
+            conviction="high", nudge_reason="batched sector momentum",
+            insight="Strong continuation (batched).", is_deep=True) for it in items}
+
+    def fake_conv(facts, **kw):  # the SYNC per-pick path -- must NOT run in batch mode
+        conv_calls.append(facts.ticker)
+        return ConvictionResult(conviction="medium", nudge_reason="", insight="", is_deep=True)
+
+    res = run.send_digest(**_kwargs(
+        tmp_path, url, smtp_send=lambda **k: sent.append(k),
+        analyze_convictions_batched_fn=fake_batched, analyze_conviction_fn=fake_conv,
+        chart_bytes_loader=lambda p: b"PNG", edge_dir=edge,
+        fundamentals_fn=lambda t: Fundamentals(ticker=t, ok=True, sector="Tech"),
+        news_fn=lambda t: [], market_trend_fn=lambda: "bull"))
+
+    assert res.sent is True
+    # the batch analyzer handled the single top pick (keyed by play_type:index); the
+    # synchronous per-pick call was NOT used at all.
+    assert batched_calls == [["continuation:0"]]
+    assert conv_calls == []
+    # the batched conviction renders in the body and an AnalystCall row is still written.
+    assert "high" in sent[-1]["text"].lower()
+    with Session(get_engine(url)) as s:
+        rows = list(s.scalars(select(AnalystCall)))
+        assert len(rows) == 1
+        assert rows[0].ticker == "AMD"
+        assert rows[0].final_conviction == "high"
+        assert rows[0].play_type == "continuation"
+
+
+def test_batch_failure_falls_back_to_synchronous(tmp_path, monkeypatch):
+    """A batch submit/poll transport error must NOT drop the digest -- it degrades to the
+    synchronous per-pick path for that play type (and the run still sends + records)."""
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS", "1")
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS_TOP_N", "1")
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS_BATCH", "1")
+    monkeypatch.delenv("SWING_DEEP_ANALYSIS_KINDS", raising=False)
+    url = f"sqlite:///{tmp_path / 'batchfail.sqlite'}"
+    _seed(url, n=1)
+    edge = _edge_dir(tmp_path)
+
+    conv_calls, sent = [], []
+
+    def boom_batched(items, **kw):
+        raise RuntimeError("batch API down")
+
+    def fake_conv(facts, *, baseline, **kw):
+        conv_calls.append(facts.ticker)
+        return ConvictionResult(conviction="high", nudge_reason="sync fallback",
+                                insight="Sync path.", is_deep=True)
+
+    res = run.send_digest(**_kwargs(
+        tmp_path, url, smtp_send=lambda **k: sent.append(k),
+        analyze_convictions_batched_fn=boom_batched, analyze_conviction_fn=fake_conv,
+        chart_bytes_loader=lambda p: b"PNG", edge_dir=edge,
+        fundamentals_fn=lambda t: Fundamentals(ticker=t, ok=True, sector="Tech"),
+        news_fn=lambda t: [], market_trend_fn=lambda: "bull"))
+
+    assert res.sent is True         # digest still sent despite the batch failure
+    assert conv_calls == ["AMD"]    # fell back to the synchronous per-pick call
+    with Session(get_engine(url)) as s:
+        assert len(list(s.scalars(select(AnalystCall)))) == 1
+
+
 def test_edge_dir_resolves_from_env_when_not_passed(tmp_path, monkeypatch):
     """With no explicit edge_dir, send_digest must resolve it from SWING_EDGE_DIR (settings)
     rather than a cwd-relative Path("edge") -- the container has no /app/edge unless the

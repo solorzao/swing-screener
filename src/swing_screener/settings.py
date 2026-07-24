@@ -92,6 +92,12 @@ class Settings:
     # absent env preserves today's behavior. Only an EXPLICIT off value disables (a
     # garbage value must not silently kill a scheduled report -- bracket_orders parse).
     market_report_enabled: bool = True
+    # Route the digest's per-pick conviction calls through the Message Batches API (50%
+    # off ALL tokens) instead of synchronous calls (SWING_DEEP_ANALYSIS_BATCH). Default
+    # OFF -- opt-in only: it trades up-to-~1h added digest-email latency for the discount,
+    # acceptable because the digest is a scheduled (non-interactive) job. See notify.batch
+    # + notify.analysis.analyze_convictions_batched.
+    deep_analysis_batch: bool = False
 
 
 _TRUE = {"1", "true", "yes", "on"}
@@ -189,6 +195,7 @@ def load_settings() -> Settings:
         deep_analysis_top_n=_int(env.get("SWING_DEEP_ANALYSIS_TOP_N"), 5),
         deep_analysis_kinds=kinds,
         analysis_max_searches=_int(env.get("SWING_ANALYSIS_MAX_SEARCHES"), 4),
+        deep_analysis_batch=(env.get("SWING_DEEP_ANALYSIS_BATCH", "").strip().lower() in _TRUE),
         lab_reasoning=lab_reasoning,
         deep_analysis_max_usd=_opt_float(env.get("SWING_DEEP_ANALYSIS_MAX_USD")),
         coach_enabled=(env.get("SWING_COACH_ENABLED", "").strip().lower() in _TRUE),
