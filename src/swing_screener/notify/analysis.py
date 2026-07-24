@@ -348,13 +348,16 @@ def _count_web_searches(usage: object) -> int:
     return n if isinstance(n, int) and n >= 0 else 0
 
 
-def _capture_usage(resp: object, model: str) -> Usage | None:
+def _capture_usage(resp: object, model: str, *, is_batch: bool = False) -> Usage | None:
     """Build a ``Usage`` from ``resp.usage``, or None if it's missing/None.
 
     GUARDED: a response with no ``usage`` (or ``usage is None``) returns None so the
     capture never crashes the analyst. ``est_cost_usd`` is the approximate list-price
     estimate; an unknown model prices at ``_FALLBACK_PRICES`` (fail-safe: the spend
     cap overcounts rather than no-ops) with a once-per-process warning per model id.
+    ``is_batch`` applies the Message Batches API's 50% TOKEN discount (the web-search
+    server-tool fee is per-call and NOT discounted), so a batched pick's persisted
+    ``est_cost_usd`` reflects what was actually billed rather than the sync list price.
     """
     usage = getattr(resp, "usage", None)
     if usage is None:
@@ -372,11 +375,10 @@ def _capture_usage(resp: object, model: str) -> Usage | None:
             )
         prices = _FALLBACK_PRICES
     in_price, out_price = prices
-    est = (
-        in_tok / 1_000_000 * in_price
-        + out_tok / 1_000_000 * out_price
-        + searches * _WEB_SEARCH_COST_USD
-    )
+    token_cost = in_tok / 1_000_000 * in_price + out_tok / 1_000_000 * out_price
+    if is_batch:  # Batches API bills input+output tokens at 50%; web-search fee is unchanged
+        token_cost *= 0.5
+    est = token_cost + searches * _WEB_SEARCH_COST_USD
     return Usage(
         input_tokens=int(in_tok),
         output_tokens=int(out_tok),
@@ -464,13 +466,14 @@ def _analyst_kwargs(
 
 
 def _parse_analyst_response(
-    resp: object, model: str,
+    resp: object, model: str, *, is_batch: bool = False,
 ) -> tuple[str, list[tuple[str, str]], Usage | None]:
     """Extract (text, citations, usage) from an analyst response -- from a synchronous
-    ``messages.create`` OR a Batch result message (same content-block shape). Raises
-    ``EmptyAnalysisError`` (carrying the billed usage) when no usable text came back,
-    so callers charge the billed-but-empty call and fall back to the narrator."""
-    usage = _capture_usage(resp, model)
+    ``messages.create`` OR a Batch result message (same content-block shape). ``is_batch``
+    flows to ``_capture_usage`` so batched responses are priced at the 50% batch rate.
+    Raises ``EmptyAnalysisError`` (carrying the billed usage) when no usable text came
+    back, so callers charge the billed-but-empty call and fall back to the narrator."""
+    usage = _capture_usage(resp, model, is_batch=is_batch)
     text, sources = _extract_text_and_citations(resp)
     if not text.strip():
         raise EmptyAnalysisError(usage)
@@ -987,7 +990,7 @@ def _conviction_from_response(
     try:
         if resp is None:
             raise EmptyAnalysisError(None)
-        text, sources, usage = _parse_analyst_response(resp, model)
+        text, sources, usage = _parse_analyst_response(resp, model, is_batch=True)
         conviction, reason, insight = _parse_conviction(
             text, item.baseline, max_step=item.max_step)
         insight += _format_sources(sources) if sources else ""

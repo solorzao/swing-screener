@@ -19,6 +19,7 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
+from functools import partial
 from pathlib import Path
 
 from sqlalchemy import select
@@ -38,13 +39,16 @@ from swing_screener.notify import market_context
 from swing_screener.notify import select as sel
 from swing_screener.notify.alerts import compose_exit_alert
 from swing_screener.notify.analysis import (
+    ConvictionInput,
     ConvictionResult,
     SignalAnalysis,
     SignalFacts,
     analyze_conviction,
+    analyze_convictions_batched,
     analyze_signal,
     analyze_signal_deep,
 )
+from swing_screener.notify.batch import submit_and_poll
 from swing_screener.notify.body import (
     AlertLine,
     DigestPick,
@@ -400,6 +404,14 @@ def _attach_pdf_tickets(
     return out
 
 
+# Per-batch poll budget for the deep-analysis Batch path. A daily run submits up to TWO
+# batches (continuation + reversal) sequentially, so 2 x this must fit inside the digest
+# job's replica timeout (jobs.bicep digestTimeoutSeconds); a batch that exceeds it just
+# falls its picks back to the deterministic narrator. Batches typically finish in minutes;
+# this is the safety ceiling, not the expected wait.
+_DIGEST_BATCH_MAX_WAIT_S = 1800.0
+
+
 def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str | None = None,
                 pdf_dir: Path = Path(".digests"), anthropic_client: object | None = None,
                 smtp_send: SmtpSend | None = None, force: bool = False,
@@ -408,6 +420,8 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                 fundamentals_fn: Callable[[str], market_context.Fundamentals] | None = None,
                 news_fn: Callable[[str], list[market_context.NewsItem]] | None = None,
                 analyze_conviction_fn: Callable[..., ConvictionResult] | None = None,
+                analyze_convictions_batched_fn: (
+                    Callable[..., dict[str, ConvictionResult]] | None) = None,
                 edge_dir: Path | None = None,
                 market_trend_fn: Callable[[], str | None] | None = None,
                 execution_adapter: ExecutionAdapter | None = None,
@@ -428,6 +442,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
     edge_dir = resolve_edge_dir(edge_dir)
     deep_analyze = deep_analyze_fn or analyze_signal_deep
     analyze_conv = analyze_conviction_fn or analyze_conviction
+    analyze_conv_batched = analyze_convictions_batched_fn or analyze_convictions_batched
     load_chart = chart_bytes_loader or _load_chart_bytes
     get_fundamentals = fundamentals_fn or market_context.get_fundamentals
     get_news = news_fn or market_context.get_recent_news
@@ -525,22 +540,28 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                 for pt, v in gate.per_play_type.items()
             }
 
-        def _deep_one(facts: SignalFacts, sig: Signal, play_type: str) -> tuple[
+        def _deep_one(facts: SignalFacts, sig: Signal, play_type: str, *,
+                      batched_cr: ConvictionResult | None = None) -> tuple[
                 SignalAnalysis, OrderIntentLine | None, OrderIntent | None, float]:
-            """Run ONE deep Opus call for a top-N pick; return (analysis, line, intent, cost).
+            """Run ONE deep call for a top-N pick; return (analysis, line, intent, cost).
 
             When the pick's play type has a playbook + verdicts sidecar, run the INSIGHT
-            ENGINE: a deterministic conviction baseline, one Opus conviction call (which
-            NUDGES it, clamped +-1), a sized order intent, and a persisted AnalystCall. The
+            ENGINE: a deterministic conviction baseline, one conviction call (which NUDGES
+            it, clamped +-1), a sized order intent, and a persisted AnalystCall. The
             analyst's insight becomes the rationale; a short core reason names the
             conviction + edge. No playbook -> fall back to the old ``deep_analyze`` (one
             call either way -- never both, so no double-billing). The 4th return is the
             call's estimated spend (``usage.est_cost_usd``, 0.0 when usage is absent) so the
-            caller can accumulate it against the per-run ceiling."""
-            context_text = market_context.context_block(
-                get_fundamentals(sig.ticker), get_news(sig.ticker))
+            caller can accumulate it against the per-run ceiling.
+
+            ``batched_cr`` short-circuits the conviction call: when the run pre-computed this
+            pick's ConvictionResult in the deep-analysis BATCH (``_batch_deep``), reuse it
+            (and skip the now-redundant context fetch) -- the rest of the assembly is
+            byte-identical to the synchronous path."""
             pb = playbooks.get(play_type)
-            if pb is None:  # no playbook/verdicts -> the existing deep path, unchanged
+            if pb is None:  # no playbook/verdicts -> the existing deep path, never batched
+                context_text = market_context.context_block(
+                    get_fundamentals(sig.ticker), get_news(sig.ticker))
                 analysis = deep_analyze(
                     facts, chart_bytes=load_chart(sig.chart_path), context_text=context_text,
                     client=anthropic_client,  # type: ignore[arg-type]  # test seam may be a fake
@@ -552,13 +573,18 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
             baseline, edge_label = conviction_baseline(
                 score=sig.score, volatility_tier=sig.volatility_tier,
                 market_trend=market_trend, verdicts=verdicts)
-            cr = analyze_conv(
-                facts, baseline=baseline, playbook_text=playbook_text,
-                context_text=context_text, chart_bytes=load_chart(sig.chart_path),
-                client=anthropic_client,  # type: ignore[arg-type]  # test seam may be a fake
-                model=cfg.analysis_model, reasoning=cfg.analysis_reasoning,
-                max_searches=cfg.analysis_max_searches,
-                max_step=nudge_steps.get(play_type, 1))  # earned ±2 ONLY if THIS play type calibrates
+            if batched_cr is not None:  # already analyzed in this run's deep-analysis batch
+                cr = batched_cr
+            else:  # synchronous per-pick conviction call
+                context_text = market_context.context_block(
+                    get_fundamentals(sig.ticker), get_news(sig.ticker))
+                cr = analyze_conv(
+                    facts, baseline=baseline, playbook_text=playbook_text,
+                    context_text=context_text, chart_bytes=load_chart(sig.chart_path),
+                    client=anthropic_client,  # type: ignore[arg-type]  # test seam may be a fake
+                    model=cfg.analysis_model, reasoning=cfg.analysis_reasoning,
+                    max_searches=cfg.analysis_max_searches,
+                    max_step=nudge_steps.get(play_type, 1))  # earned ±2 ONLY if THIS play type calibrates
             intent = build_order_intent(
                 facts, cr, play_type=play_type, edge_played=edge_label,
                 risk_unit_dollars=risk_unit, max_shares=max_sh)
@@ -585,6 +611,44 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         spend = [0.0]
         ceiling_logged = [False]
 
+        # Deep-analysis BATCH pre-pass (SWING_DEEP_ANALYSIS_BATCH, default off). When on, the
+        # top-N playbook picks for a play type are analyzed in ONE Message Batch (50% off all
+        # tokens) instead of N synchronous calls; ``_deep_one`` then assembles from the
+        # pre-computed ConvictionResults. Picks WITHOUT a playbook keep the synchronous legacy
+        # ``deep_analyze`` path either way. Per-batch wait is bounded so the daily run's two
+        # batches fit the job timeout; a timed-out batch falls its picks back to the narrator.
+        batch_mode = deep_on and cfg.deep_analysis_batch
+        _batch_runner = partial(submit_and_poll, max_wait_s=_DIGEST_BATCH_MAX_WAIT_S)
+
+        def _batch_deep(sigs: list[Signal], play_type: str) -> dict[str, ConvictionResult]:
+            """Analyze the top-N playbook picks for ``play_type`` in ONE batch; key results by
+            the pick's loop index (``f"{play_type}:{i}"``) so ``_build_picks`` looks each up.
+            No playbook -> empty dict (those picks stay on the synchronous legacy path)."""
+            pb = playbooks.get(play_type)
+            if pb is None:
+                return {}
+            playbook_text, verdicts = pb
+            items: list[ConvictionInput] = []
+            for i, sig in enumerate(sigs):
+                if i >= cfg.deep_analysis_top_n:
+                    break
+                baseline, _edge = conviction_baseline(
+                    score=sig.score, volatility_tier=sig.volatility_tier,
+                    market_trend=market_trend, verdicts=verdicts)
+                context_text = market_context.context_block(
+                    get_fundamentals(sig.ticker), get_news(sig.ticker))
+                items.append(ConvictionInput(
+                    custom_id=f"{play_type}:{i}", facts=_facts(sig), baseline=baseline,
+                    playbook_text=playbook_text, context_text=context_text,
+                    chart_bytes=load_chart(sig.chart_path),
+                    max_step=nudge_steps.get(play_type, 1)))
+            if not items:  # no deep picks for this play type -> no batch
+                return {}
+            return analyze_conv_batched(
+                items, client=anthropic_client,  # type: ignore[arg-type]  # test seam may be a fake
+                model=cfg.analysis_model, reasoning=cfg.analysis_reasoning,
+                max_searches=cfg.analysis_max_searches, runner=_batch_runner)
+
         def _build_picks(sigs: list[Signal], *, play_type: str,
                          collect_intents: list[OrderIntent]) -> tuple[
                 list[DigestPick], list[PdfPick]]:
@@ -594,23 +658,37 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
             ``OrderIntent`` is appended to ``collect_intents`` for the post-build dispatch --
             rendering is unchanged here; nothing is dispatched inline.
 
-            SPEND CEILING: a pick that WOULD get the deep path skips it for the deterministic
-            narrator once the per-run accumulator (``spend``) has reached ``max_usd`` -- the
-            pick still renders, just without the Opus insight/conviction nudge. Else it runs
-            deep and adds its est_cost to the accumulator. ``max_usd is None`` -> no ceiling."""
+            SPEND CEILING: a deep pick skips to the deterministic narrator once the per-run
+            accumulator (``spend``) reaches ``max_usd``. A BATCHED play type caps submissions
+            ex-ante at top_n (already half price), so its mid-loop truncation is disabled; the
+            legacy sync path and a batch that fell back keep the ceiling. None -> no ceiling."""
+            # BATCH pre-pass, but only for a play type that HAS a playbook (the legacy
+            # no-playbook path is never batched). A submit/poll transport failure degrades to
+            # the synchronous per-pick path for this play type -- never a dropped digest.
+            play_batch = batch_mode and playbooks.get(play_type) is not None
+            batched: dict[str, ConvictionResult] = {}
+            if play_batch:
+                try:
+                    batched = _batch_deep(sigs, play_type)
+                except Exception:
+                    log.warning("deep-analysis batch failed for %s; falling back to the "
+                                "synchronous per-pick path", play_type, exc_info=True)
+                    play_batch = False  # sync fallback -> re-enable the spend ceiling below
             dps: list[DigestPick] = []
             pps: list[PdfPick] = []
             for i, sig in enumerate(sigs):
                 facts = _facts(sig)
                 order_intent: OrderIntentLine | None = None
                 want_deep = deep_on and i < cfg.deep_analysis_top_n
-                over_ceiling = max_usd is not None and spend[0] >= max_usd
+                over_ceiling = (max_usd is not None and spend[0] >= max_usd
+                                and not play_batch)
                 if want_deep and over_ceiling and not ceiling_logged[0]:
                     log.warning("deep-analysis spend ceiling $%.2f reached; remaining picks "
                                 "use deterministic text", max_usd)
                     ceiling_logged[0] = True
                 if want_deep and not over_ceiling:
-                    analysis, order_intent, built_intent, cost = _deep_one(facts, sig, play_type)
+                    analysis, order_intent, built_intent, cost = _deep_one(
+                        facts, sig, play_type, batched_cr=batched.get(f"{play_type}:{i}"))
                     spend[0] += cost
                     if built_intent is not None:
                         collect_intents.append(built_intent)

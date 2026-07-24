@@ -103,10 +103,14 @@ param maxDailyNotional string = ''
 param maxDailyLoss string = ''
 param maxConcurrent string = ''
 
-// 1800s (30 min) comfortably covers deep (Opus + web-search) analysis of the
-// top-N picks (~1 min/pick) plus the email build.
+// Synchronous digest runs finish in minutes (deep analysis ~1 min/pick + email build).
+// The higher ceiling accommodates the OPTIONAL Batch path (SWING_DEEP_ANALYSIS_BATCH): a
+// daily run submits up to two batches (continuation + reversal), each polled up to
+// notify.run._DIGEST_BATCH_MAX_WAIT_S (30 min); 4200s covers 2 x 30 min + work. A batch
+// that exceeds its poll budget falls its picks back to the narrator, so the run still
+// finishes and emails -- the timeout only needs to outlast the polling, not the batch.
 @description('Replica timeout (seconds) for digest/alert jobs.')
-param digestTimeoutSeconds int = 1800
+param digestTimeoutSeconds int = 4200
 
 // --- Deep-analysis (Opus web-search analyst) knobs. Default ON: the insight engine is
 // the qualitative learning loop (analyst calls recorded + scored -> calibration -> the
@@ -152,6 +156,12 @@ param analysisMaxSearches string = '2'
 // as None = unbounded) must never be a template default.
 @description('Per-run deep-analysis spend ceiling in USD (SWING_DEEP_ANALYSIS_MAX_USD).')
 param deepAnalysisMaxUsd string = '2.50'
+
+// Route the digest's per-pick conviction calls through the Message Batches API (50% off
+// all tokens) instead of synchronous calls. Default '0' (OFF) -- opt-in: it trades up to
+// ~1h added email latency (batches are async) for the discount. Set '1' to enable.
+@description('Batch the digest deep-analysis conviction calls (SWING_DEEP_ANALYSIS_BATCH).')
+param deepAnalysisBatch string = '0'
 
 // The weekly Market Weather LLM read: ONE deep call per Sunday run. The code-level
 // switch (StrategyConfig.market_report_enabled) is ON and market_run ANDs this env
@@ -294,6 +304,10 @@ var commonEnv = concat(equityEnv, riskPctEnv, executionModeEnv, capsEnv, [
   {
     name: 'SWING_DEEP_ANALYSIS_MAX_USD'
     value: deepAnalysisMaxUsd
+  }
+  {
+    name: 'SWING_DEEP_ANALYSIS_BATCH'
+    value: deepAnalysisBatch
   }
   {
     name: 'SWING_ANALYSIS_MODEL'

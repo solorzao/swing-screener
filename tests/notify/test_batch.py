@@ -153,3 +153,16 @@ def test_batched_conviction_empty_items_no_call():
     out = analyze_convictions_batched([], client=object(), runner=lambda *a: called.append(a) or {})
     assert out == {}
     assert called == []   # empty items -> no batch submitted
+
+
+def test_capture_usage_applies_batch_discount():
+    """A batched response is priced at the Batches API's 50% TOKEN rate; the per-call
+    web-search server-tool fee is not discounted (here: zero searches)."""
+    from swing_screener.notify.analysis import _capture_usage
+
+    usage = SimpleNamespace(input_tokens=1_000_000, output_tokens=1_000_000)  # 0 web searches
+    sync = _capture_usage(SimpleNamespace(usage=usage), "claude-sonnet-5")
+    batch = _capture_usage(SimpleNamespace(usage=usage), "claude-sonnet-5", is_batch=True)
+    assert sync is not None and batch is not None
+    assert sync.est_cost_usd == 18.0    # $3/MTok in + $15/MTok out, 1 MTok each
+    assert batch.est_cost_usd == 9.0    # tokens billed at half under the Batch API
