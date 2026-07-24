@@ -7,11 +7,11 @@ from swing_screener.journal.coach_grade import TradeReviewFacts
 
 
 def _facts(**kw) -> TradeReviewFacts:
-    base = dict(
-        book="manual_equity", symbol="AMD", unit="R", result=2.0, outcome="target",
-        hold_days=3, moved_stop=False, override=None, emotional_state=None,
-        exit_reason="target",
-    )
+    base = {
+        "book": "manual_equity", "symbol": "AMD", "unit": "R", "result": 2.0, "outcome": "target",
+        "hold_days": 3, "moved_stop": False, "override": None, "emotional_state": None,
+        "exit_reason": "target",
+    }
     base.update(kw)
     return TradeReviewFacts(**base)  # type: ignore[arg-type]
 

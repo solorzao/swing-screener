@@ -101,11 +101,11 @@ def _resolve_bytes(key: str | None) -> bytes | None:
     if blob_enabled():
         try:
             return download_bytes(key)
-        except Exception:
+        except Exception:  # noqa: BLE001 -- best-effort read; missing/unreadable blob -> None
             return None
     try:
         return Path(key).read_bytes()
-    except Exception:
+    except Exception:  # noqa: BLE001 -- best-effort read; missing/unreadable file -> None
         return None
 
 

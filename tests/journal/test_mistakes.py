@@ -8,12 +8,13 @@ trades (an open trade has no realized cost yet), and a trade tagged the same mis
 by two sources counts ONCE. Ordered worst-first (most negative total R). Empty/None-safe.
 """
 
+from sqlalchemy.orm import Session
+
 from swing_screener.analytics.performance import PerformanceSummary, summarize
 from swing_screener.db.models import PaperTrade
 from swing_screener.db.session import get_engine
 from swing_screener.journal.mistakes import mistake_cost
 from swing_screener.journal.repo import add_tag, tag_trade
-from sqlalchemy.orm import Session
 
 
 def _pt(r, *, status="closed", fill_status="filled", account="research"):

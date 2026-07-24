@@ -113,8 +113,8 @@ def process_one(
             review.est_cost_usd = draft.usage.est_cost_usd
         session.commit()
         repo.complete_coach_draft_request(session, request.id, finished_at=now)
-    except Exception as exc:  # noqa: BLE001 -- one bad draft never aborts the batch
-        log.error("coach draft request %s failed", request.id, exc_info=True)
+    except Exception as exc:
+        log.exception("coach draft request %s failed", request.id)
         session.rollback()
         repo.fail_coach_draft_request(
             session, request.id, error=f"error ({type(exc).__name__})", finished_at=now)
@@ -142,7 +142,7 @@ def _build_client() -> anthropic.Anthropic | None:
     """Construct one real Anthropic client for the batch, or None if the SDK/key is
     absent (draft_review then degrades to the template per call)."""
     try:
-        import anthropic  # noqa: PLC0415
+        import anthropic
 
         return anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
     except Exception:  # noqa: BLE001 -- no key/SDK -> template path, never a crash

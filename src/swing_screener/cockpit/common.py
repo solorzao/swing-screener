@@ -37,7 +37,7 @@ def connection_label(db_url: str) -> str:
     """
     try:
         u = make_url(db_url)
-    except Exception:  # unparseable input: still never echo it back
+    except Exception:  # noqa: BLE001 -- unparseable input: still never echo it back
         return "Database"
     driver = u.drivername.split("+", 1)[0]
     if driver == "sqlite":
@@ -57,7 +57,7 @@ def _is_azure(db_url: str) -> bool:
     exactly the case the button exists for."""
     try:
         return make_url(db_url).drivername.split("+", 1)[0] == "mssql"
-    except Exception:  # unparseable: no affordance, same posture as connection_label
+    except Exception:  # noqa: BLE001 -- unparseable: no affordance, same posture as connection_label
         return False
 
 
@@ -82,7 +82,7 @@ def _spawn_az_login() -> _LoginProc | None:
     flags = 0
     if sys.platform == "win32":  # attr exists only on Windows; Linux CI type-checks
         flags = subprocess.CREATE_NO_WINDOW
-    return subprocess.Popen(  # noqa: S603 -- fixed argv by contract
+    return subprocess.Popen(
         [az, "login"],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         creationflags=flags,

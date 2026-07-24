@@ -12,16 +12,15 @@ complement of the per-arm exit A/B. server_default "default" backfills existing 
 to the live screen config; indexed because QC slices the book by variant.
 """
 from collections.abc import Sequence
-from typing import Union
 
 import sqlalchemy as sa
 
 from alembic import op
 
 revision: str = "c4d8e2f6a9b1"
-down_revision: Union[str, Sequence[str], None] = "e9c7b3a15d24"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "e9c7b3a15d24"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

@@ -23,16 +23,15 @@ sqlite never self-migrates); this migration is for Azure SQL, where Alembic owns
 the schema.
 """
 from collections.abc import Sequence
-from typing import Union
 
 import sqlalchemy as sa
 
 from alembic import op
 
 revision: str = "f3c9a1e6b4d2"
-down_revision: Union[str, Sequence[str], None] = "b4e9f2c7a3d1"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "b4e9f2c7a3d1"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

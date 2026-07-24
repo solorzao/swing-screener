@@ -2,14 +2,14 @@
 leaks, /api/heartbeats and /api/stats/cohorts are typed, /api/forward-books,
 /api/funnel, a dead database is a friendly 503, and /api/azure-login."""
 
+import os
+import sys
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
-import os
 from pathlib import Path
-import sys
 
-from fastapi.testclient import TestClient
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -33,16 +33,15 @@ from swing_screener.db.repo import (
 from swing_screener.db.session import get_engine
 from tests.cockpit.conftest import (
     _AZURE_URL,
+    _HDR,
+    STAT_KEYS,
     _book_trade,
     _client,
     _db_url,
     _experiment,
-    _HDR,
     _trade,
     _write_registry,
-    STAT_KEYS,
 )
-
 
 # The SettlementCard wire form -- a closed set, like STAT_KEYS.
 CARD_KEYS = {"name", "kind", "play_type", "state", "n_accrued", "n_needed", "eta",

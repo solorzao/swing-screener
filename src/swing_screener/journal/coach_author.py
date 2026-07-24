@@ -84,10 +84,10 @@ def draft_review(
     always matches the model actually called (a default here duplicated that constant --
     a stamp/call mismatch hazard flagged by the 2026-07-17 audit)."""
     try:
-        from swing_screener.notify.analysis import _capture_usage  # noqa: PLC0415
+        from swing_screener.notify.analysis import _capture_usage
 
         if client is None:
-            import anthropic  # noqa: PLC0415
+            import anthropic
 
             client = anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
         context = (
@@ -111,6 +111,6 @@ def draft_review(
         if not text.strip():
             raise ValueError("empty model response")
         return DraftResult(text=text.strip(), usage=_capture_usage(resp, model))
-    except Exception:  # noqa: BLE001 -- any failure degrades; the review never blocks on the LLM
+    except Exception:
         log.warning("coach review authoring failed; using deterministic template", exc_info=True)
         return DraftResult(text=template_review(facts), usage=None)

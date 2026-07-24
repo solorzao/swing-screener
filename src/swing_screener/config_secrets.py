@@ -60,7 +60,7 @@ def _fetch_from_key_vault(name: str, vault_url: str) -> str | None:
     try:
         client = _build_secret_client(vault_url)
         value = client.get_secret(_secret_name(name)).value
-    except Exception:
+    except Exception:  # noqa: BLE001 -- best-effort key vault lookup, falls back to default
         # NAME only -- never the value, and never the raw exception text (which
         # could echo the value back). exc_info is omitted for the same reason.
         log.warning("key vault lookup failed for secret %s; falling back to default", name)

@@ -4,7 +4,7 @@ import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -21,9 +21,9 @@ from swing_screener.data.fetch import (
 from swing_screener.data.resample import resample_ohlcv
 from swing_screener.data.universe import load_universe
 from swing_screener.db import repo
-from swing_screener.notify.select import REVERSAL_POOL_N
 from swing_screener.db.models import Signal
 from swing_screener.db.session import get_engine
+from swing_screener.notify.select import REVERSAL_POOL_N
 from swing_screener.pipeline.analyze import (
     SignalResult,
     analyze_frames,
@@ -31,9 +31,9 @@ from swing_screener.pipeline.analyze import (
     build_frames,
 )
 from swing_screener.pipeline.arms import BASELINE, build_arms
-from swing_screener.pipeline.diversity import cap_by_sector, first_per_ticker
 from swing_screener.pipeline.broker import BrokerClient
 from swing_screener.pipeline.broker_alpaca import build_broker
+from swing_screener.pipeline.diversity import cap_by_sector, first_per_ticker
 from swing_screener.pipeline.reconcile import reconcile_live
 from swing_screener.pipeline.regime import MARKET_PROXY, classify_regime
 from swing_screener.pipeline.shadow import (
@@ -119,8 +119,9 @@ def _alembic_upgrade(db_url: str) -> None:
     the optional ``azure`` extra and is absent in CI / local sqlite runs; tests
     monkeypatch this whole function so it never executes there.
     """
-    from alembic import command
     from alembic.config import Config
+
+    from alembic import command
 
     base = _alembic_dir()
     cfg = Config(str(base / "alembic.ini"))
@@ -149,7 +150,7 @@ def _migrate_with_retry(
         try:
             upgrade(db_url)
             return
-        except Exception as exc:  # noqa: BLE001 -- inspect message, decide retry
+        except Exception as exc:
             if _SERVERLESS_RESUMING not in str(exc):
                 raise  # not a resume; fail fast on the real error
             if attempt == attempts:
@@ -269,9 +270,7 @@ def _passes_reversal_surface(pr: SignalResult, cfg: StrategyConfig) -> bool:
     renderer (both must agree with the digest about WHICH reversals can reach the email)."""
     if cfg.reversal_surface_premium_only and pr.conviction_tier != "premium":
         return False
-    if cfg.reversal_surface_confirmed_only and pr.strength != "confirmed":
-        return False
-    return True
+    return not (cfg.reversal_surface_confirmed_only and pr.strength != "confirmed")
 
 
 def _would_surface(pr: SignalResult, rank: int, cfg: StrategyConfig) -> bool:
@@ -392,7 +391,7 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
                migrate_fn: Callable[[str], None] | None = None,
                broker: BrokerClient | None = None) -> RunResult:
     cfg = cfg or StrategyConfig()
-    today = today or date.today()
+    today = today or datetime.now(UTC).date()
     # Live reconcile cadence: the BROKER owns live fills/exits, so when execution_mode=="live"
     # AND a broker is configured we reconcile the live book right where positions are advanced
     # (a fill materializes an account="live" PaperTrade; a venue close reconciles its exit).
@@ -578,7 +577,7 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         if broker is None and settings.broker and repo.load_open_live_trades(s):
             try:
                 broker = build_broker(settings)
-            except Exception:  # noqa: BLE001 -- a secrets/config gap must not abort the screen
+            except Exception:
                 log.warning("open LIVE exposure exists but the broker could not be built; "
                             "live book NOT reconciled this run", exc_info=True)
         if broker is not None and (settings.execution_mode == "live"

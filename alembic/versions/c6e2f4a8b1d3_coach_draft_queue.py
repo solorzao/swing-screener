@@ -9,16 +9,15 @@ these; the journal.coach_run worker drains it and backfills the review's narrati
 Mirrors analysis_requests (status queued|running|done|failed, started_at claim clock).
 """
 from collections.abc import Sequence
-from typing import Union
 
 import sqlalchemy as sa
 
 from alembic import op
 
 revision: str = "c6e2f4a8b1d3"
-down_revision: Union[str, Sequence[str], None] = "b5f8d2a1c3e7"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "b5f8d2a1c3e7"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

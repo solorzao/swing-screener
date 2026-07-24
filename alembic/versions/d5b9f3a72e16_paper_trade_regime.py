@@ -11,16 +11,15 @@ nullable (NULL = unknown, e.g. SPY data unavailable, or legacy rows); not indexe
 the other denormalized tag columns (quality_tier / volatility_tier).
 """
 from collections.abc import Sequence
-from typing import Union
 
 import sqlalchemy as sa
 
 from alembic import op
 
 revision: str = "d5b9f3a72e16"
-down_revision: Union[str, Sequence[str], None] = "c4d8e2f6a9b1"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "c4d8e2f6a9b1"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

@@ -10,16 +10,15 @@ both signals (surfacing filter) and paper_trades (size-weighted performance). NO
 "base" default so legacy rows read as the lowest tier; not indexed, matching the other tag columns.
 """
 from collections.abc import Sequence
-from typing import Union
 
 import sqlalchemy as sa
 
 from alembic import op
 
 revision: str = "a7c2e9f4d8b6"
-down_revision: Union[str, Sequence[str], None] = "f3a9c1e7b2d4"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "f3a9c1e7b2d4"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

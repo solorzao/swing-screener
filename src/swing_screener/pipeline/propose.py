@@ -20,8 +20,8 @@ from pathlib import Path
 import numpy as np
 
 from swing_screener.analytics.performance import (
-    MIN_LEADERBOARD_N,
     _CLUSTER_FLOOR,
+    MIN_LEADERBOARD_N,
     _is_closed_filled,
     closed_by_ticker,
     clustered_two_sample_delta_low,

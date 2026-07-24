@@ -11,16 +11,15 @@ column carries a server_default of "baseline" so existing rows backfill to the
 all-or-nothing arm. Indexed because QC slices the book by arm.
 """
 from collections.abc import Sequence
-from typing import Union
 
 import sqlalchemy as sa
 
 from alembic import op
 
 revision: str = "f7a1c2d4e5b8"
-down_revision: Union[str, Sequence[str], None] = "d3e8f1b6a2c9"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "d3e8f1b6a2c9"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

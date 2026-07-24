@@ -44,9 +44,8 @@ def _quality_gates_pass(f: pd.DataFrame, last, pullback: list, swing_low: float,
         if math.isnan(rvol) or rvol < cfg.vol_thrust_min:
             return False
     # trend strength: EMA20 must sit a meaningful (ATR-normalized) distance above EMA50
-    if cfg.min_ema_sep_atr > 0 and atr:
-        if (float(last["ema_fast"]) - float(last["ema_slow"])) / atr < cfg.min_ema_sep_atr:
-            return False
+    if cfg.min_ema_sep_atr > 0 and atr and (float(last["ema_fast"]) - float(last["ema_slow"])) / atr < cfg.min_ema_sep_atr:
+        return False
     # momentum re-acceleration: MACD histogram positive AND turning up
     if cfg.require_macd_hook and not (float(last["macd_hist"]) > 0 and bool(last["macd_hist_rising"])):
         return False

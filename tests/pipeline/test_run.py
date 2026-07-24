@@ -208,9 +208,10 @@ def test_run_persists_and_enriches_universe(tmp_path, bars, monkeypatch):
     run.run_screen(universe_path=_write_universe(tmp_path, ["AAPL", "ZZZ"]), db_url=db,
                    cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts",
                    today=date(2024, 4, 1))
+    from sqlalchemy.orm import Session
+
     from swing_screener.db import repo
     from swing_screener.db.session import get_engine
-    from sqlalchemy.orm import Session
     with Session(get_engine(db)) as s:
         rows = {u.ticker: u for u in repo.list_universe(s)}
     assert set(rows) == {"AAPL", "ZZZ"}            # full seed persisted
@@ -270,8 +271,8 @@ def test_run_stamps_extension_and_inherits_first_seen_across_runs(tmp_path, bars
         return {"1d": _firing(bars)} if ticker == "AAPL" else {}
     monkeypatch.setattr(run, "_fetch_all_timeframes", fake_fetch)
     db = f"sqlite:///{tmp_path / 'db.sqlite'}"
-    kw = dict(universe_path=_write_universe(tmp_path, ["AAPL"]), db_url=db,
-              cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts", cfg=_NO_EXT_GATE)
+    kw = {"universe_path": _write_universe(tmp_path, ["AAPL"]), "db_url": db,
+              "cache_dir": tmp_path / "cache", "chart_dir": tmp_path / "charts", "cfg": _NO_EXT_GATE}
 
     run.run_screen(today=date(2024, 4, 1), **kw)
     run.run_screen(today=date(2024, 4, 2), **kw)  # same setup fires again next run
@@ -355,11 +356,11 @@ def test_run_is_idempotent_for_same_day(tmp_path, bars, monkeypatch):
 
     db = f"sqlite:///{tmp_path / 'db.sqlite'}"
     today = date(2024, 4, 1)
-    kwargs = dict(
-        universe_path=_write_universe(tmp_path, ["AAPL"]), db_url=db,
-        cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts", today=today,
-        cfg=_NO_EXT_GATE,
-    )
+    kwargs = {
+        "universe_path": _write_universe(tmp_path, ["AAPL"]), "db_url": db,
+        "cache_dir": tmp_path / "cache", "chart_dir": tmp_path / "charts", "today": today,
+        "cfg": _NO_EXT_GATE,
+    }
     res1 = run.run_screen(**kwargs)
     run.run_screen(**kwargs)  # second run for the SAME day
 
@@ -385,11 +386,11 @@ def test_run_double_fire_does_not_duplicate_or_double_advance(tmp_path, bars, mo
 
     db = f"sqlite:///{tmp_path / 'db.sqlite'}"
     today = date(2024, 4, 2)
-    kwargs = dict(
-        universe_path=_write_universe(tmp_path, ["AAPL"]), db_url=db,
-        cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts", today=today,
-        cfg=_NO_EXT_GATE,
-    )
+    kwargs = {
+        "universe_path": _write_universe(tmp_path, ["AAPL"]), "db_url": db,
+        "cache_dir": tmp_path / "cache", "chart_dir": tmp_path / "charts", "today": today,
+        "cfg": _NO_EXT_GATE,
+    }
 
     def _snapshot():
         with Session(get_engine(db)) as s:

@@ -1,7 +1,7 @@
 """Coach deterministic trade-review grader: code owns every number; no MAE/MFE
 (the Trade table has no water marks); robinhood is premium-$, no R, no A+ grade."""
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 from swing_screener.db.models import OptionPaperTrade, Trade
 from swing_screener.journal.coach_grade import (
@@ -55,7 +55,7 @@ def test_equity_result_none_when_open_or_bad_risk():
 def test_option_facts_are_premium_dollars_never_r():
     o = OptionPaperTrade(
         account="robinhood", strategy="gex", underlying="SPY", direction="long",
-        opened_at=datetime(2026, 7, 1, 10, 0), closed_at=datetime(2026, 7, 3, 15, 0),
+        opened_at=datetime(2026, 7, 1, 10, 0, tzinfo=UTC), closed_at=datetime(2026, 7, 3, 15, 0, tzinfo=UTC),
         premium_pnl=42.0, status="closed", exit_reason="manual",
     )
     f = option_review_facts(o)

@@ -1,6 +1,6 @@
 import base64
 import types
-from datetime import datetime
+from datetime import UTC, datetime
 
 from swing_screener.notify.pdf import PdfPick, build_digest_pdf
 from swing_screener.notify.ticker_report import TickerReport, TimeframeRead
@@ -185,7 +185,7 @@ def _ticker_report():
     ]
     return TickerReport(
         ticker="AMD", name="Advanced Micro Devices",
-        run_at=datetime(2026, 6, 16, 9, 30), reads=reads,
+        run_at=datetime(2026, 6, 16, 9, 30, tzinfo=UTC), reads=reads,
         summary="Daily continuation intact; weekly still basing.",
         analysis_text="CORE: Clean continuation.\n4h: Momentum building.",
         is_deep=True,

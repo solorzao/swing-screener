@@ -1,7 +1,7 @@
 """Trades-router write actions (split from test_api.py): POST /api/trades,
 POST /api/trades/{id}/close, and the _override_note branch pins."""
 
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -18,8 +18,8 @@ from swing_screener.db.models import (
     Trade,
 )
 from tests.cockpit.conftest import (
-    _client_and_engine,
     _HDR,
+    _client_and_engine,
     _signal_row,
     _trade_body,
 )
@@ -89,14 +89,14 @@ def test_log_trade_persists_with_engine_defaults(tmp_path: Path) -> None:
     r = client.post("/api/trades", json=_trade_body(notes="from cockpit"), headers=_HDR)
     assert r.status_code == 200
     body = r.json()
-    assert body["entry_date"] == date.today().isoformat()  # server-stamped, never client
+    assert body["entry_date"] == datetime.now(UTC).date().isoformat()  # server-stamped, never client
     assert body["override"] is None  # unprefilled: no signal to verify against
     with Session(engine) as s:
         t = s.get(Trade, body["trade_id"])
         assert t is not None
         assert t.ticker == "AMD"  # stripped + uppercased
         assert (t.timeframe, t.horizon) == ("1d", "medium")  # engine defaults
-        assert t.status == "open" and t.entry_date == date.today()
+        assert t.status == "open" and t.entry_date == datetime.now(UTC).date()
         assert t.notes == "from cockpit"
         assert t.signal_id is None and t.override is None
 
@@ -190,10 +190,10 @@ def test_log_trade_unknown_signal_id_is_422(tmp_path: Path) -> None:
 
 
 def _seed_open_trade(engine: Engine, **over: object) -> int:
-    row: dict[str, object] = dict(
-        ticker="AMD", timeframe="1d", horizon="medium", entry_date=date(2026, 7, 1),
-        entry_price=100.0, size=10.0, stop=95.0, target=110.0,
-    )
+    row: dict[str, object] = {
+        "ticker": "AMD", "timeframe": "1d", "horizon": "medium", "entry_date": date(2026, 7, 1),
+        "entry_price": 100.0, "size": 10.0, "stop": 95.0, "target": 110.0,
+    }
     row.update(over)
     with Session(engine) as s:
         t = Trade(**row)
@@ -222,7 +222,7 @@ def test_close_trade_computes_r_and_dollars_and_writes_exit_event(tmp_path: Path
     assert body["trade_id"] == tid
     assert body["realized_r"] == pytest.approx(1.6)     # (108-100)/(100-95)
     assert body["realized_usd"] == pytest.approx(80.0)  # (108-100)*10
-    assert body["exit_date"] == date.today().isoformat()  # default: today
+    assert body["exit_date"] == datetime.now(UTC).date().isoformat()  # default: today
     assert body["exit_reason"] == "target"
     with Session(engine) as s:
         t = s.get(Trade, tid)
@@ -309,7 +309,7 @@ def test_close_trade_rejects_out_of_range_exit_date(tmp_path: Path) -> None:
                          json={"exit_price": 108.0, "exit_date": "2026-06-30"},
                          headers=_HDR)
     assert before.status_code == 422
-    future = (date.today() + timedelta(days=1)).isoformat()
+    future = (datetime.now(UTC).date() + timedelta(days=1)).isoformat()
     after = client.post(f"/api/trades/{tid}/close",
                         json={"exit_price": 108.0, "exit_date": future}, headers=_HDR)
     assert after.status_code == 422

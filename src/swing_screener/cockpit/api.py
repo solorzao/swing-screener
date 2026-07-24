@@ -48,13 +48,13 @@ from swing_screener.cockpit.routers.analysis import (
     build_analysis_router,
 )
 from swing_screener.cockpit.routers.analyst import build_analyst_router
-from swing_screener.cockpit.routers.books import build_books_router
-from swing_screener.cockpit.routers.events import build_events_router
-from swing_screener.cockpit.routers.journal import build_journal_router
-from swing_screener.cockpit.routers.gex import build_gex_router
-from swing_screener.cockpit.routers.lab import LabBars, build_lab_router
-from swing_screener.cockpit.routers.coach import build_coach_router
 from swing_screener.cockpit.routers.audit import build_audit_router
+from swing_screener.cockpit.routers.books import build_books_router
+from swing_screener.cockpit.routers.coach import build_coach_router
+from swing_screener.cockpit.routers.events import build_events_router
+from swing_screener.cockpit.routers.gex import build_gex_router
+from swing_screener.cockpit.routers.journal import build_journal_router
+from swing_screener.cockpit.routers.lab import LabBars, build_lab_router
 from swing_screener.cockpit.routers.picks import build_picks_router
 from swing_screener.cockpit.routers.playbooks import build_playbooks_router
 from swing_screener.cockpit.routers.proposals import build_proposals_router

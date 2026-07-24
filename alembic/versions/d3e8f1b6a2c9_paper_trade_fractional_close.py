@@ -12,16 +12,15 @@ trail reference). NOT NULL booleans/floats carry server_defaults so existing row
 backfill to the feature-off state (no partial, full size).
 """
 from collections.abc import Sequence
-from typing import Union
 
 import sqlalchemy as sa
 
 from alembic import op
 
 revision: str = "d3e8f1b6a2c9"
-down_revision: Union[str, Sequence[str], None] = "cb4445986710"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "cb4445986710"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

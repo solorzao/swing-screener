@@ -11,8 +11,8 @@ from sqlalchemy.orm import Session
 
 from swing_screener.db.models import (
     AnalysisRequest,
-    CoachDraftRequest,
     AnalystCall,
+    CoachDraftRequest,
     EmailLog,
     ExecutionLog,
     ExitEvent,
@@ -302,7 +302,7 @@ def score_analyst_calls(session: Session) -> int:
         if trade is None:
             continue
         call.realized_r = trade.realized_r
-        call.scored_at = trade.exit_date or date.today()
+        call.scored_at = trade.exit_date or datetime.now(UTC).date()
         scored += 1
     session.commit()
     return scored

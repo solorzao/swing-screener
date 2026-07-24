@@ -155,7 +155,7 @@ def detect_reversal(f: pd.DataFrame, cfg: StrategyConfig) -> ReversalContext | N
     # column is absent (SPY not provided) or NaN (SPY gap) -- fail open, no market data penalty.
     if cfg.require_rs_leader and "rs" in f.columns:
         rs_now = float(f["rs"].iloc[-1])
-        if rs_now == rs_now and rs_now <= float(f["rs"].tail(cfg.rs_ma_window).mean()):
+        if rs_now == rs_now and rs_now <= float(f["rs"].tail(cfg.rs_ma_window).mean()):  # noqa: PLR0124 -- NaN check
             return None
     # The prior decline's high over a longer lookback -- the breakdown level the relief
     # rally targets (and the base for the target retracement).

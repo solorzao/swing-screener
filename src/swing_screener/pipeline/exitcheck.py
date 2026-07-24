@@ -17,7 +17,7 @@ fetch -> enrich -> last-bar shape, including the HA ``shaved_head`` flag that
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import numpy as np
@@ -123,7 +123,7 @@ def run_exit_check(*, db_url: str, today: date | None = None,
     ExitEvent (deduped by ``(trade_id, reason, created_date)`` so an hourly
     re-run is idempotent). The real ``Trade`` row is never mutated.
     """
-    today = today or date.today()
+    today = today or datetime.now(UTC).date()
     cfg = StrategyConfig()
     engine = get_engine(db_url)
 

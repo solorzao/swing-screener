@@ -193,7 +193,7 @@ def pending_exit_alerts(session: Session, run_date: date) -> list[ExitEvent]:
     # mssql -- portable, unlike the `.is_not()` form.
     stmt = (
         select(ExitEvent)
-        .where(ExitEvent.created_date == run_date, ExitEvent.is_paper == False,  # noqa: E712
+        .where(ExitEvent.created_date == run_date, ExitEvent.is_paper == False,
                ExitEvent.reason != "manual_close")
         .order_by(ExitEvent.id.desc())
     )

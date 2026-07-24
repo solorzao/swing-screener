@@ -80,8 +80,7 @@ def _money(raw: str) -> float | None:
 def _qty(raw: str) -> int:
     """Quantity, dropping the OEXP ``S`` suffix (e.g. ``30S`` -> ``30``)."""
     s = raw.strip()
-    if s.endswith("S"):
-        s = s[:-1]
+    s = s.removesuffix("S")
     return int(s)
 
 
@@ -91,7 +90,7 @@ def _parse_date(raw: str) -> date:
 
 
 def _occ_symbol(underlying: str, expiry: date, right: str, strike: float) -> str:
-    return f"{underlying:<6}{expiry:%y%m%d}{right}{int(round(strike * 1000)):08d}"
+    return f"{underlying:<6}{expiry:%y%m%d}{right}{round(strike * 1000):08d}"
 
 
 def parse_activity_csv(text: str) -> list[FillRecord]:

@@ -183,5 +183,5 @@ class BrokerSnapshot:
                 open_orders=tuple(broker.list_open_orders()),
                 as_of=datetime.now(UTC),
             )
-        except Exception:  # the module invariant: degrade to None, never crash
+        except Exception:  # noqa: BLE001 -- the module invariant: degrade to None, never crash
             return None

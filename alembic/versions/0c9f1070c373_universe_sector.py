@@ -10,16 +10,15 @@ existing rows backfill to NULL ("unknown" -> never capped, fail-open) until the 
 screen populates them. Mirrors the Universe model in db/models.py.
 """
 from collections.abc import Sequence
-from typing import Union
 
 import sqlalchemy as sa
 
 from alembic import op
 
 revision: str = "0c9f1070c373"
-down_revision: Union[str, Sequence[str], None] = "bc856e48d4dc"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "bc856e48d4dc"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

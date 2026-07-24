@@ -18,16 +18,15 @@ uses a composite unique over its NOT-NULL (kind, period_from, period_to, breach_
 Strings stay bounded (Azure SQL cannot index NVARCHAR(max)); JSON bodies are Text.
 """
 from collections.abc import Sequence
-from typing import Union
 
 import sqlalchemy as sa
 
 from alembic import op
 
 revision: str = "b5f8d2a1c3e7"
-down_revision: Union[str, Sequence[str], None] = "a4e7c1b9f2d6"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "a4e7c1b9f2d6"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

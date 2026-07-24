@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from swing_screener.cockpit.common import ActionNonce, _finite_or_none, _require_cockpit
 from swing_screener.db.models import GexSnapshot, OptionPaperTrade, OptionSetup
 from swing_screener.options import broker_import
+from swing_screener.options.autograde import AutoGrade
 from swing_screener.options.chain import _now_eastern
 from swing_screener.options.config import GexConfig
 from swing_screener.options.journal import (
@@ -29,7 +30,6 @@ from swing_screener.options.journal import (
     list_setups,
     set_status,
 )
-from swing_screener.options.autograde import AutoGrade
 from swing_screener.options.reading import describe_gex
 from swing_screener.options.run import (
     Analyzer,

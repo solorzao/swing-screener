@@ -1,8 +1,8 @@
 from swing_screener.signals.score import (
-    score_signal,
     ScoreInputs,
-    _rsi_quality,
     _hist_accel,
+    _rsi_quality,
+    score_signal,
 )
 
 

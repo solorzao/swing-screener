@@ -7,7 +7,7 @@ returns the same row instead of duplicating. Tag DEFINITIONS are get-or-create o
 (kind, name) so the vocabulary never accretes duplicates.
 """
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy.orm import Session
 
@@ -93,7 +93,7 @@ def test_theses_for_trade_filters_by_trade_and_book():
             JournalThesis(trade_id=9, book="research", event_kind="entry",
                           source="screener", body="pullback into 20EMA",
                           snapshot_json='{"rsi": 40}',
-                          created_at=datetime(2026, 7, 12, 9, 30, 0)),
+                          created_at=datetime(2026, 7, 12, 9, 30, 0, tzinfo=UTC)),
             JournalThesis(trade_id=9, book="research", event_kind="exit",
                           source="human", body="hit target"),
             JournalThesis(trade_id=9, book="paper", event_kind="entry",

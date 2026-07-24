@@ -35,7 +35,7 @@ def test_tag_and_trade_tag_roundtrip():
         s.flush()  # assign tag.id
         s.add(JournalTradeTag(
             trade_id=42, book="research", tag_id=tag.id, source="human",
-            created_at=datetime(2026, 7, 12, 14, 30, 0),
+            created_at=datetime(2026, 7, 12, 14, 30, 0),  # noqa: DTZ001 -- naive literal; SQLite DateTime column is tz-naive on roundtrip
         ))
         s.commit()
         tag_id = tag.id
@@ -52,7 +52,7 @@ def test_tag_and_trade_tag_roundtrip():
         assert link.book == "research"
         assert link.tag_id == tag_id
         assert link.source == "human"
-        assert link.created_at == datetime(2026, 7, 12, 14, 30, 0)
+        assert link.created_at == datetime(2026, 7, 12, 14, 30, 0)  # noqa: DTZ001 -- naive literal; SQLite DateTime column is tz-naive on roundtrip
 
 
 def test_note_roundtrip():
@@ -61,7 +61,7 @@ def test_note_roundtrip():
         s.add(JournalNote(
             day=date(2026, 7, 12), kind="premarket", module="swing",
             body="watching semis into CPI", source="human",
-            created_at=datetime(2026, 7, 12, 8, 0, 0),
+            created_at=datetime(2026, 7, 12, 8, 0, 0),  # noqa: DTZ001 -- naive literal; SQLite DateTime column is tz-naive on roundtrip
         ))
         s.commit()
 
@@ -72,7 +72,7 @@ def test_note_roundtrip():
         assert note.module == "swing"
         assert note.body == "watching semis into CPI"
         assert note.source == "human"
-        assert note.created_at == datetime(2026, 7, 12, 8, 0, 0)
+        assert note.created_at == datetime(2026, 7, 12, 8, 0, 0)  # noqa: DTZ001 -- naive literal; SQLite DateTime column is tz-naive on roundtrip
 
 
 def test_note_module_is_optional():

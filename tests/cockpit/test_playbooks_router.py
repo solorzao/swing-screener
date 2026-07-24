@@ -2,8 +2,8 @@
 drift, degrade postures) and /api/attention."""
 
 import dataclasses
-from datetime import date
 import json
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -29,7 +29,6 @@ from tests.cockpit.conftest import (
     _write_registry,
 )
 
-
 # ---- Task 11 reads: /api/playbooks, /api/weather, /api/analyst, /api/attention
 
 
@@ -46,11 +45,11 @@ ATTENTION_KEYS = {"proposals_queued", "proposals_approved_pending",
                   "reflection_due", "latest_analysis_id", "audit_unacked",
                   "audit_worst", "coach_pending", "research_prs"}
 def _sidecar_verdict(**over: object) -> Verdict:
-    base: dict = dict(
-        play_type="reversal", dimension="market_trend", bucket="bear",
-        tier="replay_screened", n=2387, expectancy_r=0.196, ci_low=0.104,
-        n_clusters=100, source="replay",
-    )
+    base: dict = {
+        "play_type": "reversal", "dimension": "market_trend", "bucket": "bear",
+        "tier": "replay_screened", "n": 2387, "expectancy_r": 0.196, "ci_low": 0.104,
+        "n_clusters": 100, "source": "replay",
+    }
     base.update(over)
     return Verdict(**base)
 

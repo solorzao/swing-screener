@@ -52,6 +52,21 @@ testpaths = ["tests"]
 line-length = 100
 target-version = "py312"
 
+# FastAPI's design puts callables (Depends/Query/...) in argument defaults, which
+# is exactly what flake8-bugbear's B008 flags. This allowlist is ruff's documented
+# mechanism for it, so B008 still catches genuine mutable-default calls elsewhere.
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Path",
+    "fastapi.Header",
+    "fastapi.Body",
+    "fastapi.Form",
+    "fastapi.File",
+    "fastapi.Cookie",
+]
+
 [tool.mypy]
 python_version = "3.12"
 # The CI gate is `mypy` (bare), which type-checks ONLY the installed package via

@@ -62,7 +62,7 @@ def _db_float(v: float | None) -> float | None:
     8023 -- the 2026-07-05 market-weather failure, a holiday-padded NaN close), and
     NaN-as-data violates the honest-numbers rule regardless: an unavailable input is
     an explicit NULL, never NaN. ``v != v`` is the NaN test."""
-    return None if v is None or v != v else v
+    return None if v is None or v != v else v  # noqa: PLR0124 -- NaN check
 
 
 def _persist(session: Session, facts: MarketFacts, analysis: MarketAnalysis) -> None:

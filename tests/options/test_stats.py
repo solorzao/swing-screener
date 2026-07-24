@@ -8,10 +8,10 @@ from swing_screener.options.stats import lab_summary
 
 
 def _closed(day: int, r: float, grade_setup=None, **kw) -> OptionPaperTrade:
-    opened = datetime(2026, 7, 1, 10, 0) + timedelta(days=day)
-    base = dict(account="options-lab", strategy="gex", underlying="SPY", direction="long",
-                opened_at=opened, closed_at=opened + timedelta(hours=1),
-                entry=100.0, stop=99.0, target=102.0, status="closed", realized_r=r)
+    opened = datetime(2026, 7, 1, 10, 0) + timedelta(days=day)  # noqa: DTZ001 -- naive test fixture
+    base = {"account": "options-lab", "strategy": "gex", "underlying": "SPY", "direction": "long",
+                "opened_at": opened, "closed_at": opened + timedelta(hours=1),
+                "entry": 100.0, "stop": 99.0, "target": 102.0, "status": "closed", "realized_r": r}
     base.update(kw)
     return OptionPaperTrade(**base)
 
