@@ -115,7 +115,7 @@ def test_analysis_queues_and_hands_off_to_the_worker(tmp_path: Path) -> None:
     assert r.status_code == 200
     body = r.json()
     assert body["ticker"] == "NVDA" and body["status"] == "queued"
-    assert body["reasoning"] == "max"  # the lab default: full effort
+    assert body["reasoning"] == "xhigh"  # the lab default (2026-07-23 cost trim)
     assert drained == [body["id"]]     # the in-process drain got the row id
 
     listed = client.get("/api/lab/analysis").json()["analyses"]
