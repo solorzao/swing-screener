@@ -26,25 +26,25 @@ from swing_screener.db.session import get_engine
 
 
 def _fields(**overrides: object) -> dict[str, object]:
-    base: dict[str, object] = dict(
-        created_date=date(2026, 6, 21),
-        ticker="AMD",
-        timeframe="1d",
-        play_type="continuation",
-        run_date=date(2026, 6, 20),
-        account="paper",
-        mode="manual",
-        side="buy",
-        limit_price=120.5,
-        shares=10,
-        stop=110.0,
-        target=140.0,
-        risk_dollars=105.0,
-        notional=1205.0,
-        status="recorded",
-        detail="manual order ticket",
-        idempotency_key="AMD|1d|continuation|2026-06-20|paper",
-    )
+    base: dict[str, object] = {
+        "created_date": date(2026, 6, 21),
+        "ticker": "AMD",
+        "timeframe": "1d",
+        "play_type": "continuation",
+        "run_date": date(2026, 6, 20),
+        "account": "paper",
+        "mode": "manual",
+        "side": "buy",
+        "limit_price": 120.5,
+        "shares": 10,
+        "stop": 110.0,
+        "target": 140.0,
+        "risk_dollars": 105.0,
+        "notional": 1205.0,
+        "status": "recorded",
+        "detail": "manual order ticket",
+        "idempotency_key": "AMD|1d|continuation|2026-06-20|paper",
+    }
     base.update(overrides)
     return base
 

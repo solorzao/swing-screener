@@ -7,11 +7,11 @@ not.
 """
 
 from swing_screener.config import StrategyConfig
-from swing_screener.pipeline.analyze import SignalResult, build_frames
 from swing_screener.notify.ticker_report import (
     TimeframeRead,
     build_ticker_reads,
 )
+from swing_screener.pipeline.analyze import SignalResult, build_frames
 
 
 def _firing(bars):

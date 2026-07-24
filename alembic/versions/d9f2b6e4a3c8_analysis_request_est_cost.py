@@ -14,16 +14,15 @@ honest unknown, never a fake $0. Purely additive, behavior-preserving. Mirrors t
 AnalysisRequest model in db/models.py exactly.
 """
 from collections.abc import Sequence
-from typing import Union
 
 import sqlalchemy as sa
 
 from alembic import op
 
 revision: str = "d9f2b6e4a3c8"
-down_revision: Union[str, Sequence[str], None] = "c6e2f4a8b1d3"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "c6e2f4a8b1d3"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

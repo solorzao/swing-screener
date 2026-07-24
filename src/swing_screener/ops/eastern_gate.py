@@ -86,9 +86,7 @@ def should_run(now_et: datetime, *, hours: str | None, require_last_bday: bool) 
     wanted = _parse_hours(hours)
     if wanted is not None and now_et.hour not in wanted:
         return False
-    if require_last_bday and not is_last_business_day(now_et.date()):
-        return False
-    return True
+    return not (require_last_bday and not is_last_business_day(now_et.date()))
 
 
 def main(

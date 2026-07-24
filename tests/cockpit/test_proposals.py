@@ -2,7 +2,7 @@
 approve/withdraw decisions."""
 
 from dataclasses import fields
-from datetime import date
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -14,12 +14,11 @@ from swing_screener.pipeline.proposed import (
 )
 from swing_screener.pipeline.registry import Experiment
 from tests.cockpit.conftest import (
-    _client,
     _HDR,
+    _client,
     _proposal,
     _write_proposals,
 )
-
 
 # ---- proposals: GET /api/proposals + the approve/withdraw decisions ----
 
@@ -223,8 +222,8 @@ def test_approve_proposal_rewrites_the_store_with_the_checklist(
     assert body["note"] == _NOTE
     assert body["checklist"] == [
         "1. pipeline/variants.py — add the roster line (replace(base, **delta))",
-        "2. edge/experiments.json — add the registry row (stopping rule, mde_r, "
-        "target_ci_halfwidth_r, registered sha)",
+        ("2. edge/experiments.json — add the registry row (stopping rule, mde_r, "
+        "target_ci_halfwidth_r, registered sha)"),
         "3. edge/reversal.proposed.json — this flip (done)",
     ]
     # Leak posture: the resolved edge_dir (tmp_path) must not appear on the wire.
@@ -232,7 +231,7 @@ def test_approve_proposal_rewrites_the_store_with_the_checklist(
     (reloaded,) = load_proposed_for("reversal", tmp_path)
     assert reloaded.status == "approved"
     assert reloaded.rationale.endswith(
-        f" APPROVED {date.today().isoformat()}: worth a slot")
+        f" APPROVED {datetime.now(UTC).date().isoformat()}: worth a slot")
 
 
 def test_proposals_get_carries_the_checklist_on_approved_rows(
@@ -259,14 +258,14 @@ def test_proposals_get_carries_the_checklist_on_approved_rows(
             _client(tmp_path).get("/api/proposals").json()["proposals"]}
     assert rows["c_ok"]["promotion_checklist"] == [
         "1. pipeline/variants.py — add the roster line (replace(base, **delta))",
-        "2. edge/experiments.json — add the registry row (stopping rule, mde_r, "
-        "target_ci_halfwidth_r, registered sha)",
+        ("2. edge/experiments.json — add the registry row (stopping rule, mde_r, "
+        "target_ci_halfwidth_r, registered sha)"),
         "3. edge/continuation.proposed.json — this flip (done)",
     ]
     assert rows["r_ok"]["promotion_checklist"] == [
         "1. pipeline/variants.py — add the roster line (replace(base, **delta))",
-        "2. edge/experiments.json — add the registry row (stopping rule, mde_r, "
-        "target_ci_halfwidth_r, registered sha)",
+        ("2. edge/experiments.json — add the registry row (stopping rule, mde_r, "
+        "target_ci_halfwidth_r, registered sha)"),
         "3. edge/reversal.proposed.json — this flip (done)",
     ]
     assert rows["r_q"]["promotion_checklist"] is None

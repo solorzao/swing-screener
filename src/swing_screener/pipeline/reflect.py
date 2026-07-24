@@ -20,7 +20,7 @@ import logging
 import statistics
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
-from datetime import date
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -581,10 +581,10 @@ def render_edge_file(
             forward_closed_at_last_reflection=n_closed_now, last_reflected=None,
         )),
         "",
-        "> This playbook is maintained by the **reflection** pass (`pipeline/reflect.py`):"
+        ("> This playbook is maintained by the **reflection** pass (`pipeline/reflect.py`):"
         " code deterministically grades each pre-registered condition into a tiered verdict"
         " and an Opus seam authors the prose. Every change lands as a **human-gated PR** --"
-        " nothing here is auto-merged. The file is also **hand-editable**.",
+        " nothing here is auto-merged. The file is also **hand-editable**."),
         "",
         f"## Thesis\n\n{thesis}\n",
         _section(
@@ -889,10 +889,10 @@ def _opus_drafter(
             None,
         )
         if not isinstance(tool_input, dict):
-            raise ValueError("no propose_screen_variants tool_use block in response")
+            raise ValueError("no propose_screen_variants tool_use block in response")  # noqa: TRY004 -- intentional ValueError for malformed API response
         variants = tool_input.get("variants", [])
         if not isinstance(variants, list):
-            raise ValueError("propose_screen_variants 'variants' is not a list")
+            raise ValueError("propose_screen_variants 'variants' is not a list")  # noqa: TRY004 -- intentional ValueError for malformed API response
         return variants
 
     return _fn
@@ -1366,7 +1366,7 @@ def main() -> None:
     with Session(engine) as session:
         reflected = run_reflection(
             session, replay_frames=replay_frames, spy_daily=spy_daily,
-            edge_dir=resolve_edge_dir(args.edge_dir), today=date.today().isoformat(),
+            edge_dir=resolve_edge_dir(args.edge_dir), today=datetime.now(UTC).date().isoformat(),
             # belt-and-braces; the carve already skips drafting
             drafter=None if args.verdicts_only else _opus_drafter(), force=args.force,
             corpus_id=corpus_id, verdicts_only=args.verdicts_only,

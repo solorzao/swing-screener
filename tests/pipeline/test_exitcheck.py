@@ -36,7 +36,7 @@ _BARS = {
 }
 
 
-def _fake_bars(tickers, timeframe):  # noqa: ARG001 - mirror the live seam signature
+def _fake_bars(tickers, timeframe):
     return {t: _BARS[t] for t in tickers if t in _BARS}
 
 
@@ -114,7 +114,7 @@ def test_reversal_trade_uses_the_reversal_exit_policy(tmp_path):
     # a bearish shaved-head bar: the momentum-flip trigger (no stop/target/time trip)
     flip = {"low": 99.0, "high": 103.0, "close": 100.0, "shaved_head": True, "bearish": True}
 
-    def flip_bars(tickers, timeframe):  # noqa: ARG001 - mirror the live seam signature
+    def flip_bars(tickers, timeframe):
         return {t: flip for t in tickers}
 
     result = run_exit_check(db_url=url, today=RUN, latest_bars_fn=flip_bars)
@@ -151,7 +151,7 @@ def test_time_stop_counts_timeframe_bars_not_calendar_days(tmp_path):
         ])
         s.commit()
 
-    def benign_bars(tickers, timeframe):  # noqa: ARG001 - mirror the live seam signature
+    def benign_bars(tickers, timeframe):
         return {t: _BENIGN for t in tickers}
 
     result = run_exit_check(db_url=url, today=RUN, latest_bars_fn=benign_bars)

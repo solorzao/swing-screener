@@ -110,7 +110,7 @@ def _mem_session() -> Session:
 
 # Pristine counter-0 scaffold, NOT copied from the repo's edge/ (living documents whose
 # counters advance with every merged reflection PR -- see test_reflect_run._PRISTINE_MD).
-from tests.pipeline.test_reflect_run import _PRISTINE_MD  # noqa: E402
+from tests.pipeline.test_reflect_run import _PRISTINE_MD
 
 
 def _seed_edge_dir(tmp_path: Path) -> Path:

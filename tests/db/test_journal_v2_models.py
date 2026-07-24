@@ -1,6 +1,6 @@
 """Journal v2 foundation models: round-trip + composite-unique enforcement."""
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -59,7 +59,7 @@ def test_system_audit_roundtrip_and_unique() -> None:
 def test_weaknesses_and_disarm_roundtrip() -> None:
     with Session(get_engine("sqlite:///:memory:")) as s:
         s.add(WeaknessesProfile(scope="personal", items_json="[]"))
-        s.add(DisarmEvent(created_at=datetime(2026, 7, 12, 14, 0), reason="manual"))
+        s.add(DisarmEvent(created_at=datetime(2026, 7, 12, 14, 0, tzinfo=UTC), reason="manual"))
         s.commit()
         assert s.query(WeaknessesProfile).count() == 1
         assert s.query(DisarmEvent).count() == 1

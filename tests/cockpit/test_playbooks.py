@@ -14,11 +14,11 @@ from swing_screener.pipeline.reflect import Verdict, render_edge_file
 
 
 def _verdict(**over: object) -> Verdict:
-    base: dict = dict(
-        play_type="reversal", dimension="market_trend", bucket="bear",
-        tier="replay_screened", n=2387, expectancy_r=0.19589562, ci_low=0.10368658,
-        n_clusters=100, source="replay",
-    )
+    base: dict = {
+        "play_type": "reversal", "dimension": "market_trend", "bucket": "bear",
+        "tier": "replay_screened", "n": 2387, "expectancy_r": 0.19589562, "ci_low": 0.10368658,
+        "n_clusters": 100, "source": "replay",
+    }
     base.update(over)
     return Verdict(**base)
 

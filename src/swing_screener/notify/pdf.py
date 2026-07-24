@@ -206,16 +206,13 @@ def build_story(picks: Sequence[PdfPick]) -> list:
         )
         story.append(table)
         story.append(Spacer(1, 0.15 * inch))
-        for flow in _order_intent_flowables(p, styles):
-            story.append(flow)
-        for flow in _order_ticket_flowables(p, styles):
-            story.append(flow)
+        story.extend(_order_intent_flowables(p, styles))
+        story.extend(_order_ticket_flowables(p, styles))
         if p.is_deep:  # flag the richer Opus output so it's distinguishable at a glance
             story.append(Paragraph(
                 '<font color="#1a5fb4"><b>DEEP ANALYSIS</b></font>', styles["BodyText"]))
             story.append(Spacer(1, 0.05 * inch))
-        for flow in _rationale_flowables(p.rationale, styles):
-            story.append(flow)
+        story.extend(_rationale_flowables(p.rationale, styles))
         if i < len(picks) - 1:
             story.append(PageBreak())
 
@@ -355,8 +352,7 @@ def build_ticker_story(report: "TickerReport") -> list:
             story.append(Paragraph("No setup firing on this timeframe.", styles["BodyText"]))
         story.append(Spacer(1, 0.15 * inch))
 
-    for flow in _rationale_flowables(report.analysis_text, styles):
-        story.append(flow)
+    story.extend(_rationale_flowables(report.analysis_text, styles))
 
     return story
 

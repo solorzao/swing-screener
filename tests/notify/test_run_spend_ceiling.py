@@ -16,6 +16,7 @@ fundamentals/news fetchers, and the market-regime are injected.
 import json
 import logging
 from datetime import date
+from typing import ClassVar
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -170,7 +171,7 @@ class _EmptyBilledClient:
             server_tool_use = None
 
         class _Resp:
-            content = [_Text()]
+            content: ClassVar = [_Text()]
             usage = _Usage()
 
         class _M:

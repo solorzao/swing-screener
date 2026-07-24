@@ -140,9 +140,9 @@ def _probe_health(port: int, timeout_s: float = 1.0) -> bool:
     """True iff ``/api/health`` on localhost:<port> answers OK within the timeout."""
     url = f"http://127.0.0.1:{port}/api/health"
     try:
-        with urllib.request.urlopen(url, timeout=timeout_s) as resp:  # noqa: S310 (fixed localhost URL)
+        with urllib.request.urlopen(url, timeout=timeout_s) as resp:
             return bool(200 <= resp.status < 300)
-    except Exception:
+    except Exception:  # noqa: BLE001 -- best-effort health probe
         return False
 
 
@@ -231,7 +231,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     _ensure_streams()  # before anything can print: pythonw ships None streams
     try:
         return _run(argv)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- top-level startup guard, reported class-name-only
         _report_startup_failure(_startup_failure_reason(exc))
         return 1
 
@@ -271,7 +271,7 @@ def _run(argv: Sequence[str] | None) -> int:
             if sys.platform == "win32":  # same guard as _windows_message_box: the
                 # attribute only exists on Windows and CI type-checks on Linux
                 with contextlib.suppress(Exception):  # cosmetic: own taskbar identity,
-                    import ctypes                     # not python.exe's
+                    import ctypes  # not python.exe's
 
                     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
                         "SwingScreener.Cockpit")

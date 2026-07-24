@@ -5,8 +5,8 @@ import dataclasses
 from datetime import date, datetime
 from pathlib import Path
 
-from fastapi.testclient import TestClient
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
@@ -17,16 +17,15 @@ from swing_screener.db.models import (
     Signal,
     Universe,
 )
+from swing_screener.db.session import get_engine
 from swing_screener.notify import select as sel
 from swing_screener.notify.run import _drop_already_ran
-from swing_screener.db.session import get_engine
 from tests.cockpit.conftest import (
+    _RUN_D,
     _db_url,
     _grade_call,
     _positions_client,
-    _RUN_D,
 )
-
 
 # ---- Task 10 reads: /api/picks, /api/ticker, /api/exits, /api/universe, /api/emails
 

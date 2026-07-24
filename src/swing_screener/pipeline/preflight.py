@@ -98,10 +98,10 @@ def _check_reachable(
     can reuse it without a second call."""
     try:
         account = broker.get_account()
-    except Exception as exc:  # noqa: BLE001 -- a down broker is a NO-GO, never a crash
+    except Exception as exc:
         # Class name ONLY on the checklist (broker_error_detail); the full traceback --
         # what the operator actually debugs with -- goes to the log instead.
-        log.error("preflight: broker.get_account() failed", exc_info=True)
+        log.exception("preflight: broker.get_account() failed")
         return PreflightCheck("reachable", False, broker_error_detail(exc), True), None
     return PreflightCheck("reachable", True, f"account status {account.status}", True), account
 
@@ -211,8 +211,8 @@ def render_preflight(report: PreflightReport) -> str:
         "",
         f"Verdict: {headline}",
         "",
-        "This is a READ-ONLY check. It does NOT arm anything and moves no money; "
-        "flipping to live stays a deliberate human act, done elsewhere.",
+        ("This is a READ-ONLY check. It does NOT arm anything and moves no money; "
+        "flipping to live stays a deliberate human act, done elsewhere."),
         "",
     ]
     for c in report.checks:
@@ -242,14 +242,14 @@ def main() -> None:
     settings = load_settings()
     broker = build_broker(settings)
     if broker is None:
-        print(  # noqa: T201 -- the CLI's whole job is to print the verdict
+        print(
             "NO-GO: no broker configured (set SWING_BROKER, e.g. 'alpaca').")
         return
     engine = get_engine(settings.db_url)
     with Session(engine) as session:
         report = preflight(session, settings, broker=broker,
                            edge_dir=resolve_edge_dir(args.edge_dir))
-    print(render_preflight(report))  # noqa: T201 -- the CLI prints the checklist
+    print(render_preflight(report))
 
 
 if __name__ == "__main__":

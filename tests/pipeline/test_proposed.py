@@ -15,6 +15,8 @@ them into ``edge/<pt>.proposed.json``. This is the validated data layer they lan
 NO LLM, NO network -- pure data + validation.
 """
 
+import dataclasses
+
 import pytest
 
 from swing_screener.config import StrategyConfig
@@ -120,7 +122,7 @@ def test_proposed_json_empty_round_trips():
 
 def test_proposed_variant_is_frozen():
     pv = _pv()
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         pv.name = "mutated"  # type: ignore[misc]
 
 

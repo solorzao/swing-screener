@@ -1,16 +1,16 @@
 """Events router (split from test_api.py): the /api/events SSE wake channel,
 the change token's watermarks, and the post-action nonce."""
 
-from collections.abc import MutableMapping
-from datetime import date, datetime
 import json
 import os
+from collections.abc import MutableMapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import anyio
-from fastapi.testclient import TestClient
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
@@ -41,6 +41,7 @@ from swing_screener.pipeline.reflect import (
     verdicts_to_json,
 )
 from tests.cockpit.conftest import (
+    _HDR,
     _broker_app,
     _call,
     _client_and_engine,
@@ -48,7 +49,6 @@ from tests.cockpit.conftest import (
     _disarm_broker,
     _exec_log,
     _experiment,
-    _HDR,
     _nonce_of,
     _proposal,
     _trade,
@@ -56,7 +56,6 @@ from tests.cockpit.conftest import (
     _write_proposals,
     _write_registry,
 )
-
 
 # --- /api/events (SSE wake channel) ---------------------------------------------------
 
@@ -79,7 +78,7 @@ def test_change_token_moves_on_new_trade(tmp_path: Path) -> None:
     # ExitEvent that EVERY close path inserts (shadow.py / reconcile.py /
     # exitcheck.py) is the observable the token must watch.
     with Session(engine) as s:
-        s.add(ExitEvent(created_date=date.today(), tier="base", reason="stop_hit"))
+        s.add(ExitEvent(created_date=datetime.now(UTC).date(), tier="base", reason="stop_hit"))
         s.commit()
     assert _change_token(engine, tmp_path) != after_insert
 
@@ -167,7 +166,7 @@ def test_change_token_watches_the_real_book(tmp_path: Path) -> None:
     before = _change_token(engine, tmp_path)
     with Session(engine) as s:
         s.add(Trade(ticker="AMD", timeframe="1d", horizon="medium",
-                    entry_date=date.today(), entry_price=100.0, size=10.0,
+                    entry_date=datetime.now(UTC).date(), entry_price=100.0, size=10.0,
                     stop=95.0, target=110.0))
         s.commit()
     after = _change_token(engine, tmp_path)
@@ -201,8 +200,8 @@ def test_change_token_covers_the_whole_analysis_lifecycle(tmp_path: Path) -> Non
     max(started_at) ALL sit still -- only the running-count component moves."""
     url = _db_url(tmp_path)
     engine = get_engine(url)
-    t1 = datetime(2026, 7, 10, 12, 0)
-    t2 = datetime(2026, 7, 10, 13, 0)
+    t1 = datetime(2026, 7, 10, 12, 0, tzinfo=UTC)
+    t2 = datetime(2026, 7, 10, 13, 0, tzinfo=UTC)
     before = _change_token(engine, tmp_path)
 
     with Session(engine) as s:  # a new request: the id component
@@ -223,7 +222,7 @@ def test_change_token_covers_the_whole_analysis_lifecycle(tmp_path: Path) -> Non
     after_second = _change_token(engine, tmp_path)
 
     with Session(engine) as s:  # requeue AMD only; NVDA keeps the later stamp
-        assert requeue_stale_running(s, cutoff=datetime(2026, 7, 10, 12, 30)) == 1
+        assert requeue_stale_running(s, cutoff=datetime(2026, 7, 10, 12, 30, tzinfo=UTC)) == 1
     after_requeue = _change_token(engine, tmp_path)
     assert after_requeue != after_second
     second_parts = after_second["analysis"].split("|")
@@ -258,7 +257,7 @@ def test_change_token_watches_analyst_calls_and_scoring(tmp_path: Path) -> None:
     engine = get_engine(url)
     before = _change_token(engine, tmp_path)
     with Session(engine) as s:
-        call = _call(date.today(), 0.5)
+        call = _call(datetime.now(UTC).date(), 0.5)
         s.add(call)
         s.commit()
         call_id = call.id
@@ -268,7 +267,7 @@ def test_change_token_watches_analyst_calls_and_scoring(tmp_path: Path) -> None:
         row = s.get(AnalystCall, call_id)
         assert row is not None
         row.realized_r = 1.2
-        row.scored_at = date.today()
+        row.scored_at = datetime.now(UTC).date()
         s.commit()
     after_score = _change_token(engine, tmp_path)
     assert after_score != after_insert

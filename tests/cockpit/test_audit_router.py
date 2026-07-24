@@ -1,6 +1,6 @@
 """Audit router contract: weekly reports + breach feed reads, and the ack write gate."""
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -22,10 +22,10 @@ def _app(tmp_path: Path):
 def _seed(engine):
     with Session(engine) as s:
         s.add(SystemAudit(kind="weekly", period_from=date(2026, 7, 6), period_to=date(2026, 7, 12),
-                          severity="info", findings_json="{}", generated_at=datetime(2026, 7, 12, 1, 0)))
+                          severity="info", findings_json="{}", generated_at=datetime(2026, 7, 12, 1, 0, tzinfo=UTC)))
         s.add(SystemAudit(kind="breach", period_from=date(2026, 7, 8), period_to=date(2026, 7, 8),
                           breach_key="cap:2026-07-08", severity="alert", findings_json="{}",
-                          generated_at=datetime(2026, 7, 8, 1, 0)))
+                          generated_at=datetime(2026, 7, 8, 1, 0, tzinfo=UTC)))
         s.commit()
         return s.query(SystemAudit).filter_by(kind="breach").one().id
 
@@ -49,11 +49,11 @@ def test_one_corrupt_findings_row_never_500s_the_lists(tmp_path: Path):
         s.add(SystemAudit(kind="weekly", period_from=date(2026, 7, 13),
                           period_to=date(2026, 7, 19), severity="info",
                           findings_json="{not json",
-                          generated_at=datetime(2026, 7, 19, 1, 0)))
+                          generated_at=datetime(2026, 7, 19, 1, 0, tzinfo=UTC)))
         s.add(SystemAudit(kind="breach", period_from=date(2026, 7, 9),
                           period_to=date(2026, 7, 9), breach_key="cap:2026-07-09",
                           severity="alert", findings_json="{not json",
-                          generated_at=datetime(2026, 7, 9, 1, 0)))
+                          generated_at=datetime(2026, 7, 9, 1, 0, tzinfo=UTC)))
         s.commit()
     reports = client.get("/api/audit/reports")
     breaches = client.get("/api/audit/breaches")

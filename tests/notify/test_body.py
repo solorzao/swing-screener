@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 from swing_screener.notify.body import (
     AlertLine,
@@ -11,8 +11,8 @@ from swing_screener.notify.ticker_report import TickerReport, TimeframeRead
 
 
 def _ticket(**over):
-    base = dict(side="long", shares=40, ticker="AMD", limit_price=101.0,
-                stop=95.0, target=110.0, status="recorded", detail="order ticket recorded")
+    base = {"side": "long", "shares": 40, "ticker": "AMD", "limit_price": 101.0,
+                "stop": 95.0, "target": 110.0, "status": "recorded", "detail": "order ticket recorded"}
     base.update(over)
     return OrderTicketLine(**base)
 
@@ -177,7 +177,7 @@ def _report():
     ]
     return TickerReport(
         ticker="AMD", name="Advanced Micro Devices",
-        run_at=datetime(2026, 6, 16, 9, 30), reads=reads,
+        run_at=datetime(2026, 6, 16, 9, 30, tzinfo=UTC), reads=reads,
         summary="Daily continuation intact; weekly still basing.",
         analysis_text="CORE: Clean continuation.", is_deep=True,
     )

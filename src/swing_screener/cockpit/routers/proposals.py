@@ -5,7 +5,7 @@ never-auto-promote posture are unchanged."""
 
 import json
 from dataclasses import fields
-from datetime import date
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -113,7 +113,7 @@ def build_proposals_router(
             return decide_proposal(
                 resolve_edge_dir(edge_dir), play_type, name,
                 decision=decision, reason=reason,
-                today=date.today().isoformat(),
+                today=datetime.now(UTC).date().isoformat(),
             )
         except (json.JSONDecodeError, TypeError) as exc:  # BEFORE ValueError
             raise HTTPException(
@@ -242,7 +242,7 @@ def _promotion_checklist(play_type: str) -> list[str]:
     made)."""
     return [
         "1. pipeline/variants.py — add the roster line (replace(base, **delta))",
-        "2. edge/experiments.json — add the registry row (stopping rule, mde_r, "
-        "target_ci_halfwidth_r, registered sha)",
+        ("2. edge/experiments.json — add the registry row (stopping rule, mde_r, "
+        "target_ci_halfwidth_r, registered sha)"),
         f"3. edge/{store_filename(play_type)} — this flip (done)",
     ]

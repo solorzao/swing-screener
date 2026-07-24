@@ -8,7 +8,7 @@ import email.message
 import json
 import urllib.error
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Self
 
 import pytest
 
@@ -44,7 +44,7 @@ class _FakeResponse:
     def read(self) -> bytes:
         return self._body
 
-    def __enter__(self) -> "_FakeResponse":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc: object) -> None:

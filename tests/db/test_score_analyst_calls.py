@@ -7,7 +7,7 @@ with a realized R. ``score_analyst_calls`` stamps that R + a ``scored_at`` onto 
 picks that haven't filled+closed yet stay unscored (rescored on a later run).
 """
 
-from datetime import date
+from datetime import UTC, date, datetime
 
 from sqlalchemy.orm import Session
 
@@ -187,4 +187,4 @@ def test_scored_at_falls_back_to_today_when_trade_has_no_exit_date() -> None:
         assert repo.score_analyst_calls(s) == 1
         call = s.query(AnalystCall).one()
         assert call.realized_r == 1.5
-        assert call.scored_at == date.today()
+        assert call.scored_at == datetime.now(UTC).date()

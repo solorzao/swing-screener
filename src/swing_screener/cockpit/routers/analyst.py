@@ -13,7 +13,7 @@ UNKNOWN, never green); spend totals name their own undercount.
 """
 
 from collections.abc import Callable, Iterator
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
@@ -82,7 +82,7 @@ def build_analyst_router(
         engine facts and ride plain (the funnel precedent); the R figures above
         carry their n alongside. ``r_basis`` labels every R as shadow-book.
         """
-        today = date.today()
+        today = datetime.now(UTC).date()
         play_types: list[dict[str, object]] = []
         for pt in PLAY_TYPES:
             calls = list(session.scalars(

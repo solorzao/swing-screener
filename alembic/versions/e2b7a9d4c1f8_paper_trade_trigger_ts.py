@@ -14,16 +14,15 @@ trigger_ts) is already booked. Nullable: legacy rows and test-seam candidates ca
 plus an IN over the run's trigger timestamps.
 """
 from collections.abc import Sequence
-from typing import Union
 
 import sqlalchemy as sa
 
 from alembic import op
 
 revision: str = "e2b7a9d4c1f8"
-down_revision: Union[str, Sequence[str], None] = "c9e5a2b7f1d4"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "c9e5a2b7f1d4"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

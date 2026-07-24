@@ -1,5 +1,5 @@
 import json
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -37,7 +37,7 @@ def _fake_snapshotter(ticker: str, cfg: object) -> ChainSnapshot:
          "open_interest": 40_000, "iv": 0.25},
     ])
     return ChainSnapshot(underlying=ticker, spot=100.0,
-                         asof=datetime(2026, 7, 13, 9, 10), frame=frame)
+                         asof=datetime(2026, 7, 13, 9, 10, tzinfo=UTC), frame=frame)
 
 
 def _fake_daily(ticker: str) -> pd.DataFrame:
@@ -395,7 +395,7 @@ def _target_hit_bars() -> pd.DataFrame:
 
 
 def test_settle_endpoint_sweeps_due_trades_and_is_idempotent(tmp_path: Path) -> None:
-    client, url = _settle_client(tmp_path, _target_hit_bars())
+    client, _url = _settle_client(tmp_path, _target_hit_bars())
     setup_id = client.post("/api/gex/setups", json=_graded_body(),
                            headers=_HDR).json()["id"]
     client.post(f"/api/gex/setups/{setup_id}/status",
@@ -492,7 +492,7 @@ def test_plan_snapshot_corrupt_profile_degrades_quietly(tmp_path: Path) -> None:
     url = _db_url(tmp_path)
     with Session(get_engine(url)) as s:
         s.add(GexSnapshot(
-            underlying="SPY", ts=datetime(2026, 7, 13, 9, 10), spot=100.0,
+            underlying="SPY", ts=datetime(2026, 7, 13, 9, 10, tzinfo=UTC), spot=100.0,
             call_wall=105.0, put_wall=95.0, gamma_flip=99.0, net_gex=1.0,
             regime="positive", profile_json="{not json", thin_chain=False,
             source="computed",
@@ -559,7 +559,7 @@ def _uptrend_5m_frame() -> pd.DataFrame:
     vols = [1_000_000.0] * n
     vols[-1] = 3_000_000.0
     rows = [
-        dict(open=c - 0.2, high=c + 0.1, low=c - 0.3, close=c, volume=v)
+        {"open": c - 0.2, "high": c + 0.1, "low": c - 0.3, "close": c, "volume": v}
         for c, v in zip(closes, vols, strict=True)
     ]
     return make_bars(rows, start=f"{day} 09:30", freq="5min")

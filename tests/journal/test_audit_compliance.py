@@ -1,7 +1,7 @@
 """Auditor compliance grader: cap adherence, reject/clamp rate, disarm count -- all
 over MACHINE conduct data only (ExecutionLog, DisarmEvent). Never touches Trade."""
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy.orm import Session
 
@@ -135,8 +135,8 @@ def test_reject_and_clamp_rate():
 def test_disarm_count_in_period_only():
     with Session(get_engine("sqlite:///:memory:")) as s:
         s.add_all([
-            DisarmEvent(created_at=datetime(2026, 7, 8, 10, 0), reason="cockpit"),
-            DisarmEvent(created_at=datetime(2026, 6, 1, 10, 0), reason="old"),  # out of period
+            DisarmEvent(created_at=datetime(2026, 7, 8, 10, 0, tzinfo=UTC), reason="cockpit"),
+            DisarmEvent(created_at=datetime(2026, 6, 1, 10, 0, tzinfo=UTC), reason="old"),  # out of period
         ])
         s.commit()
         f = compliance_findings(s, period_from=_FROM, period_to=_TO,

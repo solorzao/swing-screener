@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy.orm import Session
 
@@ -10,14 +10,14 @@ def test_lab_tables_roundtrip() -> None:
     engine = get_engine("sqlite:///:memory:")
     with Session(engine) as s:
         snap = GexSnapshot(
-            underlying="SPY", ts=datetime(2026, 7, 13, 9, 10), spot=560.25,
+            underlying="SPY", ts=datetime(2026, 7, 13, 9, 10, tzinfo=UTC), spot=560.25,
             call_wall=565.0, put_wall=550.0, gamma_flip=557.5,
             net_gex=1.2e9, regime="positive", profile_json="[]", source="computed",
         )
         s.add(snap)
         s.commit()
         setup = OptionSetup(
-            ts=datetime(2026, 7, 13, 10, 5), underlying="SPY", direction="long",
+            ts=datetime(2026, 7, 13, 10, 5, tzinfo=UTC), underlying="SPY", direction="long",
             gex_snapshot_id=snap.id, regime="positive", pivot_level=557.5,
             pattern="bull flag at flip", grade="A+", status="taken",
             entry=558.0, stop=556.5, target=565.0,
@@ -31,7 +31,7 @@ def test_lab_tables_roundtrip() -> None:
         trade = OptionPaperTrade(
             setup_id=setup.id, account="options-lab", strategy="gex",
             underlying="SPY", direction="long",
-            opened_at=datetime(2026, 7, 13, 10, 6), entry=558.0, stop=556.5, target=565.0,
+            opened_at=datetime(2026, 7, 13, 10, 6, tzinfo=UTC), entry=558.0, stop=556.5, target=565.0,
         )
         fill = BrokerFill(
             import_hash="abc123", activity_date=date(2026, 7, 10), underlying="PATH",
@@ -51,11 +51,11 @@ def test_broker_fill_import_hash_unique() -> None:
 
     engine = get_engine("sqlite:///:memory:")
     with Session(engine) as s:
-        kw = dict(
-            import_hash="dup", activity_date=date(2026, 7, 10), underlying="PATH",
-            occ_symbol="PATH  260717C00013000", trans_code="BTO",
-            quantity=5, price=0.05, amount=-25.20, raw="{}", source="robinhood",
-        )
+        kw = {
+            "import_hash": "dup", "activity_date": date(2026, 7, 10), "underlying": "PATH",
+            "occ_symbol": "PATH  260717C00013000", "trans_code": "BTO",
+            "quantity": 5, "price": 0.05, "amount": -25.20, "raw": "{}", "source": "robinhood",
+        }
         s.add(BrokerFill(**kw))
         s.commit()
         s.add(BrokerFill(**kw))

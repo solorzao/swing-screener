@@ -306,7 +306,7 @@ def main() -> None:
     # The manual sweep also tests the target floor (min_target_r); the scheduled propose path
     # stays gate-only (it parses the winner as ext_<float> and edits only the gate).
     grid = build_config_grid(StrategyConfig(), include_min_target_r=True)
-    print(format_report(  # noqa: T201
+    print(format_report(
         optimize(frames, timeframe="1d", grid=grid, oos_frac=args.oos_frac,
                  scopes=grid_scopes())))
 

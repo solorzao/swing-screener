@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pandas as pd
 import pytest
@@ -62,7 +62,7 @@ def test_fetch_retries_with_jittered_backoff(tmp_path, monkeypatch):
 
 def test_corrupt_cache_falls_through_to_download(tmp_path, monkeypatch):
     # a corrupt/partial cache file must not break isolation: re-download instead
-    cache_file = fetch._cache_path(tmp_path, "1d", "AAPL", date.today())
+    cache_file = fetch._cache_path(tmp_path, "1d", "AAPL", datetime.now(UTC).date())
     cache_file.parent.mkdir(parents=True, exist_ok=True)
     cache_file.write_text("not a real parquet file")
     monkeypatch.setattr(fetch, "_download", lambda *a, **k: _df())

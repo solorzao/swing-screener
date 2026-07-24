@@ -1,4 +1,5 @@
 from datetime import date
+from typing import ClassVar
 
 import pandas as pd
 
@@ -33,7 +34,7 @@ def test_spot_nan_fast_info_falls_back_to_daily_close() -> None:
     # to sail past the None check and become the GEX map's spot. A non-finite
     # fast_info price must count as missing so the daily-close fallback engages.
     class _NanTicker:
-        fast_info = {"lastPrice": float("nan")}
+        fast_info: ClassVar[dict[str, float]] = {"lastPrice": float("nan")}
 
         def history(self, period: str = "1d") -> pd.DataFrame:
             return pd.DataFrame({"Close": [123.45]})
@@ -43,7 +44,7 @@ def test_spot_nan_fast_info_falls_back_to_daily_close() -> None:
 
 def test_spot_finite_fast_info_used_directly() -> None:
     class _LiveTicker:
-        fast_info = {"lastPrice": 101.5}
+        fast_info: ClassVar[dict[str, float]] = {"lastPrice": 101.5}
 
         def history(self, period: str = "1d") -> pd.DataFrame:
             raise AssertionError("fallback must not fire when fast_info is finite")

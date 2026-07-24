@@ -5,7 +5,7 @@ real-money pool (``manual_equity`` + ``live``, both R); robinhood is ``$``-only 
 never enters an R pool; the ``paper`` card is the curated gold/baseline/default slice.
 """
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy.orm import Session
@@ -52,7 +52,7 @@ def _add_robinhood_episode(
     underlying: str,
     *,
     premium_pnl: float,
-    closed_at: datetime = datetime(2026, 1, 10, 15, 0),
+    closed_at: datetime = datetime(2026, 1, 10, 15, 0, tzinfo=UTC),
 ) -> None:
     """One imported flat-to-flat Robinhood option episode (``$``, never R)."""
     session.add(OptionPaperTrade(
@@ -176,8 +176,8 @@ def test_paper_card_populates_without_would_surface(session):
 
 
 def test_window_cuts_by_close_date(session):
-    old = date.today() - timedelta(days=400)
-    recent = date.today() - timedelta(days=10)
+    old = datetime.now(UTC).date() - timedelta(days=400)
+    recent = datetime.now(UTC).date() - timedelta(days=10)
     _add_manual_trade(session, "AAA", entry=10, stop=9, exit=12, size=100, exit_date=old)
     _add_manual_trade(session, "BBB", entry=10, stop=9, exit=11, size=100, exit_date=recent)
     all_card = _card(build_scoreboard(session, window="all"), "manual_equity")

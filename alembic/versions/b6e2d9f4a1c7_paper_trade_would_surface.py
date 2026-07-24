@@ -13,16 +13,15 @@ stamped-True facet as gold. Nullable: NULL = legacy row (pre-stamping), never gr
 as gold. Not indexed, matching the other denormalized tag columns.
 """
 from collections.abc import Sequence
-from typing import Union
 
 import sqlalchemy as sa
 
 from alembic import op
 
 revision: str = "b6e2d9f4a1c7"
-down_revision: Union[str, Sequence[str], None] = "a8d3c5f1e7b2"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "a8d3c5f1e7b2"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

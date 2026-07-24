@@ -2,7 +2,7 @@
 the header guard on writes."""
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -27,7 +27,7 @@ def _review(engine, *, trade_id=1, proposals=None):
         r = JournalReview(identity_key=f"trade_close:manual_equity:{trade_id}",
                           kind="trade_close", book="manual_equity", trade_id=trade_id,
                           facts_json=json.dumps(facts), source="analyst", narrative="draft",
-                          generated_at=datetime(2026, 7, 12, 10, 0))
+                          generated_at=datetime(2026, 7, 12, 10, 0, tzinfo=UTC))
         s.add(r)
         s.commit()
         return r.id
@@ -78,7 +78,7 @@ def test_one_corrupt_facts_row_never_500s_the_list(tmp_path: Path):
         s.add(JournalReview(identity_key="trade_close:manual_equity:2",
                             kind="trade_close", book="manual_equity", trade_id=2,
                             facts_json="{not json", source="analyst",
-                            generated_at=datetime(2026, 7, 12, 11, 0)))
+                            generated_at=datetime(2026, 7, 12, 11, 0, tzinfo=UTC)))
         s.commit()
     r = client.get("/api/coach/reviews?book=manual_equity")
     assert r.status_code == 200
@@ -92,7 +92,7 @@ def test_weaknesses_returns_latest_or_empty(tmp_path: Path):
         s.add(WeaknessesProfile(scope="personal",
                                 items_json=json.dumps({"items": [{"weakness": "exits early"}],
                                                        "thin_data": True, "n_reviews": 3}),
-                                generated_at=datetime(2026, 7, 12, 12, 0)))
+                                generated_at=datetime(2026, 7, 12, 12, 0, tzinfo=UTC)))
         s.commit()
     body = client.get("/api/coach/weaknesses").json()
     assert body["items"][0]["weakness"] == "exits early" and body["generated_at"]
@@ -104,7 +104,7 @@ def test_weaknesses_accepts_the_model_default_list_shape(tmp_path: Path):
     serve the documented shape, never TypeError into a 500."""
     client, engine = _app(tmp_path)
     with Session(engine) as s:
-        s.add(WeaknessesProfile(generated_at=datetime(2026, 7, 12, 12, 0)))
+        s.add(WeaknessesProfile(generated_at=datetime(2026, 7, 12, 12, 0, tzinfo=UTC)))
         s.commit()
     r = client.get("/api/coach/weaknesses")
     assert r.status_code == 200

@@ -1,11 +1,11 @@
 """Safety-router endpoints (split from test_api.py): /api/gate, POST
 /api/disarm, and GET /api/execution/safety."""
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from fastapi.testclient import TestClient
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from swing_screener.analytics.calibration import _CLUSTER_FLOOR, MIN_LEADERBOARD_N
@@ -13,16 +13,15 @@ from swing_screener.cockpit.api import create_app
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.broker import BrokerAccount, BrokerOrderSpec, FakeBroker
 from tests.cockpit.conftest import (
+    _HDR,
     _broker_app,
     _call,
     _db_url,
     _disarm_broker,
-    _HDR,
     _kill_sell_legs,
     _nonce_of,
     _recorded_stop_row,
 )
-
 
 # --- /api/gate ------------------------------------------------------------------------
 
@@ -39,7 +38,7 @@ def test_gate_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SWING_BROKER", raising=False)
     url = _db_url(tmp_path)
     engine = get_engine(url)
-    today = date.today()
+    today = datetime.now(UTC).date()
     with Session(engine) as s:
         s.add_all([_call(today, 0.12), _call(today, 0.30), _call(today, None),
                    _call(today - timedelta(days=1), 5.0)])

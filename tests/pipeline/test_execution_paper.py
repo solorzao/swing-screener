@@ -19,8 +19,8 @@ from swing_screener.db.models import ExecutionLog, ExitEvent, PaperTrade
 from swing_screener.db.repo import load_closed_paper_trades, load_open_paper_trades
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.execution import PaperAdapter
-from swing_screener.pipeline.shadow import advance_open
 from swing_screener.pipeline.insight import OrderIntent
+from swing_screener.pipeline.shadow import advance_open
 from swing_screener.settings import Limits
 
 RUN = date(2026, 6, 19)
@@ -30,13 +30,13 @@ CFG = StrategyConfig()
 
 
 def _intent(**over: object) -> OrderIntent:
-    base: dict[str, object] = dict(
-        ticker="AMD", timeframe="1d", play_type="continuation",
-        entry_floor=99.0, entry_ceiling=101.0, stop=94.0, target=110.0,
-        conviction="high", shares=10, risk_dollars=70.0,
-        edge_played="e", key_risk="", insight="i",
-        side="long", limit_price=101.0,
-    )
+    base: dict[str, object] = {
+        "ticker": "AMD", "timeframe": "1d", "play_type": "continuation",
+        "entry_floor": 99.0, "entry_ceiling": 101.0, "stop": 94.0, "target": 110.0,
+        "conviction": "high", "shares": 10, "risk_dollars": 70.0,
+        "edge_played": "e", "key_risk": "", "insight": "i",
+        "side": "long", "limit_price": 101.0,
+    }
     base.update(over)
     return OrderIntent(**base)  # type: ignore[arg-type]
 

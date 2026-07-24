@@ -196,8 +196,8 @@ def render_report(report: AutonomyReport) -> str:
         "",
         f"Status: {headline}",
         "",
-        "This is an ADVISORY report. It NEVER changes execution_mode or any config; "
-        "autonomy is switched on last, by a human.",
+        ("This is an ADVISORY report. It NEVER changes execution_mode or any config; "
+        "autonomy is switched on last, by a human."),
         "",
     ]
     for pt, v in report.per_play_type.items():
@@ -242,7 +242,7 @@ def main() -> None:
     engine = get_engine(settings.db_url)
     with Session(engine) as session:
         report = autonomy_gate(session, edge_dir=resolve_edge_dir(args.edge_dir))
-    print(render_report(report))  # noqa: T201 -- the CLI's whole job is to print the report
+    print(render_report(report))
 
 
 if __name__ == "__main__":

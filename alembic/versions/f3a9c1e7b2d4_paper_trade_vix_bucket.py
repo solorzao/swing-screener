@@ -11,16 +11,15 @@ Nullable (NULL = unknown, e.g. ^VIX unavailable, or legacy rows); not indexed, m
 other denormalized tag columns (market_trend / market_vol).
 """
 from collections.abc import Sequence
-from typing import Union
 
 import sqlalchemy as sa
 
 from alembic import op
 
 revision: str = "f3a9c1e7b2d4"
-down_revision: Union[str, Sequence[str], None] = "0c9f1070c373"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "0c9f1070c373"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
