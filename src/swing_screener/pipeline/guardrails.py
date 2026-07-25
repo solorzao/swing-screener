@@ -242,9 +242,12 @@ def _run_sweep(
     any exception -> ``('partial', class-name-only detail)`` -- the caller
     records either, so a failed sweep is visible and re-runnable, never silent.
     After the attempt (success OR partial) a best-effort DisarmEvent is written
-    (``reason='guardrail:<breaker>'``): the Auditor's breach scanner already
-    turns DisarmEvents into alerts, so the sweep is on the conduct record with
-    zero new Auditor code. NOTE its ``orders_cancelled`` UNDER-reports when
+    (``reason='guardrail:<breaker>'``): every venue-moving sweep belongs on the
+    Auditor's conduct record. The reason PREFIX is load-bearing -- Task 14's
+    auditor reads it as SANCTIONED (counted as ``n_guardrail_sweeps``, expected
+    conduct) rather than as the unexplained disarm that earns a breach row; the
+    brake firing correctly must never read as misconduct. NOTE
+    ``orders_cancelled`` UNDER-reports when
     ``pull_entry_orders`` dies mid-cancel (``entries`` stays empty) --
     best-effort telemetry, never the ledger; the venue is the ledger."""
     entries: list[BrokerOrder] = []
