@@ -1,16 +1,12 @@
 """Safety-router endpoints (split from test_api.py): /api/gate, POST
 /api/disarm, and GET /api/execution/safety."""
 
-from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
 
 from fastapi.testclient import TestClient
 import pytest
-from sqlalchemy import event
-from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from swing_screener.analytics.calibration import _CLUSTER_FLOOR, MIN_LEADERBOARD_N
@@ -23,35 +19,13 @@ from tests.cockpit.conftest import (
     _broker_app,
     _call,
     _db_url,
+    _deny_writes,
     _disarm_broker,
     _HDR,
     _kill_sell_legs,
     _nonce_of,
     _recorded_stop_row,
 )
-
-
-@contextmanager
-def _deny_writes(table: str) -> Iterator[list[str]]:
-    """Simulate a read-only DB grant: every INSERT/UPDATE touching ``table`` raises.
-
-    Listens on the Engine CLASS, not one instance, because ``create_app`` builds its
-    own engine from the URL -- an instance listener would miss exactly the writes
-    under test. Yields the list of attempted statements (empty = nothing tried)."""
-    attempted: list[str] = []
-
-    def _guard(conn: Any, cursor: Any, statement: str, parameters: Any,
-               context: Any, executemany: bool) -> None:
-        sql = " ".join(statement.split()).lower()
-        if sql.startswith(("insert into", "update")) and table in sql:
-            attempted.append(sql)
-            raise PermissionError(f"no write grant on {table}")
-
-    event.listen(Engine, "before_cursor_execute", _guard)
-    try:
-        yield attempted
-    finally:
-        event.remove(Engine, "before_cursor_execute", _guard)
 
 
 # --- /api/gate ------------------------------------------------------------------------
@@ -128,7 +102,8 @@ def test_gate_carries_brake_state(tmp_path: Path) -> None:
 
 # ---- POST /api/disarm + GET /api/execution/safety (Task 9) ----
 
-DISARM_KEYS = {"dry_run", "cancelled", "sells_kept", "stops_restored", "unprotected"}
+DISARM_KEYS = {"dry_run", "mode", "state", "cancelled", "sells_kept", "stops_restored",
+               "unprotected"}
 SAFETY_KEYS = {"broker_configured", "mode", "env_scope", "locks", "caps_mandate",
                "guardrails", "preflight", "bracket_shield"}
 GUARDRAIL_KEYS = {"ok", "reason", "state", "sweep_state"}
@@ -170,6 +145,10 @@ def test_disarm_dry_run_cancels_nothing_and_previews_everything(
     body = r.json()
     assert set(body) == DISARM_KEYS
     assert body["dry_run"] is True
+    # the mode-tagged union: an untripped book is always the ``raw`` variant, and
+    # ``state`` names the brake this ran against.
+    assert body["mode"] == "raw"
+    assert body["state"] == "ok"
     assert body["cancelled"] == [{"symbol": "AMD", "broker_order_id": "fake-0"}]
     assert body["sells_kept"] == 0  # the legs are dead; nothing sell-side survives
     assert body["stops_restored"] == ["NVDA"]  # the hold preview names the symbol
@@ -285,7 +264,9 @@ def test_disarm_is_single_flight(tmp_path: Path) -> None:
     try:
         r = client.post("/api/disarm", headers=_HDR)
         assert r.status_code == 409
-        assert r.json()["detail"] == "disarm already in flight"
+        # ONE wording for the shared lock: HALT contends for it too, and an operator
+        # who pressed HALT must not be told about a "disarm" nobody ran.
+        assert r.json()["detail"] == "a protective action is already in flight"
         assert calls["n"] == 0                       # rejected before the factory
         assert len(broker.list_open_orders()) == 3   # venue untouched
     finally:
@@ -475,6 +456,25 @@ def test_gate_and_safety_never_write_the_brake_row(tmp_path: Path) -> None:
     assert checks["guardrails"]["ok"] is False
     with Session(engine) as s:
         assert s.query(AgentGuardrails).count() == 0  # the table is still virgin
+
+
+def test_deny_writes_listener_actually_fires(tmp_path: Path) -> None:
+    """POSITIVE CONTROL for the test above.
+
+    "No write was attempted" passes just as happily when the listener never bound --
+    a silently-inert guard would turn the G7 pin into a test of nothing. This proves
+    the same helper, over the same table, DOES refuse a write on the app's own engine
+    and that the refusal is a ``SQLAlchemyError`` (so an endpoint that let it
+    propagate would 503, not 500)."""
+    client, engine, _calls = _broker_app(tmp_path, FakeBroker())
+    client.get("/api/gate")                      # force the app's engine into being
+
+    with _deny_writes("agent_guardrails") as attempted:
+        with Session(engine) as s, pytest.raises(OperationalError):
+            gr.halt(s, source="test")
+    assert attempted and attempted[0].startswith(("insert into", "update"))
+    with Session(engine) as s:
+        assert s.query(AgentGuardrails).count() == 0   # the refusal held
 
 
 def test_execution_safety_broker_error_degrades_by_class_name(

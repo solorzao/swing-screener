@@ -1,7 +1,10 @@
 """Shared plumbing for the cockpit API test suite (split out of the old
-test_api.py monolith): the app/client builders, seeded-row factories, and
-closed wire-shape sets used across the per-router test files."""
+test_api.py monolith): the app/client builders, seeded-row factories, the
+read-only-grant listeners, and closed wire-shape sets used across the per-router
+test files."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date, datetime
 import itertools
 from pathlib import Path
@@ -9,7 +12,9 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 
 from swing_screener.cockpit.api import create_app
 from swing_screener.cockpit.common import (
@@ -34,6 +39,68 @@ from swing_screener.pipeline.registry import Experiment
 
 STAT_KEYS = {"value", "n", "n_clusters", "ci_low", "ci_high", "cost_level",
              "corpus_id", "facet", "unit", "thin_clusters"}
+
+
+# --- read-only-grant simulation -------------------------------------------------------
+#
+# ONE implementation behind two names. Both refuse statements against the named
+# TABLES with an ``OperationalError`` -- a real ``SQLAlchemyError``, which is what a
+# denied write raises through the driver, so the endpoints' 503-never-200 posture is
+# exercised end to end. (A bare ``PermissionError`` escapes SQLAlchemy's wrapping and
+# 500s, which tests the harness rather than the app.)
+#
+# POSITIVE CONTROL, REQUIRED: a test whose assertion is "nothing was attempted"
+# passes just as happily when the listener never bound at all. Every consumer of
+# these helpers must ALSO prove the guard is live -- see
+# ``test_deny_writes_listener_actually_fires`` beside the G7 test.
+
+#: DML verbs only. The guards must NOT match sqlite's schema reflection
+#: (``pragma main.table_info("agent_guardrails")``), which ``create_all`` runs while
+#: the app builds its engine: denying that kills the app before any endpoint code
+#: runs, and the test would "pass" against a request that never happened.
+_DML_WRITES = ("insert into", "update", "delete from")
+_DML_ALL = ("select", *_DML_WRITES)
+
+
+@contextmanager
+def _deny_sql(*tables: str, verbs: tuple[str, ...]) -> Iterator[list[str]]:
+    """Refuse every ``verbs`` statement touching ``tables``; yield what was tried.
+
+    Listens on the Engine CLASS, not one instance, because ``create_app`` builds its
+    OWN engine from the URL -- an instance listener would miss exactly the statements
+    under test."""
+    attempted: list[str] = []
+
+    def _guard(conn: Any, cursor: Any, statement: str, parameters: Any,
+               context: Any, executemany: bool) -> None:
+        sql = " ".join(statement.split()).lower()
+        if sql.startswith(verbs) and any(t in sql for t in tables):
+            attempted.append(sql)
+            raise OperationalError(statement, {}, Exception("no grant"))
+
+    event.listen(Engine, "before_cursor_execute", _guard)
+    try:
+        yield attempted
+    finally:
+        event.remove(Engine, "before_cursor_execute", _guard)
+
+
+def _deny_writes(*tables: str) -> Any:
+    """A read-only DB grant: INSERT/UPDATE/DELETE on ``tables`` raise, reads pass."""
+    return _deny_sql(*tables, verbs=_DML_WRITES)
+
+
+def _deny_reads(*tables: str) -> Any:
+    """The complement: SELECTs on ``tables`` raise, writes pass. The shape of a
+    failure that arrives AFTER a transition has committed -- the endpoint's write
+    lands, only its follow-up read dies."""
+    return _deny_sql(*tables, verbs=("select",))
+
+
+def _deny_all(*tables: str) -> Any:
+    """Harsher: reads and writes. For the emergency path, where DISARM must reach the
+    venue whatever the database is doing."""
+    return _deny_sql(*tables, verbs=_DML_ALL)
 
 
 @pytest.fixture(autouse=True)

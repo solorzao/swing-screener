@@ -65,6 +65,43 @@ _EVENT_HISTORY = 25
 #: describe the same configuration state in two different ways.
 _NO_BROKER = "no broker configured"
 
+#: The single-flight 409, shared by DISARM and HALT. They contend for the SAME
+#: ``disarm_lock`` (both submit protective stops), so they must not describe that
+#: contention in two different ways -- an operator who reads "disarm already in
+#: flight" after pressing HALT would go looking for a disarm nobody ran.
+_ACTION_IN_FLIGHT = "a protective action is already in flight"
+
+#: The three 503 detail PREFIXES this router emits, and the ONLY thing a client may
+#: branch on. They are a stable contract (Task 16 discriminates failure kinds with
+#: them; the text after the prefix is human-facing and may change):
+#:
+#: * ``database error (`` -- the app-level SQLAlchemyError handler (cockpit/api.py).
+#: * ``broker error (``   -- a venue/factory failure, exception CLASS only.
+#: * ``guardrail sweep did not complete`` -- a resumed trip sweep that ended
+#:   partial; the venue may still hold working entry orders.
+_D503_DB = "database error ("
+_D503_BROKER = "broker error ("
+_D503_SWEEP = "guardrail sweep did not complete"
+
+
+def _db_error_detail(exc: Exception) -> str:
+    """``database error (ClassName)`` -- the app-level handler's wording, reproduced
+    for the one place that must CATCH a DB failure instead of letting it 503: the
+    post-commit enrichment reads (see ``_after_write``). Same leak posture (class
+    name only) and the same prefix, so a client cannot tell the two apart -- it is
+    the same kind of failure, just one that arrived too late to change the outcome."""
+    return f"{_D503_DB}{type(exc).__name__})"
+
+
+def _client_error(exc: Exception) -> str:
+    """A ``guardrails_repo`` rejection as an operator-facing 422 message.
+
+    The repo raises with an ``edit_limits: `` prefix naming its own function -- true
+    but internal, and the cockpit is not where a user learns the callee's name. The
+    SUBSTANCE (which column, which rule) is kept verbatim: it is the same text the
+    repo's own tests pin, and re-wording it would let the two drift."""
+    return str(exc).removeprefix("edit_limits: ")
+
 
 def _halt_key() -> str:
     """The HALT sweep's ``key_suffix``: ``halt-cockpit-<UTC to the second>``.
@@ -78,15 +115,20 @@ def _halt_key() -> str:
 
 
 def _rollback_quietly(session: Session, *, what: str) -> None:
-    """Discard a failed transaction so the CALLER can keep using the session.
+    """Discard a swallowed failure's transaction before the caller carries on.
 
-    A statement that raised leaves the Session in a failed state, and every later
-    query on it answers ``PendingRollbackError`` -- itself a ``SQLAlchemyError``, so
-    it would 503 the request. On the DISARM path that would silently defeat the
-    whole point of ignoring a refused brake read: the sweep's own ticket lookups
-    would inherit the failure and the operator would lose the emergency sweep to a
-    table they never asked about. Never raises -- a session too dead to roll back is
-    logged and left alone (the same posture ``_record_disarm`` takes)."""
+    DEFENCE IN DEPTH, deliberately. In SQLAlchemy 2.0 a failed SELECT does NOT by
+    itself deactivate the Session -- only a failed FLUSH does, which is why the raw
+    disarm sweep keeps working after a refused brake read even without this call.
+    But "which failures deactivate" is a property of the backend and the error
+    (a lost connection, a driver that fails mid-transaction, pyodbc against Azure
+    SQL), not something the emergency path should have to be right about: every
+    later query on a deactivated Session answers ``PendingRollbackError``, itself a
+    ``SQLAlchemyError``, which would 503 a DISARM over a table the operator never
+    asked about. One cheap call removes the whole question.
+
+    Never raises -- a session too dead to roll back is logged and left alone (the
+    same posture ``_record_disarm`` takes)."""
     try:
         session.rollback()
     except Exception:  # noqa: BLE001 -- a dead session must not become the response
@@ -160,9 +202,15 @@ class GuardrailAction(BaseModel):
 
 def _state_body(g: GuardrailsState) -> dict[str, object]:
     """The brake row on the wire: every ``GuardrailsState`` field, FLAT and under its
-    OWN column name -- the same keys the POST edit body accepts, so the panel's form
-    round-trips without a translation layer (and a new column can never be silently
-    dropped by a hand-maintained mapping)."""
+    OWN column name (so a new column can never be silently dropped by a
+    hand-maintained mapping).
+
+    The round-trip claim is scoped to the SIX EDITABLE keys -- the four breakers and
+    the two ``hwm_*`` anchors: those come back under exactly the names the POST edit
+    body accepts, so the panel's form needs no translation layer. ``state`` /
+    ``trip_id`` / ``trip_reason`` / ``sweep_state`` are READ-ONLY here: they move
+    through the state machine (halt / trip / clear) and ``edit_limits``' whitelist
+    refuses them by name, so posting one back is a 422, not a round trip."""
     return {
         "state": g.state,
         "max_daily_loss_usd": g.max_daily_loss_usd,
@@ -200,6 +248,42 @@ def _current_breach(session: Session, g: GuardrailsState) -> dict[str, str] | No
     hit = guardrails_repo.breached_breaker(
         session, g, run_date=latest_run_date(session) or date.today())
     return None if hit is None else {"breaker": hit[0], "reason": hit[1]}
+
+
+def _after_write(session: Session, *, action: str) -> dict[str, object]:
+    """The response to a brake write that has ALREADY COMMITTED. Always a 200.
+
+    Every ``guardrails_repo`` transition commits before returning, and this endpoint
+    then enriches the answer with a fresh snapshot + the live breach evaluation --
+    two more DB reads, AFTER the point of no return. Letting those ride the
+    app-level 503 handler would tell the operator their action FAILED while the
+    brake had in fact moved, and ``clear_trip`` makes that lie dangerous: the
+    operator reads 503, retries, gets 409 'trip id is stale or state is not
+    tripped', and concludes the brake is still on -- while real money is armed. The
+    retry's own error CONFIRMS the wrong story, so nothing self-corrects.
+
+    So the enrichment is best-effort: on failure the answer is still 200, still says
+    ``committed: true``, and carries ``enrichment_error`` (same class-only wording
+    and ``database error (`` prefix the real handler uses). The state keys are then
+    ABSENT rather than guessed -- we could not read them, and the pre-write snapshot
+    would actively misdescribe the row we just changed; the client re-polls
+    ``GET /api/guardrails``, which is one poll tick away anyway.
+
+    ``committed`` (not ``cleared``): one name for one meaning across all three
+    DB-only actions -- edit and clear_halt have the same commit-then-enrich shape,
+    and an action-specific key would have to be read differently per branch."""
+    try:
+        g = guardrails_repo.peek_guardrails(session)
+        breach = _current_breach(session, g)
+    except SQLAlchemyError as exc:
+        log.warning("guardrail %s committed, but the follow-up read failed -- "
+                    "answering 200 with enrichment_error (the write STANDS)",
+                    action, exc_info=True)
+        _rollback_quietly(session, what=f"the post-{action} read")
+        return {"action": action, "committed": True, "current_breach": None,
+                "enrichment_error": _db_error_detail(exc)}
+    return _state_body(g) | {"action": action, "committed": True,
+                             "current_breach": breach, "enrichment_error": None}
 
 
 def _sweep_result(
@@ -252,6 +336,29 @@ def _cfg_row(
     return {"key": key, "env": env, "value": value, "note": note}
 
 
+def _bracket_shield(session: Session, snapshot: Snapshot | None) -> dict[str, object]:
+    """The safety screen's venue-truth table: one row per VENUE position, each with
+    its ``_bracket`` state -- ``armed`` (a live protective sell stop at the venue),
+    ``db-only`` (only a recorded ExecutionLog level -- ``latest_recorded_stop``,
+    the same lookup disarm restores from), or ``unprotected`` (no level anywhere,
+    loud). No snapshot (no broker configured, or the venue read failed/degraded)
+    -> ``known: False`` with an empty table: absence of evidence is never a claim,
+    so UNKNOWN can never render green."""
+    if snapshot is None:
+        return {"known": False, "as_of": None, "positions": []}
+    armed = _armed_symbols(snapshot)
+    return {
+        "known": True,
+        "as_of": snapshot.as_of.isoformat(),
+        "positions": [
+            {"symbol": pos.symbol, "qty": pos.qty,
+             "state": _bracket(pos.symbol, latest_recorded_stop(session, pos.symbol),
+                               snapshot=snapshot, armed=armed)}
+            for pos in snapshot.positions
+        ],
+    }
+
+
 def build_safety_router(
     *,
     _session: Callable[[], Iterator[Session]],
@@ -267,6 +374,8 @@ def build_safety_router(
     single-flight lock (also parked on ``app.state`` for tests), and the
     post-action wake nonce (bumped by a REAL disarm run)."""
     router = APIRouter()
+
+    # --- the advisory autonomy gate ---------------------------------------------------
 
     @router.get("/api/gate")
     def gate(session: Session = Depends(_session)) -> dict[str, object]:
@@ -309,6 +418,8 @@ def build_safety_router(
             "brake_state": guardrails_repo.peek_guardrails(session).state,
             "analyst_spend_today_usd": spend_today,
         }
+
+    # --- DISARM: the raw sweep and the trip-aware resume ------------------------------
 
     def _resume_disarm(
         session: Session, broker: BrokerClient, g: GuardrailsState, *, dry_run: bool,
@@ -360,25 +471,32 @@ def build_safety_router(
         itemize (the pipeline returns a bool), so its counts ride ``detail`` --
         the sweep event's own recorded summary, verbatim -- and the four arrays stay
         empty. The full row is in the guardrails event history either way.
+
+        WIRE (the ``mode``-tagged union -- see ``disarm_book``): ``resume_key`` is
+        the venue-side client_order_id prefix both processes derive from the trip.
+        It is diagnostic detail, given its own field rather than embedded in
+        ``detail`` prose so the panel can hide it behind a disclosure instead of
+        showing an operator a raw order key mid-emergency.
         """
         trip_id = g.trip_id
         assert trip_id is not None  # the caller gates on this
         key = f"guardrail-{trip_id}"
         if dry_run:
-            entries, sells = pull_entry_orders(broker, dry_run=True)
+            preview, sells = pull_entry_orders(broker, dry_run=True)
             restored, unprotected = ensure_stop_protection(
                 broker, lambda sym: latest_recorded_stop(session, sym),
                 key_suffix=key, dry_run=True)
             return {
                 "dry_run": True,
                 "mode": "guardrail-resume-preview",
+                "state": g.state,
                 "trip_id": trip_id,
                 "sweep_state": g.sweep_state,
-                "detail": f"would resume the sweep for trip {trip_id} "
-                          f"(client_order_id key {key!r})",
+                "resume_key": key,
+                "detail": f"would resume the sweep for trip {trip_id}",
                 "cancelled": [{"symbol": o.symbol,
                                "broker_order_id": o.broker_order_id}
-                              for o in entries],
+                              for o in preview],
                 "sells_kept": len(sells),
                 "stops_restored": restored,
                 "unprotected": unprotected,
@@ -417,13 +535,14 @@ def build_safety_router(
             # A human pressed DISARM and the book is NOT clean: never a 200.
             raise HTTPException(
                 status_code=503,
-                detail=f"guardrail sweep did not complete "
-                       f"(sweep_state={after.sweep_state}): {detail}")
+                detail=f"{_D503_SWEEP} (sweep_state={after.sweep_state}): {detail}")
         return {
             "dry_run": False,
             "mode": "guardrail-resume",
+            "state": after.state,
             "trip_id": trip_id,
             "sweep_state": after.sweep_state,
+            "resume_key": key,
             "detail": detail,
             # Not itemized on this path (the pipeline returns a bool, not the
             # orders): ``detail`` carries the sweep's own recorded summary, and the
@@ -485,9 +604,21 @@ def build_safety_router(
         than answering "200, nothing happened". The only DB failure that may stop
         this endpoint is one raised by the sweep itself, AFTER the entry orders are
         already cancelled.
+
+        WIRE: a ``mode``-TAGGED UNION, and ``mode`` alone is what a client branches
+        on -- ``raw`` (the body below: itemized ``cancelled`` / ``sells_kept`` /
+        ``stops_restored`` / ``unprotected``), ``guardrail-resume`` (counts ride
+        ``detail``; the arrays are empty because the pipeline returns a bool, NOT
+        because nothing moved) or ``guardrail-resume-preview``. All three carry
+        ``dry_run`` + ``state`` (the brake state this ran against; null when the
+        brake row could not be read).
+
+        503 DETAILS: three stable prefixes, and the only thing a client may branch
+        on -- ``database error (``, ``broker error (``, ``guardrail sweep did not
+        complete``. See the module constants.
         """
         if not disarm_lock.acquire(blocking=False):
-            raise HTTPException(status_code=409, detail="disarm already in flight")
+            raise HTTPException(status_code=409, detail=_ACTION_IN_FLIGHT)
         try:
             try:
                 broker = resolved_broker_factory()
@@ -563,6 +694,10 @@ def build_safety_router(
                         orders_cancelled=len(entries))
             return {
                 "dry_run": dry_run,
+                "mode": "raw",
+                # The brake state this swept against -- null when the row could not
+                # be read (the emergency path ran anyway). Never a guess.
+                "state": g.state if g is not None else None,
                 "cancelled": [{"symbol": o.symbol,
                                "broker_order_id": o.broker_order_id}
                               for o in entries],
@@ -572,6 +707,8 @@ def build_safety_router(
             }
         finally:
             disarm_lock.release()
+
+    # --- the Execution Safety report --------------------------------------------------
 
     @router.get("/api/execution/safety")
     def execution_safety(session: Session = Depends(_session)) -> dict[str, object]:
@@ -660,6 +797,8 @@ def build_safety_router(
             "bracket_shield": _bracket_shield(session, broker_snapshot.get()),
         }
 
+    # --- the guardrails brake: state, history, and the four operator actions ----------
+
     @router.get("/api/guardrails")
     def guardrails(session: Session = Depends(_session)) -> dict[str, object]:
         """The brake, whole: state + limits, the live breach, and recent history.
@@ -721,26 +860,45 @@ def build_safety_router(
         brake may not have (the ``_record_disarm`` best-effort posture applies ONLY
         to audit rows written AFTER a change already committed).
 
+        Its mirror image is the SECOND hard rule: once a transition has committed,
+        the answer is ALWAYS a 200 (see ``_after_write``) -- a DB failure in the
+        follow-up read may not turn a durable change into a reported failure.
+
         * ``edit`` -- the six limit columns (``guardrails_repo``'s whitelist is the
-          gate; unknown key / non-positive breaker -> 422 wearing the repo's own
-          message). Presence decides: an omitted key is untouched, an explicit null
+          gate; unknown key / non-positive breaker -> 422 carrying the repo's own
+          reason). Presence decides: an omitted key is untouched, an explicit null
           unsets. State columns can never ride an edit, so editing a cap while
           tripped leaves the brake tripped.
-        * ``halt`` -- 'ok' -> 'halted' AND the protective sweep, so it takes the
-          SAME single-flight ``disarm_lock`` /api/disarm holds (409 to the loser,
-          before the factory resolves). The DB brake lands FIRST -- persist-first,
-          exactly like ``respond_to_trip``: the halt blocks every dispatch path on
-          DB truth alone, and the venue sweep is best-effort on top (no broker ->
-          still 200, ``sweep.ran`` False). ``dry_run=1`` previews and changes
-          NOTHING -- not the state, not a row, not the venue.
+        * ``halt`` -- 'ok' -> 'halted' AND the protective sweep, so a REAL run takes
+          the SAME single-flight ``disarm_lock`` /api/disarm holds (409 to the
+          loser, before the factory resolves). The DB brake lands FIRST --
+          persist-first, exactly like ``respond_to_trip``: the halt blocks every
+          dispatch path on DB truth alone, and the venue sweep is best-effort on top
+          (no broker -> still 200, ``sweep.ran`` False). ``dry_run=1`` previews and
+          changes NOTHING -- not the state, not a row, not the venue -- and
+          deliberately does NOT hold the lock (see ``_halt_action``).
         * ``clear_halt`` -- 'halted' -> 'ok', DB-only. A trip never clears here.
           ``dry_run`` is a 422 on this and the other two DB-only actions: there is
           nothing to preview, and silently ignoring the flag would turn a preview
           into an execution.
         * ``clear_trip`` -- requires ``ack_trip_id``: the clear only matches the trip
           the operator actually READ, so a stale cockpit screen cannot release a
-          newer trip. The response carries ``still_breached`` so the panel can say
+          newer trip. The response carries ``current_breach`` so the panel can say
           immediately that this will re-trip within the hour.
+
+        AS-BUILT DEVIATION (the plan said ``halt``/``clear_trip`` both take the
+        lock): ``clear_trip`` does NOT. The lock exists to serialise protective stop
+        SUBMITS at the venue -- two overlapping runs can each read the open-order
+        list before either acts, and duplicate live GTC sell stops on a margin
+        account close a position and then SHORT it. ``clear_trip`` touches no venue
+        at all; its own race is handled far better by the repo's conditional UPDATE
+        (``WHERE trip_id = <acknowledged> AND state = 'tripped'``), which is atomic
+        across PROCESSES, where a per-process lock is not. Holding the lock here
+        would only let a clear 409 a concurrent emergency DISARM.
+
+        503 DETAILS: three stable prefixes, and the only thing a client may branch
+        on -- ``database error (``, ``broker error (``, ``guardrail sweep did not
+        complete``. See the module constants.
         """
         if dry_run and body.action != "halt":
             # HALT is the only action with a venue side to preview; the other three
@@ -761,12 +919,11 @@ def build_safety_router(
                 # a body key that COLLIDES with edit_limits' own parameters
                 # ('source', 'session'): Python raises before the whitelist ever
                 # runs, and an uncaught one would 500 the brake's write endpoint.
-                # Both are client errors, and both carry the message verbatim.
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
+                # Both are client errors carrying the repo's own reason.
+                raise HTTPException(
+                    status_code=422, detail=_client_error(exc)) from exc
             action_nonce.bump()
-            g = guardrails_repo.peek_guardrails(session)
-            return _state_body(g) | {"action": "edit",
-                                     "current_breach": _current_breach(session, g)}
+            return _after_write(session, action="edit")
 
         if body.action == "halt":
             return _halt_action(session, dry_run=dry_run)
@@ -776,10 +933,10 @@ def build_safety_router(
                 state = guardrails_repo.peek_guardrails(session).state
                 raise HTTPException(
                     status_code=409,
-                    detail=f"state is {state} -- there is no HALT to clear")
+                    detail=f"nothing to clear — no HALT is in force "
+                           f"(state: {state})")
             action_nonce.bump()
-            return _state_body(guardrails_repo.peek_guardrails(session)) | {
-                "action": "clear_halt"}
+            return _after_write(session, action="clear_halt")
 
         if body.ack_trip_id is None:
             raise HTTPException(status_code=422,
@@ -789,16 +946,24 @@ def build_safety_router(
             raise HTTPException(
                 status_code=409, detail="trip id is stale or state is not tripped")
         action_nonce.bump()
-        g = guardrails_repo.peek_guardrails(session)
-        return _state_body(g) | {"action": "clear_trip",
-                                 "still_breached": _current_breach(session, g)}
+        # The release has COMMITTED: from here the answer is a 200 whatever the DB
+        # does. See _after_write -- on this action the alternative is telling an
+        # operator the brake is still on while real money is armed.
+        return _after_write(session, action="clear_trip")
 
     def _halt_action(session: Session, *, dry_run: bool) -> dict[str, object]:
         """The HALT branch: single-flight, persist-first, sweep best-effort.
 
-        Lock coverage is unconditional (the dry run makes read-only venue calls, and
-        the raw DISARM endpoint locks its previews too), and it is released in the
-        outer ``finally`` so a failed halt never wedges the endpoint shut.
+        THE LOCK COVERS REAL RUNS ONLY. It exists to serialise protective stop
+        SUBMITS -- two overlapping runs can each read the open-order list before
+        either acts, and the per-second key suffix only collapses re-submits inside
+        the same second, so duplicate live GTC sell stops are the hazard. A dry run
+        submits NOTHING: it makes two read-only venue round-trips and returns. The
+        frontend fires it on every hold-START, and holding the lock across those
+        round-trips would let a preview -- possibly an abandoned one -- 409 the
+        emergency DISARM the operator reaches for next. Previews must never be able
+        to block the brake. Real runs take it non-blocking and release it in the
+        outer ``finally``, so a failed halt never wedges the endpoint shut.
 
         ORDER, and why: lock -> the DB halt -> the broker -> the sweep. The brake is
         DB truth -- every dispatch path consults the row -- so the halt has to be
@@ -823,38 +988,43 @@ def build_safety_router(
         is no brake to protect, and a preview that cannot reach the venue has nothing
         to say.
         """
+        if dry_run:
+            # LOCK-FREE by design (see above): a preview submits nothing, so it must
+            # never be able to 409 the emergency DISARM. Peek (no seed), no
+            # transition, and the venue read through the two disarm helpers'
+            # dry-run mode -- Task 16 fires this on every hold-START, so it stays
+            # free of side effects.
+            try:
+                broker = resolved_broker_factory()
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=503, detail=broker_error_detail(exc)) from exc
+            g = guardrails_repo.peek_guardrails(session)
+            if broker is None:
+                sweep = _sweep_result(ran=False, detail=_NO_BROKER)
+            else:
+                preview, sells = pull_entry_orders(broker, dry_run=True)
+                restored, unprotected = ensure_stop_protection(
+                    broker, lambda sym: latest_recorded_stop(session, sym),
+                    key_suffix=_halt_key(), dry_run=True)
+                sweep = _sweep_result(ran=False, entries=preview, sells=len(sells),
+                                      restored=restored, unprotected=unprotected)
+            # ``committed: False`` keeps the POST responses one shape: every one of
+            # them says whether the brake actually moved, and only this branch says
+            # it did not.
+            return _state_body(g) | {
+                "action": "halt", "committed": False, "dry_run": True,
+                "current_breach": _current_breach(session, g),
+                "enrichment_error": None, "sweep": sweep}
+
         if not disarm_lock.acquire(blocking=False):
-            raise HTTPException(status_code=409,
-                                detail="guardrail action already in flight")
-        # Pre-bound so the real run's FAILURE path can report how many entries were
-        # pulled before the raise: ``pull_entry_orders`` dying mid-cancel leaves the
-        # name unbound, and 0 ("we don't know that any cancel landed") is the honest
+            raise HTTPException(status_code=409, detail=_ACTION_IN_FLIGHT)
+        # Pre-bound so the FAILURE path can report how many entries were pulled
+        # before the raise: ``pull_entry_orders`` dying mid-cancel leaves the name
+        # unbound, and 0 ("we don't know that any cancel landed") is the honest
         # floor -- never an invented count. Same reasoning as /api/disarm's.
         entries: list[BrokerOrder] = []
         try:
-            if dry_run:
-                # Preview only: peek (no seed), no transition, and the venue read
-                # through the two disarm helpers' dry-run mode. Task 16 fires this
-                # on every hold-START, so it must stay free of side effects.
-                try:
-                    broker = resolved_broker_factory()
-                except Exception as exc:
-                    raise HTTPException(
-                        status_code=503, detail=broker_error_detail(exc)) from exc
-                g = guardrails_repo.peek_guardrails(session)
-                if broker is None:
-                    sweep = _sweep_result(ran=False, detail=_NO_BROKER)
-                else:
-                    entries, sells = pull_entry_orders(broker, dry_run=True)
-                    restored, unprotected = ensure_stop_protection(
-                        broker, lambda sym: latest_recorded_stop(session, sym),
-                        key_suffix=_halt_key(), dry_run=True)
-                    sweep = _sweep_result(ran=False, entries=entries,
-                                          sells=len(sells), restored=restored,
-                                          unprotected=unprotected)
-                return _state_body(g) | {"action": "halt", "dry_run": True,
-                                         "sweep": sweep}
-
             halted = False
             venue_touched = False
             try:
@@ -864,8 +1034,8 @@ def build_safety_router(
                     state = guardrails_repo.peek_guardrails(session).state
                     raise HTTPException(
                         status_code=409,
-                        detail=f"state is not ok -- nothing to halt "
-                               f"(state is {state})")
+                        detail=f"nothing to halt — the brake is already engaged "
+                               f"(state: {state})")
                 halted = True
                 try:
                     broker = resolved_broker_factory()
@@ -906,10 +1076,15 @@ def build_safety_router(
                     if venue_touched:
                         gpipe.record_disarm_event(
                             session, reason="halt", orders_cancelled=len(entries))
-            return _state_body(guardrails_repo.peek_guardrails(session)) | {
-                "action": "halt", "dry_run": False, "sweep": sweep}
+            # The halt has COMMITTED (and the sweep has run), so the answer is a 200
+            # whatever the follow-up reads do -- see _after_write. ``sweep`` rides
+            # ON TOP, so even an enrichment failure still reports what the venue did.
+            return _after_write(session, action="halt") | {
+                "dry_run": False, "sweep": sweep}
         finally:
             disarm_lock.release()
+
+    # --- the live configuration (read-only) -------------------------------------------
 
     @router.get("/api/config")
     def config() -> dict[str, object]:
@@ -1016,26 +1191,3 @@ def build_safety_router(
         }
 
     return router
-
-
-def _bracket_shield(session: Session, snapshot: Snapshot | None) -> dict[str, object]:
-    """The safety screen's venue-truth table: one row per VENUE position, each with
-    its ``_bracket`` state -- ``armed`` (a live protective sell stop at the venue),
-    ``db-only`` (only a recorded ExecutionLog level -- ``latest_recorded_stop``,
-    the same lookup disarm restores from), or ``unprotected`` (no level anywhere,
-    loud). No snapshot (no broker configured, or the venue read failed/degraded)
-    -> ``known: False`` with an empty table: absence of evidence is never a claim,
-    so UNKNOWN can never render green."""
-    if snapshot is None:
-        return {"known": False, "as_of": None, "positions": []}
-    armed = _armed_symbols(snapshot)
-    return {
-        "known": True,
-        "as_of": snapshot.as_of.isoformat(),
-        "positions": [
-            {"symbol": pos.symbol, "qty": pos.qty,
-             "state": _bracket(pos.symbol, latest_recorded_stop(session, pos.symbol),
-                               snapshot=snapshot, armed=armed)}
-            for pos in snapshot.positions
-        ],
-    }
