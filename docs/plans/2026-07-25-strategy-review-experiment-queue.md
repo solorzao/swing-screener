@@ -59,6 +59,16 @@ each item's stated comparison family.
 
 ### A. Free diagnostics on existing pinned dumps (runnable today, zero replay compute)
 
+> **RUN 2026-07-25 — all five complete, every verdict independently re-derived and
+> confirmed. Full tables: [2026-07-25-free-diagnostics-results.md](2026-07-25-free-diagnostics-results.md).**
+> Q1: NEITHER pattern — bear is the load-bearing axis, high-vol amplifies inside bear
+> (bear×high lb +0.218; bull×high fails) → the promotion cohort is bear×high, and Q9's
+> highvol-only premium redefinition must be reconsidered (bear-conditioned instead).
+> Q2: EARLY×high-vol cell A PASS (+0.171R, lb +0.109, hw 0.063); cell B + 0.10 repeats
+> still owed. Q3: PARK — 0/6 cells clear; continuation selection-side closed. Q4: RETIRE
+> the rotation thread (discriminates, zero edge). Q5: NOT CERTIFIED (both ladders) — Q8
+> sizing stays blocked; conviction_tier is a surfacing label only.
+
 **Q1. rev_bear_highvol_crosstab** — *Are the two standout reversal screens the same trades?*
 New `scripts/replay_rev_crosstab.py` (~60 lines, `_Row`+`breakdown` pattern from
 `replay_rev_combo.py:66-86`) over `.cache/queue_experiments/D_dump_s*_slip0.05.parquet`
