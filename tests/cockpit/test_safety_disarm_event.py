@@ -81,9 +81,13 @@ def test_disarm_reports_a_refused_stop_as_unprotected_and_keeps_going(
     red no-Escape alarm the no-recorded-level case raises, now NAMING the position --
     while every other position is still swept. That is strictly safer than the old
     posture, where the first refusal raised a 503 that named nothing and left the
-    REMAINING positions unattempted. The DisarmEvent still records the venue-moving
-    run for the Auditor, and the leak posture is unchanged: no venue host on the
-    wire."""
+    REMAINING positions unattempted.
+
+    The conduct record still says PARTIAL: a completed sweep that left a position
+    unprotected is partially-protected venue state, so the DisarmEvent reads
+    'cockpit-partial' -- the more-alarming context the Auditor's disarm narrative
+    exists to surface -- even though nothing raised. Leak posture unchanged: no
+    venue host on the wire."""
 
     class _RestoreRefusedBroker(FakeBroker):
         def submit_order(self, spec: BrokerOrderSpec) -> Any:
@@ -113,6 +117,7 @@ def test_disarm_reports_a_refused_stop_as_unprotected_and_keeps_going(
     assert "secret-venue-host" not in r.text          # leak posture holds
     with Session(engine) as s:
         ev = s.query(DisarmEvent).one()               # the Auditor SEES the sweep
+        assert ev.reason == "cockpit-partial"         # ...and that it left a gap
         assert ev.orders_cancelled == 1               # AMD's resting entry was pulled
 
 

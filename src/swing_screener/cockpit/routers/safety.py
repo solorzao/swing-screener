@@ -681,8 +681,11 @@ def build_safety_router(
             # Pre-bound so the FAILURE path can report how many entries were pulled
             # before the raise: pull_entry_orders raising mid-cancel leaves the name
             # unbound, and 0 ("we don't know that any cancel landed") is the honest
-            # floor -- never an invented count.
+            # floor -- never an invented count. ``unprotected`` is pre-bound for the
+            # same reason: the reason label below reads it, and a raise before the
+            # ensure pass leaves it unset (that path is 'cockpit-partial' anyway).
             entries: list[BrokerOrder] = []
+            unprotected: list[str] = []
             completed = False
             try:
                 entries, sells = pull_entry_orders(broker, dry_run=dry_run)
@@ -712,13 +715,22 @@ def build_safety_router(
                     action_nonce.bump()
                     # Every REAL attempt is recorded for the Auditor -- the breach
                     # scan exists to flag disarms, and a disarm that cancelled the
-                    # entries then died restoring stops has moved MORE alarming
-                    # venue state than a clean one, not less. 'cockpit-partial'
-                    # names the failure path; best-effort (_record_disarm never
-                    # raises), so a failed event write cannot mask the 503.
+                    # entries then left the book part-protected has moved MORE
+                    # alarming venue state than a clean one, not less. So
+                    # 'cockpit' is earned, not assumed: the sweep must have
+                    # COMPLETED *and* left nothing unprotected. A raise (the sweep
+                    # died) and a completed-but-partial pass (since
+                    # ensure_stop_protection's per-position boundary, a refused
+                    # stop re-submit reports the symbol instead of raising) both
+                    # read 'cockpit-partial' -- the Auditor's disarm narrative
+                    # treats that as the more-alarming context deliberately, and
+                    # partially-protected venue state is exactly that. Best-effort
+                    # (_record_disarm never raises), so a failed event write can
+                    # never mask the 503.
                     _record_disarm(
                         session,
-                        reason="cockpit" if completed else "cockpit-partial",
+                        reason=("cockpit" if completed and not unprotected
+                                else "cockpit-partial"),
                         orders_cancelled=len(entries))
             return {
                 "dry_run": dry_run,
