@@ -242,9 +242,9 @@ export interface ScoreboardStats {
   equity_r: [string, number][] | null
   /** Closed trades DROPPED from `realized_usd` for want of a share count / price
    * (legacy live rows booked before fills stamped qty) — the honesty counter on the
-   * $ figure, > 0 only on the live card. Optional because every CARD sends it but the
-   * combined pool does not: the pool's dollars carry the same exclusions, and the live
-   * card is where they are disclosed. */
+   * $ figure. Only live rows can be unsized, so it is > 0 on the live card and on the
+   * combined pool that inherits them; every other tile sends 0. Typed optional so the
+   * shared tile keeps a renderer-side default rather than trusting the wire. */
   n_unsized?: number
 }
 

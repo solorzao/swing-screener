@@ -285,9 +285,12 @@ def build_scoreboard(
         "unit": "R",
         **_r_body(combined_summary, facet="combined"),
         # Real dollars from BOTH books. Any live close the $ math had to skip is
-        # skipped here too -- the live card's n_unsized is where that is disclosed
-        # (the pool carries no counter of its own).
+        # skipped HERE too, so the pool carries the live card's counter verbatim --
+        # the hero tile discloses its own gap rather than making the operator find
+        # the smaller tile below it. Only live rows can be unsized: manual $ comes
+        # from Trade.size, which is never NULL.
         "realized_usd": manual_usd + (live_card.realized_usd or 0.0),
+        "n_unsized": live_card.n_unsized,
         "equity_r": _cumulative_r(manual_pairs + live_pairs),
     }
 

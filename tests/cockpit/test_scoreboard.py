@@ -158,7 +158,7 @@ def test_combined_equity_curve_merges_and_resorts(session):
     combined = build_scoreboard(session, window="all")["combined"]
     assert set(combined) == {
         "books", "unit", "expectancy", "win_rate", "n_wins", "n_losses",
-        "n_closed", "profit_factor", "realized_usd", "equity_r",
+        "n_closed", "profit_factor", "realized_usd", "equity_r", "n_unsized",
     }
     # merged across books, re-sorted by close date: live (1/3) before manual (1/5)
     assert combined["equity_r"] == [["2026-01-03", 1.0], ["2026-01-05", 3.0]]
@@ -183,10 +183,13 @@ def test_live_card_counts_unsized_legacy_rows(session):
                      entry_price=10.0, exit_price=12.0, qty=100)
     _add_paper_trade(session, "OLD", 1.0, account="live",
                      entry_price=10.0, exit_price=90.0, qty=None)
-    card = _card(build_scoreboard(session, window="all"), "live")
+    board = build_scoreboard(session, window="all")
+    card = _card(board, "live")
     assert card["realized_usd"] == pytest.approx(200.0)
     assert card["n_unsized"] == 1
     assert card["n_closed"] == 2
+    # the pooled hero tile inherits the same gap, so it discloses it too
+    assert board["combined"]["n_unsized"] == 1
 
 
 def test_combined_includes_live_dollars(session):

@@ -17,9 +17,10 @@ import { StatChip } from './StatChip'
    muted em dash — an honest-empty face, never a fabricated zero. No per-tile equity
    curve here: the combined curve is a MetricsScreen footer (design decision).
 
-   The realized-$ line admits its own gaps: a card sending n_unsized > 0 (only the live
-   book can) says how many closes were left OUT of that figure for want of a broker
-   share count — an under-report the tile names rather than an estimate it invents. */
+   The realized-$ line admits its own gaps: a tile sending n_unsized > 0 (the live book
+   and the pool that inherits its rows) says how many closes were left OUT of that
+   figure for want of a broker share count — an under-report the tile names rather than
+   an estimate it invents. */
 
 export function BookMetricCard({
   card,
@@ -32,8 +33,8 @@ export function BookMetricCard({
 }) {
   const empty = card.n_closed === 0
   // Closed trades whose dollars are MISSING from realized_usd (no share count on a
-  // legacy live row). > 0 turns the realized line into an admitted under-report — the
-  // $ figure is never quietly padded with a guess.
+  // legacy live row; the combined pool inherits the live book's). > 0 turns the
+  // realized line into an admitted under-report — never a quietly padded guess.
   const unsized = card.n_unsized ?? 0
   // An R book whose expectancy is null despite closes shouldn't occur, but the
   // union types it Stat | null — treat it as the honest-empty face too.

@@ -394,18 +394,24 @@ def test_live_realized_usd_total_sums_all_time_and_counts_unsized(session: Sessi
         _live_trade(ticker="WIN", entry_price=100.0, exit_price=110.0, qty=5,
                     exit_date=date(2026, 7, 10)),
         _live_trade(ticker="LOSE", entry_price=50.0, exit_price=44.0, qty=10),
-        # unpriceable closes: 0 to the sum, 1 each to the honesty count.
-        _live_trade(ticker="LEGACY", qty=None),
+        # unpriceable closes: 0 to the sum, 1 each to the honesty count -- ONE PER
+        # NULL AXIS (share count, exit price, entry price). All three axes are pinned
+        # because a dropped axis under-reports n_unsized SILENTLY: the sum is safe
+        # either way (SQL sums skip a NULL term), so only the counter can catch it --
+        # and the counter is the whole disclosure.
+        _live_trade(ticker="LEGACY", qty=None, exit_date=date(2026, 7, 10)),
         _live_trade(ticker="NOPRICE", exit_price=None),
+        _live_trade(ticker="NOENTRY", entry_price=None),
         # other book / still open: neither summed nor counted.
         _live_trade(ticker="RSRCH", account="research", qty=9),
         _live_trade(ticker="OPEN", status="open", exit_date=None, exit_price=None),
     ])
     session.commit()
-    assert gr.live_realized_usd_total(session) == (pytest.approx(-10.0), 2)
-    # `since` cuts on the CLOSE date (the scoreboard's window axis).
-    assert gr.live_realized_usd_total(
-        session, since=date(2026, 7, 15))[0] == pytest.approx(-60.0)
+    assert gr.live_realized_usd_total(session) == (pytest.approx(-10.0), 3)
+    # `since` cuts on the CLOSE date (the scoreboard's window axis), and the honesty
+    # count rides the SAME cut as the sum -- LEGACY's 7/10 close drops from both.
+    assert gr.live_realized_usd_total(session, since=date(2026, 7, 15)) == (
+        pytest.approx(-60.0), 2)
     # an empty window coalesces to 0.0, never NULL.
     assert gr.live_realized_usd_total(session, since=date(2026, 8, 1)) == (0.0, 0)
 

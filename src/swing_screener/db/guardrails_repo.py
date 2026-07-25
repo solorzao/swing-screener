@@ -477,6 +477,11 @@ def live_realized_usd_total(
     instead of quietly under-reporting. NULL ``qty`` is the legacy live row
     (booked before fill materialization stamped share counts); R needs no share
     count, so those rows still carry their full weight in every R aggregate.
+    "Closed" here is the STATUS alone (matching ``realized_usd_on``), NOT the R
+    side's closed + filled + graded (``analytics.performance._is_closed_filled``):
+    a closed-but-unfilled live row is unreachable today (reconcile refuses to close
+    a position without broker truth), and were one ever to appear it would land in
+    ``n_unsized`` -- the honest bucket for a close whose dollars cannot be proven.
 
     ALL-TIME by default (the scoreboard's "all" window) -- unlike
     ``realized_usd_on``, which is the daily-loss breaker's single-day input.
