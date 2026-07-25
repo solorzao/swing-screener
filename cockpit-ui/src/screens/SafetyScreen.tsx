@@ -182,8 +182,7 @@ export function SafetyScreen({ wake }: { wake: number }) {
                       {s.env_scope}
                       <span className="sfy-note">
                         {' '}
-                        — the Azure jobs read their own env; the remote mode flip
-                        stays the runbook&apos;s az command
+                        · the remote mode flip stays the runbook&apos;s az command
                       </span>
                     </span>
                   </div>

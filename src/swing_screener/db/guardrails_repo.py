@@ -3,7 +3,13 @@
 Every state change is an ATOMIC conditional UPDATE (rows-affected election)
 plus one appended ``AgentGuardrailEvent``; every read on the hot dispatch path
 is a COLUMN select (never a cached ORM entity, which the dispatch loop's
-long-lived Session would serve stale). The election on ``trip`` is the ONLY
+long-lived Session would serve stale).
+
+Reads come in two flavours and the difference is load-bearing:
+``load_guardrails`` GET-OR-CREATES (enforcement + anything about to UPDATE --
+the row must exist or the conditional UPDATE matches nothing), while
+``peek_guardrails`` never writes (read-only surfaces: preflight, the cockpit
+polls). Same snapshot type, same freshness; only the empty-table behaviour differs. The election on ``trip`` is the ONLY
 cross-process lock the brake has -- the 8am digest job, the 4:15pm screen job
 and the cockpit all race the same WHERE clause, and whoever's UPDATE reports
 rowcount 1 owns the trip response (sweep + email); everyone else stands down.
@@ -114,6 +120,45 @@ def _select_state(session: Session) -> GuardrailsState | None:
     if row is None:
         return None
     return GuardrailsState(**row._mapping)
+
+
+#: The state a brake row that does not exist yet WOULD have: byte-identical to the
+#: row ``load_guardrails`` seeds (the ``AgentGuardrails`` column defaults -- state
+#: 'ok', every breaker unset, baseline 0.0, no trip). It exists so a READ-ONLY caller
+#: (``peek_guardrails``) can answer honestly without writing: on an empty table the
+#: only truthful answer IS the default, and inventing it here beats an INSERT the
+#: caller never asked for. Keep in lockstep with the model's defaults.
+_UNSEEDED = GuardrailsState(
+    state="ok",
+    max_daily_loss_usd=None,
+    max_trades_per_day=None,
+    max_drawdown_usd=None,
+    loss_streak_halt=None,
+    hwm_anchor_date=None,
+    hwm_baseline_usd=0.0,
+    trip_id=None,
+    trip_reason=None,
+    sweep_state=None,
+)
+
+
+def peek_guardrails(session: Session) -> GuardrailsState:
+    """The current brake state, READ-ONLY: the column select, or ``_UNSEEDED``.
+
+    Same snapshot ``load_guardrails`` returns, minus the get-or-create: an empty
+    table reads as the default row instead of creating one. For SURFACES -- preflight,
+    the cockpit polls -- which must not write: a poll that INSERTs would 503 the
+    masthead under a read-only DB grant, and a read-only check has no business
+    materialising rows.
+
+    NEVER call this before an UPDATE. Every transition (``trip`` / ``halt`` /
+    ``edit_limits``) get-or-creates FIRST precisely so its conditional UPDATE has a
+    target row; peeking there would leave the UPDATE matching nothing, and the brake
+    would silently no-op -- a halt that reports success and blocks nothing. Enforcement
+    paths keep ``load_guardrails``.
+    """
+    state = _select_state(session)
+    return state if state is not None else _UNSEEDED
 
 
 def load_guardrails(session: Session) -> GuardrailsState:
@@ -535,16 +580,23 @@ def effective_execution_scope(
     return settings.execute_play_types
 
 
-def guardrails_mandate_ok(session: Session) -> tuple[bool, str]:
-    """The mandate that real money may not dispatch with an unset breaker.
+def mandate_from_state(g: GuardrailsState) -> tuple[bool, str]:
+    """The mandate, evaluated over a snapshot you already hold. PURE -- no DB, no write.
 
     Returns ``(True, "")`` only if ``max_daily_loss_usd``, ``max_trades_per_day``
     AND ``max_drawdown_usd`` are ALL set and the brake state is 'ok'. Otherwise
     refuses, naming the FIRST failing item so a misconfig reads as one concrete
     cause (mirrors ``settings.real_money_limits_ok``). ``loss_streak_halt`` is
     optional and never part of the mandate.
+
+    The reason strings are PINNED: they are logged verbatim as ``rejected_live``
+    execution details and rendered verbatim on the cockpit's safety screen, so a
+    surface that wants extra context appends to them at ITS layer, never here.
+
+    Split out of ``guardrails_mandate_ok`` so a read-only surface can pair it with
+    ``peek_guardrails`` (one snapshot, no seed) while enforcement keeps the seeding
+    entry point below -- ONE definition of "may real money dispatch", two ways in.
     """
-    g = load_guardrails(session)
     if g.max_daily_loss_usd is None:
         return False, "max_daily_loss_usd is not set"
     if g.max_trades_per_day is None:
@@ -554,3 +606,14 @@ def guardrails_mandate_ok(session: Session) -> tuple[bool, str]:
     if g.state != "ok":
         return False, f"guardrails state is {g.state}"
     return True, ""
+
+
+def guardrails_mandate_ok(session: Session) -> tuple[bool, str]:
+    """The ENFORCEMENT entry to the mandate: ``mandate_from_state(load_guardrails(...))``.
+
+    Unchanged behaviour for every enforcement caller (execution's real-money guard,
+    the dispatch-loop consult): it get-or-creates the row, so the brake always has a
+    target for the UPDATE a trip would issue moments later. Read-only SURFACES use
+    ``mandate_from_state(peek_guardrails(session))`` instead -- same verdict, no write.
+    """
+    return mandate_from_state(load_guardrails(session))

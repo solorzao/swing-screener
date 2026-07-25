@@ -472,6 +472,44 @@ def test_trades_today_counts_counting_statuses_only(session: Session) -> None:
     assert gr.trades_today(session, run_date=day) == 2
 
 
+def test_peek_never_seeds_and_answers_the_load_default(session: Session) -> None:
+    """``peek_guardrails`` is ``load_guardrails`` minus the get-or-create.
+
+    On an empty table it answers ``_UNSEEDED`` and writes NOTHING (the read-only
+    surfaces -- preflight, the cockpit polls -- must not INSERT under a read-only DB
+    grant). The constant must be BYTE-IDENTICAL to the row load would have seeded, or
+    the two readers would disagree about a brake nobody has configured yet: that is
+    pinned here against the real seed, so a model default change breaks this test
+    rather than the safety screen."""
+    assert gr.peek_guardrails(session) == gr._UNSEEDED
+    assert session.query(AgentGuardrails).count() == 0   # peek seeded nothing
+
+    seeded = gr.load_guardrails(session)                 # NOW the row is created
+    assert session.query(AgentGuardrails).count() == 1
+    assert seeded == gr._UNSEEDED                        # byte-identical to the peek
+    assert gr.peek_guardrails(session) == seeded         # and agrees once it exists
+
+
+def test_peek_sees_another_sessions_committed_transition(session: Session) -> None:
+    """Same column-select freshness as load: a HALT committed elsewhere is visible
+    immediately (the masthead chip polls through this)."""
+    gr.load_guardrails(session)
+    with Session(session.get_bind()) as other:
+        assert gr.halt(other, source="cockpit") is True
+    assert gr.peek_guardrails(session).state == "halted"
+
+
+def test_mandate_from_state_is_pure_and_shares_one_definition(session: Session) -> None:
+    """The mandate over a snapshot you already hold -- no session, no write -- and the
+    SAME verdict the seeding enforcement entry gives."""
+    assert gr.mandate_from_state(gr._UNSEEDED) == (False, "max_daily_loss_usd is not set")
+    gr.edit_limits(session, source="cockpit", max_daily_loss_usd=50.0,
+                   max_trades_per_day=3, max_drawdown_usd=200.0)
+    g = gr.peek_guardrails(session)
+    assert gr.mandate_from_state(g) == (True, "")
+    assert gr.guardrails_mandate_ok(session) == gr.mandate_from_state(g)
+
+
 def test_mandate_ok_requires_three_breakers_set(session: Session) -> None:
     # unset breakers refuse, naming the FIRST missing one in mandate order.
     assert gr.guardrails_mandate_ok(session) == (False, "max_daily_loss_usd is not set")

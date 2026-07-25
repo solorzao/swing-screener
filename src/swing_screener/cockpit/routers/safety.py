@@ -105,12 +105,15 @@ def build_safety_router(
         NEVER connectivity: DISARM's enablement keys on it, and it rides this
         already-polled endpoint so the always-visible masthead needs no extra poll.
         ``brake_state`` rides it for the same reason (the masthead brake chip):
-        ``load_guardrails(session).state`` rendered DIRECTLY -- 'ok' | 'halted' |
+        ``peek_guardrails(session).state`` rendered DIRECTLY -- 'ok' | 'halted' |
         'tripped', never a consult VERDICT, so the chip can never say 'ok' about a
-        halted brake. One extra column select on an already-polled endpoint, and NO
-        venue call. Unlike ``execution_mode`` this is a DB read: the brake row is
-        the venue of record every process shares, so a trip landed by an Azure job
-        shows on the next poll (the column select bypasses the identity map).
+        halted brake. ONE column select on an already-polled endpoint, no venue call
+        and NO write: ``peek`` (not ``load``) because a poll must never seed a row --
+        under a read-only DB grant that INSERT would 503 the masthead, and an empty
+        table honestly reads as the default 'ok'. Unlike ``execution_mode`` this is a
+        DB read: the brake row is the venue of record every process shares, so a trip
+        landed by an Azure job shows on the next poll (the column select bypasses the
+        identity map).
         """
         report = autonomy_gate(session, edge_dir=resolve_edge_dir(edge_dir))
         today = date.today()
@@ -124,7 +127,7 @@ def build_safety_router(
             "countdown": gate_countdown(report),
             "execution_mode": settings.execution_mode,
             "broker_configured": bool(settings.broker),
-            "brake_state": guardrails_repo.load_guardrails(session).state,
+            "brake_state": guardrails_repo.peek_guardrails(session).state,
             "analyst_spend_today_usd": spend_today,
         }
 
@@ -243,18 +246,29 @@ def build_safety_router(
         individually (``gate_ready`` reuses the report's advisory gate line -- one
         evaluation per request); ``caps_mandate`` is ``real_money_limits_ok`` over
         the resolved limits. ``guardrails`` is the brake: the mandate verdict +
-        reason (``guardrails_mandate_ok`` -- the same one execution enforces at
-        submit time) beside the RAW ``state`` / ``sweep_state``, rendered DIRECTLY
-        so the screen can never report 'ok' about a halted brake.
+        reason (the same definition execution enforces at submit time) beside the
+        RAW ``state`` / ``sweep_state``, rendered DIRECTLY so the screen can never
+        report 'ok' about a halted brake. All four fields come from ONE
+        ``peek_guardrails`` snapshot -- a second read could land either side of a
+        trip and publish a verdict that contradicts the state beside it -- and
+        ``peek`` never seeds, so this poll cannot write (a read-only DB grant must
+        not 503 the safety screen).
         ``env_scope`` is the honesty label, and it covers the ENV-DERIVED fields
-        only (mode, locks, caps, broker_configured): those read THIS process's env
-        -- the Azure jobs run under their own. ``guardrails`` is NOT one of them --
-        it reads the shared ``agent_guardrails`` row, the brake's single venue of
-        record for EVERY process, so a trip landed by an Azure job shows here.
+        only (``mode``, ``locks``, ``caps_mandate``, ``broker_configured``, and the
+        preflight block's ``config`` / ``reachable`` / ``funded`` / ``caps`` rows):
+        those read THIS process's env -- the Azure jobs run under their own.
+        ``guardrails`` is NOT one of them -- it reads the shared ``agent_guardrails``
+        row, the brake's single venue of record for EVERY process, so a trip landed
+        by an Azure job shows here.
+        The top-level ``guardrails`` entry and the preflight block's ``guardrails``
+        ROW are computed from SEPARATE snapshots (preflight peeks for itself), so a
+        trip landing mid-request can leave them momentarily disagreeing -- the next
+        poll converges. Deliberate: threading a snapshot through ``preflight`` would
+        widen its signature for a sub-second cosmetic win.
         ``bracket_shield`` reads the CACHED broker snapshot (the venue-truth table:
-        see ``_bracket_shield`` -- UNKNOWN is never rendered green). Both DB reads
-        are cheap column selects: this endpoint already makes a REAL broker call
-        through the factory, and nothing added here touches the venue.
+        see ``_bracket_shield`` -- UNKNOWN is never rendered green). Every DB read
+        here is a cheap column select: this endpoint already makes a REAL broker call
+        through the factory, and nothing added since touches the venue.
         """
         settings = load_settings()
         broker: BrokerClient | None
@@ -276,17 +290,17 @@ def build_safety_router(
             (c.ok for c in report.checks if c.name == "autonomy_gate"), False)
         mode, limits = resolve_execution(settings)
         caps_ok, caps_reason = real_money_limits_ok(limits)
-        # The mandate verdict and the raw snapshot are read SEPARATELY on purpose:
-        # ok/reason answer 'may real money dispatch', state/sweep_state say WHAT the
-        # brake is doing (a tripped brake's sweep bookkeeping has no place in a
-        # boolean). Both are column selects that bypass the identity map, so a trip
-        # committed by another process is visible immediately.
-        g_ok, g_reason = guardrails_repo.guardrails_mandate_ok(session)
-        g = guardrails_repo.load_guardrails(session)
+        # ONE snapshot for all four brake fields: the verdict (may real money
+        # dispatch) and the raw state/sweep bookkeeping must describe the SAME
+        # instant, or a trip landing between two reads would publish 'ok' beside
+        # 'tripped'. peek (not load) so the poll stays read-only; the column select
+        # bypasses the identity map, so another process's trip is visible at once.
+        g = guardrails_repo.peek_guardrails(session)
+        g_ok, g_reason = guardrails_repo.mandate_from_state(g)
         return {
             "broker_configured": bool(settings.broker),
             "mode": mode,
-            "env_scope": "this process",
+            "env_scope": "this process — the Azure jobs run under their own env",
             "locks": {
                 "mode_is_live": mode == "live",
                 "allow_real_money": settings.allow_real_money,

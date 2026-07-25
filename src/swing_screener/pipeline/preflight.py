@@ -4,17 +4,18 @@ Before anyone arms a REAL-money endpoint they run ``preflight``: is the broker r
 funded, are all the hard-limit caps set, is the agent's brake configured and released, does
 ``is_real_money`` match the configured host, is the autonomy gate ready? It answers ONE
 question -- *should a human flip the switch?* -- and it answers it WITHOUT touching anything.
-It is READ-ONLY (North Star #1/#3): it changes NO state (no settings/env mutation, no
-edge-file rewrite, no brake transition) and **NEVER arms**. It only reads the broker, the
-settings snapshot, the brake row, and the advisory autonomy gate. Its ONE write is the
-guardrails get-or-create seed -- see ``_check_guardrails``.
+It is strictly READ-ONLY (North Star #1/#3): it performs NO writes (no DB rows, no
+settings/env mutation, no edge-file rewrite) and **NEVER arms**. It only reads the broker,
+the settings snapshot, the brake row, and the advisory autonomy gate.
 
 The checks split into SAFETY-CRITICAL and ADVISORY:
 
 * ``config`` / ``reachable`` / ``funded`` / ``caps`` are CRITICAL -- ``go`` is True iff EVERY
   critical check passes. These are the can-this-safely-run questions.
-* ``guardrails`` is CRITICAL on a REAL-money host and advisory otherwise -- the brake mandate
-  binds real money exactly as it does at submit time, and paper hosts stay exempt.
+* ``guardrails`` carries TWO rules with different scopes: an ENGAGED brake (state
+  halted/tripped) is critical on ANY host -- it means the agent will not trade at all --
+  while an UNSET mandatory breaker is critical only on a real-money host (paper is exempt
+  from that mandate, exactly as it is from the caps mandate).
 * ``is_real_money`` / ``autonomy_gate`` are ADVISORY (warn, not critical) -- a heads-up the
   human weighs, never a hard gate. (The autonomy gate is itself advisory: the human decides
   whether the edge is proven enough; preflight just surfaces its verdict.)
@@ -32,7 +33,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from swing_screener.db.guardrails_repo import guardrails_mandate_ok
+from swing_screener.db.guardrails_repo import mandate_from_state, peek_guardrails
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.autonomy import autonomy_gate
 
@@ -133,33 +134,69 @@ def _check_caps(settings: Settings) -> PreflightCheck:
     return PreflightCheck("caps", ok, detail, True)
 
 
+def _real_money_or_fail_safe(broker: BrokerClient | None) -> bool:
+    """``broker.is_real_money()``, never propagating. No broker -> False (unknown host).
+
+    The same never-propagate posture the reachability check wears: this call decides a
+    SAFETY-CRITICAL flag, and a client that raises on a host lookup must not be the thing
+    that crashes the whole checklist. Fail-safe is TRUE (treat as real money -> critical),
+    matching ``broker_alpaca.is_real_money``'s own unknown-host posture: an endpoint we
+    cannot identify is assumed to move real money."""
+    if broker is None:
+        return False
+    try:
+        return broker.is_real_money()
+    except Exception:  # noqa: BLE001 -- an unreadable host is a strict verdict, not a crash
+        log.error("preflight: broker.is_real_money() failed; assuming REAL money",
+                  exc_info=True)
+        return True
+
+
 def _check_guardrails(session: Session, broker: BrokerClient | None) -> PreflightCheck:
-    """CRITICAL on a REAL-money host / advisory otherwise: all three mandatory breakers
-    are set AND the brake state is 'ok' (``guardrails_mandate_ok``).
+    """The agent's brake: every mandatory breaker set AND the state released.
 
-    The SAME mandate ``execution`` enforces at submit time, consulted through the same
-    function -- so preflight can never hand out a GO the first live order would be
-    refused under. Criticality mirrors execution's posture exactly: that mandate block
-    sits inside ``if self._broker.is_real_money()``, so a paper host is EXEMPT (as it is
-    from the caps mandate) and this line reads advisory. With ``broker=None`` real-vs-paper
-    is UNKNOWN, so it stays advisory too -- the no-broker report is already NO-GO on
-    reachable/funded, and a critical line there would add noise, never safety. The check
-    itself is evaluated for REAL in every case: it reads the DB, never the venue.
+    Uses the mandate ``execution`` enforces at submit time (``mandate_from_state`` --
+    the same four-branch definition, reached through the READ-ONLY ``peek_guardrails``),
+    so preflight can never hand out a GO the first live order would be refused under.
+    Reads the DB, never the venue.
 
-    Rendered honestly on paper as well as live (``ok`` is the mandate's real answer, not a
-    softened one): an unset breaker is exactly what the operator must see BEFORE the flip.
-    The detail is internally formatted only -- the mandate's own reason string, which names
-    a breaker column or the brake state; no venue text can pass through here.
+    Criticality is a SPLIT, because the mandate bundles two rules with different scopes:
 
-    Reading the mandate get-or-creates the single default ``agent_guardrails`` row (state
-    'ok', every breaker unset) -- the same idempotent seed every other brake reader
-    performs. It is the only write preflight can cause, it is never a STATE transition,
-    and the row it seeds is the most restrictive answer the mandate has, so it can only
-    ever make preflight say NO-GO."""
-    ok, reason = guardrails_mandate_ok(session)
-    critical = broker is not None and broker.is_real_money()
-    detail = "all mandatory breakers set, brake state ok" if ok else reason
-    return PreflightCheck("guardrails", ok, detail, critical)
+    * an ENGAGED brake (state halted / tripped) is CRITICAL on ANY host -- with the brake
+      on, the agent will not trade at all, so a paper drill reads NO-GO just as live does
+      (advisory there would mean 'proceed' while every submit gets skipped);
+    * an UNSET mandatory breaker is critical only on a REAL-money host -- execution's
+      mandate block sits inside ``if self._broker.is_real_money()``, so paper is exempt
+      exactly as it is from the caps mandate. With ``broker=None`` real-vs-paper is
+      UNKNOWN, so that half stays advisory (the no-broker report is already NO-GO on
+      reachable/funded).
+
+    ``ok`` is the mandate's real answer on every host -- never softened to match the
+    criticality -- so an unset breaker is visible on paper BEFORE the flip.
+
+    The detail is internally formatted only (no venue text can pass through here). The
+    shared mandate reason is used VERBATIM -- it is pinned as an execution rejection
+    detail -- and preflight appends its own context at THIS layer: the trip's id +
+    reason (what ``clear`` needs to acknowledge), or the note that an unset breaker is a
+    cockpit setting rather than an env var, which also tells the two near-identical
+    'is not set' rows (caps vs brake) apart. When BOTH are wrong the mandate reports only
+    its first failure (breakers are checked before state), so the engaged brake -- the
+    dominant fact -- is named explicitly rather than left unsaid."""
+    g = peek_guardrails(session)
+    ok, reason = mandate_from_state(g)
+    engaged = g.state != "ok"
+    unset = None in (g.max_daily_loss_usd, g.max_trades_per_day, g.max_drawdown_usd)
+    trip_ctx = f" (trip #{g.trip_id}: {g.trip_reason})" if g.trip_id is not None else ""
+    setting_note = " [brake setting — cockpit guardrails, not env]"
+    if ok:
+        detail = "all mandatory breakers set, brake state ok"
+    elif engaged and not unset:
+        detail = f"{reason}{trip_ctx}"           # reason IS the state message
+    elif engaged:
+        detail = f"{reason}{setting_note}; brake is also {g.state}{trip_ctx}"
+    else:
+        detail = f"{reason}{setting_note}"
+    return PreflightCheck("guardrails", ok, detail, engaged or _real_money_or_fail_safe(broker))
 
 
 def _check_is_real_money(broker: BrokerClient) -> PreflightCheck:
@@ -192,10 +229,11 @@ def preflight(
     broker: BrokerClient | None,
     edge_dir: Path = _EDGE_DIR,
 ) -> PreflightReport:
-    """Run the read-only GO/NO-GO preflight check. NO state change, NO arming.
+    """Run the read-only GO/NO-GO preflight check. NO writes, NO arming.
 
     Evaluates seven checks in order -- config / reachable / funded / caps (CRITICAL) +
-    guardrails (critical on a REAL-money host, advisory otherwise) + is_real_money /
+    guardrails (critical whenever the brake is ENGAGED, and on a real-money host also
+    when a mandatory breaker is unset) + is_real_money /
     autonomy_gate (ADVISORY) -- and returns a ``PreflightReport`` whose ``go``
     is True iff every CRITICAL check passed. A broker error never propagates (the reachability
     check catches it). ``broker=None`` (the cockpit's default local setup, or a client
@@ -205,12 +243,12 @@ def preflight(
     is_real_money read as explicit not-applicable
     lines; caps, the brake and the autonomy gate stay REAL (none needs the broker);
     ``go`` is False.
-    This function DECIDES nothing: it only reads the broker, the settings
-    snapshot, the brake row, and the advisory gate (a SELECT over the scored-call book + the
-    verdicts sidecars).
+    This function performs NO writes: it only reads the broker, the settings
+    snapshot, the brake row (one column select -- ``peek_guardrails`` never seeds), and
+    the advisory gate (a SELECT over the scored-call book + the verdicts sidecars).
     It NEVER mutates ``execution_mode``, settings, env, any edge file, or the brake state --
-    arming stays a human act, performed elsewhere. Its one write is the guardrails
-    get-or-create seed (see ``_check_guardrails``), which no state depends on."""
+    arming stays a human act, performed elsewhere. It also never COMMITS: a caller's
+    pending work is still pending when it returns."""
     if broker is None:
         checks = [
             # The REAL config check, not a hardcoded line: with SWING_BROKER unset the

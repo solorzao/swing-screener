@@ -1,16 +1,22 @@
 """Safety-router endpoints (split from test_api.py): /api/gate, POST
 /api/disarm, and GET /api/execution/safety."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from fastapi.testclient import TestClient
 import pytest
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from swing_screener.analytics.calibration import _CLUSTER_FLOOR, MIN_LEADERBOARD_N
 from swing_screener.cockpit.api import create_app
 from swing_screener.db import guardrails_repo as gr
+from swing_screener.db.models import AgentGuardrails
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.broker import BrokerAccount, BrokerOrderSpec, FakeBroker
 from tests.cockpit.conftest import (
@@ -23,6 +29,29 @@ from tests.cockpit.conftest import (
     _nonce_of,
     _recorded_stop_row,
 )
+
+
+@contextmanager
+def _deny_writes(table: str) -> Iterator[list[str]]:
+    """Simulate a read-only DB grant: every INSERT/UPDATE touching ``table`` raises.
+
+    Listens on the Engine CLASS, not one instance, because ``create_app`` builds its
+    own engine from the URL -- an instance listener would miss exactly the writes
+    under test. Yields the list of attempted statements (empty = nothing tried)."""
+    attempted: list[str] = []
+
+    def _guard(conn: Any, cursor: Any, statement: str, parameters: Any,
+               context: Any, executemany: bool) -> None:
+        sql = " ".join(statement.split()).lower()
+        if sql.startswith(("insert into", "update")) and table in sql:
+            attempted.append(sql)
+            raise PermissionError(f"no write grant on {table}")
+
+    event.listen(Engine, "before_cursor_execute", _guard)
+    try:
+        yield attempted
+    finally:
+        event.remove(Engine, "before_cursor_execute", _guard)
 
 
 # --- /api/gate ------------------------------------------------------------------------
@@ -317,7 +346,8 @@ def test_execution_safety_none_factory_is_200_never_a_500(
     assert set(body) == SAFETY_KEYS
     assert body["broker_configured"] is False
     assert body["mode"] == "off"
-    assert body["env_scope"] == "this process"
+    # the SAME honesty label /api/config carries -- one string, one meaning.
+    assert body["env_scope"] == "this process — the Azure jobs run under their own env"
     assert set(body["locks"]) == LOCK_KEYS
     assert body["locks"] == {"mode_is_live": False, "allow_real_money": False,
                              "gate_ready": False}
@@ -417,6 +447,34 @@ def test_safety_report_carries_guardrails_entry(tmp_path: Path) -> None:
     assert client.get("/api/execution/safety").json()["guardrails"] == {
         "ok": False, "reason": "guardrails state is tripped",
         "state": "tripped", "sweep_state": "pending"}
+
+
+def test_gate_and_safety_never_write_the_brake_row(tmp_path: Path) -> None:
+    """The G7 scenario: a virgin ``agent_guardrails`` table AND no write grant.
+
+    Both polls must answer 200 -- the masthead and the safety screen cannot go dark
+    because a row was never seeded -- with the brake reading its honest default ('ok',
+    mandate refusing on the first unset breaker) and NOT ONE write attempted. A poll
+    that get-or-created would 503 here, on the two most-polled endpoints in the app.
+    The denial is a class-level Engine listener because the app builds its OWN engine
+    from the URL (``get_engine`` is not a cache), so it covers the app's writes too."""
+    client, engine, _calls = _broker_app(tmp_path, FakeBroker())
+    with _deny_writes("agent_guardrails") as attempted:
+        gate = client.get("/api/gate")
+        safety = client.get("/api/execution/safety")
+
+    assert attempted == []                       # no INSERT/UPDATE even attempted
+    assert gate.status_code == 200
+    assert gate.json()["brake_state"] == "ok"    # the honest default, not a seeded row
+    assert safety.status_code == 200
+    body = safety.json()
+    assert body["guardrails"] == {"ok": False, "reason": "max_daily_loss_usd is not set",
+                                  "state": "ok", "sweep_state": None}
+    # preflight rides this endpoint: its brake row is a peek too (no seed, no 503).
+    checks = {c["name"]: c for c in body["preflight"]["checks"]}
+    assert checks["guardrails"]["ok"] is False
+    with Session(engine) as s:
+        assert s.query(AgentGuardrails).count() == 0  # the table is still virgin
 
 
 def test_execution_safety_broker_error_degrades_by_class_name(
