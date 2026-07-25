@@ -238,8 +238,11 @@ class EmailLog(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     sent_at: Mapped[datetime]
     # daily / weekly / monthly / exit / guardrail (trip alerts, keyed on the trip
-    # event id) / execution (live-rejection alerts, one coverage row PER alerted
-    # ExecutionLog id, keyed 'xlog-{id}' -- Task 11's at-least-once retry joins on it)
+    # event id) / execution (ONE display row per live-rejection alert email,
+    # keyed on the sha1 of the alerted id set) / execution-cover (bookkeeping,
+    # NOT a sent email: one row per alerted ExecutionLog id, keyed 'xlog-{id}',
+    # which Task 11's at-least-once retry joins on for coverage -- the cockpit's
+    # email surfaces exclude this kind)
     kind: Mapped[str] = mapped_column(String(32))
     subject: Mapped[str] = mapped_column(String(256), default="")
     run_date: Mapped[date | None] = mapped_column(default=None)

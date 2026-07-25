@@ -119,9 +119,50 @@ def test_same_day_rerun_keeps_the_live_position(tmp_path, bars, monkeypatch):
         assert pt.opened_date == date(2024, 4, 2)
 
 
+def _open_live_trade(*, ticker: str = "AMD") -> PaperTrade:
+    """One OPEN live position (entry 50, stop 45, qty 10) the reconciler can close --
+    the exposure that keeps the live book in scope after a disarm."""
+    return PaperTrade(
+        ticker=ticker, timeframe="1d", horizon="medium", signal_score=0.8, rank=1,
+        account="live", fill_status="filled", entry_date=date(2024, 3, 20),
+        entry_price=50.0, stop=45.0, target=60.0, risk=5.0, status="open", qty=10)
+
+
+def test_disarmed_open_exposure_still_reconciles(tmp_path, bars, monkeypatch):
+    """THE disarmed-exposure pin: mode OFF but an open live position at the venue
+    -> the screen still reconciles it.
+
+    Disarming used to stop the reconcile precisely when the operator was trying
+    to reduce risk, leaving the live book dark while positions sat at the venue
+    (2026-07 review). ``live_sync.maybe_reconcile_live``'s gate is deliberately
+    "live mode OR open exposure", and this is the screen-side half of it."""
+    monkeypatch.delenv("SWING_EXECUTION_MODE", raising=False)   # disarmed
+    monkeypatch.delenv("DIGEST_TO", raising=False)              # no trip mail from here
+    monkeypatch.setattr(run, "_fetch_all_timeframes", lambda *a, **k: {})
+
+    url = f"sqlite:///{tmp_path / 'disarmedexposure.sqlite'}"
+    broker = FakeBroker(real_money=False)
+    broker.close_position("AMD", price=44.0)      # the venue closed it while disarmed
+    with Session(get_engine(url)) as s:
+        s.add(_open_live_trade())
+        s.commit()
+
+    run.run_screen(universe_path=_write_universe(tmp_path, ["ZZZ"]), db_url=url,
+                   cache_dir=tmp_path / "cache", chart_dir=tmp_path / "charts",
+                   today=date(2024, 4, 2), cfg=_NO_EXT_GATE, broker=broker)
+
+    with Session(get_engine(url)) as s:
+        pt = s.scalars(select(PaperTrade).where(PaperTrade.account == "live")).one()
+        assert pt.status == "closed"             # booked despite the mode being off
+        assert pt.exit_price == 44.0
+        assert pt.exit_reason == "broker_close"
+        assert pt.exit_date == date(2024, 4, 2)
+
+
 def test_off_mode_does_not_reconcile_even_with_a_broker(tmp_path, bars, monkeypatch):
-    """off (default) + a broker handed in -> NO reconcile: a filled broker order is left
-    un-materialized (the live path stays dark)."""
+    """off (default) + a broker handed in + NO open exposure -> NO reconcile: a filled
+    broker order is left un-materialized (the live path stays dark). The gate's other
+    arm (open exposure, even disarmed) is pinned by the test above."""
     monkeypatch.delenv("SWING_EXECUTION_MODE", raising=False)  # default off
     monkeypatch.setattr(run, "_fetch_all_timeframes", lambda *a, **k: {})
 

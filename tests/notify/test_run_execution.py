@@ -525,7 +525,7 @@ def test_dispatch_time_reconcile_trips_on_a_same_morning_stop_out(tmp_path, monk
     # THREE distinct sends, three distinct kinds (Task 10): the fresh
     # broker_close rides the EXIT alert (a stop-out is a FILL + CLOSE --
     # position truth -- so it never triggers the live-REJECTION alert, which
-    # fires only on rejected_live/canceled ORDER flips); the dispatch loop's
+    # fires only on rejected_live ORDER flips); the dispatch loop's
     # trip then sends the GUARDRAIL alert; the digest itself goes last.
     assert len(sent) == 3
     assert "Exit Alert" in sent[0]["subject"]

@@ -39,12 +39,19 @@ def maybe_reconcile_live(
     degrades to a loud warning and a 0 count, never a raise. The change count is
     0 on every degraded path.
 
+    THE BUILD GATE IS DELIBERATELY WIDER THAN THE SCREEN NEEDS: the ``mode ==
+    "live"`` arm of the on-demand build exists for the HOURLY caller
+    (``pipeline.exitcheck``), which has no pre-built broker of its own. It is
+    unreachable from ``run_screen`` today -- live mode there builds its broker
+    before this call (``run.py``'s "if broker is None and execution_mode ==
+    'live'") -- so for the screen only the open-exposure arm can fire. Do not
+    "simplify" it away on the strength of the screen path alone.
+
     The broker rides back in the tuple deliberately: when the on-demand build
     fired (mode off + open exposure), the caller's guardrails consult right
     after this must reuse it -- a fresh trip's sweep should run NOW, not defer a
-    cycle because the extraction dropped the broker on the floor (byte-identical
-    with the old inline block in ``run.py``, which left the built broker in
-    scope for the consult).
+    cycle because the extraction dropped the broker on the floor (the old inline
+    block in ``run.py`` left the built broker in scope for the consult).
     """
     settings = settings if settings is not None else load_settings()
     open_exposure = bool(repo.load_open_live_trades(session))

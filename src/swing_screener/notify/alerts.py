@@ -6,11 +6,15 @@ Three alert kinds live here:
   ``message`` already carries the ticker and context.
 * GUARDRAIL-TRIP alerts (Task 10) — a breaker tripped the live brake; the
   operator must hear it the moment it happens, not in tomorrow's digest.
-* LIVE-REJECTION alerts (Task 10) — working live orders the venue rejected or
-  canceled (the reconcile's ``rejected_live``/``canceled`` status flips): order
-  truth the operator believes is still working but is not. Distinct from an
-  exit alert — a venue stop-out is a FILL + CLOSE (position truth), never a
-  rejection.
+* LIVE-REJECTION alerts (Task 10) — working live orders the venue REJECTED
+  (the reconcile's ``rejected_live`` status flip): order truth the operator
+  believes is still working but is not. Distinct from an exit alert — a venue
+  stop-out is a FILL + CLOSE (position truth), never a rejection. ``canceled``
+  rows are deliberately NOT mailed (Task-11 review): that status covers benign
+  end-of-day DAY-order expiry AND this system's own trip/halt/kill sweep
+  cancels — emailing "re-enter manually if still wanted" for orders the
+  guardrails deliberately killed an hour earlier is worse than silence. They
+  still ride the digest's ticket lines and the cockpit execution log.
 
 LEAK POSTURE (binding, mirrors ``pipeline.guardrails``): subjects and bodies
 are built ONLY from internally formatted strings — breaker names, the repo's
@@ -22,8 +26,10 @@ the bottom — the guardrail-trip pair (:func:`send_guardrail_alert` +
 :func:`guardrail_alert_sent` + :func:`emit_pending_guardrail_alert`, owning the
 ``alert_key=str(trip_event_id)`` send-then-log dedup contract) and the
 live-rejection pair (:func:`send_live_rejection_alert` +
-:func:`pending_rejection_ids`, owning the per-ROW ``alert_key='xlog-{id}'``
-contract) — one owner per contract, shared by every caller: ``notify.run``'s
+:func:`pending_rejection_ids`, owning the per-ROW
+``kind='execution-cover'``/``alert_key='xlog-{id}'`` coverage contract plus the
+one ``kind='execution'`` DISPLAY row per sent email) — one owner per contract,
+shared by every caller: ``notify.run``'s
 dispatch loop, ``pipeline.run``'s evening screen, and ``pipeline.exitcheck``'s
 hourly job. They live HERE because this module stays pipeline-import-free (its
 only imports are ``notify.body``, sqlalchemy, and ``db.*``; the send callable
@@ -31,6 +37,7 @@ is injected), which lets the pipeline jobs import it lazily without ever
 touching ``notify.run`` (the notify.run -> pipeline cycle).
 """
 
+import hashlib
 import html
 from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime, timedelta
@@ -113,14 +120,16 @@ def compose_guardrail_alert(
 def compose_live_rejection_alert(
     rows: Sequence[_ExecutionRow], run_date: date
 ) -> EmailContent:
-    """Alert for live orders the venue REJECTED or CANCELED.
+    """Alert for live orders the venue REJECTED.
 
     Built from :class:`ExecutionLog` rows the reconcile just flipped to
-    ``rejected_live``/``canceled`` — orders the operator believes are working
-    but are not (order truth). A venue stop-out is a FILL + CLOSE and rides the
-    EXIT alert instead; the two kinds are disjoint by construction. ``status``
-    and ``detail`` are internally recorded strings (the leak posture was upheld
-    when they were written).
+    ``rejected_live`` — orders the operator believes are working but are not
+    (order truth). A venue stop-out is a FILL + CLOSE and rides the EXIT alert
+    instead; the two kinds are disjoint by construction. ``canceled`` rows are
+    out of scope by CALLER contract (see the module docstring) — the wording
+    here says REJECTED and must stay true to what the emitters select.
+    ``status`` and ``detail`` are internally recorded strings (the leak posture
+    was upheld when they were written).
     """
     # Phone-glance subject: count + tickers, so the preview alone says what
     # died. Ticker list bounded (EmailLog.subject is String(256) and Azure SQL
@@ -129,7 +138,7 @@ def compose_live_rejection_alert(
     shown = ", ".join(tickers[:6]) + (", …" if len(tickers) > 6 else "")
     n = len(rows)
     plural = "s" if n != 1 else ""
-    subject = (f"Swing Screener — {n} Live Order{plural} Rejected/Canceled: "
+    subject = (f"Swing Screener — {n} Live Order{plural} Rejected: "
                f"{shown} ({run_date})")
     action = ("Nothing auto-resubmits a rejected order — re-enter manually "
               "if still wanted.")
@@ -172,12 +181,11 @@ def send_guardrail_alert(session: Session, *, run_date: date, recipient: str,
                          breaker: str, reason: str) -> bool:
     """Send + log ONE guardrail-trip alert, deduped on ``str(trip_event_id)``.
 
-    The single owner of the trip-alert dedup contract, shared by all three
-    callers: ``notify.run._trip_emailer`` (the dispatch loop's in-protocol
-    IMMEDIACY half), ``notify.run._emit_pending_guardrail_alert`` (the
-    digest-side AT-LEAST-ONCE half), and ``pipeline.run._screen_trip_emailer``
-    (the evening screen) — one alert_key, so whichever fires first wins and the
-    others no-op. SEND-then-LOG, the ``_emit_pending_exit_alert`` ordering and
+    The single owner of the trip-alert dedup contract: EVERY trip-alert path —
+    in-protocol emitters (the IMMEDIACY half) and at-least-once retry emitters
+    alike, in whichever job — routes here rather than composing and logging its
+    own, so one alert_key covers them all and whichever fires first wins while
+    the rest no-op. SEND-then-LOG, the ``_emit_pending_exit_alert`` ordering and
     rationale: a trip alert is urgent, so we prioritize never LOSING it over
     strictly preventing a rare duplicate. A failed send leaves NO EmailLog row
     — and because trip elections happen ONCE, the in-protocol path never
@@ -231,13 +239,30 @@ def emit_pending_guardrail_alert(session: Session, run_date: date, recipient: st
 
 # --- the shared live-rejection emitter (the ONE owner of the per-row contract) --
 
-#: the ExecutionLog statuses that mean "the venue did NOT keep the order working".
-REJECTED_STATUSES = ("rejected_live", "canceled")
+#: the ExecutionLog statuses an alert email covers. REJECTED ONLY (Task-11
+#: review): ``canceled`` also marks benign EOD DAY-order expiry and this
+#: system's OWN trip/halt/kill sweep cancels, so mailing it tells the operator
+#: to re-enter orders the guardrails deliberately killed. Canceled rows stay
+#: visible in the digest ticket lines and the cockpit execution log.
+REJECTED_STATUSES = ("rejected_live",)
 
 #: how far back the rejection queries look. The reconcile only flips RECENT
 #: ``submitted_live`` rows (DAY orders die the same session), so an unbounded
 #: scan would grow forever with the table while never finding older flips.
 _REJECTION_LOOKBACK_DAYS = 7
+
+#: the per-ROW coverage kind: one row per alerted ExecutionLog id, read ONLY by
+#: the coverage join. Split off ``kind='execution'`` (Task-11 review) so the
+#: cockpit's email list and the activity feed show ONE entry per email sent
+#: instead of N identical rows; heartbeats key on their own kinds either way.
+#: PUBLIC because the cockpit's reference router filters this kind out of both
+#: email surfaces (it restates the literal rather than import notify for one
+#: string; tests/cockpit/test_reference.py pins the two against each other).
+REJECTION_COVER_KIND = "execution-cover"
+
+#: the DISPLAY kind: exactly one row per email actually sent (subject, run_date,
+#: a set-hash alert_key) — what ``GET /api/emails`` and the ticker render.
+_DISPLAY_KIND = "execution"
 
 
 def _rejection_key(log_id: int) -> str:
@@ -256,8 +281,19 @@ def _rejection_key(log_id: int) -> str:
     return f"xlog-{log_id}"
 
 
+def _display_key(ids: Sequence[int]) -> str:
+    """Deterministic key over the SET of alerted ids (sha1, 40 chars) for the
+    ONE display row — ``notify.run._exit_alert_key``'s idiom, numeric-sorted so
+    the key is order-independent and distinguishes {1,2} from {1,2,3}. Dedup for
+    THIS kind is incidental (the coverage rows already decide what gets sent);
+    the key exists so the ``(kind, run_date, alert_key)`` unique constraint can
+    never collide two different emails on the same day."""
+    joined = ",".join(str(i) for i in sorted(ids))
+    return hashlib.sha1(joined.encode()).hexdigest()
+
+
 def recent_rejection_ids(session: Session, *, run_date: date) -> set[int]:
-    """The ids of RECENT rejected/canceled ExecutionLog rows (the lookback window).
+    """The ids of RECENT rejected ExecutionLog rows (the lookback window).
 
     The digest's before/after snapshot pair around a ``reconcile_live`` pass
     diffs two of these to get THAT pass's flips (the reconcile returns a count,
@@ -272,7 +308,7 @@ def recent_rejection_ids(session: Session, *, run_date: date) -> set[int]:
 
 
 def _covered_rejection_ids(session: Session, ids: set[int]) -> set[int]:
-    """The subset of ``ids`` already covered by a per-row execution EmailLog row.
+    """The subset of ``ids`` already covered by a per-row coverage EmailLog row.
 
     Deliberately NOT date-filtered (the ``guardrail_alert_sent`` posture): the
     retry owner may run on a later date than the alert that covered a row, and
@@ -281,14 +317,14 @@ def _covered_rejection_ids(session: Session, ids: set[int]) -> set[int]:
     if not ids:
         return set()
     stmt = select(EmailLog.alert_key).where(
-        EmailLog.kind == "execution",
+        EmailLog.kind == REJECTION_COVER_KIND,
         EmailLog.alert_key.in_([_rejection_key(i) for i in ids]),
     )
     return {int(key.removeprefix("xlog-")) for key in session.scalars(stmt)}
 
 
 def pending_rejection_ids(session: Session, *, run_date: date) -> set[int]:
-    """Every recent rejected/canceled ExecutionLog id with NO alert coverage.
+    """Every recent rejected ExecutionLog id with NO alert coverage.
 
     The hourly retry owner's query (Task 11): a digest whose rejection send
     FAILED leaves no coverage rows, and its next cycle's before-snapshot
@@ -303,32 +339,48 @@ def pending_rejection_ids(session: Session, *, run_date: date) -> set[int]:
 def send_live_rejection_alert(session: Session, *, run_date: date, recipient: str,
                               send: Callable[..., None],
                               candidate_ids: set[int]) -> bool:
-    """ONE email naming every uncovered rejected/canceled row in ``candidate_ids``.
+    """ONE email naming every uncovered REJECTED row in ``candidate_ids``.
 
     The single owner of the live-rejection dedup contract, shared by the
-    digest's dispatch-time diff and the hourly query-based retry. Coverage is
-    per ROW (see :func:`_rejection_key`): already-covered ids are dropped, so a
-    partial overlap (digest alerted {5,6}; the hourly finds {5,6,7}) alerts
-    ONLY the new row. SEND-then-LOG, the exit-alert ordering and rationale —
-    a failed send leaves NO coverage rows, so the next hourly pass retries the
-    whole batch. The coverage rows are then inserted ONE COMMIT PER ROW, each
-    IntegrityError-tolerant: a mid-loop failure leaves the earlier rows
-    covered and only the remainder re-alertable (minimal duplication under an
+    digest's dispatch-time diff and the hourly query-based retry. Two filters
+    decide what gets mailed: the status (``REJECTED_STATUSES`` — canceled rows
+    are never alerted, enforced HERE so no caller can widen the scope by
+    handing over a fatter id set) and per-ROW coverage (see
+    :func:`_rejection_key`) — already-covered ids are dropped, so a partial
+    overlap (digest alerted {5,6}; the hourly finds {5,6,7}) alerts ONLY the
+    new row.
+
+    SEND-then-LOG, the exit-alert ordering and rationale — a failed send leaves
+    NO rows at all, so the next hourly pass retries the whole batch. The writes
+    after the send are: ONE display row (``kind='execution'``, the entry the
+    cockpit email list and the activity ticker render — one per EMAIL, not per
+    row), then the N coverage rows ONE COMMIT PER ROW, each
+    IntegrityError-tolerant: a mid-loop failure leaves the earlier rows covered
+    and only the remainder re-alertable (minimal duplication under an
     at-least-once posture). Returns True iff an email was sent.
     """
     new_ids = set(candidate_ids) - _covered_rejection_ids(session, set(candidate_ids))
     if not new_ids:
         return False
     rows = list(session.scalars(
-        select(ExecutionLog).where(ExecutionLog.id.in_(new_ids))
+        select(ExecutionLog)
+        .where(ExecutionLog.id.in_(new_ids),
+               ExecutionLog.status.in_(REJECTED_STATUSES))
         .order_by(ExecutionLog.id)))
-    if not rows:  # defensive: ids that vanished can't compose an honest alert
+    if not rows:  # ids that vanished / are not alertable can't compose an honest alert
         return False
     email = compose_live_rejection_alert(rows, run_date)
     send(to=recipient, subject=email.subject, text=email.text, html=email.html,
          attachments=[])  # SEND FIRST (see docstring)
+    session.add(EmailLog(sent_at=datetime.now(UTC), kind=_DISPLAY_KIND,
+                         subject=email.subject, run_date=run_date,
+                         alert_key=_display_key([r.id for r in rows])))
+    try:
+        session.commit()
+    except IntegrityError:  # lost the concurrent-replica race; the row already exists
+        session.rollback()
     for row in rows:
-        session.add(EmailLog(sent_at=datetime.now(UTC), kind="execution",
+        session.add(EmailLog(sent_at=datetime.now(UTC), kind=REJECTION_COVER_KIND,
                              subject=email.subject, run_date=run_date,
                              alert_key=_rejection_key(row.id)))
         try:

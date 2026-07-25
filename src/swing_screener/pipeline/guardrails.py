@@ -25,6 +25,7 @@ venue hosts and credentials); the full traceback goes to the log.
 import logging
 from collections.abc import Callable
 from datetime import UTC, date, datetime
+from typing import Literal
 
 from sqlalchemy.orm import Session
 
@@ -62,12 +63,24 @@ def consult(
     session: Session, *, run_date: date, source: str,
     broker: BrokerClient | None,
     emailer: Callable[[int, str, str], None] | None = None,
-) -> str | None:
+) -> Literal["tripped", "halted"] | None:
     """The shared guardrails consult: resume -> load -> evaluate-unless-tripped ->
     respond. ONE definition for all three cycles -- the digest dispatch loop, the
     evening screen, and the hourly exit check -- so they can never drift on the
     skip-when-tripped rule or the ordered trip protocol (Task 11; the quadruplet
     used to be copy-pasted at each site).
+
+    DAY-KEY CONVENTION (binding, see the design doc's "Day semantics"): the
+    ``run_date`` handed in is the TRADING DAY OF RECORD, and outside the evening
+    screen every caller resolves it as ``repo.latest_run_date(session) or
+    date.today()`` -- the same key the digest stamps on ``ExecutionLog.run_date``
+    and on the ``PaperTrade.exit_date`` its dispatch-time reconcile books. Only
+    the evening screen mints a NEW day (it passes its own ``today``, the date it
+    is writing signals for). This matters because the breakers are run_date
+    scoped: an hourly consult keyed on the wall clock would count zero of the
+    day's own live orders in ``max_trades_per_day`` (the breaker is then
+    structurally dead there) and would book exits on a day the daily-loss
+    breaker never queries.
 
     Ordered exactly like the dispatch loop this generalizes:
 
@@ -88,7 +101,10 @@ def consult(
     may proceed. Any response BEYOND the protocol stays with the caller: the
     dispatch loop breaks its batch and runs the manual-HALT sweep on
     ``'halted'``; the screen and the hourly job dispatch nothing, so they call
-    this bare and ignore the verdict.
+    this bare and ignore the verdict. FAIL-SAFE on the unexpected: any state
+    that is neither 'ok' nor one of the two known blocking values is reported as
+    ``'tripped'`` (the conservative bucket -- an unrecognized brake state must
+    BLOCK, never wave dispatch through) with a loud log naming it.
     """
     resume_incomplete_sweep(session, broker=broker, source=source)
     g = guardrails_repo.load_guardrails(session)
@@ -98,7 +114,14 @@ def consult(
         respond_to_trip(session, breaker=breach[0], reason=breach[1],
                         source=source, broker=broker, emailer=emailer)
         return "tripped"
-    return g.state if g.state != "ok" else None
+    if g.state == "ok":
+        return None
+    if g.state == "halted":
+        return "halted"
+    if g.state != "tripped":
+        log.error("unexpected guardrails state %r -- blocking dispatch as 'tripped' "
+                  "(fail-safe)", g.state)
+    return "tripped"
 
 
 def respond_to_trip(

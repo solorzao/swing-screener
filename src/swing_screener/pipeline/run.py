@@ -631,6 +631,12 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         # is swallow-everything with a rollback-first except (the dispatch
         # loop's hardened posture): the screen's core job -- persisting the
         # day's signals -- must never be blocked by guardrails machinery.
+        # CONTAINMENT NOTE (Task-11 review): this except covers CALL-time
+        # failures only. The de-lazied module-level `import ... guardrails`
+        # above means an IMPORT-time failure anywhere in that subtree now kills
+        # the whole screen, where the old lazy import degraded it to this
+        # warning -- accepted: an import failure is a structural bug the
+        # fresh-interpreter canary catches in CI, not a runtime condition.
         try:
             # The shared consult (Task 11): resume -> load -> evaluate-unless-
             # tripped -> respond, one definition for all three cycles. `broker`

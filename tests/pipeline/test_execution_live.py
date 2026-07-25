@@ -244,7 +244,7 @@ def test_broker_raise_on_submit_is_graceful() -> None:
 
         assert result.status == "rejected"
         # Leak posture: the stored detail reaches the cockpit wire, so it carries
-        # the exception CLASS only (preflight's broker_error_detail wording) --
+        # the exception CLASS only (pipeline.broker's broker_error_detail wording) --
         # the raw message (which can embed venue hosts) lives in the LOG.
         assert result.detail == "broker error (RuntimeError)"
         assert s.query(PaperTrade).count() == 0

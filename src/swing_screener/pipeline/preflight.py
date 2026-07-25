@@ -31,12 +31,10 @@ from sqlalchemy.orm import Session
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.autonomy import autonomy_gate
 
-# ``broker_error_detail`` MOVED to ``pipeline.broker`` (Task 11): it is a pure leaf
-# helper, and homing it here handed every consumer preflight's whole autonomy ->
-# reflect -> replay import chain -- the edge that closed the replay<->run cycle.
-# The import below keeps ``from swing_screener.pipeline.preflight import
-# broker_error_detail`` working for external callers (a deprecated re-export);
-# repoint new code at ``swing_screener.pipeline.broker``.
+# ``broker_error_detail`` lives in ``pipeline.broker`` (moved there in Task 11):
+# it is a pure leaf helper, and homing it HERE handed every consumer preflight's
+# whole autonomy -> reflect -> replay import chain -- the edge that closed the
+# replay<->run cycle. Imported (not re-exported) for this module's own use.
 from swing_screener.pipeline.broker import BrokerAccount, BrokerClient, broker_error_detail
 from swing_screener.pipeline.broker_alpaca import build_broker
 from swing_screener.settings import (

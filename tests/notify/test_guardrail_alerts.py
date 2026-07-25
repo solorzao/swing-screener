@@ -1,26 +1,32 @@
-"""Guardrail-trip + live-rejection alert emails (Task 10).
+"""Guardrail-trip + live-rejection alert emails (Task 10, amended in Task 11).
 
-Two new standalone alert kinds, both send-then-log with an ``EmailLog`` dedup
-row (the ``_emit_pending_exit_alert`` ordering: a failed send leaves NO log row,
-so the retry owner re-sends; the pre-check makes a sequential re-run a no-op).
+Two standalone alert kinds, both send-then-log with ``EmailLog`` rows (the
+``_emit_pending_exit_alert`` ordering: a failed send leaves NO row, so the retry
+owner re-sends; the pre-check makes a sequential re-run a no-op). The contracts
+live in ``notify.alerts`` (the pipeline jobs share them), so these tests exercise
+THAT module's public functions; ``notify.run``'s one-line delegates get one
+still-wired test per path rather than being the subject of the contract tests.
 
 The load-bearing properties proven here:
 
 * IMMEDIACY: ``respond_to_trip`` with the real ``_trip_emailer`` sends exactly
   ONE alert and logs ``EmailLog(kind='guardrail', alert_key=str(trip_event_id))``;
-  the digest-side retry emitter then no-ops on the same key.
-* AT-LEAST-ONCE: a raising send leaves NO log row, and the digest-side emitter
-  (``_emit_pending_guardrail_alert``, the retry owner -- elections happen once
-  per trip, so the in-protocol path never retries) sends on a later cycle.
+  the at-least-once retry emitter then no-ops on the same key.
+* AT-LEAST-ONCE: a raising send leaves NO log row, and
+  ``alerts.emit_pending_guardrail_alert`` (the retry owner -- elections happen
+  once per trip, so the in-protocol path never retries) sends on a later cycle.
 * The broker-None evening-trip case (tripped state, no mail ever sent) is
   covered by a full ``send_digest`` run.
 * A dead mailer never aborts the sweep (the trip protocol's swallow posture).
-* REJECTIONS: the dispatch-time reconcile's ``rejected_live``/``canceled``
-  status flips ride ONE ``kind='execution'`` email with one coverage EmailLog
-  row PER alerted ExecutionLog id (``alert_key='xlog-{id}'`` -- Task 11
-  replaced the sha1-of-the-set key, whose partial overlaps re-alerted covered
-  rows); re-runs flip nothing new and the emitter dedups per row. A venue
-  stop-out is a CLOSE (fill + broker_close -> the EXIT alert), never a
+* REJECTIONS: only ``rejected_live`` flips are mailed (Task-11 review --
+  ``canceled`` covers benign EOD DAY expiry AND our own trip/halt/kill sweep
+  cancels, so alerting it would tell the operator to re-enter orders the
+  guardrails deliberately killed). One email writes ONE ``kind='execution'``
+  DISPLAY row (what the cockpit lists) plus one ``kind='execution-cover'``
+  coverage row per alerted ExecutionLog id (``alert_key='xlog-{id}'`` -- Task 11
+  replaced the sha1-of-the-set coverage key, whose partial overlaps re-alerted
+  covered rows); re-runs flip nothing new and the emitter dedups per row. A
+  venue stop-out is a CLOSE (fill + broker_close -> the EXIT alert), never a
   rejection -- the two kinds are disjoint by construction.
 
 All tmp-file sqlite + FakeBroker + injected send spies -- no venue, no SMTP.
@@ -35,7 +41,7 @@ from swing_screener.db import guardrails_repo as gr
 from swing_screener.db import repo
 from swing_screener.db.models import EmailLog, ExecutionLog
 from swing_screener.db.session import get_engine
-from swing_screener.notify import run
+from swing_screener.notify import alerts, run
 from swing_screener.pipeline import guardrails as gp
 from swing_screener.pipeline.broker import BrokerOrderSpec, FakeBroker
 from swing_screener.pipeline.execution import LiveAdapter
@@ -89,8 +95,8 @@ def _digest_kwargs(tmp_path, url, sent, **extra):
 
 def test_trip_sends_exactly_one_email(tmp_path):
     """respond_to_trip with the real emailer: ONE send, EmailLog kind='guardrail'
-    keyed str(trip_event_id) -- and the digest-side retry emitter then no-ops on
-    the same key (immediacy + at-least-once collapse onto one dedup row)."""
+    keyed str(trip_event_id) -- and the at-least-once retry emitter then no-ops
+    on the same key (immediacy + at-least-once collapse onto one dedup row)."""
     url = f"sqlite:///{tmp_path / 'trip.sqlite'}"
     sent, send = _spy()
     with Session(get_engine(url)) as s:
@@ -109,15 +115,20 @@ def test_trip_sends_exactly_one_email(tmp_path):
         row = s.scalars(select(EmailLog).where(EmailLog.kind == "guardrail")).one()
         assert row.alert_key == str(trip_id)
         assert row.run_date == RUN
-        # the digest-side emitter sees the log row -> no second send.
-        assert run._emit_pending_guardrail_alert(s, RUN, "me@example.com", send) is False
+        # the shared retry emitter sees the log row -> no second send.
+        assert alerts.emit_pending_guardrail_alert(
+            s, RUN, "me@example.com", send) is False
         assert len(sent) == 1
 
 
 def test_trip_email_failure_leaves_no_log_row(tmp_path):
-    """SEND-then-LOG: a dead transport leaves NO EmailLog row, so the digest-side
-    emitter retries on the next cycle (a later run_date -- the dedup is keyed on
-    the trip id, NOT the date) and succeeds."""
+    """SEND-then-LOG: a dead transport leaves NO EmailLog row, so the retry
+    emitter sends on the next cycle (a later run_date -- the dedup is keyed on
+    the trip id, NOT the date) and succeeds.
+
+    Goes through ``run._emit_pending_guardrail_alert`` on purpose: the DELEGATE
+    test for this path (the contract itself is exercised against
+    ``alerts.emit_pending_guardrail_alert`` above)."""
     url = f"sqlite:///{tmp_path / 'tripfail.sqlite'}"
     sent, send = _spy()
     with Session(get_engine(url)) as s:
@@ -187,10 +198,15 @@ def test_trip_email_failure_never_aborts_sweep(tmp_path):
 # --- live-rejection alerts ---------------------------------------------------
 
 
-def test_rejection_alert_lists_flipped_rows(tmp_path, monkeypatch):
-    """Two working live orders die at the venue (one rejected, one canceled): the
-    dispatch-time reconcile flips both logs and ONE kind='execution' email names
-    both tickers, with one per-row coverage EmailLog row per flipped id."""
+def test_rejection_alert_lists_rejected_rows_only(tmp_path, monkeypatch):
+    """Two working live orders die at the venue -- one REJECTED, one CANCELED.
+
+    The dispatch-time reconcile flips both logs, but only the rejection is
+    mailed (Task-11 review: a canceled row is benign DAY expiry or one of our
+    own sweep cancels -- "re-enter manually if still wanted" would be advice to
+    undo the guardrails). The one email writes ONE display row plus one coverage
+    row for the alerted id -- and none for the canceled one, so no later pass
+    thinks it is owed an alert."""
     monkeypatch.setenv("SWING_EXECUTION_MODE", "live")
     monkeypatch.delenv("SWING_DEEP_ANALYSIS", raising=False)
     url = f"sqlite:///{tmp_path / 'reject.sqlite'}"
@@ -204,31 +220,40 @@ def test_rejection_alert_lists_flipped_rows(tmp_path, monkeypatch):
     res = run.send_digest(**_digest_kwargs(tmp_path, url, sent, broker=broker))
 
     assert res.sent is True
-    rejections = [m for m in sent if "Rejected/Canceled" in m["subject"]]
-    assert len(rejections) == 1                   # ONE email for BOTH flips
+    rejections = [m for m in sent if "Rejected" in m["subject"]]
+    assert len(rejections) == 1
     # phone-glance subject: count + tickers ride the preview.
-    assert "2 Live Orders Rejected/Canceled" in rejections[0]["subject"]
-    assert "AMD" in rejections[0]["subject"] and "NVDA" in rejections[0]["subject"]
+    assert "1 Live Order Rejected" in rejections[0]["subject"]
+    assert "AMD" in rejections[0]["subject"]
     body = rejections[0]["text"]
-    assert "AMD" in body and "NVDA" in body
-    assert "rejected_live" in body and "canceled" in body
+    assert "AMD" in body and "rejected_live" in body
+    assert "NVDA" not in body                     # the canceled order is NOT alerted
     assert "re-enter manually" in body            # the action line
     with Session(get_engine(url)) as s:
         statuses = {(x.ticker, x.status) for x in s.scalars(select(ExecutionLog))}
         assert statuses == {("AMD", "rejected_live"), ("NVDA", "canceled")}
-        # Per-ROW coverage (Task 11): one EmailLog row per alerted ExecutionLog
-        # id, keyed 'xlog-{id}' -- the hourly retry's coverage join reads these,
-        # and a partial overlap alerts only the uncovered rows.
-        ids = set(s.scalars(select(ExecutionLog.id)))
-        rows = list(s.scalars(select(EmailLog).where(EmailLog.kind == "execution")))
-        assert {r.alert_key for r in rows} == {f"xlog-{i}" for i in ids}
-        assert all(r.run_date == RUN for r in rows)
+        amd_id = s.scalars(select(ExecutionLog.id)
+                           .where(ExecutionLog.status == "rejected_live")).one()
+        # ONE display row per EMAIL (what the cockpit's email list renders)...
+        display = s.scalars(select(EmailLog).where(EmailLog.kind == "execution")).one()
+        assert display.subject == rejections[0]["subject"]
+        assert display.run_date == RUN
+        # ...and per-ROW coverage rows (Task 11) for the alerted ids ONLY -- the
+        # hourly retry's coverage join reads these, so a partial overlap alerts
+        # only the uncovered rows.
+        cover = list(s.scalars(select(EmailLog).where(EmailLog.kind == "execution-cover")))
+        assert {r.alert_key for r in cover} == {f"xlog-{amd_id}"}
+        assert all(r.run_date == RUN for r in cover)
 
 
 def test_rejection_alert_dedups_on_rerun(tmp_path, monkeypatch):
     """A forced digest re-run re-polls the broker but flips nothing new (the
     reconcile's status-transition guard) -> no second rejection email; and the
-    emitter itself no-ops on the logged key even when handed the SAME id set."""
+    emitter itself no-ops on the covered rows even when handed the SAME id set.
+
+    The final block goes through ``run._emit_live_rejection_alert``: the
+    DELEGATE test for this path (the contract is exercised against
+    ``alerts.send_live_rejection_alert`` below)."""
     monkeypatch.setenv("SWING_EXECUTION_MODE", "live")
     monkeypatch.delenv("SWING_DEEP_ANALYSIS", raising=False)
     url = f"sqlite:///{tmp_path / 'rerun.sqlite'}"
@@ -236,11 +261,11 @@ def test_rejection_alert_dedups_on_rerun(tmp_path, monkeypatch):
     broker.reject(_submit_live(url, broker, "AMD"))
     sent: list[dict] = []
     run.send_digest(**_digest_kwargs(tmp_path, url, sent, broker=broker))
-    assert len([m for m in sent if "Rejected/Canceled" in m["subject"]]) == 1
+    assert len([m for m in sent if "Rejected" in m["subject"]]) == 1
 
     sent2: list[dict] = []
     run.send_digest(**_digest_kwargs(tmp_path, url, sent2, broker=broker, force=True))
-    assert [m for m in sent2 if "Rejected/Canceled" in m["subject"]] == []
+    assert [m for m in sent2 if "Rejected" in m["subject"]] == []
 
     with Session(get_engine(url)) as s:
         ids = set(s.scalars(select(ExecutionLog.id)))
@@ -248,12 +273,14 @@ def test_rejection_alert_dedups_on_rerun(tmp_path, monkeypatch):
         assert run._emit_live_rejection_alert(s, RUN, "me@example.com", send3, ids) is False
         assert sent3 == []
         assert s.query(EmailLog).filter_by(kind="execution").count() == 1
+        assert s.query(EmailLog).filter_by(kind="execution-cover").count() == 1
 
 
 def test_rejection_send_failure_leaves_no_log_row_then_retry_succeeds(tmp_path):
-    """The emitter honors SEND-then-LOG too: a dead transport leaves no
-    kind='execution' row, so a later caller with the SAME flipped-id set (the
-    Task-11 hourly job reuses this emitter) re-sends and logs."""
+    """The shared emitter honors SEND-then-LOG too: a dead transport leaves NO
+    rows at all (neither the display row nor any coverage row), so a later
+    caller with the SAME id set (the Task-11 hourly job reuses this emitter)
+    re-sends and logs."""
     url = f"sqlite:///{tmp_path / 'rejectfail.sqlite'}"
     with Session(get_engine(url)) as s:
         row = repo.add_execution_log(
@@ -264,13 +291,43 @@ def test_rejection_send_failure_leaves_no_log_row_then_retry_succeeds(tmp_path):
             detail="insufficient buying power", idempotency_key="k-amd")
         new_ids = {row.id}
         try:
-            run._emit_live_rejection_alert(s, RUN, "me@example.com", _dead_send, new_ids)
+            alerts.send_live_rejection_alert(
+                s, run_date=RUN, recipient="me@example.com", send=_dead_send,
+                candidate_ids=new_ids)
         except RuntimeError:
             pass                                  # send_digest's reconcile guard swallows this
         assert s.query(EmailLog).count() == 0     # no row -> retry stays armed
         sent, send = _spy()
-        assert run._emit_live_rejection_alert(s, RUN, "me@example.com", send, new_ids) is True
+        assert alerts.send_live_rejection_alert(
+            s, run_date=RUN, recipient="me@example.com", send=send,
+            candidate_ids=new_ids) is True
         assert len(sent) == 1
         assert "AMD" in sent[0]["text"]
         assert "insufficient buying power" in sent[0]["text"]
         assert s.query(EmailLog).filter_by(kind="execution").count() == 1
+        assert s.query(EmailLog).filter_by(kind="execution-cover").count() == 1
+
+
+def test_canceled_rows_are_never_alertable(tmp_path):
+    """The scope rule at the QUERY level (Task-11 review): a canceled row is
+    never a rejection-alert candidate, and even handed one explicitly the
+    emitter refuses to compose an email about it -- so the system's own
+    trip/halt/kill sweep cancels can never generate "re-enter manually" advice.
+    """
+    url = f"sqlite:///{tmp_path / 'canceled.sqlite'}"
+    with Session(get_engine(url)) as s:
+        row = repo.add_execution_log(
+            s, created_date=RUN, ticker="NVDA", timeframe="1d",
+            play_type="continuation", run_date=RUN, account="live", mode="live",
+            side="buy", limit_price=100.0, shares=10, stop=95.0, target=110.0,
+            risk_dollars=50.0, notional=1000.0, status="canceled",
+            detail="canceled by the guardrail sweep", idempotency_key="k-nvda")
+
+        assert alerts.recent_rejection_ids(s, run_date=RUN) == set()
+        assert alerts.pending_rejection_ids(s, run_date=RUN) == set()
+        sent, send = _spy()
+        assert alerts.send_live_rejection_alert(
+            s, run_date=RUN, recipient="me@example.com", send=send,
+            candidate_ids={row.id}) is False
+        assert sent == []
+        assert s.query(EmailLog).count() == 0

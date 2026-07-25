@@ -226,25 +226,27 @@ def _emit_pending_guardrail_alert(session: Session, run_date: date, recipient: s
     return emit_pending_guardrail_alert(session, run_date, recipient, send)
 
 
-def _rejected_canceled_ids(session: Session, *, run_date: date) -> set[int]:
-    """The ids of the RECENT rejected/canceled ExecutionLog rows — the
-    before/after snapshot pair around a ``reconcile_live`` pass yields THAT
-    pass's flips (the reconcile returns a count, not rows). A thin delegate to
-    the shared ``notify.alerts.recent_rejection_ids`` (the window rationale
-    lives there)."""
+def _rejected_ids(session: Session, *, run_date: date) -> set[int]:
+    """The ids of the RECENT REJECTED ExecutionLog rows — the before/after
+    snapshot pair around a ``reconcile_live`` pass yields THAT pass's flips (the
+    reconcile returns a count, not rows). A thin delegate to the shared
+    ``notify.alerts.recent_rejection_ids``, which owns both the window and the
+    alertable-status scope (rejected only; a ``canceled`` row is benign DAY
+    expiry or one of our own sweep cancels — never mailed)."""
     return recent_rejection_ids(session, run_date=run_date)
 
 
 def _emit_live_rejection_alert(session: Session, run_date: date, recipient: str,
                                send: SmtpSend, new_ids: set[int]) -> bool:
-    """One email naming every live order the venue just rejected/canceled.
+    """One email naming every live order the venue just REJECTED.
 
     ``new_ids`` are the ExecutionLog ids a reconcile pass flipped to
-    ``rejected_live``/``canceled`` (the caller's before/after set diff). A thin
-    delegate to the shared ``notify.alerts.send_live_rejection_alert``, which
-    owns the per-ROW ``alert_key='xlog-{id}'`` dedup (Task 11: the old
-    sha1-of-the-set key made a partial overlap re-alert already-covered rows).
-    SEND-then-LOG: a failed send leaves no coverage rows — and the hourly exit
+    ``rejected_live`` (the caller's before/after set diff). A thin delegate to
+    the shared ``notify.alerts.send_live_rejection_alert``, which owns the
+    per-ROW ``kind='execution-cover'``/``alert_key='xlog-{id}'`` coverage dedup
+    plus the single ``kind='execution'`` display row (Task 11: the old
+    sha1-of-the-set coverage key made a partial overlap re-alert already-covered
+    rows). SEND-then-LOG: a failed send leaves no rows — and the hourly exit
     job's query-based pass (``alerts.pending_rejection_ids``) is the retry
     owner, since this digest path's next-cycle diff never re-produces the ids.
     Returns True iff an email was sent.
@@ -553,16 +555,17 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # block the digest (the submit-side clamp stays the hard backstop).
         if exec_mode == "live" and live_broker is not None:
             # LIVE-REJECTION ALERT capture (Task 10): reconcile_live returns a
-            # count, not rows, so snapshot the rejected/canceled id set before +
-            # after and diff — exactly THIS pass's flips. A venue stop-out is a
-            # fill + broker_close (position truth, the EXIT alert's job), so it
-            # never lands in this diff.
+            # count, not rows, so snapshot the REJECTED id set before + after
+            # and diff — exactly THIS pass's flips. A venue stop-out is a fill +
+            # broker_close (position truth, the EXIT alert's job), so it never
+            # lands in this diff; a canceled order is out of alert scope
+            # entirely (Task-11 review — see ``alerts.REJECTED_STATUSES``).
             new_rejects: set[int] = set()
             try:
-                rejected_before = _rejected_canceled_ids(session, run_date=run_date)
+                rejected_before = _rejected_ids(session, run_date=run_date)
                 n_fresh_changes = reconcile_live(session, live_broker, today=run_date)
                 log.info("dispatch-time live reconcile: %d change(s)", n_fresh_changes)
-                new_rejects = (_rejected_canceled_ids(session, run_date=run_date)
+                new_rejects = (_rejected_ids(session, run_date=run_date)
                                - rejected_before)
             except Exception:  # the freshness poll must never block the digest
                 log.warning("dispatch-time live reconcile failed for %s %s",
@@ -1085,7 +1088,13 @@ def run_exit_check_and_alert(*, db_url: str, run_date: date | None = None, to: s
     if not recipient:
         raise RuntimeError("no recipient: set DIGEST_TO or pass to=")
 
-    kwargs: dict[str, object] = {"db_url": db_url, "today": run_date}
+    # The recipient/transport resolved above are THREADED IN (Task-11 review):
+    # the hourly job's own alert paths (live-rejection + guardrail-trip retries)
+    # then reuse this pair instead of re-resolving the secret and building a
+    # second transport -- and the whole hourly alert surface becomes injectable
+    # from here, so a test's spy send covers it without patching module globals.
+    kwargs: dict[str, object] = {"db_url": db_url, "today": run_date,
+                                 "recipient": recipient, "smtp_send": send}
     if latest_bars_fn is not None:
         kwargs["latest_bars_fn"] = latest_bars_fn
     result = run_exit_check(**kwargs)  # type: ignore[arg-type]
