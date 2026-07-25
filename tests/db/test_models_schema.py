@@ -145,7 +145,7 @@ def test_boolean_filter_renders_mssql_safe() -> None:
     # ("Incorrect syntax near '0'"). Guards pending_exit_alerts / exit_events_for.
     sql = str(
         select(ExitEvent)
-        .where(ExitEvent.is_paper == False)
+        .where(ExitEvent.is_paper == False)  # noqa: E712
         .compile(dialect=MSDialect())
     )
     assert "IS 0" not in sql and "IS 1" not in sql

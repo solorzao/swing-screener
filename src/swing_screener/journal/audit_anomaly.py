@@ -69,7 +69,7 @@ def anomaly_findings(
             ExitEvent.created_date <= period_to,
             # `== True` renders `= 1`; `.is_(True)` renders `IS 1`, which SQL Server
             # rejects (IS is NULL-only). sqlite accepts both, so tests can't catch it.
-            ExitEvent.is_paper == True,
+            ExitEvent.is_paper == True,  # noqa: E712
         )
     ))
     orphan_exit_events = sum(

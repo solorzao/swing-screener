@@ -249,7 +249,7 @@ def _change_token(engine: Engine, edge_dir: Path) -> dict[str, str]:
             "system_audits": "|".join((
                 _watermark(session.scalar(select(func.max(SystemAudit.id)))),
                 _watermark(session.scalar(select(func.count(SystemAudit.id))
-                                          .where(SystemAudit.acknowledged_by_human == True))),
+                                          .where(SystemAudit.acknowledged_by_human == True))),  # noqa: E712
             )),
         }
     token["verdicts"] = "|".join(
