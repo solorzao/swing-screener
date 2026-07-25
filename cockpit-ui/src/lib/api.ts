@@ -286,6 +286,11 @@ export interface Gate {
    * masthead DISARM enablement keys on it; it rides this already-polled
    * endpoint so the always-visible masthead needs no extra poll. */
   broker_configured: boolean
+  /** The guardrails brake, rendered DIRECTLY (never a consult verdict) — it rides
+   * this already-polled endpoint so the masthead brake chip needs no extra poll.
+   * Unlike `execution_mode` this is DB state SHARED by every process: a trip landed
+   * by an Azure job shows here on the next tick. */
+  brake_state: BrakeState
   analyst_spend_today_usd: number
 }
 
@@ -666,14 +671,74 @@ export interface ProposalApproved extends ProposalDecided {
 
 /* ---------- Phase 3 wire shapes (routers/safety.py) ---------- */
 
-export interface DisarmResult {
-  dry_run: boolean
-  cancelled: { symbol: string; broker_order_id: string }[]
+/** The guardrails brake's three states, straight off the `agent_guardrails` row.
+ * DB state, not env: every process shares it, so an Azure job's trip lands here. */
+export type BrakeState = 'ok' | 'halted' | 'tripped'
+
+/** One venue order the sweep moved (or would move). */
+export interface CancelledOrder {
+  symbol: string
+  broker_order_id: string
+}
+
+/** The itemized half every disarm shape carries — a resume fills the arrays with
+ * NOTHING because the pipeline returns a bool, not because nothing moved (its
+ * counts ride `detail`). Kept on all three so the wire stays one superset. */
+interface DisarmItems {
+  cancelled: CancelledOrder[]
   sells_kept: number
   stops_restored: string[]
   /** Positions with no recorded stop level anywhere — loud, left alone. */
   unprotected: string[]
 }
+
+interface DisarmBase extends DisarmItems {
+  dry_run: boolean
+  /** The brake state this ran against; null when the brake row could not be read
+   * (a DISARM is unconditional — the emergency sweep runs anyway). */
+  state: BrakeState | null
+}
+
+/** The plain sweep: entry-side orders cancelled, bracket stops kept/restored. */
+export interface DisarmRaw extends DisarmBase {
+  mode: 'raw'
+}
+
+/** A TRIPPED book whose sweep never finished: /api/disarm routes through the
+ * trip's own `resume_incomplete_sweep` so both processes derive the SAME
+ * `guardrail-{trip_id}` client_order_ids and the venue collapses the race. */
+export interface DisarmResume extends DisarmBase {
+  mode: 'guardrail-resume'
+  trip_id: number
+  sweep_state: string | null
+  /** The venue-side client_order_id prefix — diagnostic, hide it behind a
+   * disclosure rather than showing a raw order key mid-emergency. */
+  resume_key: string
+  /** The sweep event's OWN recorded summary, verbatim (the arrays stay empty on
+   * this path — see DisarmItems). */
+  detail: string
+}
+
+/** The resume's dry run — the ONE resume path that can itemize (it composes the
+ * two disarm helpers directly under the key the real resume would use). */
+export interface DisarmResumePreview extends DisarmBase {
+  mode: 'guardrail-resume-preview'
+  trip_id: number
+  sweep_state: string | null
+  resume_key: string
+  detail: string
+}
+
+/** POST /api/disarm — a `mode`-TAGGED UNION, and `mode` alone is what a client
+ * branches on (routers/safety.py `disarm_book`). */
+export type DisarmResult = DisarmRaw | DisarmResume | DisarmResumePreview
+
+/** The 503 detail PREFIXES routers/safety.py documents as module constants — the
+ * ONLY thing a client may branch on (the text after the prefix is human-facing
+ * and may change). */
+export const D503_DB = 'database error ('
+export const D503_BROKER = 'broker error ('
+export const D503_SWEEP = 'guardrail sweep did not complete'
 
 export interface PreflightCheck {
   name: string
@@ -696,10 +761,111 @@ export interface ExecutionSafety {
   env_scope: string
   locks: { mode_is_live: boolean; allow_real_money: boolean; gate_ready: boolean }
   caps_mandate: { ok: boolean; reason: string }
+  /** The brake: the mandate verdict (may real money dispatch) + the RAW state
+   * beside it, all from ONE snapshot. NOT covered by `env_scope` — it reads the
+   * shared `agent_guardrails` row, the brake's venue of record for every process. */
+  guardrails: { ok: boolean; reason: string; state: string; sweep_state: string | null }
   preflight: { go: boolean; checks: PreflightCheck[] }
   /** known: false (no broker / venue read failed) renders UNKNOWN, never green. */
   bracket_shield: { known: boolean; as_of: string | null; positions: BracketShieldRow[] }
 }
+
+/** One row of the append-only guardrail history (edit / halt / trip / clear /
+ * sweep). `breaker` and `reason` are NOT NULL columns defaulting to '' — an
+ * empty string means "not applicable", never "unknown". */
+export interface GuardrailEvent {
+  id: number
+  created_at: string
+  kind: string
+  breaker: string
+  reason: string
+  source: string
+}
+
+/** The first breaker breached RIGHT NOW — a STATE-BLIND evaluation, so it answers
+ * even while the brake is already tripped. That is exactly what lets the clear
+ * dialog warn that clearing will simply re-trip on the next hourly consult. */
+export interface GuardrailBreach {
+  breaker: string
+  reason: string
+}
+
+/** The SIX editable limit columns, under the names the POST edit body accepts —
+ * so the panel's form needs no translation layer (routers/safety.py `_state_body`).
+ * The four breakers unset as null; `hwm_baseline_usd` is NOT NULL (no unset). */
+export interface GuardrailLimits {
+  max_daily_loss_usd: number | null
+  max_trades_per_day: number | null
+  max_drawdown_usd: number | null
+  loss_streak_halt: number | null
+  hwm_anchor_date: string | null
+  hwm_baseline_usd: number
+}
+
+/** The read-only state columns: they move through the state machine (halt / trip
+ * / clear) and `edit_limits`' whitelist refuses them by name. */
+export interface GuardrailStateCols {
+  state: BrakeState
+  trip_id: number | null
+  trip_reason: string | null
+  /** 'pending' | 'partial' | 'complete' | null. pending/partial = the sweep has
+   * not finished — the hourly cycle RETRIES it; never render that as "failed". */
+  sweep_state: string | null
+}
+
+/** GET /api/guardrails — the brake whole: the flat state body + the live breach +
+ * the last 25 events newest-first. DB-only and cheap (never rides the broker). */
+export interface Guardrails extends GuardrailLimits, GuardrailStateCols {
+  current_breach: GuardrailBreach | null
+  events: GuardrailEvent[]
+}
+
+/** The HALT response's `sweep` block — ONE closed shape whatever happened, so the
+ * panel never type-switches. `ran` is false for a dry-run preview AND for the
+ * no-broker path (the brake still engaged: it is DB truth). */
+export interface GuardrailSweep {
+  ran: boolean
+  detail: string
+  cancelled: CancelledOrder[]
+  sells_kept: number
+  stops_restored: string[]
+  unprotected: string[]
+}
+
+/** POST /api/guardrails — the answer to a brake write. `committed` says whether
+ * the brake actually MOVED (false only on a dry-run halt).
+ *
+ * The state keys are OPTIONAL by contract: every transition commits BEFORE the
+ * response enriches itself with a fresh snapshot, and when that follow-up read
+ * fails the answer is still 200/committed with `enrichment_error` set and the
+ * state keys ABSENT — never guessed. The panel re-polls; that is one tick away. */
+export interface GuardrailsPostResult extends Partial<GuardrailLimits>,
+  Partial<GuardrailStateCols> {
+  action: 'edit' | 'halt' | 'clear_halt' | 'clear_trip'
+  committed: boolean
+  current_breach?: GuardrailBreach | null
+  /** `database error (Class)` when the post-commit read failed — the WRITE STANDS. */
+  enrichment_error?: string | null
+  dry_run?: boolean
+  /** halt only. */
+  sweep?: GuardrailSweep
+}
+
+/** POST /api/guardrails bodies. PRESENCE, not value, decides what an edit touches:
+ * omit a key to leave it alone, send an explicit null to UNSET the breaker.
+ * `hwm_baseline_usd` has no null (the column is NOT NULL — a null there is a 422). */
+export interface GuardrailEditBody extends Partial<GuardrailLimits> {
+  action: 'edit'
+  hwm_baseline_usd?: number
+}
+
+export type GuardrailActionBody =
+  | GuardrailEditBody
+  | { action: 'halt' }
+  | { action: 'clear_halt' }
+  /** The clear only matches the trip the operator actually READ, so a stale
+   * screen cannot release a newer trip (409 otherwise). */
+  | { action: 'clear_trip'; ack_trip_id: number }
 
 /* ---------- Phase 3 wire shapes (routers/picks.py) ---------- */
 
@@ -1294,6 +1460,26 @@ export const postDisarm = (
 
 export const getExecutionSafety = (): Promise<ExecutionSafety> =>
   fetchJson<ExecutionSafety>('/api/execution/safety')
+
+/** The brake, whole: state + limits + the live breach + the last 25 events. DB-only
+ * and cheap — it deliberately does NOT ride the broker-calling safety poll. */
+export const getGuardrails = (): Promise<Guardrails> =>
+  fetchJson<Guardrails>('/api/guardrails')
+
+/** One brake action. `dry_run` is supported ONLY by halt — the server 422s the
+ * flag on the three DB-only actions rather than ignoring it (a silently-dropped
+ * dry_run would turn a "preview" into a brake release). `signal` exists for the
+ * HALT preview: an aborted hold cancels its in-flight dry run outright. */
+export const postGuardrails = (
+  body: GuardrailActionBody,
+  dryRun = false,
+  signal?: AbortSignal,
+): Promise<GuardrailsPostResult> =>
+  postAction<GuardrailsPostResult>(
+    `/api/guardrails?dry_run=${dryRun ? 1 : 0}`,
+    body,
+    signal,
+  )
 
 export const getPicks = (): Promise<Picks> => fetchJson<Picks>('/api/picks')
 

@@ -5,6 +5,7 @@ import type { CockpitConfig, ExecutionSafety, Polled } from '../lib/api'
 import { fmtClock } from '../lib/fmt'
 import { BracketLamp } from '../components/BracketLamp'
 import { CapGauge } from '../components/CapGauge'
+import { GuardrailsPanel } from '../components/GuardrailsPanel'
 import { PanelBody } from '../components/PanelBody'
 
 /* Screen 7 — Execution Safety: is real money possible, and why not.
@@ -182,7 +183,9 @@ export function SafetyScreen({ wake }: { wake: number }) {
                       {s.env_scope}
                       <span className="sfy-note">
                         {' '}
-                        · the remote mode flip stays the runbook&apos;s az command
+                        · the remote mode flip stays the runbook&apos;s az command ·
+                        does NOT cover the GUARDRAILS panel: the brake is one shared
+                        DB row every process reads
                       </span>
                     </span>
                   </div>
@@ -225,10 +228,35 @@ export function SafetyScreen({ wake }: { wake: number }) {
                       <span className="sfy-warn">{s.caps_mandate.reason}</span>
                     )}
                   </div>
+                  {/* The brake's own mandate verdict — the SAME definition execution
+                      enforces at submit time. Shared DB state, NOT this process's
+                      env, so an Azure job's trip shows here (and in the panel
+                      below); the note says so rather than inheriting the row above. */}
+                  <div className="sfy-row">
+                    <span className="sfy-name">guardrails mandate</span>
+                    {s.guardrails.ok ? (
+                      <span className="sfy-val">
+                        {s.guardrails.reason || 'brake released'}
+                        <span className="sfy-note"> · shared DB state (all processes)</span>
+                      </span>
+                    ) : (
+                      <span className="sfy-warn">
+                        {s.guardrails.reason} (state: {s.guardrails.state}
+                        {s.guardrails.sweep_state !== null &&
+                          ` · sweep ${s.guardrails.sweep_state}`}
+                        )
+                      </span>
+                    )}
+                  </div>
                 </>
               )}
             </SafetyBody>
           </section>
+
+          {/* The brake's own panel: state banner, the six breaker limits, HALT and
+              the clear flow, and the append-only history. Its own DB-only poll —
+              it deliberately does not ride the broker-calling safety read. */}
+          <GuardrailsPanel wake={wake} />
 
           <section className="panel">
             <div className="panel-head">
