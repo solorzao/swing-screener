@@ -244,10 +244,10 @@ var executionModeEnv = executionMode == ''
         value: executionMode
       }
     ]
-// Same absent-not-empty rule as executionMode: SWING_BROKER='' would still be "set" to
-// the container, and settings reads it as an empty broker id -- identical to absent
-// today, but leaving the var out keeps the honest "unset" reading everywhere (the
-// cockpit Safety screen's broker_configured lamp is this env's truthiness).
+// Same absent-not-empty rule as executionMode: SWING_BROKER='' would still be "set" on
+// the container, and settings reads it as an empty broker id -- behaviourally identical
+// to absent, so this is hygiene rather than a behaviour change. Omitting the var keeps
+// `az containerapp job show` an honest record of what is configured.
 var brokerEnv = broker == ''
   ? []
   : [

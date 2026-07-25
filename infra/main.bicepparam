@@ -103,8 +103,10 @@ param maxConcurrent = '3'
 // So creating swing-alpaca-key / swing-alpaca-secret / swing-alpaca-host in the
 // existing vault is sufficient -- the jobs already have KEY_VAULT_URL and the UAMI
 // has Secrets User. Do NOT add them to keyvault.bicep's seeded secrets or to the
-// jobs' secretDefs: they are fetched at runtime, not injected at deploy time, and
-// keeping them out of the template keeps the material out of deployment history.
+// jobs' secretDefs. Seeding them would mean three more @secure() params to supply on
+// EVERY deploy (or a seedSecrets=true run blanking the real values with empty
+// placeholders); adding them to secretDefs would make all ten job resources FAIL to
+// provision until the vault secrets exist. Runtime fetch avoids both.
 //
 // CD NEVER APPLIES BICEP (cd.yml only repoints job images), so nothing in this
 // file reaches Azure until the ceremony runs the deployment by hand:
