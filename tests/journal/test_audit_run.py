@@ -18,10 +18,12 @@ from swing_screener.db.session import get_engine
 from swing_screener.journal import audit_run
 from swing_screener.journal.audit_author import _AUDIT_SYSTEM, draft_audit
 from swing_screener.journal.audit_run import _breach_scan_window, run_breach_scan, run_weekly
+from swing_screener.notify import alerts
 from swing_screener.settings import load_settings
 
 _NOW = datetime(2026, 7, 12, 14, 0, tzinfo=UTC)
 _FROM, _TO = date(2026, 7, 6), date(2026, 7, 12)
+_DAY = date(2026, 7, 8)  # the single-day breach window the guardrail tests scan
 
 
 class _Block:
@@ -236,8 +238,6 @@ def test_weekend_disarm_is_recorded_by_mondays_scan(monkeypatch):
 
 
 # ---- guardrail conduct (Task 14): expected activity vs the four hard breach rules ----
-
-_DAY = date(2026, 7, 8)
 
 
 def _gevent(s, *, kind, at=datetime(2026, 7, 8, 10, 0), source="digest",
@@ -517,3 +517,96 @@ def test_weekly_still_warns_on_an_unexplained_disarm(monkeypatch):
         s.commit()
         a = run_weekly(s, settings=s_, period_from=_FROM, period_to=_TO, now=_NOW)
         assert a.severity == "warn"
+
+
+# ---- review round: the two clocks (rule 1) and trip EPISODES (rule 2) ----
+
+
+def test_friday_run_date_orders_meet_mondays_trip(monkeypatch):
+    """THE PRODUCTION LAYOUT, and why the rule bridges two clocks: the evening screen
+    stamps ``run_date=Friday``, the digest DISPATCHES those orders Monday morning, and
+    Monday's consult trips the brake. Matching run_date to the trip's wall-clock day
+    would compare Friday to Monday, see nothing, and leave the rule structurally inert
+    on the only path that submits live orders."""
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        friday, monday = date(2026, 7, 10), date(2026, 7, 13)
+        trip_id = _gevent(s, kind="trip", at=datetime(2026, 7, 13, 9, 35))
+        s.add_all([_mailed(trip_id), _live_log(key="a", run_day=friday),
+                   _live_log(key="b", run_day=friday, status="filled_live")])
+        _brake(s, state="tripped", trip_id=trip_id, sweep_state="complete")
+        rows = run_breach_scan(s, settings=s_, day_from=friday, day_to=monday,
+                               now=datetime(2026, 7, 13, 20, 0, tzinfo=UTC))
+        assert _keys(rows) == {"guardrail-submit-while-tripped:2026-07-10"}
+        f = json.loads(rows[0].findings_json)["guardrail_breach"]
+        assert f["n_live_counting"] == 2 and f["trip_day"] == "2026-07-13"
+        assert rows[0].severity == "warn" and f["caveat"]
+
+
+def test_trip_cleared_before_the_dispatch_day_does_not_fire(monkeypatch):
+    """The inverse: Friday's trip was acknowledged and cleared before Monday's dispatch
+    of the Friday-stamped orders, so submitting them was sanctioned."""
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        friday, monday = date(2026, 7, 10), date(2026, 7, 13)
+        trip_id = _gevent(s, kind="trip", at=datetime(2026, 7, 10, 16, 5))
+        _gevent(s, kind="clear", at=datetime(2026, 7, 10, 17, 0), source="cockpit",
+                breaker="", reason=f"trip {trip_id} acknowledged and cleared")
+        s.add_all([_mailed(trip_id), _live_log(key="a", run_day=friday)])
+        _brake(s)
+        assert run_breach_scan(s, settings=s_, day_from=friday, day_to=monday,
+                               now=datetime(2026, 7, 13, 20, 0, tzinfo=UTC)) == []
+
+
+def test_election_loser_trip_event_rides_the_winners_alert(monkeypatch):
+    """``guardrails_repo.trip()`` appends the trip event UNCONDITIONALLY, BEFORE the
+    rows-affected election: on a concurrent breach the loser's event is permanently
+    unmailed by design (``respond_to_trip`` touches nothing on a lost election, and the
+    alert is keyed on the WINNER's id). One episode, one required email."""
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        winner = _gevent(s, kind="trip", source="digest")
+        _gevent(s, kind="trip", source="exitcheck", at=datetime(2026, 7, 8, 10, 0, 1))
+        s.add(_mailed(winner))
+        _brake(s, state="tripped", trip_id=winner, sweep_state="complete")
+        assert run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW) == []
+
+
+def test_wholly_unmailed_episode_still_breaches_once(monkeypatch):
+    """A genuinely unmailed episode -- neither the winner nor the loser mailed -- is
+    still ONE breach, carrying every trip id in the episode."""
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        winner = _gevent(s, kind="trip", source="digest")
+        loser = _gevent(s, kind="trip", source="exitcheck",
+                        at=datetime(2026, 7, 8, 10, 0, 1))
+        _brake(s, state="tripped", trip_id=winner, sweep_state="complete")
+        rows = run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW)
+        assert _keys(rows) == {"guardrail-unmailed-trip:2026-07-08"}
+        f = json.loads(rows[0].findings_json)["guardrail_breach"]
+        assert f["trip_event_ids"] == [winner, loser] and f["n_episodes"] == 1
+        assert "episode" in rows[0].narrative.lower()
+
+
+def test_second_episode_after_a_clear_breaches_alone(monkeypatch):
+    """A 'clear' ENDS an episode: the mailed first episode covers only its own trips,
+    and the unmailed episode that follows breaches on its own day."""
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        first = _gevent(s, kind="trip")
+        s.add(_mailed(first))
+        _gevent(s, kind="clear", at=datetime(2026, 7, 8, 11, 0), source="cockpit",
+                breaker="", reason=f"trip {first} acknowledged and cleared")
+        second = _gevent(s, kind="trip", at=datetime(2026, 7, 9, 10, 0), source="screen")
+        _brake(s, state="tripped", trip_id=second, sweep_state="complete")
+        rows = run_breach_scan(s, settings=s_, day_from=_DAY, day_to=date(2026, 7, 9),
+                               now=_NOW)
+        assert _keys(rows) == {"guardrail-unmailed-trip:2026-07-09"}
+        f = json.loads(rows[0].findings_json)["guardrail_breach"]
+        assert f["trip_event_ids"] == [second]
+
+
+def test_trip_alert_kind_matches_the_module_that_writes_it():
+    """Anti-drift pin: the auditor restates the trip-alert EmailLog kind as a literal
+    (no journal -> notify import); ``notify.alerts`` OWNS it."""
+    assert audit_run._TRIP_ALERT_KIND == alerts.TRIP_ALERT_KIND

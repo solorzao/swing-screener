@@ -160,6 +160,14 @@ def compose_live_rejection_alert(
 # --- the shared guardrail-trip emitter (the ONE owner of the dedup contract) --
 
 
+#: the trip-alert ``EmailLog`` kind, keyed ``alert_key=str(trip_event_id)``. PUBLIC
+#: because READERS grade against it: the System Behavior Auditor's unmailed-trip rule
+#: asks whether a trip EPISODE has one of these rows (it restates the string as a
+#: literal rather than take a journal -> notify import, and pins the two in its tests).
+#: This module is the WRITER and therefore the owner of the value.
+TRIP_ALERT_KIND = "guardrail"
+
+
 def guardrail_alert_sent(session: Session, alert_key: str) -> bool:
     """True if a guardrail alert for this trip event was EVER logged (any run_date).
 
@@ -171,7 +179,7 @@ def guardrail_alert_sent(session: Session, alert_key: str) -> bool:
     same-date concurrent race.
     """
     stmt = select(EmailLog).where(
-        EmailLog.kind == "guardrail", EmailLog.alert_key == alert_key
+        EmailLog.kind == TRIP_ALERT_KIND, EmailLog.alert_key == alert_key
     )
     return session.scalars(stmt).first() is not None
 
@@ -199,7 +207,7 @@ def send_guardrail_alert(session: Session, *, run_date: date, recipient: str,
                                     reason=reason, run_date=run_date)
     send(to=recipient, subject=email.subject, text=email.text, html=email.html,
          attachments=[])  # SEND FIRST (see docstring)
-    session.add(EmailLog(sent_at=datetime.now(UTC), kind="guardrail",
+    session.add(EmailLog(sent_at=datetime.now(UTC), kind=TRIP_ALERT_KIND,
                          subject=email.subject, run_date=run_date, alert_key=key))
     try:
         session.commit()

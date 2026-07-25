@@ -264,7 +264,8 @@ def test_email_counts_exclude_execution_cover_bookkeeping():
         assert f.n_guardrail_alerts == 1
 
 
-def test_bookkeeping_email_kind_matches_the_module_that_writes_it():
-    # The grader restates the kind as a literal (no journal -> notify import in the
-    # pure grader); this is the anti-drift pin against the module that WRITES it.
+def test_email_kind_mirrors_match_the_module_that_writes_them():
+    # The grader restates both kinds as literals (no journal -> notify import in the
+    # pure grader); these are the anti-drift pins against the module that WRITES them.
     assert audit_compliance._BOOKKEEPING_EMAIL_KIND == alerts.REJECTION_COVER_KIND
+    assert audit_compliance._TRIP_ALERT_KIND == alerts.TRIP_ALERT_KIND

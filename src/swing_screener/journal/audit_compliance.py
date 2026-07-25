@@ -60,6 +60,11 @@ HALT_DISARM_REASON = "halt"
 #: pins it against ``notify.alerts.REJECTION_COVER_KIND`` so the two can never drift.
 _BOOKKEEPING_EMAIL_KIND = "execution-cover"
 
+#: the trip-alert ``EmailLog`` kind (``n_guardrail_alerts`` counts these). Same mirror
+#: posture and the same anti-drift pin: ``notify.alerts.TRIP_ALERT_KIND`` owns the
+#: value, this grader restates it rather than take a journal -> notify import.
+_TRIP_ALERT_KIND = "guardrail"
+
 
 def is_sanctioned_disarm(reason: str) -> bool:
     """True when the guardrails machinery itself authored this ``DisarmEvent``.
@@ -207,7 +212,7 @@ def compliance_findings(
     email_kinds = list(session.scalars(
         select(EmailLog.kind).where(EmailLog.sent_at >= span_from, EmailLog.sent_at <= span_to)
     ))
-    n_guardrail_alerts = sum(1 for k in email_kinds if k == "guardrail")
+    n_guardrail_alerts = sum(1 for k in email_kinds if k == _TRIP_ALERT_KIND)
     n_emails_sent = sum(1 for k in email_kinds if k != _BOOKKEEPING_EMAIL_KIND)
 
     return ComplianceFindings(
