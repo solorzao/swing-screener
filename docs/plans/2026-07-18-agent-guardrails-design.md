@@ -192,7 +192,10 @@ mid-dispatch HALT flip asserting the ≤1-order leak bound.
   with an honesty caption: *"a brake, not a knob — env stays the master arm."* Never inside the
   read-only CONFIG panel.
 - **API:** separate `GET /api/guardrails` (cheap, DB-only — the existing safety poll makes a
-  real broker call per refresh and must not gain guardrail reads) + `POST /api/guardrails`
+  real broker call per refresh and must not gain guardrail reads; *as-built amendment, Task 12:*
+  the safety report and gate poll do carry read-only brake fields via the non-seeding
+  `peek_guardrails` — display-grade, never seeding, never a venue call; `GET /api/guardrails`
+  remains the panel's own richer surface) + `POST /api/guardrails`
   in the safety router beside `/api/disarm`, following its conventions: `_require_cockpit`
   header guard, single-flight lock → 409, snapshot invalidate + `action_nonce` bump in `finally`.
 - **Error posture (critical):** the **primary state write propagates `SQLAlchemyError`** to the
