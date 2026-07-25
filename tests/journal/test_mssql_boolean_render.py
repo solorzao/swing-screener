@@ -17,7 +17,7 @@ def _mssql(stmt) -> str:
 
 
 def test_is_paper_filter_renders_equals_not_is():
-    sql = _mssql(select(ExitEvent.id).where(ExitEvent.is_paper == True))
+    sql = _mssql(select(ExitEvent.id).where(ExitEvent.is_paper == True))  # noqa: E712
     assert " IS 1" not in sql and " IS 0" not in sql
     assert "is_paper = 1" in sql
 
@@ -25,7 +25,7 @@ def test_is_paper_filter_renders_equals_not_is():
 def test_acknowledged_filter_renders_equals_not_is():
     sql = _mssql(
         select(func.count(SystemAudit.id))
-        .where(SystemAudit.acknowledged_by_human == True)
+        .where(SystemAudit.acknowledged_by_human == True)  # noqa: E712
     )
     assert " IS 1" not in sql and " IS 0" not in sql
     assert "acknowledged_by_human = 1" in sql

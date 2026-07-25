@@ -14,7 +14,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11", "pandas-stubs"]
+# ruff is capped to a minor: CI installs it fresh from this extra every run, so an
+# open-ended floor lets a new ruff release (new stable rules) break every PR's lint
+# gate at once. Bump the cap deliberately, after `ruff check src tests alembic`
+# passes locally on the new version.
+dev = ["pytest>=8", "ruff>=0.15,<0.16", "mypy>=1.11", "pandas-stubs"]
 cockpit = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
@@ -51,6 +55,14 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+# These test files import mid-file on purpose: each test section carries its own
+# imports (see the inline comments there). E402 is a layout choice, not a
+# correctness issue, so it is ignored for exactly these files -- a stray late
+# import anywhere else still gets flagged.
+[tool.ruff.lint.per-file-ignores]
+"tests/db/test_session_mssql.py" = ["E402"]
+"tests/pipeline/test_reflect_verdicts_json.py" = ["E402"]
 
 # FastAPI's design puts callables (Depends/Query/...) in argument defaults, which
 # is exactly what flake8-bugbear's B008 flags. This allowlist is ruff's documented

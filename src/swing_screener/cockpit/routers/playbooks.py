@@ -231,7 +231,7 @@ def build_playbooks_router(
         # rejects -- and the desktop app polls this against Azure SQL.
         severities = session.execute(
             select(SystemAudit.severity, func.count(SystemAudit.id))
-            .where(SystemAudit.acknowledged_by_human == False)
+            .where(SystemAudit.acknowledged_by_human == False)  # noqa: E712
             .group_by(SystemAudit.severity)
         ).all()
         confirmed = select(JournalTradeTag.id).where(
