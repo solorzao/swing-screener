@@ -41,9 +41,9 @@
     "delta": {
       "max_extension_atr": 2.5
     },
-    "rationale": "Reversal setups likely fail when price is overextended; capping extension may lift the high-expectancy mid-score band toward significance by dropping late/exhausted entries in med volatility.",
+    "rationale": "Reversal setups likely fail when price is overextended; capping extension may lift the high-expectancy mid-score band toward significance by dropping late/exhausted entries in med volatility. WITHDRAWN 2026-07-25: max_extension_atr is a continuation-path gate (pipeline/analyze.py analyze_frames) that never reaches the reversal detector -- the same knob as the 2026-07-03 withdrawal, re-minted under a new hunch name; sweeping it would produce an identical reversal book and mint a false null. See docs/plans/2026-07-25-strategy-review-experiment-queue.md (reachability guard).",
     "hunch_ref": "volatility_tier=med",
-    "status": "queued",
+    "status": "withdrawn",
     "drafted_at": "2026-07-16",
     "provenance": "reflection-opus"
   }
