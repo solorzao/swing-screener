@@ -854,13 +854,14 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         tickets: dict[tuple[str, str], OrderTicketLine] = {}
         if collected_intents and not isinstance(adapter, NoOpAdapter):
             try:
-                # EXECUTION SCOPE (Task 8): the ceremony-controlled play-type
-                # CEILING, resolved through the Task-22 seam once per dispatch
-                # batch -- the env half is static for the run, and when Task 22
-                # lands its cockpit-disabled DB half re-reads HERE, per batch
-                # (never per intent). None = unscoped (today's behavior). Inside
-                # the dispatch gate + try so the off/no-intent path never pays
-                # (or fails on) the future DB read.
+                # EXECUTION SCOPE: the ceremony-controlled play-type CEILING
+                # (Task 8) MINUS the cockpit's disabled set (Task 22), resolved
+                # through the one seam once per dispatch batch -- the env half is
+                # static for the run, and the DB half re-reads HERE, per batch
+                # (never per intent), so a scope change lands on the next batch
+                # without this loop knowing anything about it. None = unscoped.
+                # Inside the dispatch gate + try so the off/no-intent path never
+                # pays (or fails on) the DB read.
                 scope = guardrails_repo.effective_execution_scope(
                     cfg, session=session)
                 for intent in collected_intents:
@@ -881,8 +882,9 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                             detail=UNSIZED_DETAIL)
                         continue
                     if scope is not None and intent.play_type not in scope:
-                        # OUT OF SCOPE (Task 8): the play type is outside the
-                        # SWING_EXECUTE_PLAY_TYPES ceiling, so the intent is
+                        # OUT OF SCOPE: the play type is outside the effective
+                        # scope (the SWING_EXECUTE_PLAY_TYPES ceiling minus the
+                        # cockpit's disabled set), so the intent is
                         # INERT -- same reasoning as the unsized skip above:
                         # nothing is being armed, so this sits BEFORE the
                         # kill-switch/guardrails consults (no live machinery
@@ -891,8 +893,11 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                         # adapter runs -> no ExecutionLog row.
                         log.info("skipping out-of-scope intent %s %s (scope: %s)",
                                  intent.ticker, intent.play_type,
+                                 # an EMPTY effective scope now has two causes -- an
+                                 # all-garbage env value OR the cockpit disabling
+                                 # everything -- so the line no longer blames the env.
                                  ", ".join(sorted(scope))
-                                 or "(empty - no valid play types)")
+                                 or "(empty - nothing is in scope)")
                         tickets[(intent.ticker, intent.play_type)] = OrderTicketLine(
                             side=intent.side, shares=intent.shares, ticker=intent.ticker,
                             limit_price=intent.limit_price, stop=intent.stop,

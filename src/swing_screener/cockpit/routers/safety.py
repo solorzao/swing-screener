@@ -55,6 +55,11 @@ log = logging.getLogger(__name__)
 #: (a restated copy here could drift from what actually protects the state columns) --
 #: which is also why an unknown key reaches the operator wearing the repo's own
 #: ValueError text rather than a re-worded cockpit message.
+#:
+#: ``disabled`` (set_scope's body key) is DELIBERATELY not listed: adding it would
+#: make ``{"action": "edit", "disabled": [...]}`` a silently-ignored field, and
+#: scope is its own verb. Leaving it out routes it into ``edit_limits``, which
+#: refuses it BY NAME -- the loud outcome a mixed body deserves.
 _NON_LIMIT_KEYS = frozenset({"action", "ack_trip_id"})
 
 #: How much guardrail history the panel gets in one read. The table is append-only and
@@ -94,14 +99,24 @@ def _db_error_detail(exc: Exception) -> str:
     return f"{_D503_DB}{type(exc).__name__})"
 
 
+#: The ``guardrails_repo`` function-name prefixes stripped off a rejection before it
+#: reaches an operator. Listed, not regex-guessed: only the two write verbs this
+#: endpoint calls, so an unexpected exception's text is never silently trimmed.
+_REPO_PREFIXES = ("edit_limits: ", "set_disabled_play_types: ")
+
+
 def _client_error(exc: Exception) -> str:
     """A ``guardrails_repo`` rejection as an operator-facing 422 message.
 
-    The repo raises with an ``edit_limits: `` prefix naming its own function -- true
-    but internal, and the cockpit is not where a user learns the callee's name. The
-    SUBSTANCE (which column, which rule) is kept verbatim: it is the same text the
-    repo's own tests pin, and re-wording it would let the two drift."""
-    return str(exc).removeprefix("edit_limits: ")
+    The repo raises with a ``<function>: `` prefix naming itself -- true but
+    internal, and the cockpit is not where a user learns the callee's name. The
+    SUBSTANCE (which column, which rule, which invalid play type) is kept verbatim:
+    it is the same text the repo's own tests pin, and re-wording it would let the two
+    drift."""
+    text = str(exc)
+    for prefix in _REPO_PREFIXES:
+        text = text.removeprefix(prefix)
+    return text
 
 
 def _halt_key() -> str:
@@ -208,9 +223,16 @@ class GuardrailAction(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    action: Literal["edit", "halt", "clear_halt", "clear_trip"]
+    action: Literal["edit", "halt", "clear_halt", "clear_trip", "set_scope"]
     #: clear_trip only: the trip id the operator actually acknowledged.
     ack_trip_id: int | None = None
+    #: set_scope only: the WHOLE new disabled set (``[]`` re-enables everything the
+    #: env ceiling still allows). Declared so the wire gets real coercion, and
+    #: DELIBERATELY not in ``_NON_LIMIT_KEYS``: sending it on an ``edit`` reaches
+    #: ``edit_limits``' whitelist and comes back as its own 422 naming ``disabled``
+    #: -- scope is its own verb, and a body that mixes the two is a client bug worth
+    #: saying out loud rather than half-applying.
+    disabled: list[str] | None = None
     max_daily_loss_usd: float | None = Field(default=None, allow_inf_nan=False)
     max_trades_per_day: int | None = None
     max_drawdown_usd: float | None = Field(default=None, allow_inf_nan=False)
@@ -229,7 +251,13 @@ def _state_body(g: GuardrailsState) -> dict[str, object]:
     body accepts, so the panel's form needs no translation layer. ``state`` /
     ``trip_id`` / ``trip_reason`` / ``sweep_state`` are READ-ONLY here: they move
     through the state machine (halt / trip / clear) and ``edit_limits``' whitelist
-    refuses them by name, so posting one back is a 422, not a round trip."""
+    refuses them by name, so posting one back is a 422, not a round trip.
+
+    ``disabled_play_types`` round-trips through its OWN verb (``action:
+    'set_scope'``, body key ``disabled``), not through the edit form -- so it is a
+    LIST here, sorted, matching the canonical order the column stores. Sorted rather
+    than set-shaped because JSON has no set and an arbitrary order would make the
+    panel's diffing (and this endpoint's own tests) depend on iteration luck."""
     return {
         "state": g.state,
         "max_daily_loss_usd": g.max_daily_loss_usd,
@@ -241,6 +269,7 @@ def _state_body(g: GuardrailsState) -> dict[str, object]:
         "trip_id": g.trip_id,
         "trip_reason": g.trip_reason,
         "sweep_state": g.sweep_state,
+        "disabled_play_types": sorted(g.disabled_play_types),
     }
 
 
@@ -288,9 +317,10 @@ def _after_write(session: Session, *, action: str) -> dict[str, object]:
     would actively misdescribe the row we just changed; the client re-polls
     ``GET /api/guardrails``, which is one poll tick away anyway.
 
-    ``committed`` (not ``cleared``): one name for one meaning across all three
-    DB-only actions -- edit and clear_halt have the same commit-then-enrich shape,
-    and an action-specific key would have to be read differently per branch."""
+    ``committed`` (not ``cleared``): one name for one meaning across all four
+    DB-only actions -- edit, set_scope and clear_halt have the same
+    commit-then-enrich shape, and an action-specific key would have to be read
+    differently per branch."""
     try:
         g = guardrails_repo.peek_guardrails(session)
         breach = _current_breach(session, g)
@@ -887,7 +917,7 @@ def build_safety_router(
         dry_run: bool = Query(default=False),
         session: Session = Depends(_session),
     ) -> dict[str, object]:
-        """The brake's four operator actions. Header-guarded like every mutation.
+        """The brake's five operator actions. Header-guarded like every mutation.
 
         Every one of them routes to a ``guardrails_repo`` state-machine function --
         those SEED (correctly: they are writes, and a conditional UPDATE needs a
@@ -918,13 +948,23 @@ def build_safety_router(
           changes NOTHING -- not the state, not a row, not the venue -- and
           deliberately does NOT hold the lock (see ``_halt_action``).
         * ``clear_halt`` -- 'halted' -> 'ok', DB-only. A trip never clears here.
-          ``dry_run`` is a 422 on this and the other two DB-only actions: there is
-          nothing to preview, and silently ignoring the flag would turn a preview
+          ``dry_run`` is a 422 on this and the other three DB-only actions: there
+          is nothing to preview, and silently ignoring the flag would turn a preview
           into an execution.
         * ``clear_trip`` -- requires ``ack_trip_id``: the clear only matches the trip
           the operator actually READ, so a stale cockpit screen cannot release a
           newer trip. The response carries ``current_breach`` so the panel can say
           immediately that this will re-trip within the hour.
+        * ``set_scope`` -- the Strategy Board's tighten-only subtraction, DB-only:
+          body ``disabled`` is the WHOLE new set of play types the cockpit switches
+          OFF (``[]`` re-enables everything the env ceiling still allows; an unknown
+          play type is a 422 carrying the repo's own reason). It can only ever
+          SUBTRACT from ``SWING_EXECUTE_PLAY_TYPES`` -- widening the ceiling stays an
+          env/IaC act -- so there is nothing here that can arm what was not already
+          armed. It has NO 409: unlike halt/clear the write is an unconditional
+          idempotent SET, so pressing "disable" on an already-disabled strategy
+          succeeds (and, exactly like a no-op ``edit``, still journals its event --
+          "the operator asked" is itself the audit fact).
 
         AS-BUILT DEVIATION (the plan said ``halt``/``clear_trip`` both take the
         lock): ``clear_trip`` does NOT. The lock exists to serialise protective stop
@@ -941,7 +981,7 @@ def build_safety_router(
         complete``. See the module constants.
         """
         if dry_run and body.action != "halt":
-            # HALT is the only action with a venue side to preview; the other three
+            # HALT is the only action with a venue side to preview; the other four
             # are pure DB transitions. Refusing loudly rather than ignoring the flag
             # matters because the frontend fires the preview on every hold-START: a
             # silently-ignored dry_run would EXECUTE the action -- a "preview" that
@@ -967,6 +1007,29 @@ def build_safety_router(
 
         if body.action == "halt":
             return _halt_action(session, dry_run=dry_run)
+
+        if body.action == "set_scope":
+            if body.disabled is None:
+                # Presence, not truthiness: `[]` is the legitimate re-enable-all
+                # request and must never be confused with an omitted key. A
+                # set_scope that silently defaulted to "" would RESTORE every
+                # disabled strategy on a malformed body -- the one direction this
+                # feature may never move without being asked.
+                raise HTTPException(
+                    status_code=422,
+                    detail="set_scope requires disabled (a list of play types; "
+                           "[] re-enables everything the env ceiling allows)")
+            try:
+                guardrails_repo.set_disabled_play_types(
+                    session, disabled=set(body.disabled), source="cockpit")
+            except ValueError as exc:
+                # The repo's vocabulary validation is THE gate (one definition,
+                # shared with any future caller); its message names the invalid
+                # member and the valid set, so it is the operator's message too.
+                raise HTTPException(
+                    status_code=422, detail=_client_error(exc)) from exc
+            action_nonce.bump()
+            return _after_write(session, action="set_scope")
 
         if body.action == "clear_halt":
             if not guardrails_repo.clear_halt(session, source="cockpit"):

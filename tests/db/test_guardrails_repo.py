@@ -7,7 +7,9 @@ The brake's load-bearing properties, pinned:
     there is no other cross-process lock),
   * clear demands the acknowledged trip_id (a stale ack never releases the brake),
   * halt never downgrades a trip; a trip overwrites a halt,
-  * edit_limits can NEVER touch the state columns,
+  * edit_limits can NEVER touch the state columns (nor can the scope verb),
+  * the tighten-only scope subtraction (``set_disabled_play_types``) validates its
+    vocabulary on the WRITE and decodes identically on load / peek / _UNSEEDED,
   * every successful transition appends exactly one AgentGuardrailEvent,
   * the four breaker inputs (trades/day, realized $, drawdown-from-HWM, loss
     streak) count exactly the rows they claim to,
@@ -383,6 +385,104 @@ def test_every_transition_appends_event(session: Session) -> None:
     # every event names its actor (journal convention: source is required).
     assert all(e.source in ("cockpit", "screen") for e in
                session.query(AgentGuardrailEvent))
+
+
+# -------------------------------------------- the tighten-only scope subtraction
+
+
+def test_set_disabled_play_types_round_trips_and_audits(session: Session) -> None:
+    """The whole-set write: parsed back as a frozenset, journaled as ONE 'edit' event
+    under the ``disabled_play_types`` breaker with old -> new sorted lists, and an
+    EMPTY set re-enables everything (the board's restore)."""
+    assert gr.load_guardrails(session).disabled_play_types == frozenset()
+
+    gr.set_disabled_play_types(session, disabled={"continuation"}, source="cockpit")
+    assert gr.load_guardrails(session).disabled_play_types == frozenset(
+        {"continuation"})
+    # the column is CANONICAL: sorted, comma-joined, no spaces.
+    assert session.query(AgentGuardrails).one().disabled_play_types == "continuation"
+
+    ev = session.query(AgentGuardrailEvent).one()
+    assert (ev.kind, ev.breaker, ev.source) == ("edit", "disabled_play_types",
+                                                "cockpit")
+    assert json.loads(ev.values_json) == {"old": [], "new": ["continuation"]}
+
+    gr.set_disabled_play_types(session, disabled={"continuation", "reversal"},
+                               source="cockpit")
+    assert session.query(AgentGuardrails).one().disabled_play_types == (
+        "continuation,reversal")
+
+    # the restore: an EMPTY set re-enables everything the env ceiling still allows.
+    gr.set_disabled_play_types(session, disabled=set(), source="cockpit")
+    assert gr.load_guardrails(session).disabled_play_types == frozenset()
+    assert session.query(AgentGuardrails).one().disabled_play_types == ""
+    events = session.query(AgentGuardrailEvent).order_by(AgentGuardrailEvent.id).all()
+    assert [e.kind for e in events] == ["edit", "edit", "edit"]     # one per write
+    assert json.loads(events[-1].values_json) == {
+        "old": ["continuation", "reversal"], "new": []}
+
+
+def test_set_disabled_play_types_rejects_unknown_members(session: Session) -> None:
+    """Vocabulary validation is on the WRITE (a read that dropped an unrecognised
+    stored member would WIDEN scope). The message NAMES the invalid members, and
+    nothing -- column or event -- moves."""
+    with pytest.raises(ValueError) as exc:
+        gr.set_disabled_play_types(session, disabled={"reversal", "breakout"},
+                                   source="cockpit")
+    assert "breakout" in str(exc.value)
+    assert "reversal" not in str(exc.value).split("valid:")[0]   # only the bad one
+    assert session.query(AgentGuardrailEvent).count() == 0
+    assert gr.peek_guardrails(session).disabled_play_types == frozenset()
+
+
+def test_scope_edit_never_touches_the_state_columns(session: Session) -> None:
+    """Scope is its own verb, but it inherits ``edit_limits``' guarantee: the UPDATE
+    touches ONLY ``disabled_play_types`` + ``updated_at``, so disabling a strategy
+    while the brake is TRIPPED leaves the trip -- state, owner and sweep -- intact."""
+    gr.edit_limits(session, source="cockpit", max_daily_loss_usd=500.0,
+                   max_trades_per_day=3, hwm_baseline_usd=250.0)
+    eid = gr.trip(session, breaker="max_daily_loss_usd", reason="breach",
+                  source="screen")
+    assert eid is not None
+
+    gr.set_disabled_play_types(session, disabled={"continuation"}, source="cockpit")
+
+    g = gr.load_guardrails(session)
+    assert g.disabled_play_types == frozenset({"continuation"})
+    assert (g.state, g.trip_id, g.trip_reason, g.sweep_state) == (
+        "tripped", eid, "breach", "pending")
+    assert (g.max_daily_loss_usd, g.max_trades_per_day) == (500.0, 3)
+    assert g.hwm_baseline_usd == 250.0
+    assert g.loss_streak_halt is None
+
+
+def test_scope_edit_is_not_an_editable_limit(session: Session) -> None:
+    """The six-field whitelist is the cockpit LIMITS form's contract; scope is NOT in
+    it. Posting it as an edit is refused by name -- which is what stops a scope change
+    from riding an edit body no scope UI ever sent."""
+    with pytest.raises(ValueError, match="disabled_play_types"):
+        gr.edit_limits(session, source="cockpit", disabled_play_types="continuation")
+    assert session.query(AgentGuardrailEvent).count() == 0
+
+
+def test_disabled_parse_agrees_across_load_peek_and_unseeded(session: Session) -> None:
+    """ALL THREE read paths must decode the column identically -- a subtraction that
+    applied on one and not another would be a strategy the operator switched OFF
+    still reaching the venue."""
+    assert gr._UNSEEDED.disabled_play_types == frozenset()
+    assert gr.peek_guardrails(session).disabled_play_types == frozenset()   # virgin
+
+    gr.set_disabled_play_types(session, disabled={"reversal"}, source="cockpit")
+    assert gr.load_guardrails(session).disabled_play_types == frozenset({"reversal"})
+    assert gr.peek_guardrails(session) == gr.load_guardrails(session)
+
+    # a hand-written column value (whitespace, casing, a trailing comma) decodes the
+    # same way on both paths -- the parse lives in ONE place, not two.
+    session.query(AgentGuardrails).one().disabled_play_types = " Reversal , CONTINUATION ,"
+    session.commit()
+    expected = frozenset({"reversal", "continuation"})
+    assert gr.load_guardrails(session).disabled_play_types == expected
+    assert gr.peek_guardrails(session).disabled_play_types == expected
 
 
 # ---------------------------------------------------------------- breaker queries

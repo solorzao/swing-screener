@@ -41,6 +41,14 @@ LIVE_ACCOUNT = "live"
 # the ONLY columns edit_limits may set. state / trip_id / trip_reason / sweep_state
 # move through the state machine (trip / clear / halt), NEVER through an edit --
 # the whitelist is what makes that a guarantee rather than a convention.
+# ``disabled_play_types`` is deliberately ABSENT too: scope is its own verb
+# (``set_disabled_play_types``). Three reasons it is not just a seventh limit --
+# (1) it is a SET, not a scalar, so "presence decides / null unsets" (the edit
+# body's rule) has no meaning for it; (2) it needs vocabulary validation the
+# positivity rule cannot express; (3) these six ARE the cockpit LIMITS form's
+# contract -- tests/cockpit/test_guardrails_router.py pins the 422 text listing
+# exactly what an edit may carry, and widening the whitelist would quietly let a
+# scope change ride an edit body that no scope UI ever sent.
 _EDITABLE_LIMITS = (
     "max_daily_loss_usd",
     "max_trades_per_day",
@@ -77,7 +85,33 @@ _STATE_COLUMNS = (
     AgentGuardrails.trip_id,
     AgentGuardrails.trip_reason,
     AgentGuardrails.sweep_state,
+    AgentGuardrails.disabled_play_types,
 )
+
+
+def _parse_disabled(raw: str | None) -> frozenset[str]:
+    """``"reversal, continuation"`` -> ``frozenset({'reversal', 'continuation'})``.
+
+    The ONE parse of the ``disabled_play_types`` column, shared by every read path
+    (the column select, and therefore both ``load_guardrails`` and
+    ``peek_guardrails``) so no two callers can disagree about what is disabled --
+    a subtraction that applied on one path and not the other would be a play type
+    the operator switched OFF still reaching the venue. Blank/NULL -> the empty set
+    (nothing subtracted); members are stripped, lowered and de-duplicated. NOT
+    validated here: validation belongs on the WRITE (``set_disabled_play_types``),
+    and a read that silently dropped an unrecognised stored member would WIDEN
+    scope -- the one direction this feature may never move.
+    """
+    return frozenset(m.strip().lower() for m in (raw or "").split(",") if m.strip())
+
+
+def _format_disabled(disabled: frozenset[str] | set[str]) -> str:
+    """The set back to its stored form: sorted, comma-joined, no spaces.
+
+    Sorted so the column is CANONICAL -- the same set always stores the same
+    string, which is what makes an old->new event diff readable and a
+    string-equality check on the column meaningful."""
+    return ",".join(sorted(disabled))
 
 
 @dataclass(frozen=True)
@@ -99,6 +133,9 @@ class GuardrailsState:
     trip_id: int | None
     trip_reason: str | None
     sweep_state: str | None
+    #: PARSED from the comma-separated column (``_parse_disabled``) -- the snapshot
+    #: carries the set, never the raw string, so no consumer re-implements the split.
+    disabled_play_types: frozenset[str]
 
 
 def _canonical_row_id() -> "ScalarSelect[Any]":
@@ -115,12 +152,21 @@ def _canonical_row_id() -> "ScalarSelect[Any]":
 
 
 def _select_state(session: Session) -> GuardrailsState | None:
+    """The canonical row as a snapshot, or None on an empty table.
+
+    THE one read every flavour funnels through (``load_guardrails`` and
+    ``peek_guardrails`` differ only in what they do with a None), which is what
+    keeps their parsing in lockstep: ``disabled_play_types`` is decoded HERE, once,
+    so there is no second place for the split to drift.
+    """
     row = session.execute(
         select(*_STATE_COLUMNS).order_by(AgentGuardrails.id).limit(1)
     ).first()
     if row is None:
         return None
-    return GuardrailsState(**row._mapping)
+    fields = dict(row._mapping)
+    fields["disabled_play_types"] = _parse_disabled(fields["disabled_play_types"])
+    return GuardrailsState(**fields)
 
 
 #: The state a brake row that does not exist yet WOULD have: byte-identical to the
@@ -140,6 +186,7 @@ _UNSEEDED = GuardrailsState(
     trip_id=None,
     trip_reason=None,
     sweep_state=None,
+    disabled_play_types=frozenset(),  # the column's "" default, parsed
 )
 
 
@@ -392,6 +439,66 @@ def edit_limits(session: Session, *, source: str, **limits: object) -> None:
     session.commit()
 
 
+def set_disabled_play_types(
+    session: Session, *, disabled: frozenset[str] | set[str], source: str
+) -> None:
+    """Set the cockpit's tighten-only scope SUBTRACTION -- and nothing else.
+
+    ``disabled`` is the WHOLE new set (not a delta): ``{'continuation'}`` disables
+    continuation, ``set()`` re-enables everything the env ceiling still allows. That
+    idempotent whole-set shape is what makes the board's toggle safe to press twice
+    and safe to race -- two operators cannot half-apply each other's intent.
+
+    TIGHTEN-ONLY IS STRUCTURAL, not a rule enforced here: this column can only be
+    SUBTRACTED from the env ceiling (``effective_execution_scope``), so no value
+    written here can widen scope. Re-enabling returns to the ceiling, never past it
+    -- exactly like releasing a HALT returns to what the master arm allows.
+
+    Members are validated against the canonical ``PLAY_TYPES`` vocabulary (ValueError
+    naming the invalid ones), which is also what keeps the stored string inside
+    ``String(64)``: an unbounded free-text set would fail on Azure SQL only. A
+    MIN(id)-pinned plain UPDATE touches ONLY this column + ``updated_at`` -- the
+    state columns are untouchable here exactly as they are through ``edit_limits``,
+    so disabling a strategy while tripped leaves the brake tripped -- and ONE 'edit'
+    event (breaker ``'disabled_play_types'``, ``values_json`` carrying old -> new as
+    sorted lists) shares the SAME commit, so the Auditor sees every scope change.
+
+    NOT part of ``edit_limits``' whitelist by design (see ``_EDITABLE_LIMITS``):
+    scope is its own verb.
+    """
+    # Function-level import, mirroring settings._parse_play_types' note: this module
+    # sits UNDER pipeline (pipeline.execution imports it), so a module-level
+    # pipeline.proposed import would close the loop into a cycle.
+    from swing_screener.pipeline.proposed import PLAY_TYPES  # noqa: PLC0415
+
+    wanted = frozenset(str(m).strip().lower() for m in disabled if str(m).strip())
+    unknown = wanted - frozenset(PLAY_TYPES)
+    if unknown:
+        raise ValueError(
+            f"set_disabled_play_types: not a known play type: "
+            f"{', '.join(sorted(unknown))} (valid: {', '.join(PLAY_TYPES)})"
+        )
+
+    old = load_guardrails(session)  # get-or-create + the old value for the event
+    _plain_update(
+        session,
+        update(AgentGuardrails)
+        .where(AgentGuardrails.id == _canonical_row_id())
+        .values(disabled_play_types=_format_disabled(wanted),
+                updated_at=datetime.now(UTC)),
+    )
+    session.add(_event(
+        kind="edit", source=source, breaker="disabled_play_types",
+        reason="execution scope: " + (
+            "disabled " + ", ".join(sorted(wanted)) if wanted
+            else "no play types disabled"),
+        values_json=json.dumps(
+            {"old": sorted(old.disabled_play_types), "new": sorted(wanted)},
+            sort_keys=True),
+    ))
+    session.commit()
+
+
 def record_sweep_outcome(
     session: Session, *, trip_id: int, outcome: str, detail: str, source: str,
     unprotected: Sequence[str] = (),
@@ -629,23 +736,69 @@ def breached_breaker(
     return None
 
 
+def effective_scope_from_state(
+    settings: Settings, g: GuardrailsState
+) -> frozenset[str] | None:
+    """Effective execution scope = env CEILING - cockpit DISABLED. PURE -- no DB.
+
+    The two-level scope of the Strategy Board addendum, resolved:
+
+    * ceiling SET (``SWING_EXECUTE_PLAY_TYPES``) -> ``ceiling - disabled``. The
+      subtraction can only ever shrink it, so no cockpit state can dispatch a play
+      type the env ceremony did not already allow -- that is the whole tighten-only
+      guarantee, and it holds by the ALGEBRA of ``-``, not by a check someone could
+      forget. An empty result means nothing dispatches (fail-closed, same as an
+      all-garbage env value).
+    * ceiling UNSET (None = the operator has expressed no ceiling) -> the board may
+      still subtract, so the answer is ``frozenset(PLAY_TYPES) - disabled``: the
+      cockpit can tighten below an unset ceiling without an env deploy.
+    * ceiling UNSET and NOTHING disabled -> None, i.e. genuinely unscoped, exactly
+      as before Task 22. Materialising ``frozenset(PLAY_TYPES)`` there would be
+      equivalent for every member of today's vocabulary but would make a STALE
+      vocabulary silently exclude a future play type nobody scoped out; None means
+      "no scoping applies", which is the honest reading of two unset knobs.
+
+    Split from the seeding entry point below the way ``mandate_from_state`` is split
+    from ``guardrails_mandate_ok``: ONE definition of effective scope, two ways in --
+    enforcement takes the ``load``-backed function, a read-only surface (Task 23's
+    ``GET /api/strategies``) pairs this with ``peek_guardrails`` and writes nothing.
+    """
+    ceiling = settings.execute_play_types
+    disabled = g.disabled_play_types
+    if ceiling is None:
+        if not disabled:
+            return None
+        from swing_screener.pipeline.proposed import PLAY_TYPES  # noqa: PLC0415
+        return frozenset(PLAY_TYPES) - disabled
+    return ceiling - disabled
+
+
 def effective_execution_scope(
-    settings: Settings, *, session: Session | None
+    settings: Settings, *, session: Session
 ) -> frozenset[str] | None:
     """The set of play types execution may dispatch, or None = unscoped (all).
 
-    Today: purely the env ceiling (``SWING_EXECUTE_PLAY_TYPES``, parsed
-    fail-closed in ``load_settings``). ``session`` is REQUIRED keyword-only but
-    unused for now -- Task 22 subtracts the cockpit-disabled set here (effective
-    = ceiling - disabled), and forcing every caller to hand a session TODAY
-    means no call site can silently skip that subtraction when it lands. Lives
-    HERE rather than in settings.py because settings stays deliberately
+    The ENFORCEMENT entry: the env ceiling MINUS the cockpit's ``disabled_play_types``
+    (see ``effective_scope_from_state`` for the algebra). Both call sites are the
+    dispatch loop's per-batch filter (``notify.run``) and ``LiveAdapter.submit``'s
+    step 0.6 -- the reason ``session`` was made REQUIRED keyword-only back in Task 8,
+    so no call site could silently skip this subtraction when it landed.
+
+    ``load_guardrails``, NOT ``peek``: both callers are WRITERS on paths that already
+    seed (submit's step 0.5 loads the brake one line earlier; the dispatch loop is a
+    job identity), and enforcement uniformly reads the seeding load -- the same
+    posture ``guardrails_mandate_ok`` takes. Nothing here is display: a read-only
+    surface must use ``effective_scope_from_state(settings, peek_guardrails(session))``
+    instead. (``GET /api/config``'s execution row is unaffected either way: it renders
+    the ENV knob only and reads no DB, so the read-only-grant poll stays write-free.)
+
+    Lives HERE rather than in settings.py because settings stays deliberately
     import-light (a module-level PLAY_TYPES/ORM import there would hand every
-    settings importer those edges) and because Task 22's ``disabled_play_types``
-    is an ``agent_guardrails`` column this module owns (its tighten-only edit
-    walks the same event-audited state machine as every other brake write).
+    settings importer those edges) and because ``disabled_play_types`` is an
+    ``agent_guardrails`` column this module owns (its tighten-only edit walks the
+    same event-audited state machine as every other brake write).
     """
-    return settings.execute_play_types
+    return effective_scope_from_state(settings, load_guardrails(session))
 
 
 #: the breakers a real-money endpoint MUST have set, in the order the mandate reports

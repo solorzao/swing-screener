@@ -684,6 +684,15 @@ class AgentGuardrails(Base):
     trip_id: Mapped[int | None] = mapped_column(default=None)
     trip_reason: Mapped[str | None] = mapped_column(String(256), default=None)
     sweep_state: Mapped[str | None] = mapped_column(String(16), default=None)
+    # The Strategy Board's tighten-only SUBTRACTION (Task 22): a comma-separated list
+    # of play types the cockpit has disabled. "" (never NULL) = nothing subtracted.
+    # Effective execution scope = the SWING_EXECUTE_PLAY_TYPES ceiling MINUS this set
+    # (guardrails_repo.effective_execution_scope) -- the cockpit can only ever remove
+    # risk, never add a play type the env ceiling does not already allow. Bounded
+    # String(64): membership is validated against the canonical PLAY_TYPES vocabulary
+    # on write, so the stored value can never outgrow the bound.
+    disabled_play_types: Mapped[str] = mapped_column(
+        String(64), default="", server_default="")
     updated_at: Mapped[datetime]
 
 

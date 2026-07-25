@@ -8,10 +8,15 @@ The load-bearing properties proven here:
   virgin table under a read-only DB grant answers 200 and attempts NOT ONE write
   (the G7 pin -- these endpoints are the first cockpit WRITERS of this table, so
   the read half has to stay provably clean).
-* WRITES GO THROUGH THE STATE MACHINE: edit / halt / clear_halt / clear route to
-  ``guardrails_repo`` verbatim (they seed, they audit, they commit atomically) and
-  a DB failure on the PRIMARY state write PROPAGATES to the app-level 503 handler
-  -- never a silent 200 that tells the operator the brake moved when it did not.
+* WRITES GO THROUGH THE STATE MACHINE: edit / halt / clear_halt / clear / set_scope
+  route to ``guardrails_repo`` verbatim (they seed, they audit, they commit
+  atomically) and a DB failure on the PRIMARY state write PROPAGATES to the
+  app-level 503 handler -- never a silent 200 that tells the operator the brake
+  moved when it did not.
+* SCOPE IS ITS OWN VERB (Task 22): ``set_scope`` writes the WHOLE new
+  ``disabled_play_types`` set (``[]`` re-enables), round-trips through the GET body
+  as a sorted list, and can never ride an ``edit`` -- the six-field limits whitelist
+  refuses it by name.
 * VENUE-TOUCHING ACTIONS ARE SINGLE-FLIGHT: HALT runs the protective sweep, so it
   takes the SAME ``disarm_lock`` /api/disarm holds; the loser 409s before the
   factory resolves.
@@ -57,7 +62,7 @@ from tests.cockpit.conftest import (
 
 STATE_KEYS = {"state", "max_daily_loss_usd", "max_trades_per_day", "max_drawdown_usd",
               "loss_streak_halt", "hwm_anchor_date", "hwm_baseline_usd", "trip_id",
-              "trip_reason", "sweep_state"}
+              "trip_reason", "sweep_state", "disabled_play_types"}
 GET_KEYS = STATE_KEYS | {"current_breach", "events"}
 EVENT_KEYS = {"id", "kind", "breaker", "reason", "source", "created_at"}
 #: Every POST answer says which action ran, whether the brake actually MOVED, the
@@ -258,12 +263,12 @@ def test_post_edit_body_key_colliding_with_a_kwarg_is_422_not_500(
         assert s.query(AgentGuardrailEvent).count() == 0
 
 
-@pytest.mark.parametrize("action", ["edit", "clear_halt", "clear_trip"])
+@pytest.mark.parametrize("action", ["edit", "clear_halt", "clear_trip", "set_scope"])
 def test_post_dry_run_is_refused_on_the_db_only_actions(
     tmp_path: Path, action: str,
 ) -> None:
     """HALT is the only action with a venue side to preview. A silently-ignored
-    dry_run would EXECUTE the other three -- and the frontend fires the preview on
+    dry_run would EXECUTE the other four -- and the frontend fires the preview on
     every hold-START, so a 'preview' would have released the brake before the
     operator finished holding. 422, and the brake never moves."""
     client, engine, _calls = _broker_app(tmp_path, None)
@@ -275,6 +280,8 @@ def test_post_dry_run_is_refused_on_the_db_only_actions(
         body["max_trades_per_day"] = 3
     elif action == "clear_trip":
         body["ack_trip_id"] = 1
+    elif action == "set_scope":
+        body["disabled"] = ["continuation"]
     r = client.post("/api/guardrails?dry_run=1", headers=_HDR, json=body)
     assert r.status_code == 422
     assert r.json()["detail"] == "dry_run is only supported for halt"
@@ -484,6 +491,113 @@ def test_post_halt_dry_run_previews_without_state_change(tmp_path: Path) -> None
         assert s.query(AgentGuardrails).count() == 0     # not even seeded
         assert s.query(AgentGuardrailEvent).count() == 0
         assert s.query(DisarmEvent).count() == 0
+
+
+# --- POST /api/guardrails: set_scope (the Strategy Board's subtraction) ---------------
+
+
+def test_post_set_scope_round_trips_the_disabled_set(tmp_path: Path) -> None:
+    """The state Task 23/24 consume must round-trip NOW: GET carries
+    ``disabled_play_types`` as a SORTED list, POST ``set_scope`` writes the WHOLE new
+    set through ``guardrails_repo`` (audited, atomic), and ``[]`` restores."""
+    client, engine, _calls = _broker_app(tmp_path, None)
+    assert client.get("/api/guardrails").json()["disabled_play_types"] == []
+    assert client.post("/api/guardrails",
+                       json={"action": "set_scope",
+                             "disabled": []}).status_code == 403   # header-guarded
+
+    r = client.post("/api/guardrails", headers=_HDR,
+                    json={"action": "set_scope", "disabled": ["continuation"]})
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body) == STATE_KEYS | WRITE_KEYS
+    assert body["action"] == "set_scope" and body["committed"] is True
+    assert body["disabled_play_types"] == ["continuation"]
+    assert body["state"] == "ok"                       # scope never moves the brake
+    assert _nonce_of(client.app).value == 1            # other windows wake
+    assert client.get("/api/guardrails").json()["disabled_play_types"] == [
+        "continuation"]
+
+    # the whole-set shape: a second call REPLACES rather than accumulating, and the
+    # wire order is canonical (sorted) whatever the client sent.
+    r = client.post("/api/guardrails", headers=_HDR,
+                    json={"action": "set_scope",
+                          "disabled": ["reversal", "continuation"]})
+    assert r.json()["disabled_play_types"] == ["continuation", "reversal"]
+
+    # ...and [] re-enables everything the env ceiling still allows.
+    r = client.post("/api/guardrails", headers=_HDR,
+                    json={"action": "set_scope", "disabled": []})
+    assert r.status_code == 200
+    assert r.json()["disabled_play_types"] == []
+
+    with Session(engine) as s:
+        events = s.query(AgentGuardrailEvent).order_by(AgentGuardrailEvent.id).all()
+        assert [e.kind for e in events] == ["edit", "edit", "edit"]
+        assert all(e.breaker == "disabled_play_types" for e in events)
+        assert all(e.source == "cockpit" for e in events)
+
+
+def test_post_set_scope_validation(tmp_path: Path) -> None:
+    """Two 422s, and NOTHING written on either: an unknown play type (the repo's
+    vocabulary check is the gate, its message the operator's), and an OMITTED
+    ``disabled`` -- presence, not truthiness, because ``[]`` is the legitimate
+    re-enable-all request and a defaulted "" would silently restore every disabled
+    strategy."""
+    client, engine, _calls = _broker_app(tmp_path, None)
+    with Session(engine) as s:
+        gr.set_disabled_play_types(s, disabled={"continuation"}, source="test")
+
+    r = client.post("/api/guardrails", headers=_HDR,
+                    json={"action": "set_scope", "disabled": ["breakout"]})
+    assert r.status_code == 422
+    assert "breakout" in r.json()["detail"]
+    assert not r.json()["detail"].startswith("set_disabled_play_types")  # repo prefix
+
+    r = client.post("/api/guardrails", headers=_HDR, json={"action": "set_scope"})
+    assert r.status_code == 422
+    assert r.json()["detail"].startswith("set_scope requires disabled")
+
+    assert _nonce_of(client.app).value == 0
+    assert client.get("/api/guardrails").json()["disabled_play_types"] == [
+        "continuation"]                                # untouched by both refusals
+    with Session(engine) as s:
+        assert s.query(AgentGuardrailEvent).count() == 1   # only the seed write
+
+
+def test_post_edit_cannot_carry_a_scope_change(tmp_path: Path) -> None:
+    """Scope is its OWN verb. A ``disabled`` key on an ``edit`` reaches
+    ``edit_limits``' six-field whitelist and comes back refused BY NAME -- never
+    half-applied, and never silently dropped."""
+    client, engine, _calls = _broker_app(tmp_path, None)
+    r = client.post("/api/guardrails", headers=_HDR,
+                    json={"action": "edit", "max_trades_per_day": 3,
+                          "disabled": ["continuation"]})
+    assert r.status_code == 422
+    assert r.json()["detail"] == "not an editable limit column: disabled"
+    with Session(engine) as s:
+        assert s.query(AgentGuardrailEvent).count() == 0
+        assert s.query(AgentGuardrails).count() == 0       # nothing even seeded
+
+
+def test_post_set_scope_db_failure_is_503_never_200(tmp_path: Path) -> None:
+    """The G7 posture applies to the scope write like every other primary state
+    write: a refused UPDATE PROPAGATES as a 503. A 200 here would tell the operator a
+    strategy is disabled while the agent still dispatches it."""
+    client, engine, _calls = _broker_app(tmp_path, None)
+    with Session(engine) as s:                   # seed so the denied statement is the UPDATE
+        gr.set_disabled_play_types(s, disabled={"continuation"}, source="test")
+
+    with _deny_writes("agent_guardrails") as attempted:
+        r = client.post("/api/guardrails", headers=_HDR,
+                        json={"action": "set_scope", "disabled": []})
+
+    assert r.status_code == 503
+    assert r.json() == {"detail": "database error (OperationalError)"}
+    assert attempted and attempted[0].startswith("update")
+    assert _nonce_of(client.app).value == 0
+    with Session(engine) as s:                   # the strategy is STILL disabled
+        assert s.query(AgentGuardrails).one().disabled_play_types == "continuation"
 
 
 # --- POST /api/guardrails: clear_halt / clear_trip ------------------------------------

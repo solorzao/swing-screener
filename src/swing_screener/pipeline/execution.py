@@ -486,13 +486,15 @@ class LiveAdapter:
        a breached breaker clamps to a logged ``skipped`` row with a ``guardrail: ...``
        detail -- non-counting, so the key is never burned and a later submit (brake
        released) upgrades the row.
-    0.6. The EXECUTION SCOPE ceiling (``guardrails_repo.effective_execution_scope``,
-       Task 8): an intent whose play type is outside the SWING_EXECUTE_PLAY_TYPES
-       ceiling clamps to a logged ``skipped`` row with :data:`OUT_OF_SCOPE_DETAIL` --
-       non-counting, so the key upgrades in place if the operator later widens the
-       scope. The dispatch loop filters these first; this is the adapter's own last
-       line (never trusting the caller), through the SAME seam Task 22's cockpit
-       subtraction lands in.
+    0.6. The EXECUTION SCOPE (``guardrails_repo.effective_execution_scope``): an
+       intent whose play type is outside the effective scope -- the
+       SWING_EXECUTE_PLAY_TYPES ceiling (Task 8) MINUS the cockpit's
+       ``disabled_play_types`` (Task 22) -- clamps to a logged ``skipped`` row with
+       :data:`OUT_OF_SCOPE_DETAIL` -- non-counting, so the key upgrades in place if
+       the operator later widens the scope (either level). The dispatch loop filters
+       these first; this is the adapter's own last line (never trusting the caller),
+       through the SAME seam, which is why the Strategy Board needed no change
+       here.
     1. The REAL-MONEY guard, consulted ONLY when ``broker.is_real_money()`` -- a paper broker
        (Alpaca paper) needs no locks and skips it entirely. For a real-money endpoint it
        demands all THREE arming locks (``can_arm_real_money``: mode=live AND allow_real_money
@@ -577,13 +579,13 @@ class LiveAdapter:
                       status="skipped", detail=detail[:512])
             return OrderResult(status="skipped", account=LIVE_ACCOUNT, detail=detail)
 
-        # 0.6 THE EXECUTION SCOPE CEILING (Task 8) -- consulted through the same seam
-        #     as the dispatch loop's filter (Task 22's cockpit subtraction lands in
-        #     that seam, so the session is threaded now). The loop filters these
+        # 0.6 THE EXECUTION SCOPE -- the env ceiling MINUS the cockpit's disabled
+        #     set, consulted through the same seam as the dispatch loop's filter
+        #     (which is why the session is threaded here). The loop filters these
         #     first; this is the adapter's own last line (never trusting the
         #     caller). Out of scope clamps to a logged 'skipped' row -- non-counting,
         #     so the key is never burned and a later submit (the operator widened
-        #     the scope) upgrades the row in place.
+        #     the ceiling, or re-enabled the strategy) upgrades the row in place.
         scope = guardrails_repo.effective_execution_scope(
             self._settings or load_settings(), session=session)
         if scope is not None and intent.play_type not in scope:

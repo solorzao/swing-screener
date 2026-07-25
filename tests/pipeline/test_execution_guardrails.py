@@ -378,6 +378,56 @@ def test_unscoped_none_ceiling_passes_through() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Task 22: step 0.6 INHERITS the cockpit subtraction with zero code changes --
+# it consults ``effective_execution_scope``, which now returns ceiling - the
+# ``disabled_play_types`` column. Proven here (not asserted in a docstring):
+# the same intent that dispatches under an unchanged ceiling stops dispatching
+# once the cockpit disables its play type, and flows again when re-enabled.
+# ---------------------------------------------------------------------------
+def test_cockpit_disabled_play_type_is_refused_at_submit() -> None:
+    with _session() as s:
+        broker = FakeBroker(real_money=False)
+        # the ENV ceiling still allows continuation -- only the cockpit says no.
+        settings = _live_settings(scope=frozenset({"continuation", "reversal"}))
+        gr.set_disabled_play_types(s, disabled={"continuation"}, source="cockpit")
+        adapter = LiveAdapter(broker, settings=settings, gate_ready_fn=lambda _s: True)
+
+        result = adapter.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
+        assert result.status == "skipped"
+        assert result.detail == OUT_OF_SCOPE_DETAIL
+        assert broker.submitted_specs == []             # zero broker calls
+        assert s.query(ExecutionLog).one().detail == OUT_OF_SCOPE_DETAIL
+        # non-counting, exactly like the env-ceiling clamp: the key is not burned.
+        assert gr.trades_today(s, run_date=RUN) == 0
+
+        # re-enable: the SAME row upgrades in place and the order reaches the venue.
+        gr.set_disabled_play_types(s, disabled=set(), source="cockpit")
+        second = adapter.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
+        assert second.status == "submitted_live"
+        assert len(broker.submitted_specs) == 1
+        assert s.query(ExecutionLog).one().status == "submitted_live"
+
+
+def test_cockpit_subtraction_applies_below_an_unset_ceiling() -> None:
+    """No env ceiling at all, and the cockpit disables 'reversal': continuation still
+    flows, reversal does not. The board can tighten without an env deploy."""
+    with _session() as s:
+        broker = FakeBroker(real_money=False)
+        gr.set_disabled_play_types(s, disabled={"reversal"}, source="cockpit")
+        adapter = LiveAdapter(broker, settings=_live_settings(scope=None),
+                              gate_ready_fn=lambda _s: True)
+
+        blocked = adapter.submit(_intent(ticker="XOM", play_type="reversal"),
+                                 session=s, run_date=RUN, limits=NO_LIMITS)
+        assert blocked.status == "skipped"
+        assert blocked.detail == OUT_OF_SCOPE_DETAIL
+
+        allowed = adapter.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
+        assert allowed.status == "submitted_live"
+        assert [spec.symbol for spec in broker.submitted_specs] == ["AMD"]
+
+
+# ---------------------------------------------------------------------------
 # the MANDATE: real money may not dispatch with an unset mandatory breaker --
 # even when all three locks pass and every Limits cap is set.
 # ---------------------------------------------------------------------------

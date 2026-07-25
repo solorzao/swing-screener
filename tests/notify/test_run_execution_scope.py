@@ -13,6 +13,13 @@ trade only what the operator scopes in. Proven here, end to end through
 * an all-garbage value -> the EMPTY scope: NOTHING dispatches, both intents are
   ticketed (fail-closed -- garbage never widens scope).
 
+Task 22 adds the cockpit SUBTRACTION beneath that ceiling (effective = ceiling -
+``agent_guardrails.disabled_play_types``) and this file proves the dispatch filter
+INHERITS it with zero code changes -- it consults the same
+``effective_execution_scope`` seam -- plus the tighten-only invariant itself: no
+value of the disabled set can ever make the effective scope a superset of the
+ceiling.
+
 All offline: conviction analyzer, chart loader, fundamentals/news, market regime
 and the execution adapter are injected (the test_run_execution.py fixtures, plus a
 seeded confirmed REVERSAL signal so the run builds one intent per play type).
@@ -178,14 +185,103 @@ def test_all_garbage_scope_dispatches_nothing_and_tickets_both(tmp_path, monkeyp
     assert body.count(run.OUT_OF_SCOPE_DETAIL) == 2  # one honest ticket per intent
 
 
-def test_effective_execution_scope_is_the_env_ceiling(monkeypatch):
-    """The Task-22 seam: today purely the env ceiling; ``session`` is REQUIRED
-    keyword-only (unused today) so no future caller can silently skip Task 22's
-    cockpit subtraction by omitting it."""
+def test_effective_execution_scope_is_the_env_ceiling(monkeypatch, tmp_path):
+    """The seam with NOTHING disabled: purely the env ceiling, byte-identical to the
+    pre-Task-22 behavior. ``session`` is REQUIRED keyword-only -- that is what stops a
+    call site from silently skipping the cockpit subtraction."""
+    url = f"sqlite:///{tmp_path / 'seam.sqlite'}"
+    with Session(get_engine(url)) as session:
+        monkeypatch.setenv("SWING_EXECUTE_PLAY_TYPES", "reversal")
+        assert guardrails_repo.effective_execution_scope(
+            load_settings(), session=session) == frozenset({"reversal"})
+        monkeypatch.delenv("SWING_EXECUTE_PLAY_TYPES", raising=False)
+        # unset ceiling AND nothing disabled = genuinely unscoped (None), not a
+        # materialised copy of today's vocabulary.
+        assert guardrails_repo.effective_execution_scope(
+            load_settings(), session=session) is None
+
+
+def test_scope_subtraction_disables_a_play_type_end_to_end(tmp_path, monkeypatch):
+    """ENFORCEMENT INHERITANCE, proven rather than asserted: the dispatch filter is
+    NOT changed by Task 22 -- it calls the seam, so a cockpit-disabled play type
+    stops dispatching with zero edits to the loop."""
+    _scoped_env(monkeypatch, "continuation,reversal")   # both inside the env ceiling
+    url = f"sqlite:///{tmp_path / 'subtract.sqlite'}"
+    _seed_both(url)
+    with Session(get_engine(url)) as s:
+        guardrails_repo.set_disabled_play_types(
+            s, disabled={"continuation"}, source="cockpit")
+    adapter = _FakeAdapter()
+    sent = []
+
+    run.send_digest(**_insight_kwargs(
+        tmp_path, url, smtp_send=lambda **k: sent.append(k), execution_adapter=adapter))
+
+    # the cockpit subtraction alone took continuation out: only XOM (reversal) went.
+    assert [i.ticker for i in adapter.calls] == ["XOM"]
+    assert run.OUT_OF_SCOPE_DETAIL in sent[-1]["text"].lower()
+
+
+def test_scope_re_enable_returns_to_the_ceiling(tmp_path, monkeypatch):
+    """Re-enabling (an EMPTY disabled set) restores dispatch -- up to the ceiling."""
+    _scoped_env(monkeypatch, "continuation,reversal")
+    url = f"sqlite:///{tmp_path / 'reenable.sqlite'}"
+    _seed_both(url)
+    with Session(get_engine(url)) as s:
+        guardrails_repo.set_disabled_play_types(
+            s, disabled={"continuation"}, source="cockpit")
+        guardrails_repo.set_disabled_play_types(s, disabled=set(), source="cockpit")
+    adapter = _FakeAdapter()
+    sent = []
+
+    run.send_digest(**_insight_kwargs(
+        tmp_path, url, smtp_send=lambda **k: sent.append(k), execution_adapter=adapter))
+
+    assert [i.ticker for i in adapter.calls] == ["AMD", "XOM"]
+    assert run.OUT_OF_SCOPE_DETAIL not in sent[-1]["text"].lower()
+
+
+def test_scope_subtraction_below_an_unset_ceiling(tmp_path, monkeypatch):
+    """The tighten-BELOW-unset-ceiling case: with no env ceiling at all the board can
+    still subtract, so disabling 'reversal' leaves continuation the only flow."""
+    _scoped_env(monkeypatch, None)
+    url = f"sqlite:///{tmp_path / 'unset_ceiling.sqlite'}"
+    _seed_both(url)
+    with Session(get_engine(url)) as s:
+        guardrails_repo.set_disabled_play_types(
+            s, disabled={"reversal"}, source="cockpit")
+    adapter = _FakeAdapter()
+    sent = []
+
+    run.send_digest(**_insight_kwargs(
+        tmp_path, url, smtp_send=lambda **k: sent.append(k), execution_adapter=adapter))
+
+    assert [i.ticker for i in adapter.calls] == ["AMD"]
+    assert run.OUT_OF_SCOPE_DETAIL in sent[-1]["text"].lower()
+
+
+def test_subtraction_can_never_widen_past_the_ceiling(monkeypatch, tmp_path):
+    """The tighten-only INVARIANT, in the one direction that matters: no value of
+    ``disabled_play_types`` can make the effective scope a SUPERSET of the ceiling.
+
+    Enumerated over every subset of the vocabulary (including the empty set, i.e.
+    "re-enable everything"): the union direction is structurally impossible, because
+    the seam only ever subtracts. Nothing the cockpit can write arms a play type the
+    env ceremony did not already allow."""
+    from itertools import combinations
+
+    from swing_screener.pipeline.proposed import PLAY_TYPES
+
     monkeypatch.setenv("SWING_EXECUTE_PLAY_TYPES", "reversal")
-    s = load_settings()
-    assert guardrails_repo.effective_execution_scope(
-        s, session=None) == frozenset({"reversal"})
-    monkeypatch.delenv("SWING_EXECUTE_PLAY_TYPES", raising=False)
-    assert guardrails_repo.effective_execution_scope(
-        load_settings(), session=None) is None
+    ceiling = frozenset({"reversal"})
+    url = f"sqlite:///{tmp_path / 'invariant.sqlite'}"
+    with Session(get_engine(url)) as s:
+        for size in range(len(PLAY_TYPES) + 1):
+            for combo in combinations(PLAY_TYPES, size):
+                guardrails_repo.set_disabled_play_types(
+                    s, disabled=set(combo), source="cockpit")
+                effective = guardrails_repo.effective_execution_scope(
+                    load_settings(), session=s)
+                assert effective is not None
+                assert effective <= ceiling          # never a superset, ever
+                assert "continuation" not in effective   # the ceiling still holds
