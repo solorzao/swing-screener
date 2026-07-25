@@ -639,14 +639,16 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         # warning -- accepted: an import failure is a structural bug the
         # fresh-interpreter canary catches in CI, not a runtime condition.
         #
-        # The consult's verdict, needed by the stop-protection re-assert below.
-        # Starts as a NON-None sentinel so a consult that RAISED skips the
-        # re-assert: what the failed consult did or did not sweep is unknown,
-        # and a DB-side failure would also poison the recorded-level lookup the
-        # re-assert copies its levels from (every position would be misreported
-        # UNPROTECTED because the ticket read failed, not because no level
-        # exists). The skip is logged with the failure below.
-        blocked: str | None = "unknown"
+        # The consult's verdict + whether it completed at all -- both read by the
+        # stop-protection re-assert below. ``consulted`` stays False when the
+        # consult RAISED, which skips the re-assert: what a failed consult did or
+        # did not sweep is unknown, and a DB-side failure would also poison the
+        # recorded-level lookup the re-assert copies its levels from (every
+        # position would then be misreported UNPROTECTED because the ticket read
+        # failed, not because no level exists). The skip is logged with the
+        # failure below.
+        blocked: str | None = None
+        consulted = False
         try:
             # The shared consult (Task 11): resume -> load -> evaluate-unless-
             # tripped -> respond, one definition for all three cycles. `broker`
@@ -661,6 +663,7 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
             # closure, never at module import.
             blocked = gpipe.consult(s, run_date=today, source="screen", broker=broker,
                                     emailer=_screen_trip_emailer(s, run_date=today))
+            consulted = True
         except Exception:  # noqa: BLE001 -- guardrails must never block the screen
             log.warning("evening-screen guardrails evaluation failed; tonight's "
                         "stop-protection re-assert is skipped (the book's sweep "
@@ -690,14 +693,19 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         # trip/halt/kill RESPONSE to a brake, not a nightly invariant, and a
         # healthy book's working entries must survive the evening screen.
         #
-        # THE ONE-PASS RULE: run this ONLY when the consult returned None. Any
-        # other outcome -- 'tripped' (respond_to_trip / resume_incomplete_sweep
-        # just ran the sweep, which ends in the SAME ensure pass), 'halted' (the
-        # dispatch loop's manual-HALT sweep owns it), or a consult that raised
-        # (unknown) -- means an ensure pass is already accounted for this cycle.
-        # A second pass would be harmless at the venue (the re-list before each
-        # submit sees the fresh stop and skips) but it double-logs and muddies
-        # the conduct record.
+        # THE ONE-PASS RULE: skip ONLY when the consult returned 'tripped' -- its
+        # respond_to_trip / resume_incomplete_sweep path just ran a sweep, which
+        # ENDS in the same ensure pass -- or when the consult RAISED (above:
+        # what it swept is unknown). A second pass would be harmless at the venue
+        # (the re-list before each submit sees the fresh stop and skips) but it
+        # double-logs and muddies the conduct record.
+        # 'halted' DOES re-assert (2026-07-25 ruling): the manual-HALT sweep
+        # lives in the MORNING digest's dispatch loop, and the screen dispatches
+        # nothing -- so a halted evening sweeps NOTHING here, and a stop leg
+        # dying tonight would leave the halted book naked until the digest. "The
+        # operator is watching" does not hold overnight, and the halt brake is
+        # about not opening NEW risk, never about abandoning the protection on
+        # what is already on.
         #
         # NO DisarmEvent is written: nothing was disarmed. This is an invariant
         # REPAIR, and the restored/unprotected log lines ARE its record --
@@ -710,7 +718,7 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         # Swallow-everything + rollback-first, like the guardrails block above:
         # the screen's core job -- persisting the day's signals -- must never be
         # blocked by protection machinery.
-        if blocked is None and broker is not None:
+        if consulted and blocked != "tripped" and broker is not None:
             try:
                 if repo.load_open_live_trades(s):
                     restored, unprotected = ensure_stop_protection(

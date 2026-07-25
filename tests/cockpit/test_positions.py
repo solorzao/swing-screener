@@ -152,6 +152,29 @@ def test_positions_live_rows_r_only_vs_shares_join(tmp_path: Path) -> None:
     assert pend["last_close"] == 52.0
 
 
+def test_positions_live_join_reads_the_side_the_adapters_write(tmp_path: Path) -> None:
+    """THE production-shape pin: a real live ticket carries ``side="long"``.
+
+    Every ExecutionLog writer stamps ``intent.side``, and ``OrderIntent.side`` is
+    "long"; "buy" is the VENUE's word (``BrokerOrderSpec.side``) and reaches no DB
+    row. The join used to match "buy" alone, so on REAL data the live tile showed no
+    size and no dollar P/L -- invisible because the fixtures above write the venue
+    word. Both vocabularies now join (``repo.ENTRY_SIDES``), and a sell-side ticket
+    is still excluded: an EXIT's shares must never masquerade as position size."""
+    client, engine = _positions_client(tmp_path, {"PROD": 52.0})
+    with Session(engine) as s:
+        s.add(_live_paper(ticker="PROD"))
+        s.add(_exec_log(ticker="PROD", account="live", mode="live", shares=7,
+                        side="long", status="filled_live"))
+        s.add(_exec_log(ticker="PROD", account="live", mode="live", shares=42,
+                        side="sell", status="submitted_live"))  # the exit, newest
+        s.commit()
+
+    row = {r["ticker"]: r for r in client.get("/api/positions").json()["open"]}["PROD"]
+    assert row["size"] == 7.0                                    # the long ENTRY ticket
+    assert row["pl"]["unrealized_pl"] == pytest.approx(14.0)     # (52-50)*7
+
+
 def test_positions_bracket_lamp_per_kind(tmp_path: Path) -> None:
     """Snapshot present: a venue sell stop/stop_limit for the symbol reads 'armed';
     otherwise BOTH kinds read 'db-only' (their stop is a NOT NULL DB column) --

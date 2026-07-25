@@ -237,6 +237,18 @@ def _venue_position(broker: FakeBroker, symbol: str, *, qty: int = 10,
     broker.fill(order.broker_order_id, price=price)
 
 
+def _live_ticket(session, ticker: str, *, stop: float = 45.0) -> None:
+    """The ExecutionLog ticket a restore copies its level from -- written with the side
+    the ADAPTERS write (``intent.side == "long"``), not the venue's "buy", so these
+    tests exercise the production row shape."""
+    repo.add_execution_log(
+        session, created_date=SUBMIT, ticker=ticker, timeframe="1d",
+        play_type="continuation", run_date=SUBMIT, account="live", mode="live",
+        side="long", limit_price=50.0, shares=10, stop=stop, target=60.0,
+        risk_dollars=50.0, notional=500.0, status="filled_live", detail="",
+        idempotency_key=f"{ticker}-live")
+
+
 def _closed_live_trade(*, ticker: str, exit_date: date) -> PaperTrade:
     """One CLOSED live trade with a broker-stamped qty: (44 - 50) * 10 = -$60 realized
     -- enough to breach a $50 daily-loss cap and trip the guardrails."""
@@ -371,12 +383,7 @@ def test_reassert_skipped_when_consult_swept(tmp_path, bars, monkeypatch):
         s.add(_closed_live_trade(ticker="LOSE", exit_date=TODAY))   # -$60 realized
         s.commit()
         gr.edit_limits(s, source="test", max_daily_loss_usd=50.0)   # breached
-        repo.add_execution_log(
-            s, created_date=SUBMIT, ticker="XYZ", timeframe="1d",
-            play_type="continuation", run_date=SUBMIT, account="live", mode="live",
-            side="long", limit_price=50.0, shares=10, stop=45.0, target=60.0,
-            risk_dollars=50.0, notional=500.0, status="filled_live", detail="",
-            idempotency_key="xyz-live")
+        _live_ticket(s, "XYZ")
 
     run.run_screen(today=TODAY, broker=broker, **_kwargs(tmp_path, url))
 
@@ -388,6 +395,42 @@ def test_reassert_skipped_when_consult_swept(tmp_path, bars, monkeypatch):
     assert passes == [f"guardrail-{trip_id}"]
     assert [s.client_order_id for s in _restore_specs(broker)] == [
         f"disarm-stop-XYZ-guardrail-{trip_id}"]
+
+
+def test_halted_book_still_gets_the_evening_re_assert(tmp_path, bars, monkeypatch):
+    """A manual HALT does NOT excuse the invariant (2026-07-25 ruling): the halt
+    sweep lives in the MORNING digest's dispatch loop and the screen dispatches
+    nothing, so a halted evening sweeps nothing -- leaving a stop leg that died today
+    unrestored until tomorrow's digest. So 'halted' re-asserts: still exactly ONE
+    ensure pass, but this time it is the SCREEN's."""
+    monkeypatch.delenv("SWING_EXECUTION_MODE", raising=False)
+    monkeypatch.delenv("DIGEST_TO", raising=False)
+    monkeypatch.setattr(run, "_fetch_all_timeframes", lambda *a, **k: {})
+    passes = _count_ensure_passes(monkeypatch)
+
+    url = f"sqlite:///{tmp_path / 'reasserthalted.sqlite'}"
+    broker = FakeBroker(real_money=False)
+    _venue_position(broker, "XYZ")             # naked: the stop leg died at the close
+    entry = broker.submit_order(BrokerOrderSpec(
+        client_order_id="resting-1", symbol="TSLA", side="buy", qty=5,
+        order_type="limit", limit_price=200.0, time_in_force="day"))
+    with Session(get_engine(url)) as s:
+        s.add(_open_live_trade(ticker="XYZ"))
+        s.commit()
+        _live_ticket(s, "XYZ")
+        assert gr.halt(s, source="test") is True   # the operator's manual brake
+
+    run.run_screen(today=TODAY, broker=broker, **_kwargs(tmp_path, url))
+
+    with Session(get_engine(url)) as s:
+        assert gr.load_guardrails(s).state == "halted"   # still halted, never tripped
+    assert passes == [f"screen-{TODAY:%Y%m%d}"]          # the SCREEN's single pass
+    assert len(_restore_specs(broker)) == 1
+    spec = _restore_specs(broker)[0]
+    assert (spec.symbol, spec.stop_price, spec.time_in_force) == ("XYZ", 45.0, "gtc")
+    # ...and the re-assert is NOT a sweep: the resting entry keeps working. Pulling it
+    # is the dispatch loop's halt RESPONSE, not this invariant's business.
+    assert broker.get_order(entry.broker_order_id).status == "new"
 
 
 def test_reassert_failure_never_blocks_the_screen(tmp_path, bars, monkeypatch, caplog):

@@ -451,15 +451,19 @@ def execution_logs_for_day(
     return list(session.scalars(stmt))
 
 
-#: The ENTRY side of a long ticket, in BOTH vocabularies. The adapters stamp the
-#: INTENT's side -- ``OrderIntent.side``, i.e. ``"long"``, the only value any writer
-#: passes -- while the venue's ``BrokerOrderSpec`` carries ``"buy"``. Matching only
-#: "buy" made ``latest_recorded_stop`` return None for EVERY real live ticket, so every
-#: restore path (the disarm CLI, the kill switch, the halt/trip sweeps, the cockpit, and
-#: the evening re-assert) would have reported live positions UNPROTECTED and restored
-#: nothing -- silently, because the fixtures wrote the venue word (2026-07-25, probed
-#: against a real LiveAdapter ticket). Both are accepted rather than rewriting history.
-_ENTRY_SIDES = ("buy", "long")
+#: The ENTRY side of a long ticket, in BOTH vocabularies -- the one definition every
+#: entry-ticket lookup filters on (this module's ``latest_recorded_stop`` and the
+#: cockpit's ``_live_shares`` position-size join, which must never drift apart).
+#: The adapters stamp the INTENT's side -- ``OrderIntent.side``, i.e. ``"long"``, the
+#: only value any writer passes -- while the venue's ``BrokerOrderSpec`` carries
+#: ``"buy"``. Matching only "buy" made both lookups return None for EVERY real live
+#: ticket: every restore path (the disarm CLI, the kill switch, the halt/trip sweeps,
+#: the cockpit, the evening re-assert) reported live positions UNPROTECTED and restored
+#: nothing, and the cockpit's live tile showed no size or dollar P/L -- silently,
+#: because the fixtures wrote the venue word (2026-07-25, probed against a real
+#: LiveAdapter ticket). Both words are accepted rather than rewriting history.
+#: A SELL-side live ticket is an EXIT and is still excluded by construction.
+ENTRY_SIDES = ("buy", "long")
 
 
 def latest_recorded_stop(session: Session, ticker: str) -> float | None:
@@ -474,7 +478,7 @@ def latest_recorded_stop(session: Session, ticker: str) -> float | None:
         select(ExecutionLog.stop)
         .where(
             ExecutionLog.ticker == ticker,
-            ExecutionLog.side.in_(_ENTRY_SIDES),
+            ExecutionLog.side.in_(ENTRY_SIDES),
             ExecutionLog.status.in_(("submitted_live", "filled_live")),
         )
         .order_by(ExecutionLog.id.desc())

@@ -30,6 +30,7 @@ from swing_screener.db.models import (
     Trade,
 )
 from swing_screener.db.repo import (
+    ENTRY_SIDES,
     AlreadyClosedError,
     add_trade,
     close_trade_with_event,
@@ -595,18 +596,20 @@ def _real_position_row(t: Trade, price: float | None, *,
 
 
 def _live_shares(session: Session, ticker: str) -> int | None:
-    """The NEWEST live BUY ticket's share count for ``ticker``, or None -- the spec'd
+    """The NEWEST live ENTRY ticket's share count for ``ticker``, or None -- the spec'd
     join for a live row's missing size column. Only ``submitted_live`` /
     ``filled_live`` rows count (the statuses that created venue exposure --
-    canceled/rejected tickets never did), and only ``side == "buy"`` (a sell-side
-    live ticket is an EXIT; its shares must never masquerade as position size);
-    newest-by-id mirrors ``repo.latest_recorded_stop``'s ordering AND filters.
+    canceled/rejected tickets never did), and only the ENTRY side (a sell-side live
+    ticket is an EXIT; its shares must never masquerade as position size);
+    newest-by-id mirrors ``repo.latest_recorded_stop``'s ordering AND filters --
+    literally, via the shared ``repo.ENTRY_SIDES``, whose docstring records why
+    matching the venue's "buy" alone made this join dead on production rows.
     One query per open live row; batch (windowed IN) if the live book grows."""
     stmt = (
         select(ExecutionLog.shares)
         .where(
             ExecutionLog.ticker == ticker,
-            ExecutionLog.side == "buy",
+            ExecutionLog.side.in_(ENTRY_SIDES),
             ExecutionLog.status.in_(("submitted_live", "filled_live")),
         )
         .order_by(ExecutionLog.id.desc())
