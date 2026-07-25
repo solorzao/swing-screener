@@ -15,6 +15,30 @@ orders under no mandate) are breaches here.
 
 Read-only oversight: it writes only its OWN audit rows; it never moves money, changes
 config, or disarms. Same code-owns-the-numbers firewall (findings_json authoritative).
+
+FINDINGS SCHEMA (the rendering contract -- ``findings_json`` is authoritative, the
+narrative advisory, so a surface reads THIS, never the prose). A ``kind='weekly'`` row
+carries ``{compliance: {...}, anomaly: {...}}`` (the two graders' dataclasses); a
+``kind='breach'`` row carries exactly ONE of four shapes, told apart by which key is
+present:
+
+* ``{"cap_breach": {date, account, notional, risk_dollars, notional_cap, day_r,
+  loss_cap_r}}`` -- a hard-limit day.
+* ``{"disarm_day": iso, "disarms": [{at, reason, orders_cancelled}]}`` -- unexplained
+  disarms (sanctioned guardrail sweeps are filtered out; see ``run_breach_scan``).
+* ``{"guardrail_breach": {...}}`` -- the four guardrail conduct rules, whose STABLE
+  CORE is ``{rule, day, detail}`` (``rule`` in ``submit-while-tripped`` |
+  ``unmailed-trip`` | ``stuck-sweep`` | ``unset-mandate``; ``day`` the ISO day of
+  record; ``detail`` a code-owned sentence). Optional ``caveat`` states what the rule
+  cannot prove and MUST be surfaced wherever the finding is (rules 1 and 4 carry one).
+  Per-rule extras: rule 1 ``n_live_counting, affected_run_dates[], trip_id, trip_day,
+  bridge_days, bridge_through, cleared_at|null``; rule 2 ``n_episodes, trips[{id, at,
+  breaker, source}]``; rule 3 ``trip_id, sweep_state, trip_reason``; rule 4
+  ``n_live_counting, missing_breakers[]``.
+* nothing recognised -> the narrative degrades to "Hard breach recorded; see findings."
+
+Treat every key beyond the stable core as OPTIONAL when rendering: a row written by an
+older revision will not have the newer ones, and these rows are permanent.
 """
 
 from __future__ import annotations
@@ -29,7 +53,11 @@ from typing import TYPE_CHECKING
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from swing_screener.db.guardrails_repo import GuardrailsState, peek_guardrails
+from swing_screener.db.guardrails_repo import (
+    GuardrailsState,
+    missing_mandate_breakers,
+    peek_guardrails,
+)
 from swing_screener.db.models import (
     AgentGuardrailEvent,
     DisarmEvent,
@@ -291,12 +319,18 @@ def _guardrail_breaches(
     the brake WRONG:
 
     1. ``guardrail-submit-while-tripped:{day}`` (warn) -- counting live orders whose
-       trading day of record meets a trip still in force (the run_date bridge).
+       trading day of record meets a trip still in force (the run_date bridge). ONE row
+       per in-force TRIP, keyed on the earliest run_date it covers.
     2. ``guardrail-unmailed-trip:{day}`` (alert) -- a trip EPISODE the operator was
-       never mailed about.
+       never mailed about, keyed on the episode's first trip.
     3. ``guardrail-stuck-sweep:{day}`` (alert) -- a trip's sweep unfinished for a day.
-    4. ``guardrail-unset-mandate:{day}`` (warn) -- live orders with no mandatory
-       breakers set.
+    4. ``guardrail-unset-mandate:{day}`` (warn) -- live orders while any mandatory
+       breaker is unset.
+
+    Rules 1 and 2 group by the thing that went wrong (the trip, the episode) rather
+    than by the day it touched, so ONE failure is ONE permanent row however many days
+    or scans it spans. Rule 4 stays per-day: the mandate is read at scan time and each
+    trading day of record is its own statement about that day's live orders.
 
     DAY KEY: the trading day of record. Execution rows key on ``run_date`` (the digest
     stamps ``repo.latest_run_date`` there and the breakers count on it -- the Task-11
@@ -306,12 +340,18 @@ def _guardrail_breaches(
 
     READ-ONLY: the brake state is ``peek_guardrails`` (never ``load_guardrails``) --
     the Auditor must not seed the agent_guardrails row it is auditing.
+
+    ONE TIMELINE, read once (``_load_timeline``) and shared by every rule that walks
+    it: the per-rule queries this replaces re-read the same append-only table up to a
+    dozen times per scan AND could order it differently, which is how a 'clear' once
+    counted as following a trip it actually preceded.
     """
     g = peek_guardrails(session)
+    timeline = _load_timeline(session)
     live_days = _live_counting_days(session, day_from=day_from, day_to=day_to)
     return [
-        *_submit_while_tripped(session, live_days=live_days),
-        *_unmailed_trips(session, day_from=day_from, day_to=day_to),
+        *_submit_while_tripped(timeline, live_days=live_days),
+        *_unmailed_trips(session, timeline, day_from=day_from, day_to=day_to),
         *_stuck_sweep(session, g=g, now=now),
         *_unset_mandate(g=g, live_days=live_days),
     ]
@@ -337,49 +377,95 @@ def _live_counting_days(
     return {day: int(n) for day, n in rows}
 
 
-def _trip_in_force_through(
-    session: Session, through: date
-) -> tuple[int, datetime] | None:
-    """The ``(id, created_at)`` of a trip still IN FORCE at the end of ``through``.
+def _naive(dt: datetime) -> datetime:
+    """``dt`` as a naive UTC datetime, so timeline walks can never raise mid-scan.
 
-    Walks the trip/clear timeline in order and returns the last trip no later 'clear'
-    released (None when the brake was free). Reconstructed from events rather than read
-    off the guardrails row because the row carries only the state NOW, while a breach
-    scan grades days that have already ended. 'halt' is deliberately not consulted: it
-    cannot release a trip (``halt()`` requires state 'ok', and a trip overwrites
-    'halted'), so it can neither set nor clear trippedness."""
-    in_force: tuple[int, datetime] | None = None
-    for event_id, created_at, kind in session.execute(
-        select(AgentGuardrailEvent.id, AgentGuardrailEvent.created_at,
-               AgentGuardrailEvent.kind)
-        .where(
-            AgentGuardrailEvent.kind.in_(("trip", "clear")),
-            AgentGuardrailEvent.created_at <= datetime.combine(through, time.max),
+    Both backends hand these timestamps back WITHOUT tzinfo (sqlite's DATETIME string
+    format and SQL Server's DATETIME column both drop the offset the writer passed),
+    and the horizons this module builds with ``datetime.combine`` are naive too. This
+    normalises anyway: an aware value -- a future backend, a caller's ``now`` -- is
+    converted to UTC and stripped rather than raising TypeError against a naive bound.
+    """
+    return dt.astimezone(UTC).replace(tzinfo=None) if dt.tzinfo is not None else dt
+
+
+@dataclass(frozen=True)
+class _GuardrailEvent:
+    """One state-moving guardrail event off the shared timeline: its id (a trip's id IS
+    its alert_key), when it landed, and which breaker/emitter recorded it."""
+
+    id: int
+    created_at: datetime
+    kind: str
+    breaker: str
+    source: str
+
+
+def _load_timeline(session: Session) -> list[_GuardrailEvent]:
+    """The trip/clear history, ONCE per scan, in ONE canonical order.
+
+    Every rule that reasons about brake state walks this list rather than issuing its
+    own query: one read instead of a dozen over the same append-only table, and -- the
+    correctness half -- ONE ordering, so "after" means the same thing to every rule.
+    Ordered by ``(created_at, id)``: the append sequence breaks ties when two processes
+    stamp the same instant. 'halt' is deliberately excluded: it can neither set nor
+    release trippedness (``halt()`` requires state 'ok' and a trip overwrites 'halted'),
+    so including it could only corrupt the walk. Unbounded by design -- an open episode
+    routinely starts before the scan window, and this table is low volume."""
+    return [
+        _GuardrailEvent(id=event_id, created_at=created_at, kind=kind,
+                        breaker=breaker, source=source)
+        for event_id, created_at, kind, breaker, source in session.execute(
+            select(AgentGuardrailEvent.id, AgentGuardrailEvent.created_at,
+                   AgentGuardrailEvent.kind, AgentGuardrailEvent.breaker,
+                   AgentGuardrailEvent.source)
+            .where(AgentGuardrailEvent.kind.in_(("trip", "clear")))
+            .order_by(AgentGuardrailEvent.created_at, AgentGuardrailEvent.id)
         )
-        .order_by(AgentGuardrailEvent.created_at, AgentGuardrailEvent.id)
-    ):
-        in_force = (event_id, created_at) if kind == "trip" else None
+    ]
+
+
+def _trip_in_force_through(
+    timeline: list[_GuardrailEvent], through: date
+) -> _GuardrailEvent | None:
+    """The trip still IN FORCE at the end of ``through``, or None if the brake was free.
+
+    Walks the shared timeline up to that instant and keeps the last trip no later
+    'clear' released. Reconstructed from events rather than read off the guardrails row
+    because the row carries only the state NOW, while a breach scan grades days that
+    have already ended."""
+    horizon = datetime.combine(through, time.max)
+    in_force: _GuardrailEvent | None = None
+    for event in timeline:
+        if _naive(event.created_at) > horizon:
+            break  # the timeline is ordered; everything past here is later still
+        in_force = event if event.kind == "trip" else None
     return in_force
 
 
-def _cleared_at(session: Session, *, trip_id: int) -> datetime | None:
-    """When the named trip was released, if it ever was -- over the FULL timeline.
+def _cleared_at(
+    timeline: list[_GuardrailEvent], trip: _GuardrailEvent
+) -> datetime | None:
+    """When ``trip`` was released, if it had been by scan time -- FULL timeline.
 
-    Deliberately UNBOUNDED, unlike ``_trip_in_force_through``'s bridge-window walk: the
+    Deliberately unbounded, unlike ``_trip_in_force_through``'s bridge-window walk: the
     breach row it annotates is PERMANENT, so it must not imply "never cleared" when all
-    it read was a four-day window. A clear that landed after the window is exactly the
-    context an operator needs when they open the row later. Ordered by id (the append
-    sequence), so the FIRST clear after the trip is its release."""
-    return session.scalars(
-        select(AgentGuardrailEvent.created_at)
-        .where(AgentGuardrailEvent.kind == "clear", AgentGuardrailEvent.id > trip_id)
-        .order_by(AgentGuardrailEvent.id)
-        .limit(1)
-    ).first()
+    that was read was a four-day window. "After" means after in the timeline's ONE
+    ordering (``created_at`` then id), not "a bigger id" -- two processes clock-skewed
+    by a second could otherwise make a clear look like it preceded the trip it
+    released. None means no clear had landed by scan time; it is a write-once snapshot,
+    not a claim that none ever will."""
+    seen = False
+    for event in timeline:
+        if event.id == trip.id:
+            seen = True
+        elif seen and event.kind == "clear":
+            return event.created_at
+    return None
 
 
 def _submit_while_tripped(
-    session: Session, *, live_days: dict[date, int]
+    timeline: list[_GuardrailEvent], *, live_days: dict[date, int]
 ) -> list[_GuardrailBreach]:
     """RULE 1 (warn): counting live orders whose run_date meets a trip still in force.
 
@@ -409,31 +495,49 @@ def _submit_while_tripped(
     skipped row (counted as expected conduct), so a day of correct braking shows clamps
     and NO counting live rows.
     """
-    out: list[_GuardrailBreach] = []
+    # GROUP BY TRIP, not by day: one trip is ONE conduct failure however many trading
+    # days of record its bridge covers, so a trip spanning a Friday and the Monday it
+    # was dispatched into files one permanent row, not one per day (the same cry-wolf
+    # the unmailed rule avoids by keying on the episode).
+    by_trip: dict[int, _GuardrailEvent] = {}
+    days_by_trip: dict[int, list[date]] = {}
     for day in sorted(live_days):
-        bridge_end = day + timedelta(days=_RUN_DATE_BRIDGE_DAYS)
-        in_force = _trip_in_force_through(session, bridge_end)
+        in_force = _trip_in_force_through(
+            timeline, day + timedelta(days=_RUN_DATE_BRIDGE_DAYS))
         if in_force is None:
             continue
-        trip_id, trip_at = in_force
-        n = live_days[day]
-        # what the WINDOW saw is "no clear through bridge_end"; what is TRUE at scan
-        # time may be a later clear. Both go on the row -- the detail claims only the
-        # former, ``cleared_at`` carries the latter (None when genuinely uncleared).
-        cleared = _cleared_at(session, trip_id=trip_id)
+        by_trip[in_force.id] = in_force
+        days_by_trip.setdefault(in_force.id, []).append(day)
+
+    out: list[_GuardrailBreach] = []
+    for trip_id, days in days_by_trip.items():
+        trip = by_trip[trip_id]
+        n = sum(live_days[day] for day in days)
+        # the FURTHEST point the in-force walk verified for this trip: the walk is
+        # monotone (no clear through the latest day's bridge end implies none through
+        # any earlier one), so the latest bridge end is what the detail may claim.
+        bridge_through = max(days) + timedelta(days=_RUN_DATE_BRIDGE_DAYS)
+        # what the WINDOW saw is "no clear through bridge_through"; what is TRUE at
+        # scan time may be a later clear. Both go on the row -- the detail claims only
+        # the former, ``cleared_at`` carries the latter.
+        cleared = _cleared_at(timeline, trip)
         out.append(_GuardrailBreach(
-            day=day, key=f"guardrail-submit-while-tripped:{day.isoformat()}",
+            day=min(days),  # keyed on the EARLIEST affected trading day of record
+            key=f"guardrail-submit-while-tripped:{min(days).isoformat()}",
             severity="warn",
             findings={"guardrail_breach": {
-                "rule": "submit-while-tripped", "day": day.isoformat(),
-                "n_live_counting": n, "trip_id": trip_id,
-                "trip_day": trip_at.date().isoformat(),
+                "rule": "submit-while-tripped", "day": min(days).isoformat(),
+                "n_live_counting": n,
+                "affected_run_dates": [d.isoformat() for d in days],
+                "trip_id": trip_id, "trip_day": trip.created_at.date().isoformat(),
                 "bridge_days": _RUN_DATE_BRIDGE_DAYS,
+                "bridge_through": bridge_through.isoformat(),
                 "cleared_at": cleared.isoformat() if cleared is not None else None,
-                "detail": (f"{n} counting live order(s) stamped for this trading day "
-                           f"with trip {trip_id} ({trip_at.date().isoformat()}) in "
-                           f"force during the bridge window, not cleared within it "
-                           f"(through {bridge_end.isoformat()})"),
+                "detail": (f"{n} counting live order(s) stamped across "
+                           f"{len(days)} trading day(s) of record with trip {trip_id} "
+                           f"({trip.created_at.date().isoformat()}) in force during "
+                           f"the bridge window, not cleared within it (through "
+                           f"{bridge_through.isoformat()})"),
                 "caveat": ("run_date is the trading day of record, not a wall clock, "
                            "and execution rows carry no submit time -- the auditor "
                            "cannot prove these orders were submitted after the trip "
@@ -443,27 +547,16 @@ def _submit_while_tripped(
 
 
 @dataclass(frozen=True)
-class _TripEvent:
-    """One appended trip event: its id (which IS the alert_key), when it landed, and
-    which breaker/emitter saw the breach."""
-
-    id: int
-    created_at: datetime
-    breaker: str
-    source: str
-
-
-@dataclass(frozen=True)
 class _TripEpisode:
     """One breach the operator has not released yet -- every trip event the racing
     processes appended for it, plus whether a 'clear' closed it."""
 
-    trips: list[_TripEvent]
+    trips: list[_GuardrailEvent]
     closed_by_clear: bool
 
 
-def _trip_episodes(session: Session) -> list[_TripEpisode]:
-    """The trip timeline as EPISODES.
+def _trip_episodes(timeline: list[_GuardrailEvent]) -> list[_TripEpisode]:
+    """The shared timeline as EPISODES.
 
     An episode is a maximal run of ``kind='trip'`` events with no intervening
     ``kind='clear'`` -- i.e. ONE breach the operator has not yet released, however many
@@ -473,34 +566,23 @@ def _trip_episodes(session: Session) -> list[_TripEpisode]:
     screen, exitcheck, cockpit) leaves a trip event, but only the WINNER runs the
     response, so only the winner's id can ever carry an alert. Grading per EVENT would
     permanently flag the losers, whose silence is by design.
-
-    Reads the whole timeline, unbounded: an episode routinely starts before the scan
-    window (the trip that is still open), and ``agent_guardrail_events`` is a
-    low-volume append-only table -- two kinds of it is a small scan.
     """
     episodes: list[_TripEpisode] = []
-    current: list[_TripEvent] = []
-    for event_id, created_at, kind, breaker, source in session.execute(
-        select(AgentGuardrailEvent.id, AgentGuardrailEvent.created_at,
-               AgentGuardrailEvent.kind, AgentGuardrailEvent.breaker,
-               AgentGuardrailEvent.source)
-        .where(AgentGuardrailEvent.kind.in_(("trip", "clear")))
-        .order_by(AgentGuardrailEvent.created_at, AgentGuardrailEvent.id)
-    ):
-        if kind == "clear":
+    current: list[_GuardrailEvent] = []
+    for event in timeline:
+        if event.kind == "clear":
             if current:
                 episodes.append(_TripEpisode(trips=current, closed_by_clear=True))
                 current = []
         else:
-            current.append(_TripEvent(id=event_id, created_at=created_at,
-                                      breaker=breaker, source=source))
+            current.append(event)
     if current:
         episodes.append(_TripEpisode(trips=current, closed_by_clear=False))
     return episodes
 
 
 def _unmailed_trips(
-    session: Session, *, day_from: date, day_to: date
+    session: Session, timeline: list[_GuardrailEvent], *, day_from: date, day_to: date
 ) -> list[_GuardrailBreach]:
     """RULE 2 (alert): a trip EPISODE with no ``EmailLog(kind='guardrail')`` on ANY of
     its trip ids.
@@ -530,7 +612,7 @@ def _unmailed_trips(
         select(EmailLog.alert_key).where(EmailLog.kind == _TRIP_ALERT_KIND)
     ))
     by_day: dict[date, list[_TripEpisode]] = {}
-    for episode in _trip_episodes(session):
+    for episode in _trip_episodes(timeline):
         if episode.closed_by_clear:
             continue  # the operator cleared it -> awareness (see the docstring)
         if not any(day_from <= t.created_at.date() <= day_to for t in episode.trips):
@@ -552,7 +634,8 @@ def _unmailed_trips(
             findings={"guardrail_breach": {
                 "rule": "unmailed-trip", "day": day.isoformat(),
                 "n_episodes": len(episodes),
-                "trip_event_ids": [t.id for t in flat],
+                # ids live in ``trips`` ONLY -- a permanent record should not state the
+                # same fact twice and risk the two copies disagreeing after an edit.
                 "trips": [{"id": t.id, "at": t.created_at.isoformat(),
                            "breaker": t.breaker, "source": t.source} for t in flat],
                 "detail": (f"{len(episodes)} trip episode(s) ({len(flat)} trip "
@@ -588,27 +671,39 @@ def _stuck_sweep(
         findings={"guardrail_breach": {
             "rule": "stuck-sweep", "day": day.isoformat(), "trip_id": g.trip_id,
             "sweep_state": g.sweep_state, "trip_reason": g.trip_reason,
-            "detail": (f"trip {g.trip_id}'s disarm sweep is still "
-                       f"'{g.sweep_state}' {(now.date() - day).days} day(s) later, "
-                       f"through every cycle's resume"),
+            # "stuck since {day}", not "{n} day(s) later": the row is written once and
+            # read forever, so an age computed at write time would freeze and mislead.
+            "detail": (f"trip {g.trip_id}'s disarm sweep has been "
+                       f"'{g.sweep_state}' since {day.isoformat()}, through every "
+                       f"cycle's resume"),
         }})]
 
 
 def _unset_mandate(
     *, g: GuardrailsState, live_days: dict[date, int]
 ) -> list[_GuardrailBreach]:
-    """RULE 4 (warn): counting live orders while NO mandatory breaker is set.
+    """RULE 4 (warn): counting live orders while ANY mandatory breaker is unset.
 
-    The submit-side mandate already refuses real money without all three breakers, so
+    ANY, not all three: the mandate is a completeness rule
+    (``guardrails_repo.missing_mandate_breakers`` -- the SAME list the submit-side
+    check refuses on), and the realistic misconfiguration is exactly one breaker
+    forgotten. Requiring all three to be unset would let the likely case through
+    unrecorded while flagging only the case nobody hits.
+
+    Reuses the mandate's own breaker list but NOT its ``state != 'ok'`` branch: a
+    tripped brake is not a misconfigured one, and rule 1 owns tripped-state conduct.
+
+    The submit-side mandate already refuses real money without the three breakers, so
     this is the conduct-record backstop, not the enforcement: it says the live book
-    moved while the brake had nothing configured to catch it. Warn, not alert, because
-    the auditor cannot tell a real-money endpoint from a paper-host drill (the broker
-    host is env, never DB) and the mandate check is what actually gates real money.
-    Evaluated against the breakers AS SET NOW -- an operator who set them afterwards
-    leaves no way to reconstruct the day's configuration."""
-    if any(v is not None for v in
-           (g.max_daily_loss_usd, g.max_trades_per_day, g.max_drawdown_usd)):
+    moved while the brake was not fully configured to catch it. Warn, not alert,
+    because the auditor cannot tell a real-money endpoint from a paper-host drill (the
+    broker host is env, never DB) and the mandate check is what actually gates real
+    money. Evaluated against the breakers AS SET NOW -- an operator who set them
+    afterwards leaves no way to reconstruct the day's configuration."""
+    missing = missing_mandate_breakers(g)
+    if not missing:
         return []
+    named = ", ".join(missing)
     out: list[_GuardrailBreach] = []
     for day in sorted(live_days):
         n = live_days[day]
@@ -616,8 +711,9 @@ def _unset_mandate(
             day=day, key=f"guardrail-unset-mandate:{day.isoformat()}", severity="warn",
             findings={"guardrail_breach": {
                 "rule": "unset-mandate", "day": day.isoformat(), "n_live_counting": n,
-                "detail": (f"{n} counting live order(s) with no mandatory breaker set "
-                           f"(daily loss / trades per day / drawdown all unset)"),
+                "missing_breakers": missing,
+                "detail": (f"{n} counting live order(s) with mandatory breaker(s) "
+                           f"unset: {named}"),
                 "caveat": ("the auditor reads no broker host: a paper-endpoint drill "
                            "records identically to real money here"),
             }}))

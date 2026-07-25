@@ -1,7 +1,8 @@
 """Auditor author firewall + audit_run weekly/breach sweeps (idempotent, read-only)."""
 
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
+from datetime import time as dtime
 
 from sqlalchemy.orm import Session
 
@@ -251,14 +252,19 @@ def _gevent(s, *, kind, at=datetime(2026, 7, 8, 10, 0), source="digest",
     return e.id
 
 
-def _brake(s, *, state="ok", trip_id=None, sweep_state=None, mandate=True):
-    """Seed the single agent_guardrails row in a chosen state."""
+def _brake(s, *, state="ok", trip_id=None, sweep_state=None, mandate=True, missing=()):
+    """Seed the single agent_guardrails row in a chosen state. ``missing`` leaves just
+    those mandatory breakers unset (the realistic half-configured brake); ``mandate``
+    False leaves all three unset."""
+    def _limit(name, value):
+        return None if (not mandate or name in missing) else value
+
     s.add(AgentGuardrails(
         state=state, trip_id=trip_id, sweep_state=sweep_state,
         trip_reason="max drawdown: $600.00 >= $500.00" if trip_id else None,
-        max_daily_loss_usd=200.0 if mandate else None,
-        max_trades_per_day=3 if mandate else None,
-        max_drawdown_usd=500.0 if mandate else None,
+        max_daily_loss_usd=_limit("max_daily_loss_usd", 200.0),
+        max_trades_per_day=_limit("max_trades_per_day", 3),
+        max_drawdown_usd=_limit("max_drawdown_usd", 500.0),
         hwm_baseline_usd=0.0, updated_at=datetime(2026, 7, 8, 9, 0)))
     s.commit()
 
@@ -279,6 +285,11 @@ def _mailed(trip_id, *, kind="guardrail"):
 
 def _keys(rows):
     return {r.breach_key for r in rows}
+
+
+def _trip_ids(findings):
+    """The unmailed payload states trip ids ONCE, inside ``trips``."""
+    return [t["id"] for t in findings["trips"]]
 
 
 def test_live_counting_statuses_are_the_live_half_of_the_limit_engine():
@@ -383,7 +394,7 @@ def test_trip_with_no_alert_email_is_a_breach(monkeypatch):
         assert _keys(rows) == {"guardrail-unmailed-trip:2026-07-08"}
         assert rows[0].severity == "alert"
         f = json.loads(rows[0].findings_json)["guardrail_breach"]
-        assert f["trip_event_ids"] == [trip_id] and f["rule"] == "unmailed-trip"
+        assert _trip_ids(f) == [trip_id] and f["rule"] == "unmailed-trip"
 
 
 def test_mailed_trip_is_not_a_breach(monkeypatch):
@@ -445,12 +456,20 @@ def test_todays_pending_sweep_is_not_yet_stuck(monkeypatch):
 
 
 def test_completed_sweep_is_never_stuck(monkeypatch):
+    """``sweep_state`` is the whole discriminator: a trip a WEEK old (long past the
+    one-day grace, and long out of the scan window that the rule deliberately does not
+    apply to itself) grades clean purely because its sweep finished."""
     s_ = _settings(monkeypatch, audit_enabled=False)
     with Session(get_engine("sqlite:///:memory:")) as s:
-        trip_id = _gevent(s, kind="trip")
+        trip_id = _gevent(s, kind="trip", at=datetime(2026, 7, 1, 10, 0))
         s.add(_mailed(trip_id))
         _brake(s, state="tripped", trip_id=trip_id, sweep_state="complete")
         assert run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW) == []
+        # same fixture, sweep unfinished -> the rule fires on the trip's own day.
+        s.query(AgentGuardrails).update({"sweep_state": "partial"})
+        s.commit()
+        rows = run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW)
+        assert _keys(rows) == {"guardrail-stuck-sweep:2026-07-01"}
 
 
 def test_live_submissions_with_no_mandatory_breakers_set_warns(monkeypatch):
@@ -584,7 +603,7 @@ def test_wholly_unmailed_episode_still_breaches_once(monkeypatch):
         rows = run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW)
         assert _keys(rows) == {"guardrail-unmailed-trip:2026-07-08"}
         f = json.loads(rows[0].findings_json)["guardrail_breach"]
-        assert f["trip_event_ids"] == [winner, loser] and f["n_episodes"] == 1
+        assert _trip_ids(f) == [winner, loser] and f["n_episodes"] == 1
         assert "episode" in rows[0].narrative.lower()
 
 
@@ -603,7 +622,7 @@ def test_second_episode_after_a_clear_breaches_alone(monkeypatch):
                                now=_NOW)
         assert _keys(rows) == {"guardrail-unmailed-trip:2026-07-09"}
         f = json.loads(rows[0].findings_json)["guardrail_breach"]
-        assert f["trip_event_ids"] == [second]
+        assert _trip_ids(f) == [second]
 
 
 def test_trip_alert_kind_matches_the_module_that_writes_it():
@@ -628,8 +647,8 @@ def test_unmailed_episode_spanning_the_window_edge_keys_on_its_first_trip(monkey
         early = run_breach_scan(s, settings=s_, day_from=date(2026, 7, 6),
                                 day_to=date(2026, 7, 12), now=_NOW)
         assert _keys(early) == {"guardrail-unmailed-trip:2026-07-08"}
-        assert json.loads(early[0].findings_json)["guardrail_breach"][
-            "trip_event_ids"] == [first, later]
+        assert _trip_ids(
+            json.loads(early[0].findings_json)["guardrail_breach"]) == [first, later]
         # the window slides past the episode's first trip: SAME episode, same key.
         late = run_breach_scan(s, settings=s_, day_from=date(2026, 7, 9),
                                day_to=date(2026, 7, 15),
@@ -659,7 +678,7 @@ def test_submit_breach_records_a_clear_that_landed_after_the_bridge_window(monke
         assert "later cleared 2026-07-15" in rows[0].narrative
 
 
-def test_genuinely_uncleared_trip_records_no_clear(monkeypatch):
+def test_trip_uncleared_at_scan_time_records_no_clear(monkeypatch):
     s_ = _settings(monkeypatch, audit_enabled=False)
     with Session(get_engine("sqlite:///:memory:")) as s:
         trip_id = _gevent(s, kind="trip")
@@ -669,3 +688,78 @@ def test_genuinely_uncleared_trip_records_no_clear(monkeypatch):
         f = json.loads(rows[0].findings_json)["guardrail_breach"]
         assert f["cleared_at"] is None
         assert "later cleared" not in rows[0].narrative
+
+
+# ---- review round 4: the mandate is ALL THREE, and one trip is one row ----
+
+
+def test_one_missing_mandatory_breaker_warns_and_names_it(monkeypatch):
+    """THE REALISTIC MISCONFIGURATION: two breakers set, one forgotten. That is exactly
+    what ``guardrails_mandate_ok`` refuses on a real-money host, so the conduct record
+    must see it too -- requiring all three to be unset lets the likely case through."""
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        s.add(_live_log(key="a"))
+        _brake(s, missing=("max_drawdown_usd",))
+        rows = run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW)
+        assert _keys(rows) == {"guardrail-unset-mandate:2026-07-08"}
+        assert rows[0].severity == "warn"
+        f = json.loads(rows[0].findings_json)["guardrail_breach"]
+        assert f["missing_breakers"] == ["max_drawdown_usd"]
+        assert "max_drawdown_usd" in rows[0].narrative
+
+
+def test_missing_breakers_are_named_in_mandate_order(monkeypatch):
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        s.add(_live_log(key="a"))
+        _brake(s, missing=("max_drawdown_usd", "max_daily_loss_usd"))
+        rows = run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW)
+        f = json.loads(rows[0].findings_json)["guardrail_breach"]
+        assert f["missing_breakers"] == ["max_daily_loss_usd", "max_drawdown_usd"]
+
+
+def test_one_trip_spanning_two_run_dates_writes_one_row(monkeypatch):
+    """One trip is ONE conduct failure however many trading days of record its bridge
+    covers: a row per day would file the same trip repeatedly, the cry-wolf shape the
+    unmailed rule already avoids by keying on the episode."""
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        trip_id = _gevent(s, kind="trip")               # 07-08
+        s.add_all([_mailed(trip_id),
+                   _live_log(key="a", run_day=date(2026, 7, 7)),
+                   _live_log(key="b", run_day=_DAY),
+                   _live_log(key="c", run_day=_DAY, status="filled_live")])
+        _brake(s, state="tripped", trip_id=trip_id, sweep_state="complete")
+        rows = run_breach_scan(s, settings=s_, day_from=date(2026, 7, 6), day_to=_DAY,
+                               now=_NOW)
+        # keyed on the EARLIEST affected run_date, not one row per day
+        assert _keys(rows) == {"guardrail-submit-while-tripped:2026-07-07"}
+        f = json.loads(rows[0].findings_json)["guardrail_breach"]
+        assert f["affected_run_dates"] == ["2026-07-07", "2026-07-08"]
+        assert f["n_live_counting"] == 3 and f["trip_id"] == trip_id
+
+
+def test_bridge_window_is_exactly_the_constant(monkeypatch):
+    """The bridge length IS the contract: a trip landing exactly
+    ``_RUN_DATE_BRIDGE_DAYS`` after the trading day of record still bridges to it; one
+    day further is out of reach and grades clean."""
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    bridge = audit_run._RUN_DATE_BRIDGE_DAYS
+    edge = datetime.combine(_DAY + timedelta(days=bridge), dtime(9, 30))
+    beyond = edge + timedelta(days=1)
+    scan = dict(day_from=_DAY, day_to=_DAY + timedelta(days=bridge + 1),
+                now=datetime(2026, 7, 20, 20, 0, tzinfo=UTC))
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        trip_id = _gevent(s, kind="trip", at=edge)
+        s.add_all([_mailed(trip_id), _live_log(key="a")])
+        _brake(s, state="tripped", trip_id=trip_id, sweep_state="complete")
+        rows = run_breach_scan(s, settings=s_, **scan)
+        assert _keys(rows) == {"guardrail-submit-while-tripped:2026-07-08"}
+        f = json.loads(rows[0].findings_json)["guardrail_breach"]
+        assert f["bridge_days"] == bridge
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        trip_id = _gevent(s, kind="trip", at=beyond)
+        s.add_all([_mailed(trip_id), _live_log(key="a")])
+        _brake(s, state="tripped", trip_id=trip_id, sweep_state="complete")
+        assert run_breach_scan(s, settings=s_, **scan) == []

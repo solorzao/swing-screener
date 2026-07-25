@@ -638,6 +638,22 @@ def effective_execution_scope(
     return settings.execute_play_types
 
 
+#: the breakers a real-money endpoint MUST have set, in the order the mandate reports
+#: them. ``loss_streak_halt`` is deliberately absent -- it is optional by design.
+MANDATORY_BREAKERS = ("max_daily_loss_usd", "max_trades_per_day", "max_drawdown_usd")
+
+
+def missing_mandate_breakers(g: GuardrailsState) -> list[str]:
+    """The mandatory breakers this snapshot leaves unset, in mandate order. PURE.
+
+    The completeness half of the mandate, split out so the ENFORCEMENT verdict
+    (``mandate_from_state``, which also refuses on a non-'ok' state) and READERS that
+    want the configuration alone share ONE definition -- the System Behavior Auditor's
+    unset-mandate rule grades conduct off this list, and a restated copy there could
+    drift from what actually gates real money."""
+    return [name for name in MANDATORY_BREAKERS if getattr(g, name) is None]
+
+
 def mandate_from_state(g: GuardrailsState) -> tuple[bool, str]:
     """The mandate, evaluated over a snapshot you already hold. PURE -- no DB, no write.
 
@@ -655,12 +671,9 @@ def mandate_from_state(g: GuardrailsState) -> tuple[bool, str]:
     ``peek_guardrails`` (one snapshot, no seed) while enforcement keeps the seeding
     entry point below -- ONE definition of "may real money dispatch", two ways in.
     """
-    if g.max_daily_loss_usd is None:
-        return False, "max_daily_loss_usd is not set"
-    if g.max_trades_per_day is None:
-        return False, "max_trades_per_day is not set"
-    if g.max_drawdown_usd is None:
-        return False, "max_drawdown_usd is not set"
+    missing = missing_mandate_breakers(g)
+    if missing:
+        return False, f"{missing[0]} is not set"  # the FIRST failing item, in order
     if g.state != "ok":
         return False, f"guardrails state is {g.state}"
     return True, ""
