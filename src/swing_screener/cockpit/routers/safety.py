@@ -22,6 +22,7 @@ from swing_screener.cockpit.common import (
 )
 from swing_screener.cockpit.livedata import BrokerSnapshot, Snapshot
 from swing_screener.cockpit.spend import spend_rows_since
+from swing_screener.db import guardrails_repo
 from swing_screener.db.models import DisarmEvent
 from swing_screener.db.repo import latest_recorded_stop
 from swing_screener.pipeline.autonomy import autonomy_gate, gate_countdown
@@ -103,6 +104,13 @@ def build_safety_router(
         ``broker_configured`` is settings TRUTHINESS (is ``SWING_BROKER`` set),
         NEVER connectivity: DISARM's enablement keys on it, and it rides this
         already-polled endpoint so the always-visible masthead needs no extra poll.
+        ``brake_state`` rides it for the same reason (the masthead brake chip):
+        ``load_guardrails(session).state`` rendered DIRECTLY -- 'ok' | 'halted' |
+        'tripped', never a consult VERDICT, so the chip can never say 'ok' about a
+        halted brake. One extra column select on an already-polled endpoint, and NO
+        venue call. Unlike ``execution_mode`` this is a DB read: the brake row is
+        the venue of record every process shares, so a trip landed by an Azure job
+        shows on the next poll (the column select bypasses the identity map).
         """
         report = autonomy_gate(session, edge_dir=resolve_edge_dir(edge_dir))
         today = date.today()
@@ -116,6 +124,7 @@ def build_safety_router(
             "countdown": gate_countdown(report),
             "execution_mode": settings.execution_mode,
             "broker_configured": bool(settings.broker),
+            "brake_state": guardrails_repo.load_guardrails(session).state,
             "analyst_spend_today_usd": spend_today,
         }
 
@@ -233,10 +242,19 @@ def build_safety_router(
         ``locks`` renders ``can_arm_real_money``'s three components
         individually (``gate_ready`` reuses the report's advisory gate line -- one
         evaluation per request); ``caps_mandate`` is ``real_money_limits_ok`` over
-        the resolved limits. ``env_scope`` is the honesty label: everything here
-        reads THIS process's env -- the Azure jobs run under their own.
+        the resolved limits. ``guardrails`` is the brake: the mandate verdict +
+        reason (``guardrails_mandate_ok`` -- the same one execution enforces at
+        submit time) beside the RAW ``state`` / ``sweep_state``, rendered DIRECTLY
+        so the screen can never report 'ok' about a halted brake.
+        ``env_scope`` is the honesty label, and it covers the ENV-DERIVED fields
+        only (mode, locks, caps, broker_configured): those read THIS process's env
+        -- the Azure jobs run under their own. ``guardrails`` is NOT one of them --
+        it reads the shared ``agent_guardrails`` row, the brake's single venue of
+        record for EVERY process, so a trip landed by an Azure job shows here.
         ``bracket_shield`` reads the CACHED broker snapshot (the venue-truth table:
-        see ``_bracket_shield`` -- UNKNOWN is never rendered green).
+        see ``_bracket_shield`` -- UNKNOWN is never rendered green). Both DB reads
+        are cheap column selects: this endpoint already makes a REAL broker call
+        through the factory, and nothing added here touches the venue.
         """
         settings = load_settings()
         broker: BrokerClient | None
@@ -258,6 +276,13 @@ def build_safety_router(
             (c.ok for c in report.checks if c.name == "autonomy_gate"), False)
         mode, limits = resolve_execution(settings)
         caps_ok, caps_reason = real_money_limits_ok(limits)
+        # The mandate verdict and the raw snapshot are read SEPARATELY on purpose:
+        # ok/reason answer 'may real money dispatch', state/sweep_state say WHAT the
+        # brake is doing (a tripped brake's sweep bookkeeping has no place in a
+        # boolean). Both are column selects that bypass the identity map, so a trip
+        # committed by another process is visible immediately.
+        g_ok, g_reason = guardrails_repo.guardrails_mandate_ok(session)
+        g = guardrails_repo.load_guardrails(session)
         return {
             "broker_configured": bool(settings.broker),
             "mode": mode,
@@ -268,6 +293,8 @@ def build_safety_router(
                 "gate_ready": gate_ready,
             },
             "caps_mandate": {"ok": caps_ok, "reason": caps_reason},
+            "guardrails": {"ok": g_ok, "reason": g_reason, "state": g.state,
+                           "sweep_state": g.sweep_state},
             "preflight": {
                 "go": report.go,
                 "checks": [{"name": c.name, "ok": c.ok, "detail": c.detail,
