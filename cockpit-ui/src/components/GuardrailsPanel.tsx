@@ -441,15 +441,23 @@ function LimitsForm({
       )}
       <div className="gr-fields">
         {LIMIT_FIELDS.map((f) => (
-          <label className="gr-field" key={f.key}>
+          /* EXPLICIT htmlFor/id (the AnalysisPanel / LogTradeForm house pattern),
+             NOT the wrapping label's implicit association — because a HelpTerm
+             renders a <button>, and a <button> is a LABELABLE element. Wrapped
+             implicitly, the label's control resolves to its first labelable
+             descendant, i.e. the help affordance, and the input beside it is left
+             with NO accessible name at all (the term-carrying fields, verified in
+             the browser: input.labels.length was 0). The explicit pairing pins the
+             control to the input; the button is then just content inside the
+             label, and being interactive content it also does not forward its
+             click to the field. */
+          <label className="gr-field" key={f.key} htmlFor={`gr-limit-${f.key}`}>
             <span className="gr-lab">
-              {/* A HelpTerm is a <button>, i.e. interactive content, so the
-                  wrapping <label> does NOT forward its click to the input — the
-                  popover opens without also focusing the field. */}
               {f.term === undefined ? f.label : <HelpTerm term={f.term}>{f.label}</HelpTerm>}
               <em className="gr-lab-note">{f.note}</em>
             </span>
             <input
+              id={`gr-limit-${f.key}`}
               className="gr-in mono"
               type={f.kind === 'date' ? 'date' : 'number'}
               step={f.kind === 'int' ? '1' : 'any'}

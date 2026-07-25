@@ -698,7 +698,7 @@
   "term": "Brake state",
   "cat": "status-lamp",
   "short": "The brake's one-word condition: ok (released), halted (an operator engaged it), or tripped (a breaker fired).",
-  "why": "Only 'ok' lets dispatch through. Any state the system does not recognise is treated as tripped, so an unexpected value blocks trading rather than waving it past.",
+  "why": "Only 'ok' lets dispatch through. Any state the system does not recognize is treated as tripped, so an unexpected value blocks trading rather than waving it past.",
   "appears": [
    "Execution Safety GUARDRAILS",
    "Masthead brake chip"
@@ -734,7 +734,7 @@
   "term": "Sweep (guardrail)",
   "cat": "system-action",
   "short": "The protective venue action a trip or a HALT runs: cancel resting entry orders, put back any missing protective stop at its recorded level, and never close a position.",
-  "why": "A sweep still pending or partial is RETRYING, not failed — every cycle re-runs it and DISARM resumes that same one. What needs your hand is a position it reports UNPROTECTED: no stop anywhere, and left alone on purpose.",
+  "why": "A TRIP's sweep left pending or partial is RETRYING, not failed — every cycle re-runs it and DISARM resumes that same one; a HALT's sweep gets no retry, so its failure is reported outright and the brake stands. What needs your hand either way is a position reported UNPROTECTED: no stop anywhere, and left alone on purpose.",
   "appears": [
    "Execution Safety GUARDRAILS (SWEEP RETRYING)",
    "DISARM outcome (guardrail resume)"
@@ -768,8 +768,8 @@
  {
   "term": "Execution scope (ceiling)",
   "cat": "config",
-  "short": "Which play types execution may dispatch at all, set in the environment (SWING_EXECUTE_PLAY_TYPES). It is the ceiling: cockpit scope controls may subtract within it, never widen it.",
-  "why": "It is why a live signal of an out-of-scope play type never reaches the broker. A value with nothing valid in it fails closed — the scope goes empty and nothing dispatches — so garbage can never open the gate.",
+  "short": "Which play types execution may dispatch at all, set in the environment (SWING_EXECUTE_PLAY_TYPES); unset = every play type. It is the ceiling: cockpit scope controls will subtract within it (Task 22), never widen it.",
+  "why": "It is why a live signal of an out-of-scope play type never reaches the broker. A value with no valid play type in it fails CLOSED — the scope goes empty and nothing dispatches — so a garbled list narrows the gate instead of opening it.",
   "appears": [
    "Execution Safety CONFIGURATION (execute play types)"
   ],

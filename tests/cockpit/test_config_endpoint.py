@@ -44,6 +44,21 @@ def test_config_execute_play_types_row(tmp_path: Path, monkeypatch) -> None:
     assert row["value"] == ["reversal"]
 
 
+def test_config_execute_play_types_row_name_matches_the_cockpit_helpterm(
+        tmp_path: Path, monkeypatch) -> None:
+    """SafetyScreen's ``CfgKey`` hangs the execution-scope glossary term off THIS
+    row's NAME, so renaming the row here would silently drop the help affordance
+    (an unmatched key renders plain text -- never an error). Same rot class the
+    glossary citation guard covers, pinned from the side that would move."""
+    monkeypatch.delenv("SWING_EXECUTE_PLAY_TYPES", raising=False)
+    body = _client(tmp_path).get("/api/config").json()
+    keys = {row["key"] for sec in body["sections"] for row in sec["rows"]}
+    tsx = (Path(__file__).resolve().parents[2]
+           / "cockpit-ui" / "src" / "screens" / "SafetyScreen.tsx").read_text(encoding="utf-8")
+    assert "execute play types" in keys
+    assert "name === 'execute play types'" in tsx
+
+
 def test_config_execute_play_types_row_shows_resolved_value(
         tmp_path: Path, monkeypatch) -> None:
     # The row renders the RESOLVED value, not the raw env: the invalid member is
