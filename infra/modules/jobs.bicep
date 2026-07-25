@@ -93,6 +93,28 @@ simulated fills into the curated account="paper" intent book, no broker, fenced 
 of research aggregates -- the North-Star Mid-term order-flow proving leg.''')
 param executionMode string = ''
 
+// --- Broker arming (the two locks that live in env; the third is the autonomy gate in
+// the database). BOTH default '' = ABSENT, which is the intended prod state today: no
+// broker configured, real money disallowed. That is the same
+// template-default-must-match-prod lesson as deepAnalysisEnabled below, pointed the
+// other way -- deep analysis is ON in prod so its default is '1'; arming is OFF in prod
+// so these defaults are ''. A bicep redeploy must never be able to arm real money as a
+// side effect, and it must never silently DISARM a deliberately armed job either: the
+// day these are set in prod, they get set in main.bicepparam in the same act (the
+// arming ceremony, docs/runbooks/arming-alpaca-live.md).
+@description('''Broker adapter for the LIVE path (SWING_BROKER): "alpaca" is the only
+impl. Empty = absent -> no broker configured, so even execution_mode=live falls back to
+the NoOp adapter and submits nothing (fail-safe). This is lock #1 of three; setting it
+alone arms NOTHING.''')
+param broker string = ''
+
+@description('''The explicit, LOUD real-money flag (SWING_BROKER_ALLOW_REAL_MONEY):
+"1"/"true"/"yes"/"on" allows real-money orders; empty = absent -> false, and any
+unrecognised value is also false. Lock #2 of three (mode==live AND this AND a ready
+autonomy gate -- settings.can_arm_real_money). A real-money Alpaca host WITHOUT this is
+still refused.''')
+param allowRealMoney string = ''
+
 @description('''The three hard caps the adapter's submit() clamp enforces per
 account-day (empty = that cap absent -> unbounded, the code's None sentinel).
 maxDailyNotional is DOLLARS of recorded order notional; maxDailyLoss is an R
@@ -222,13 +244,33 @@ var executionModeEnv = executionMode == ''
         value: executionMode
       }
     ]
+// Same absent-not-empty rule as executionMode: SWING_BROKER='' would still be "set" to
+// the container, and settings reads it as an empty broker id -- identical to absent
+// today, but leaving the var out keeps the honest "unset" reading everywhere (the
+// cockpit Safety screen's broker_configured lamp is this env's truthiness).
+var brokerEnv = broker == ''
+  ? []
+  : [
+      {
+        name: 'SWING_BROKER'
+        value: broker
+      }
+    ]
+var allowRealMoneyEnv = allowRealMoney == ''
+  ? []
+  : [
+      {
+        name: 'SWING_BROKER_ALLOW_REAL_MONEY'
+        value: allowRealMoney
+      }
+    ]
 var capsEnv = concat(
   maxDailyNotional == '' ? [] : [{ name: 'SWING_MAX_DAILY_NOTIONAL', value: maxDailyNotional }],
   maxDailyLoss == '' ? [] : [{ name: 'SWING_MAX_DAILY_LOSS', value: maxDailyLoss }],
   maxConcurrent == '' ? [] : [{ name: 'SWING_MAX_CONCURRENT', value: maxConcurrent }]
 )
 
-var commonEnv = concat(equityEnv, riskPctEnv, executionModeEnv, capsEnv, [
+var commonEnv = concat(equityEnv, riskPctEnv, executionModeEnv, brokerEnv, allowRealMoneyEnv, capsEnv, [
   {
     name: 'ANTHROPIC_API_KEY'
     secretRef: 'anthropic-api-key'

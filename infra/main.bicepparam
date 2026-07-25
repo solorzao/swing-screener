@@ -78,3 +78,42 @@ param executionMode = 'paper'
 param maxDailyNotional = '1000'
 param maxDailyLoss = '2.0'
 param maxConcurrent = '3'
+
+// =============================================================================
+// --- Broker arming: DELIBERATELY UNSET. ---
+//
+// These two params exist in main.bicep / modules/jobs.bicep so the Azure jobs are
+// CAPABLE of being armed, and they are left commented here so that a routine
+// re-provision keeps every job DISARMED. Uncommenting them is the arming
+// ceremony (docs/runbooks/arming-alpaca-live.md), a deliberate manual act -- never
+// a side effect of shipping code.
+//
+//   param broker = 'alpaca'
+//   param allowRealMoney = 'yes'          // real money. Read the runbook first.
+//
+// Three locks gate a real-money order, and env carries only two of them:
+// execution_mode == 'live' (executionMode above, currently 'paper'), broker +
+// allowRealMoney here, and a READY autonomy gate that lives in the database --
+// no bicep param can set that one.
+//
+// ALPACA SECRETS NEED NO BICEP CHANGE. broker_alpaca.py resolves SWING_ALPACA_KEY /
+// SWING_ALPACA_SECRET / SWING_ALPACA_HOST through config_secrets.get_secret, whose
+// Key Vault fallback maps an env NAME to a secret name by lower-casing and
+// replacing '_' -> '-' (src/swing_screener/config_secrets.py:74-87 + _secret_name).
+// So creating swing-alpaca-key / swing-alpaca-secret / swing-alpaca-host in the
+// existing vault is sufficient -- the jobs already have KEY_VAULT_URL and the UAMI
+// has Secrets User. Do NOT add them to keyvault.bicep's seeded secrets or to the
+// jobs' secretDefs: they are fetched at runtime, not injected at deploy time, and
+// keeping them out of the template keeps the material out of deployment history.
+//
+// CD NEVER APPLIES BICEP (cd.yml only repoints job images), so nothing in this
+// file reaches Azure until the ceremony runs the deployment by hand:
+//
+//   az deployment sub create --location <region> \
+//     --template-file infra/main.bicep --parameters infra/main.bicepparam \
+//     --parameters seedSecrets=false anthropicApiKey=<...> digestTo=<...> \
+//                  alertEmail=<...> sqlAadAdminLogin=<...> sqlAadAdminObjectId=<...>
+//
+// seedSecrets=false is mandatory on every re-deploy so the live vault values are
+// not overwritten by the empty placeholders above.
+// =============================================================================
