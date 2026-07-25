@@ -41,6 +41,7 @@ from swing_screener.pipeline.broker_alpaca import build_broker
 # import staying cycle-free (pytest collection order hides an import cycle; only a
 # fresh `import swing_screener.pipeline.run` as the ROOT probes it honestly).
 from swing_screener.pipeline import guardrails as gpipe
+from swing_screener.pipeline.disarm import ensure_stop_protection
 from swing_screener.pipeline.live_sync import maybe_reconcile_live
 from swing_screener.pipeline.regime import MARKET_PROXY, classify_regime
 from swing_screener.pipeline.shadow import (
@@ -637,22 +638,33 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         # the whole screen, where the old lazy import degraded it to this
         # warning -- accepted: an import failure is a structural bug the
         # fresh-interpreter canary catches in CI, not a runtime condition.
+        #
+        # The consult's verdict, needed by the stop-protection re-assert below.
+        # Starts as a NON-None sentinel so a consult that RAISED skips the
+        # re-assert: what the failed consult did or did not sweep is unknown,
+        # and a DB-side failure would also poison the recorded-level lookup the
+        # re-assert copies its levels from (every position would be misreported
+        # UNPROTECTED because the ticket read failed, not because no level
+        # exists). The skip is logged with the failure below.
+        blocked: str | None = "unknown"
         try:
             # The shared consult (Task 11): resume -> load -> evaluate-unless-
             # tripped -> respond, one definition for all three cycles. `broker`
             # may be None (off/paper, or live_sync's secrets-gap path) -- the
             # resume no-ops and a fresh trip persists with sweep_state='pending'
-            # for the digest/hourly cycles to finish. The verdict is
-            # deliberately ignored: the screen dispatches nothing, so a
-            # halted/tripped book needs no entry-pull from this path -- the
-            # digest's dispatch loop owns that response. The emailer (Task 10)
-            # is the minimal on-demand sender; its transport resolves lazily
-            # inside the closure, never at module import.
-            gpipe.consult(s, run_date=today, source="screen", broker=broker,
-                          emailer=_screen_trip_emailer(s, run_date=today))
+            # for the digest/hourly cycles to finish. The verdict does not gate
+            # DISPATCH here (the screen dispatches nothing, so a halted/tripped
+            # book needs no entry-pull from this path -- the digest's dispatch
+            # loop owns that response); it is kept only for the one-pass rule of
+            # the re-assert below. The emailer (Task 10) is the minimal
+            # on-demand sender; its transport resolves lazily inside the
+            # closure, never at module import.
+            blocked = gpipe.consult(s, run_date=today, source="screen", broker=broker,
+                                    emailer=_screen_trip_emailer(s, run_date=today))
         except Exception:  # noqa: BLE001 -- guardrails must never block the screen
-            log.warning("evening-screen guardrails evaluation failed",
-                        exc_info=True)
+            log.warning("evening-screen guardrails evaluation failed; tonight's "
+                        "stop-protection re-assert is skipped (the book's sweep "
+                        "state is unknown)", exc_info=True)
             try:
                 # a guardrails failure can leave the SHARED session's
                 # transaction poisoned (PendingRollbackError on every later
@@ -660,6 +672,63 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
                 s.rollback()
             except Exception:  # noqa: BLE001 -- the screen result is the priority
                 log.warning("post-guardrails rollback failed", exc_info=True)
+
+        # NIGHTLY STOP-PROTECTION RE-ASSERT (Task 19): every open live position
+        # must end the evening carrying a live protective stop AT THE VENUE.
+        # Bracket entries go out time_in_force='day' and the venue MAY apply
+        # that TIF to the child stop leg -- which would kill the stop at the
+        # close and leave a multi-day swing hold naked overnight. Rather than
+        # guess the venue's leg behaviour (the Stage-0 paper drill answers that
+        # empirically), the screen re-asserts the INVARIANT nightly: a position
+        # with no live stop gets one re-submitted GTC at the ExecutionLog
+        # ticket's RECORDED level (copied, never computed -- North Star #4), and
+        # a position with no recorded level is named UNPROTECTED for the human.
+        # Either way no hold sits unprotected for more than one session.
+        #
+        # ``ensure_stop_protection`` ONLY -- deliberately NOT
+        # ``run_protective_sweep``: pulling the resting ENTRY orders is a
+        # trip/halt/kill RESPONSE to a brake, not a nightly invariant, and a
+        # healthy book's working entries must survive the evening screen.
+        #
+        # THE ONE-PASS RULE: run this ONLY when the consult returned None. Any
+        # other outcome -- 'tripped' (respond_to_trip / resume_incomplete_sweep
+        # just ran the sweep, which ends in the SAME ensure pass), 'halted' (the
+        # dispatch loop's manual-HALT sweep owns it), or a consult that raised
+        # (unknown) -- means an ensure pass is already accounted for this cycle.
+        # A second pass would be harmless at the venue (the re-list before each
+        # submit sees the fresh stop and skips) but it double-logs and muddies
+        # the conduct record.
+        #
+        # NO DisarmEvent is written: nothing was disarmed. This is an invariant
+        # REPAIR, and the restored/unprotected log lines ARE its record --
+        # a deliberate contrast with the trip/halt/kill sweeps, which journal a
+        # DisarmEvent precisely because they cancelled entry orders.
+        #
+        # ``key_suffix`` day-stamps the restore client_order_ids, so a
+        # same-evening re-run (job retry, manual re-run) collapses to the same
+        # ids and the venue's duplicate-id rejection makes it idempotent.
+        # Swallow-everything + rollback-first, like the guardrails block above:
+        # the screen's core job -- persisting the day's signals -- must never be
+        # blocked by protection machinery.
+        if blocked is None and broker is not None:
+            try:
+                if repo.load_open_live_trades(s):
+                    restored, unprotected = ensure_stop_protection(
+                        broker, lambda sym: repo.latest_recorded_stop(s, sym),
+                        key_suffix=f"screen-{today:%Y%m%d}", dry_run=False)
+                    if restored:
+                        log.warning("evening re-assert: re-submitted %d protective "
+                                    "stop(s): %s", len(restored), ", ".join(restored))
+                    if unprotected:
+                        log.error("evening re-assert: %d position(s) left UNPROTECTED: "
+                                  "%s", len(unprotected), ", ".join(unprotected))
+            except Exception:  # noqa: BLE001 -- protection must never block the screen
+                log.warning("evening-screen stop-protection re-assert failed",
+                            exc_info=True)
+                try:
+                    s.rollback()
+                except Exception:  # noqa: BLE001 -- the screen result is the priority
+                    log.warning("post-re-assert rollback failed", exc_info=True)
 
         # Enrich the universe rows with the metrics gathered during the loop
         # (one batch UPDATE; None-skips, self-commits).
