@@ -14,7 +14,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -77,24 +77,55 @@ def _halt_key() -> str:
     return f"halt-cockpit-{datetime.now(UTC):%Y%m%d%H%M%S}"
 
 
-def _sweep_detail(session: Session) -> str:
-    """The newest recorded ``sweep`` event's detail, VERBATIM.
+def _rollback_quietly(session: Session, *, what: str) -> None:
+    """Discard a failed transaction so the CALLER can keep using the session.
+
+    A statement that raised leaves the Session in a failed state, and every later
+    query on it answers ``PendingRollbackError`` -- itself a ``SQLAlchemyError``, so
+    it would 503 the request. On the DISARM path that would silently defeat the
+    whole point of ignoring a refused brake read: the sweep's own ticket lookups
+    would inherit the failure and the operator would lose the emergency sweep to a
+    table they never asked about. Never raises -- a session too dead to roll back is
+    logged and left alone (the same posture ``_record_disarm`` takes)."""
+    try:
+        session.rollback()
+    except Exception:  # noqa: BLE001 -- a dead session must not become the response
+        log.warning("rollback after %s also failed", what, exc_info=True)
+
+
+def _event_watermark(session: Session) -> int:
+    """``max(agent_guardrail_events.id)`` right now, or 0 on an empty table.
+
+    Taken BEFORE a sweep so ``_sweep_detail`` can prove the row it reports was
+    written by THIS request -- see there for why a bare "newest sweep event" is
+    not good enough."""
+    return int(session.scalar(select(func.max(AgentGuardrailEvent.id))) or 0)
+
+
+def _sweep_detail(session: Session, *, after: int) -> str:
+    """This request's ``sweep`` event detail, VERBATIM -- or an honest admission.
 
     The resume path cannot itemize what it moved (``resume_incomplete_sweep``
     returns a bool), but the sweep it just ran recorded its own summary -- "swept: N
     entry order(s) cancelled, M protective stop(s) restored", or a class-name-only
     error on a partial -- as the event's reason. Echoing that string is strictly
     better than restating it: it is the SAME text the Auditor and the event history
-    show, so the three can never disagree. Newest-row rather than a trip_id filter
-    because the sweep was written moments ago in THIS request; the only way another
-    row interleaves is a concurrent process sweeping the same in-force trip, whose
-    summary describes the same work."""
+    show, so the three can never disagree.
+
+    ``after`` is the id watermark taken before the sweep, and it is load-bearing.
+    ``_record_outcome_guarded`` SWALLOWS a failed outcome write (by design -- the
+    venue already moved, and a poisoned session would kill the caller), so "no row
+    was written" is a real outcome. Without the watermark this would then report a
+    PRIOR sweep's text -- an old success narrating a run that just failed, which is
+    the worst possible lie on this endpoint. Scoped, that case falls through to a
+    detail that says exactly what is known: the sweep ran, its bookkeeping did not
+    land, and the state may lag."""
     reason = session.scalar(
         select(AgentGuardrailEvent.reason)
-        .where(AgentGuardrailEvent.kind == "sweep")
+        .where(AgentGuardrailEvent.kind == "sweep", AgentGuardrailEvent.id > after)
         .order_by(AgentGuardrailEvent.id.desc())
         .limit(1))
-    return reason or "the sweep outcome was not recorded -- see the guardrail events"
+    return reason or "sweep ran; outcome write failed — state may lag"
 
 
 class GuardrailAction(BaseModel):
@@ -163,7 +194,9 @@ def _current_breach(session: Session, g: GuardrailsState) -> dict[str, str] | No
     DAY KEY: ``latest_run_date(session) or date.today()`` -- the trading day of record
     the digest stamps on ExecutionLog.run_date, the same key every non-screen consult
     resolves (a wall-clock key would count zero of the day's own live orders).
-    Costs ZERO queries when no breaker is set (each check is skipped when unset)."""
+    COST: one ``latest_run_date`` select (evaluated eagerly, whatever the snapshot
+    says) plus AT MOST one query per breaker that is actually SET -- an all-unset row
+    costs exactly the one, since ``breached_breaker`` skips each unset check."""
     hit = guardrails_repo.breached_breaker(
         session, g, run_date=latest_run_date(session) or date.today())
     return None if hit is None else {"breaker": hit[0], "reason": hit[1]}
@@ -279,8 +312,18 @@ def build_safety_router(
 
     def _resume_disarm(
         session: Session, broker: BrokerClient, g: GuardrailsState, *, dry_run: bool,
-    ) -> dict[str, object]:
+    ) -> dict[str, object] | None:
         """DISARM on a TRIPPED book whose sweep never finished: resume THAT sweep.
+
+        Returns None when the resume did NOT happen -- the brake was cleared or
+        swept by another process between this request's peek and the resume's own
+        state read, or the DB refused that read. The caller then runs the RAW sweep:
+        a DISARM is UNCONDITIONAL. Answering "200, nothing happened" because the
+        brake moved under us would leave resting entry orders working at the venue
+        on the one request whose entire purpose is to pull them. Falling through is
+        safe because every raise point inside the resume (its ``load_guardrails``,
+        its trip-event fetch) precedes any venue call -- the sweep body itself never
+        raises, it records 'partial'.
 
         Why not the raw cockpit sweep (the 2026-07-18 red team): the trip response
         keys its stop re-submits ``guardrail-{trip_id}``, and a cockpit run carrying
@@ -300,10 +343,15 @@ def build_safety_router(
         No second 'cockpit' event is written here -- that would double-count one
         sweep AND re-label a correctly-firing brake as an unexplained cockpit disarm.
 
-        Venue failures do NOT 503 here: ``resume_incomplete_sweep`` records them as
-        ``sweep_state='partial'`` with a class-name-only detail and returns, so the
-        honest report is a 200 whose ``sweep_state`` says 'partial' -- visible,
-        re-runnable, and identical to what every other process would have reported.
+        A sweep that did NOT reach 'complete' is a 503, mirroring the raw disarm's
+        partial posture. ``resume_incomplete_sweep`` deliberately swallows venue
+        failures (it records 'partial' and returns True -- correct for a background
+        cycle, which simply retries next hour), but a HUMAN just pressed DISARM: a
+        200 is read as "the book is safe", and here the book demonstrably is not.
+        The detail is the sweep's OWN recorded text, which is already class-name-only
+        on a failure (``_run_sweep``'s leak posture), and the ``finally`` has still
+        invalidated the snapshot, bumped the wake nonce, and left the DisarmEvent the
+        sweep wrote -- a partial run moved venue state and must be visible everywhere.
 
         ``dry_run`` previews: ``resume_incomplete_sweep`` has no dry-run mode (it is
         the response protocol, not a query), so the preview composes the two disarm
@@ -335,24 +383,48 @@ def build_safety_router(
                 "stops_restored": restored,
                 "unprotected": unprotected,
             }
+        ran = False
         try:
+            # Both DB reads sit inside the guard: the watermark and the resume's own
+            # state load precede every venue call, so a refusal here has moved
+            # NOTHING and the raw sweep must still run.
+            watermark = _event_watermark(session)
             ran = gpipe.resume_incomplete_sweep(
                 session, broker=broker, source="cockpit")
+        except SQLAlchemyError:
+            log.warning("guardrail resume could not read the brake row -- falling "
+                        "back to the raw disarm sweep (a DISARM is unconditional)",
+                        exc_info=True)
+            _rollback_quietly(session, what="the guardrail resume read")
+            return None
         finally:
             # The resume swallows venue errors, but it can still have moved venue
             # state before one -- same posture as the raw path: invalidate FIRST
-            # (a woken fetch must never hit the stale cache), then wake.
-            broker_snapshot.invalidate()
-            action_nonce.bump()
+            # (a woken fetch must never hit the stale cache), then wake. Only when a
+            # sweep actually ran: a stand-down touched nothing.
+            if ran:
+                broker_snapshot.invalidate()
+                action_nonce.bump()
+        if not ran:
+            # The trip was cleared (or its sweep finished) between our peek and the
+            # resume's own read. Nothing was swept -- fall through to the raw sweep.
+            log.info("guardrail resume stood down (state moved mid-request) -- "
+                     "running the raw disarm sweep instead")
+            return None
         after = guardrails_repo.peek_guardrails(session)
+        detail = _sweep_detail(session, after=watermark)
+        if after.sweep_state != "complete":
+            # A human pressed DISARM and the book is NOT clean: never a 200.
+            raise HTTPException(
+                status_code=503,
+                detail=f"guardrail sweep did not complete "
+                       f"(sweep_state={after.sweep_state}): {detail}")
         return {
             "dry_run": False,
             "mode": "guardrail-resume",
             "trip_id": trip_id,
             "sweep_state": after.sweep_state,
-            "detail": (_sweep_detail(session) if ran else
-                       "nothing to resume -- another process finished this "
-                       "trip's sweep first"),
+            "detail": detail,
             # Not itemized on this path (the pipeline returns a bool, not the
             # orders): ``detail`` carries the sweep's own recorded summary, and the
             # guardrails event history has the row. Kept as empty lists rather than
@@ -404,6 +476,15 @@ def build_safety_router(
         whose sweep already reads 'complete' -- takes the body below UNCHANGED; the
         routing costs one column select (``peek``: a read, never a seed) taken
         AFTER the lock and the broker, so no ordering or status code moves.
+
+        THE ROUTING NEVER BLOCKS THE SWEEP. DISARM is the emergency path and it
+        predates the brake: before Task 15 it reached the venue without reading the
+        database at all, and it must keep doing so. A refused/failed brake read is
+        logged and IGNORED -- the raw sweep below runs -- and a resume that stands
+        down (the trip cleared mid-request) falls through to that same sweep rather
+        than answering "200, nothing happened". The only DB failure that may stop
+        this endpoint is one raised by the sweep itself, AFTER the entry orders are
+        already cancelled.
         """
         if not disarm_lock.acquire(blocking=False):
             raise HTTPException(status_code=409, detail="disarm already in flight")
@@ -415,16 +496,29 @@ def build_safety_router(
                     status_code=503, detail=broker_error_detail(exc)
                 ) from exc
             if broker is None:
-                raise HTTPException(status_code=409, detail="no broker configured")
-            g = guardrails_repo.peek_guardrails(session)
+                raise HTTPException(status_code=409, detail=_NO_BROKER)
+            try:
+                g = guardrails_repo.peek_guardrails(session)
+            except SQLAlchemyError:
+                # A dead/refused DB must not cost the operator their emergency
+                # sweep: pre-Task-15 this endpoint read no DB before the venue, and
+                # that guarantee is restored here rather than defended downstream.
+                log.warning("could not read the brake row -- running the raw disarm "
+                            "sweep (a DISARM is unconditional)", exc_info=True)
+                g = None
+                _rollback_quietly(session, what="the brake read")
             # ``gpipe._INCOMPLETE_SWEEPS`` rather than a literal: ONE definition of
             # "the sweep has not finished" across the pipeline and the cockpit.
             # ``trip_id is None`` on a tripped row is never expected -- if it ever
             # happens the resume could not key a sweep outcome anyway, so fall
             # through to the raw sweep (protection now beats bookkeeping).
-            if (g.state == "tripped" and g.sweep_state in gpipe._INCOMPLETE_SWEEPS
+            if (g is not None and g.state == "tripped"
+                    and g.sweep_state in gpipe._INCOMPLETE_SWEEPS
                     and g.trip_id is not None):
-                return _resume_disarm(session, broker, g, dry_run=dry_run)
+                resumed = _resume_disarm(session, broker, g, dry_run=dry_run)
+                if resumed is not None:
+                    return resumed
+                # None = the resume did not happen; the raw sweep below still must.
             # Pre-bound so the FAILURE path can report how many entries were pulled
             # before the raise: pull_entry_orders raising mid-cancel leaves the name
             # unbound, and 0 ("we don't know that any cancel landed") is the honest
@@ -640,19 +734,34 @@ def build_safety_router(
           still 200, ``sweep.ran`` False). ``dry_run=1`` previews and changes
           NOTHING -- not the state, not a row, not the venue.
         * ``clear_halt`` -- 'halted' -> 'ok', DB-only. A trip never clears here.
+          ``dry_run`` is a 422 on this and the other two DB-only actions: there is
+          nothing to preview, and silently ignoring the flag would turn a preview
+          into an execution.
         * ``clear_trip`` -- requires ``ack_trip_id``: the clear only matches the trip
           the operator actually READ, so a stale cockpit screen cannot release a
           newer trip. The response carries ``still_breached`` so the panel can say
           immediately that this will re-trip within the hour.
         """
+        if dry_run and body.action != "halt":
+            # HALT is the only action with a venue side to preview; the other three
+            # are pure DB transitions. Refusing loudly rather than ignoring the flag
+            # matters because the frontend fires the preview on every hold-START: a
+            # silently-ignored dry_run would EXECUTE the action -- a "preview" that
+            # released the brake.
+            raise HTTPException(status_code=422,
+                                detail="dry_run is only supported for halt")
+
         if body.action == "edit":
             fields = {k: getattr(body, k)
                       for k in sorted(body.model_fields_set - _NON_LIMIT_KEYS)}
             try:
                 guardrails_repo.edit_limits(session, source="cockpit", **fields)
-            except ValueError as exc:
-                # The repo's message, verbatim: it names the offending column and the
-                # rule it broke, which is more useful than anything restated here.
+            except (ValueError, TypeError) as exc:
+                # ValueError = the repo whitelist / positivity rules. TypeError =
+                # a body key that COLLIDES with edit_limits' own parameters
+                # ('source', 'session'): Python raises before the whitelist ever
+                # runs, and an uncaught one would 500 the brake's write endpoint.
+                # Both are client errors, and both carry the message verbatim.
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             action_nonce.bump()
             g = guardrails_repo.peek_guardrails(session)

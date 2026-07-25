@@ -65,6 +65,34 @@ DISARM_KEYS = {"dry_run", "cancelled", "sells_kept", "stops_restored", "unprotec
 RESUME_KEYS = DISARM_KEYS | {"mode", "trip_id", "sweep_state", "detail"}
 
 
+#: DML verbs only. The listeners below must NOT match sqlite's schema reflection
+#: (``pragma main.table_info("agent_guardrails")``), which ``create_all`` runs while
+#: the app builds its engine: denying that kills the app before any endpoint code
+#: runs and the test would "pass" against a request that never happened.
+_DML = ("select", "insert into", "update", "delete from")
+
+
+@contextmanager
+def _deny_all(*tables: str) -> Iterator[list[str]]:
+    """Harsher than ``_deny_writes``: every DML statement touching ``tables`` raises
+    -- reads included. The read-refusal case matters on the emergency path: DISARM
+    must reach the venue whatever the database is doing."""
+    attempted: list[str] = []
+
+    def _guard(conn: Any, cursor: Any, statement: str, parameters: Any,
+               context: Any, executemany: bool) -> None:
+        sql = " ".join(statement.split()).lower()
+        if sql.startswith(_DML) and any(t in sql for t in tables):
+            attempted.append(sql)
+            raise OperationalError(statement, {}, Exception("no grant"))
+
+    event.listen(Engine, "before_cursor_execute", _guard)
+    try:
+        yield attempted
+    finally:
+        event.remove(Engine, "before_cursor_execute", _guard)
+
+
 @contextmanager
 def _deny_writes(*tables: str) -> Iterator[list[str]]:
     """Simulate a read-only DB grant: every INSERT/UPDATE touching ``tables`` raises.
@@ -242,6 +270,51 @@ def test_post_edit_rejects_unknown_key_and_nonpositive(tmp_path: Path) -> None:
         assert s.query(AgentGuardrailEvent).count() == 0
 
 
+@pytest.mark.parametrize("key", ["source", "session"])
+def test_post_edit_body_key_colliding_with_a_kwarg_is_422_not_500(
+    tmp_path: Path, key: str,
+) -> None:
+    """``edit_limits(session, source='cockpit', **fields)``: a body key named after
+    one of its OWN parameters raises TypeError at the call, before the whitelist ever
+    runs -- so the whitelist's ValueError cannot cover it and an uncaught one would
+    500 the brake's write endpoint. It is a client error like any other bad key: 422,
+    message verbatim, nothing written."""
+    client, engine, _calls = _broker_app(tmp_path, None)
+    r = client.post("/api/guardrails", headers=_HDR,
+                    json={"action": "edit", key: "x"})
+    assert r.status_code == 422
+    assert key in r.json()["detail"]
+    with Session(engine) as s:
+        assert s.query(AgentGuardrailEvent).count() == 0
+
+
+@pytest.mark.parametrize("action", ["edit", "clear_halt", "clear_trip"])
+def test_post_dry_run_is_refused_on_the_db_only_actions(
+    tmp_path: Path, action: str,
+) -> None:
+    """HALT is the only action with a venue side to preview. A silently-ignored
+    dry_run would EXECUTE the other three -- and the frontend fires the preview on
+    every hold-START, so a 'preview' would have released the brake before the
+    operator finished holding. 422, and the brake never moves."""
+    client, engine, _calls = _broker_app(tmp_path, None)
+    with Session(engine) as s:
+        assert gr.halt(s, source="test") is True
+
+    body: dict[str, object] = {"action": action}
+    if action == "edit":
+        body["max_trades_per_day"] = 3
+    elif action == "clear_trip":
+        body["ack_trip_id"] = 1
+    r = client.post("/api/guardrails?dry_run=1", headers=_HDR, json=body)
+    assert r.status_code == 422
+    assert r.json()["detail"] == "dry_run is only supported for halt"
+
+    assert client.get("/api/guardrails").json()["state"] == "halted"   # untouched
+    assert _nonce_of(client.app).value == 0
+    with Session(engine) as s:
+        assert [e.kind for e in s.query(AgentGuardrailEvent).all()] == ["halt"]
+
+
 def test_post_edit_db_failure_is_503_never_200(tmp_path: Path) -> None:
     """G7 posture, stated as a rule: the PRIMARY state write lets ``SQLAlchemyError``
     propagate to the app-level handler. A cockpit that answered 200 while the UPDATE
@@ -372,6 +445,38 @@ def test_post_halt_engages_the_brake_before_touching_the_broker(
         assert s.query(AgentGuardrails).one().state == "halted"
         assert [e.kind for e in s.query(AgentGuardrailEvent).all()] == ["halt"]
         assert s.query(DisarmEvent).count() == 0   # no sweep ran, nothing to journal
+    r = client.post("/api/guardrails", headers=_HDR, json={"action": "halt"})
+    assert r.status_code == 409
+    assert r.json()["detail"] == "state is not ok -- nothing to halt (state is halted)"
+
+
+def test_post_halt_sweep_failure_is_503_with_the_brake_left_on(tmp_path: Path) -> None:
+    """The other half of the halt failure surface: the brake engages, then the sweep
+    dies AT the venue. 503 carrying the exception CLASS only, and everything the
+    ``finally`` owes still happens -- the halt is durable, the nonce bumps, and the
+    DisarmEvent is written because a partial sweep has moved venue state and is MORE
+    alarming than a clean one, not less. The retry's 409 names 'halted', so the 503
+    can never be misread as a brake that failed to engage."""
+
+    class _CancelRefusedBroker(FakeBroker):
+        def cancel_order(self, broker_order_id: str) -> None:
+            raise RuntimeError("secret-venue-host.alpaca.markets refused the cancel")
+
+    broker = _disarm_broker(_CancelRefusedBroker())
+    client, engine, _calls = _broker_app(tmp_path, broker)
+    nonce = _nonce_of(client.app)
+
+    r = client.post("/api/guardrails", headers=_HDR, json={"action": "halt"})
+    assert r.status_code == 503
+    assert r.json()["detail"] == "broker error (RuntimeError)"
+    assert "secret-venue-host" not in r.text
+    assert nonce.value == 1
+    with Session(engine) as s:
+        assert s.query(AgentGuardrails).one().state == "halted"
+        ev = s.query(DisarmEvent).one()
+        # 0 is the honest floor: pull_entry_orders died mid-cancel, so nothing is
+        # provably cancelled -- never an invented count.
+        assert (ev.reason, ev.orders_cancelled) == ("halt", 0)
     r = client.post("/api/guardrails", headers=_HDR, json={"action": "halt"})
     assert r.status_code == 409
     assert r.json()["detail"] == "state is not ok -- nothing to halt (state is halted)"
@@ -568,6 +673,131 @@ def test_disarm_untripped_behavior_unchanged(tmp_path: Path) -> None:
     assert body["stops_restored"] == ["NVDA"]
     assert broker.submitted_specs[-1].client_order_id.startswith(
         "disarm-stop-NVDA-cockpit-")
+    with Session(engine) as s:
+        assert s.query(DisarmEvent).one().reason == "cockpit"
+
+
+def _tripped_partial_book(
+    tmp_path: Path, broker: FakeBroker, *, kill_legs: bool = True,
+) -> tuple[TestClient, Engine, int]:
+    """A tripped book whose sweep never finished, with a dead NVDA stop leg and a
+    recorded level to restore it from -- the resume path's scenario. ``kill_legs``
+    is off for brokers that REFUSE cancels (the teardown would raise in setup)."""
+    if kill_legs:
+        _kill_sell_legs(broker)
+    client, engine, _calls = _broker_app(tmp_path, broker)
+    with Session(engine) as s:
+        s.add(_recorded_stop_row("NVDA", 95.0))
+        s.commit()
+        trip_id = gr.trip(s, breaker="max_drawdown_usd", reason="dd breach",
+                          source="screen")
+        assert trip_id is not None
+        gr.record_sweep_outcome(s, trip_id=trip_id, outcome="partial",
+                                detail="OLD SWEEP TEXT", source="screen")
+    return client, engine, trip_id
+
+
+def test_disarm_resume_that_stays_partial_is_a_503_never_a_200(
+    tmp_path: Path,
+) -> None:
+    """A human just pressed DISARM: a 200 is read as "the book is safe". When the
+    resumed sweep fails at the venue the book demonstrably is NOT, so the honest
+    answer is the raw disarm's partial posture -- 503, exception CLASS only. The
+    ``finally`` work still happens (snapshot invalidated, nonce bumped, the sweep's
+    own DisarmEvent written): a partial run moved venue state and must be visible."""
+
+    class _CancelRefusedBroker(FakeBroker):
+        def cancel_order(self, broker_order_id: str) -> None:
+            raise RuntimeError("secret-venue-host.alpaca.markets refused the cancel")
+
+    client, engine, _trip_id = _tripped_partial_book(
+        tmp_path, _disarm_broker(_CancelRefusedBroker()), kill_legs=False)
+    nonce = _nonce_of(client.app)
+
+    r = client.post("/api/disarm", headers=_HDR)
+    assert r.status_code == 503
+    detail = r.json()["detail"]
+    assert "sweep_state=partial" in detail
+    assert "broker error (RuntimeError)" in detail
+    assert "secret-venue-host" not in r.text     # leak posture: class only
+    assert nonce.value == 1                      # the partial run still wakes windows
+    with Session(engine) as s:
+        row = s.query(AgentGuardrails).one()
+        assert (row.state, row.sweep_state) == ("tripped", "partial")
+        assert s.query(DisarmEvent).one().reason == "guardrail:max_drawdown_usd"
+
+
+def test_disarm_resume_detail_is_scoped_to_this_request(tmp_path: Path) -> None:
+    """The watermark pin. ``_record_outcome_guarded`` SWALLOWS a failed outcome
+    write, so "no sweep event was written" is a real outcome -- and reporting the
+    PRIOR sweep's text there would let an old success narrate a run that just
+    failed. Scoped to ids written after this request started, the fallback says
+    exactly what is known instead."""
+    client, engine, _trip_id = _tripped_partial_book(tmp_path, _disarm_broker())
+
+    # deny only the event INSERT: the sweep runs and moves the venue, then
+    # record_sweep_outcome's write is refused and guarded-swallowed.
+    with _deny_writes("agent_guardrail_events"):
+        r = client.post("/api/disarm", headers=_HDR)
+
+    assert r.status_code == 503
+    detail = r.json()["detail"]
+    assert "sweep ran; outcome write failed — state may lag" in detail
+    assert "OLD SWEEP TEXT" not in detail        # never a prior sweep's words
+    with Session(engine) as s:                   # the rolled-back write left it lagging
+        assert s.query(AgentGuardrails).one().sweep_state == "partial"
+
+
+def test_disarm_still_sweeps_when_the_brake_row_cannot_be_read(
+    tmp_path: Path,
+) -> None:
+    """EMERGENCY-PATH PIN. Before Task 15 this endpoint reached the venue without
+    reading the database at all; the trip-routing peek must not hand a dead DB a veto
+    over the operator's sweep. A refused brake read is logged and IGNORED -- the raw
+    sweep runs in full, and the response is the plain 5-key shape."""
+    broker = _disarm_broker()
+    _kill_sell_legs(broker)
+    client, engine, _calls = _broker_app(tmp_path, broker)
+    with Session(engine) as s:
+        s.add(_recorded_stop_row("NVDA", 95.0))
+        s.commit()
+
+    with _deny_all("agent_guardrails") as attempted:
+        r = client.post("/api/disarm", headers=_HDR)
+
+    assert attempted                             # the peek WAS tried, and refused
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body) == DISARM_KEYS
+    assert body["cancelled"] == [{"symbol": "AMD", "broker_order_id": "fake-0"}]
+    assert body["stops_restored"] == ["NVDA"]    # the whole sweep, not just the pull
+    assert [o for o in broker.list_open_orders() if o.side == "buy"] == []
+    with Session(engine) as s:
+        assert s.query(DisarmEvent).one().reason == "cockpit"
+
+
+def test_disarm_falls_through_to_the_raw_sweep_when_the_resume_stands_down(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mid-request race: the trip is cleared (or swept by another process)
+    between this request's peek and the resume's own state read, so the resume
+    stands down. Answering "200, nothing happened" would leave resting entry orders
+    working at the venue on the one request whose entire purpose is to pull them --
+    the raw sweep runs instead."""
+    from swing_screener.pipeline import guardrails as gpipe
+
+    broker = _disarm_broker()
+    client, engine, _calls = _broker_app(tmp_path, broker)
+    with Session(engine) as s:
+        assert gr.trip(s, breaker="max_drawdown_usd", reason="dd", source="screen")
+    monkeypatch.setattr(gpipe, "resume_incomplete_sweep",
+                        lambda *a, **k: False)   # "another process got there first"
+
+    r = client.post("/api/disarm", headers=_HDR)
+    assert r.status_code == 200
+    assert set(r.json()) == DISARM_KEYS          # the raw shape, not a resume report
+    assert r.json()["cancelled"] == [{"symbol": "AMD", "broker_order_id": "fake-0"}]
+    assert [o for o in broker.list_open_orders() if o.side == "buy"] == []
     with Session(engine) as s:
         assert s.query(DisarmEvent).one().reason == "cockpit"
 
