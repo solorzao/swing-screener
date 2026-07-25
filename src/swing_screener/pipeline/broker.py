@@ -23,7 +23,10 @@ from typing import Protocol
 
 # The order lifecycle states a broker order can be in. The two "open" states (an order the
 # venue may still fill) are the ones ``list_open_orders`` surfaces; the rest are terminal.
-_OPEN_STATUSES = ("new", "partially_filled")
+# PUBLIC because "is this order still WORKING at the venue?" is asked outside this module
+# too -- ``disarm.ensure_stop_protection`` asks it of an order it found by client_order_id
+# (a duplicate-id rejection is only benign if that order is actually still working).
+OPEN_STATUSES = ("new", "partially_filled")
 
 
 def broker_error_detail(exc: BaseException) -> str:
@@ -219,7 +222,7 @@ class FakeBroker:
 
     def list_open_orders(self) -> list[BrokerOrder]:
         """Every order still working at the venue (``new`` / ``partially_filled``)."""
-        return [o for o in self._orders.values() if o.status in _OPEN_STATUSES]
+        return [o for o in self._orders.values() if o.status in OPEN_STATUSES]
 
     def get_positions(self) -> list[BrokerPosition]:
         return list(self._positions.values())

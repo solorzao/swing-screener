@@ -29,7 +29,13 @@ from sqlalchemy.orm import Session
 
 from swing_screener.db import repo
 from swing_screener.db.session import get_engine
-from swing_screener.pipeline.broker import BrokerClient, BrokerOrder, BrokerOrderSpec
+from swing_screener.pipeline.broker import (
+    OPEN_STATUSES,
+    BrokerClient,
+    BrokerOrder,
+    BrokerOrderSpec,
+    broker_error_detail,
+)
 from swing_screener.pipeline.broker_alpaca import build_broker
 from swing_screener.settings import Settings, load_settings
 
@@ -64,6 +70,31 @@ def pull_entry_orders(
     return entries, sells
 
 
+def _already_working_at_the_venue(broker: BrokerClient, client_order_id: str) -> bool:
+    """True when the venue already holds a WORKING order under ``client_order_id``.
+
+    The benign half of a failed stop re-submit. A duplicate client_order_id is
+    REJECTED by Alpaca -- it raises -- which is precisely what the day/trip-stamped key
+    is FOR: a same-evening (or same-trip) re-run must be a NO-OP, not an abort, and not
+    a false UNPROTECTED alarm about a position that is in fact guarded.
+
+    Detected by ASKING THE VENUE, never by parsing the error text: Alpaca's
+    duplicate-id message is not reliably parseable, the same reason the LiveAdapter's
+    orphan adoption looks the order up instead (``execution._adopt_orphan``). Anything
+    less than certain returns False -- a lookup that itself fails, an unknown key, or an
+    order that is no longer working (canceled/rejected/filled protects nothing) -- so
+    the caller falls through to the honest error path. Absence of evidence is never
+    evidence of protection."""
+    try:
+        existing = broker.get_order_by_client_id(client_order_id)
+    except Exception:  # noqa: BLE001 -- a venue boundary: fall through to the error path
+        log.warning("could not ask the venue whether %s already exists; the failed "
+                    "re-submit is reported as unprotected", client_order_id,
+                    exc_info=True)
+        return False
+    return existing is not None and existing.status in OPEN_STATUSES
+
+
 def ensure_stop_protection(
     broker: BrokerClient,
     stop_for: Callable[[str], float | None],
@@ -80,6 +111,17 @@ def ensure_stop_protection(
     ``(restored, unprotected)``: ``restored`` names every symbol a stop was
     re-submitted for -- dry-run INCLUDED (the symbols a real run WOULD protect, so a
     hold preview can show them); ``unprotected`` the positions left to the human.
+
+    PER-POSITION ERROR BOUNDARY (2026-07-25 spec review): each submit is isolated, so
+    ONE failure can never abort the pass and silently leave the REMAINING positions
+    neither restored nor reported -- the loop's whole purpose is the report. A failed
+    submit is triaged: a duplicate client_order_id (the venue rejecting our own
+    same-key re-run -- see ``_already_working_at_the_venue``) is BENIGN and skipped
+    quietly, since that key's stop is the protection; anything else appends the symbol
+    to ``unprotected`` with a class-name-only reason and the walk CONTINUES. This makes
+    the ``key_suffix`` idempotency claim true against a REAL venue: Alpaca RAISES on a
+    duplicate id rather than collapsing to the existing order the way ``FakeBroker``
+    does, so before this boundary a same-evening re-run aborted at the first position.
 
     LAST-INSTANT RE-CHECK (2026-07-18 red-team): open orders are re-listed
     immediately before EACH submit, because a CONCURRENT sweep (a guardrail trip
@@ -114,11 +156,24 @@ def ensure_stop_protection(
             log.info("protective stop for %s appeared at the venue since the scan "
                      "(a concurrent sweep) -- skipping the re-submit", pos.symbol)
             continue
+        client_order_id = f"disarm-stop-{pos.symbol}-{key_suffix}"
+        try:
+            broker.submit_order(BrokerOrderSpec(
+                client_order_id=client_order_id,
+                symbol=pos.symbol, side="sell", qty=pos.qty, order_type="stop",
+                limit_price=None, time_in_force="gtc", stop_price=stop))
+        except Exception as e:  # noqa: BLE001 -- a venue boundary: never abort the pass
+            if _already_working_at_the_venue(broker, client_order_id):
+                log.info("protective stop for %s already working at the venue under "
+                         "%s (duplicate-id rejection) -- the position is protected; "
+                         "nothing to do", pos.symbol, client_order_id)
+                continue
+            unprotected.append(pos.symbol)
+            log.error("UNPROTECTED position %s x%d: the protective stop re-submit "
+                      "failed (%s) -- protect it manually NOW", pos.symbol, pos.qty,
+                      broker_error_detail(e), exc_info=True)
+            continue
         restored.append(pos.symbol)
-        broker.submit_order(BrokerOrderSpec(
-            client_order_id=f"disarm-stop-{pos.symbol}-{key_suffix}",
-            symbol=pos.symbol, side="sell", qty=pos.qty, order_type="stop",
-            limit_price=None, time_in_force="gtc", stop_price=stop))
         log.info("re-submitted protective stop: %s x%d @ %.2f (level copied from the "
                  "ExecutionLog ticket)", pos.symbol, pos.qty, stop)
     return restored, unprotected

@@ -277,9 +277,12 @@ def _hourly_live_sync(session: Session, *, today: date,
             _rollback_guarded(session)
     # (c) the shared consult (Task 11): resume -> load -> evaluate -> respond.
     # The reconcile above may have just booked a stop-out's realized loss --
-    # trip the breakers same-HOUR, not at the evening screen. Bare call, verdict
-    # ignored: this job dispatches nothing, so a halted/tripped book needs no
-    # entry-pull from here (the digest's dispatch loop owns that response).
+    # trip the breakers same-HOUR, not at the evening screen. Bare call, the
+    # whole ConsultResult ignored: this job dispatches nothing, so a
+    # halted/tripped book needs no entry-pull from here (the digest's dispatch
+    # loop owns that response), and it asserts no protection invariant of its
+    # own (the evening screen owns the nightly stop re-assert, reading the
+    # result's ``swept`` flag).
     # broker None -> a fresh trip persists with sweep_state='pending' and the
     # next cycle's hoist (b) hands the resume a broker.
     try:

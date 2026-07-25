@@ -639,31 +639,30 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         # warning -- accepted: an import failure is a structural bug the
         # fresh-interpreter canary catches in CI, not a runtime condition.
         #
-        # The consult's verdict + whether it completed at all -- both read by the
-        # stop-protection re-assert below. ``consulted`` stays False when the
+        # What the consult DID (not what it decided) -- read by the
+        # stop-protection re-assert below. ``consult_swept`` stays None when the
         # consult RAISED, which skips the re-assert: what a failed consult did or
         # did not sweep is unknown, and a DB-side failure would also poison the
         # recorded-level lookup the re-assert copies its levels from (every
         # position would then be misreported UNPROTECTED because the ticket read
         # failed, not because no level exists). The skip is logged with the
         # failure below.
-        blocked: str | None = None
-        consulted = False
+        consult_swept: bool | None = None
         try:
             # The shared consult (Task 11): resume -> load -> evaluate-unless-
             # tripped -> respond, one definition for all three cycles. `broker`
             # may be None (off/paper, or live_sync's secrets-gap path) -- the
             # resume no-ops and a fresh trip persists with sweep_state='pending'
-            # for the digest/hourly cycles to finish. The verdict does not gate
-            # DISPATCH here (the screen dispatches nothing, so a halted/tripped
+            # for the digest/hourly cycles to finish. The blocking VERDICT is
+            # ignored here (the screen dispatches nothing, so a halted/tripped
             # book needs no entry-pull from this path -- the digest's dispatch
-            # loop owns that response); it is kept only for the one-pass rule of
-            # the re-assert below. The emailer (Task 10) is the minimal
-            # on-demand sender; its transport resolves lazily inside the
-            # closure, never at module import.
-            blocked = gpipe.consult(s, run_date=today, source="screen", broker=broker,
-                                    emailer=_screen_trip_emailer(s, run_date=today))
-            consulted = True
+            # loop owns that response); only the result's ``swept`` FACT is kept,
+            # for the one-pass rule of the re-assert below. The emailer (Task 10)
+            # is the minimal on-demand sender; its transport resolves lazily
+            # inside the closure, never at module import.
+            consult_swept = gpipe.consult(
+                s, run_date=today, source="screen", broker=broker,
+                emailer=_screen_trip_emailer(s, run_date=today)).swept
         except Exception:  # noqa: BLE001 -- guardrails must never block the screen
             log.warning("evening-screen guardrails evaluation failed; tonight's "
                         "stop-protection re-assert is skipped (the book's sweep "
@@ -693,19 +692,26 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         # trip/halt/kill RESPONSE to a brake, not a nightly invariant, and a
         # healthy book's working entries must survive the evening screen.
         #
-        # THE ONE-PASS RULE: skip ONLY when the consult returned 'tripped' -- its
-        # respond_to_trip / resume_incomplete_sweep path just ran a sweep, which
-        # ENDS in the same ensure pass -- or when the consult RAISED (above:
-        # what it swept is unknown). A second pass would be harmless at the venue
-        # (the re-list before each submit sees the fresh stop and skips) but it
-        # double-logs and muddies the conduct record.
-        # 'halted' DOES re-assert (2026-07-25 ruling): the manual-HALT sweep
-        # lives in the MORNING digest's dispatch loop, and the screen dispatches
-        # nothing -- so a halted evening sweeps NOTHING here, and a stop leg
-        # dying tonight would leave the halted book naked until the digest. "The
-        # operator is watching" does not hold overnight, and the halt brake is
-        # about not opening NEW risk, never about abandoning the protection on
-        # what is already on.
+        # THE ONE-PASS RULE keys on what the consult DID -- ``ConsultResult.swept``
+        # -- never on its blocking verdict. A sweep ends in this very ensure pass,
+        # so when one ran here a second pass would be harmless at the venue (the
+        # re-list before each submit sees the fresh stop and skips) but would
+        # double-log and muddy the conduct record. The consult RAISING also skips
+        # (above: what it swept is unknown).
+        # The verdict is NOT the predicate (2026-07-25 spec review, twice):
+        #  * 'halted' sweeps nothing HERE -- the manual-HALT sweep lives in the
+        #    MORNING digest's dispatch loop and the screen dispatches nothing, so
+        #    a leg dying tonight would leave the halted book naked until the
+        #    digest. "The operator is watching" does not hold overnight, and the
+        #    halt brake is about not opening NEW risk, never about abandoning the
+        #    protection on what is already on.
+        #  * 'tripped' likewise does not imply a sweep ran: from the SECOND
+        #    evening after a trip onward the resume no-ops (sweep_state is
+        #    'complete') and evaluation is skipped while tripped, so the consult
+        #    returns 'tripped' having touched no venue -- and an election LOSER
+        #    returns 'tripped' having deliberately touched nothing. Keying on the
+        #    verdict left a tripped book's dying stop legs naked every night the
+        #    brake stayed on, without even an UNPROTECTED line to show for it.
         #
         # NO DisarmEvent is written: nothing was disarmed. This is an invariant
         # REPAIR, and the restored/unprotected log lines ARE its record --
@@ -718,8 +724,19 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         # Swallow-everything + rollback-first, like the guardrails block above:
         # the screen's core job -- persisting the day's signals -- must never be
         # blocked by protection machinery.
-        if consulted and blocked != "tripped" and broker is not None:
+        if consult_swept is False and broker is not None:
             try:
+                # THE EXPOSURE GATE reads the DB's open live rows, not the venue's
+                # positions: it exists to keep a dark book (off/paper, no live
+                # exposure) from touching the venue at all, and ``reconcile_live``
+                # committed its materializations moments ago, so the two agree for
+                # every position the system itself opened. RESIDUAL, accepted: a
+                # venue position the DB never materialized -- hand-placed in the
+                # broker's own UI, or an orphan whose adoption never landed -- is
+                # skipped by this gate and never reaches the ensure pass. The
+                # Safety screen's bracket_shield lamp is the surface that catches
+                # those (it reads the VENUE), which is why this stays a cheap DB
+                # read rather than an unconditional get_positions() call.
                 if repo.load_open_live_trades(s):
                     restored, unprotected = ensure_stop_protection(
                         broker, lambda sym: repo.latest_recorded_stop(s, sym),

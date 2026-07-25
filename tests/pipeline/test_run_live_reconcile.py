@@ -31,7 +31,13 @@ from sqlalchemy.orm import Session
 from swing_screener.config import StrategyConfig
 from swing_screener.db import guardrails_repo as gr
 from swing_screener.db import repo
-from swing_screener.db.models import ExecutionLog, ExitEvent, PaperTrade, Signal
+from swing_screener.db.models import (
+    AgentGuardrailEvent,
+    ExecutionLog,
+    ExitEvent,
+    PaperTrade,
+    Signal,
+)
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline import disarm, run
 from swing_screener.pipeline.broker import BrokerOrder, BrokerOrderSpec, FakeBroker
@@ -395,6 +401,45 @@ def test_reassert_skipped_when_consult_swept(tmp_path, bars, monkeypatch):
     assert passes == [f"guardrail-{trip_id}"]
     assert [s.client_order_id for s in _restore_specs(broker)] == [
         f"disarm-stop-XYZ-guardrail-{trip_id}"]
+
+
+def test_second_evening_of_a_trip_still_re_asserts(tmp_path, bars, monkeypatch):
+    """THE hole the verdict-based rule left open: on the SECOND evening of a trip the
+    consult returns 'tripped' having swept NOTHING -- the resume no-ops (sweep_state
+    is already 'complete') and evaluation is skipped while tripped -- so a stop leg
+    that died TODAY would stay dead every night the brake stayed on, without even an
+    UNPROTECTED line (the whole block was skipped). The predicate keys on what the
+    consult DID (``ConsultResult.swept``), so the screen's own pass runs."""
+    monkeypatch.delenv("SWING_EXECUTION_MODE", raising=False)
+    monkeypatch.delenv("DIGEST_TO", raising=False)
+    monkeypatch.setattr(run, "_fetch_all_timeframes", lambda *a, **k: {})
+    passes = _count_ensure_passes(monkeypatch)
+
+    url = f"sqlite:///{tmp_path / 'reassertday2.sqlite'}"
+    broker = FakeBroker(real_money=False)
+    _venue_position(broker, "XYZ")             # today the day-TIF stop leg died
+    with Session(get_engine(url)) as s:
+        s.add(_open_live_trade(ticker="XYZ"))
+        s.commit()
+        _live_ticket(s, "XYZ")
+        # LAST night's trip, already fully swept -- the brake is simply still on.
+        trip_id = gr.trip(s, breaker="max_daily_loss_usd", reason="yesterday's breach",
+                          source="screen")
+        assert trip_id is not None
+        gr.record_sweep_outcome(s, trip_id=trip_id, outcome="complete",
+                                detail="swept last night", source="screen")
+        assert gr.load_guardrails(s).sweep_state == "complete"
+
+    run.run_screen(today=TODAY, broker=broker, **_kwargs(tmp_path, url))
+
+    with Session(get_engine(url)) as s:
+        g = gr.load_guardrails(s)
+        assert g.state == "tripped"                  # still tripped, still blocking
+        assert s.query(AgentGuardrailEvent).filter_by(kind="trip").count() == 1
+    assert passes == [f"screen-{TODAY:%Y%m%d}"]      # the consult swept nothing
+    spec = _restore_specs(broker)[0]
+    assert spec.client_order_id == f"disarm-stop-XYZ-screen-{TODAY:%Y%m%d}"
+    assert (spec.stop_price, spec.time_in_force) == (45.0, "gtc")
 
 
 def test_halted_book_still_gets_the_evening_re_assert(tmp_path, bars, monkeypatch):

@@ -24,6 +24,7 @@ venue hosts and credentials); the full traceback goes to the log.
 
 import logging
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Literal
 
@@ -38,6 +39,30 @@ log = logging.getLogger(__name__)
 
 #: the sweep_state values that mean "the sweep has not finished -- re-run it".
 _INCOMPLETE_SWEEPS = ("pending", "partial")
+
+
+@dataclass(frozen=True)
+class ConsultResult:
+    """What one guardrails consult decided AND what it actually did.
+
+    ``blocked`` is the BLOCKING STATE -- the dispatch verdict ('tripped' /
+    'halted' / None); ``swept`` is a statement of FACT about this process, this
+    cycle: a protective sweep (entry pulls + the ``ensure_stop_protection`` pass)
+    ran inside this call.
+
+    The two are deliberately separate because they answer different questions,
+    and conflating them is a money bug (2026-07-25 spec review). 'tripped' does
+    NOT imply a sweep ran here: from the SECOND cycle after a trip onward the
+    resume no-ops (``sweep_state`` is already 'complete') and evaluation is
+    skipped while tripped, so the consult returns 'tripped' having touched no
+    venue at all -- and an election LOSER returns 'tripped' having deliberately
+    touched nothing. A caller that owns a protection invariant (the evening
+    screen's nightly stop re-assert) must key on ``swept``, never on ``blocked``:
+    keying on the verdict left a tripped book's dying day-TIF stop legs naked
+    every night the brake stayed on."""
+
+    blocked: Literal["tripped", "halted"] | None
+    swept: bool
 
 
 def evaluate_breakers(session: Session, *, run_date: date) -> tuple[str, str] | None:
@@ -63,7 +88,7 @@ def consult(
     session: Session, *, run_date: date, source: str,
     broker: BrokerClient | None,
     emailer: Callable[[int, str, str], None] | None = None,
-) -> Literal["tripped", "halted"] | None:
+) -> ConsultResult:
     """The shared guardrails consult: resume -> load -> evaluate-unless-tripped ->
     respond. ONE definition for all three cycles -- the digest dispatch loop, the
     evening screen, and the hourly exit check -- so they can never drift on the
@@ -96,32 +121,42 @@ def consult(
        (persist-first, sweep, outcome, mail; ``broker`` None defers the sweep to
        the next cycle's resume, ``emailer`` None skips the mail step).
 
-    Returns the BLOCKING state -- ``'tripped'`` (a fresh breach responded to
-    here, or an already-tripped book) or ``'halted'`` -- or None when dispatch
-    may proceed. Any response BEYOND the protocol stays with the caller: the
-    dispatch loop breaks its batch and runs the manual-HALT sweep on
-    ``'halted'``; the screen and the hourly job dispatch nothing, so they call
-    this bare and ignore the verdict. FAIL-SAFE on the unexpected: any state
-    that is neither 'ok' nor one of the two known blocking values is reported as
-    ``'tripped'`` (the conservative bucket -- an unrecognized brake state must
-    BLOCK, never wave dispatch through) with a loud log naming it.
+    Returns a :class:`ConsultResult`: the BLOCKING state -- ``'tripped'`` (a
+    fresh breach responded to here, or an already-tripped book) or ``'halted'``,
+    or None when dispatch may proceed -- AND ``swept``, whether a protective
+    sweep actually ran inside this call. ``swept`` is True when step 1's resume
+    ran a sweep, or when step 3's ``respond_to_trip`` WON the election with a
+    broker in hand (an election loser and a broker-less trip touch no venue, and
+    a 'tripped' book on its second cycle does not even reach step 3). Callers
+    that own a protection invariant must read ``swept``; see ConsultResult.
+
+    Any response BEYOND the protocol stays with the caller: the dispatch loop
+    breaks its batch and runs the manual-HALT sweep on ``'halted'``; the screen
+    and the hourly job dispatch nothing, so they ignore the verdict (the screen
+    still reads ``swept`` for its nightly stop re-assert). FAIL-SAFE on the
+    unexpected: any state that is neither 'ok' nor one of the two known blocking
+    values is reported as ``'tripped'`` (the conservative bucket -- an
+    unrecognized brake state must BLOCK, never wave dispatch through) with a
+    loud log naming it.
     """
-    resume_incomplete_sweep(session, broker=broker, source=source)
+    swept = resume_incomplete_sweep(session, broker=broker, source=source)
     g = guardrails_repo.load_guardrails(session)
     breach = (None if g.state == "tripped"
               else evaluate_breakers(session, run_date=run_date))
     if breach is not None:
-        respond_to_trip(session, breaker=breach[0], reason=breach[1],
-                        source=source, broker=broker, emailer=emailer)
-        return "tripped"
+        trip_id = respond_to_trip(session, breaker=breach[0], reason=breach[1],
+                                  source=source, broker=broker, emailer=emailer)
+        # The sweep runs only when this call WON the election (trip_id is not
+        # None) and had a broker to sweep with -- respond_to_trip's own contract.
+        return ConsultResult("tripped", swept or (trip_id is not None and broker is not None))
     if g.state == "ok":
-        return None
+        return ConsultResult(None, swept)
     if g.state == "halted":
-        return "halted"
+        return ConsultResult("halted", swept)
     if g.state != "tripped":
         log.error("unexpected guardrails state %r -- blocking dispatch as 'tripped' "
                   "(fail-safe)", g.state)
-    return "tripped"
+    return ConsultResult("tripped", swept)
 
 
 def respond_to_trip(

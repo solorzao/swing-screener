@@ -939,12 +939,16 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                     # dispatch loop's OWN posture, deliberately kept outside consult
                     # (the screen and the hourly job dispatch nothing).
                     if isinstance(adapter, LiveAdapter):
+                        # Only the blocking VERDICT matters here: the loop's own
+                        # response (break the batch, run the manual-HALT sweep)
+                        # keys off it. The result's ``swept`` flag is for callers
+                        # that own a protection invariant (the evening screen).
                         blocked = gpipe.consult(
                             session, run_date=run_date, source="digest",
                             broker=live_broker,
                             emailer=_trip_emailer(
                                 session, run_date=run_date,
-                                recipient=recipient, send=send))
+                                recipient=recipient, send=send)).blocked
                         if blocked is not None:
                             log.warning("guardrails brake: halting dispatch for %s %s",
                                         kind, run_date)

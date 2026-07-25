@@ -2,12 +2,17 @@
 
 The success path ("a real disarm records reason 'cockpit'") is pinned in
 test_api.py; this file pins the gap that motivated the fix: a disarm that cancels
-the entry orders and then dies restoring stops HAS moved venue state, and the
-System Behavior Auditor's breach scan exists to flag exactly such disarms -- so
-the failure path must persist a DisarmEvent too (reason 'cockpit-partial'),
-best-effort, never masking the original 503. Helpers are deliberate local copies
-of test_api.py's disarm scenario (same FakeBroker seeding), so this file stands
-alone.
+the entry orders and then dies HAS moved venue state, and the System Behavior
+Auditor's breach scan exists to flag exactly such disarms -- so the failure path
+must persist a DisarmEvent too (reason 'cockpit-partial'), best-effort, never
+masking the original 503. Helpers are deliberate local copies of test_api.py's
+disarm scenario (same FakeBroker seeding), so this file stands alone.
+
+The cancel-loop failure is still that raising 503 path. A refused STOP RE-SUBMIT
+no longer is: since ``ensure_stop_protection`` grew a per-position boundary
+(2026-07-25) it triages the refusal into ``unprotected`` -- the alarm that names
+the position -- and sweeps the rest of the book instead of aborting on the first
+one. Both postures are pinned below.
 """
 
 from datetime import date
@@ -66,33 +71,49 @@ def _recorded_stop_row(ticker: str, stop: float) -> ExecutionLog:
     )
 
 
-def test_disarm_partial_failure_still_records_a_disarm_event(tmp_path: Path) -> None:
-    """A disarm that cancels the entry orders then DIES restoring stops has moved
-    venue state -- the exact event the Auditor's breach scan exists to flag -- so
-    the failure path persists a DisarmEvent too: reason 'cockpit-partial', with
-    the count of entries pulled before the raise. The response stays the 503
-    class-only error (the event write never masks it)."""
+def test_disarm_reports_a_refused_stop_as_unprotected_and_keeps_going(
+    tmp_path: Path,
+) -> None:
+    """A venue that REFUSES one stop re-submit no longer aborts the sweep.
+
+    ``ensure_stop_protection``'s per-position boundary (2026-07-25) triages the
+    failure instead of raising: the refused symbol joins ``unprotected`` -- the same
+    red no-Escape alarm the no-recorded-level case raises, now NAMING the position --
+    while every other position is still swept. That is strictly safer than the old
+    posture, where the first refusal raised a 503 that named nothing and left the
+    REMAINING positions unattempted. The DisarmEvent still records the venue-moving
+    run for the Auditor, and the leak posture is unchanged: no venue host on the
+    wire."""
 
     class _RestoreRefusedBroker(FakeBroker):
         def submit_order(self, spec: BrokerOrderSpec) -> Any:
-            if spec.client_order_id.startswith("disarm-stop-"):
+            if spec.client_order_id.startswith("disarm-stop-NVDA"):
                 raise RuntimeError("secret-venue-host refused the stop re-submit")
             return super().submit_order(spec)
 
     broker = _disarm_broker(_RestoreRefusedBroker())
+    # a SECOND naked position, to prove the pass continues past the refusal
+    other = broker.submit_order(BrokerOrderSpec(
+        client_order_id="entry-TSLA", symbol="TSLA", side="buy", qty=4,
+        order_type="limit", limit_price=200.0, time_in_force="day"))
+    broker.fill(other.broker_order_id, 200.0)
     _kill_sell_legs(broker)  # NVDA's stop leg is dead -> the restore path runs
     client, engine = _broker_client(tmp_path, broker)
     with Session(engine) as s:
         s.add(_recorded_stop_row("NVDA", 95.0))
+        s.add(_recorded_stop_row("TSLA", 190.0))
         s.commit()
+
     r = client.post("/api/disarm", headers=_HDR)
-    assert r.status_code == 503
-    assert r.json()["detail"] == "broker error (RuntimeError)"
-    assert "secret-venue-host" not in r.text          # leak posture survives the record
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["unprotected"] == ["NVDA"]            # the alarm NAMES the position
+    assert body["stops_restored"] == ["TSLA"]         # ...and the rest was protected
+    assert "secret-venue-host" not in r.text          # leak posture holds
     with Session(engine) as s:
-        ev = s.query(DisarmEvent).one()               # the Auditor SEES the partial run
-        assert ev.reason == "cockpit-partial"
-        assert ev.orders_cancelled == 1               # AMD's entry WAS pulled first
+        ev = s.query(DisarmEvent).one()               # the Auditor SEES the sweep
+        assert ev.orders_cancelled == 1               # AMD's resting entry was pulled
 
 
 def test_disarm_failure_during_the_cancel_loop_records_the_attempt(

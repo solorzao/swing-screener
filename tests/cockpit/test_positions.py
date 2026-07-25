@@ -118,7 +118,8 @@ def test_positions_live_rows_r_only_vs_shares_join(tmp_path: Path) -> None:
         # JOINED's log history: older filled_live(3) -> newer submitted_live(7) wins;
         # the newest-of-all canceled(99) never reserved shares and must not join,
         # and the even-newer SELL-side live ticket (42) is an exit, not position
-        # size -- the join is buy-side only, like repo.latest_recorded_stop.
+        # size -- the join is ENTRY-side (both vocabularies: repo.ENTRY_SIDES),
+        # like repo.latest_recorded_stop.
         s.add(_exec_log(ticker="JOINED", account="live", mode="live", shares=3,
                         status="filled_live"))
         s.add(_exec_log(ticker="JOINED", account="live", mode="live", shares=7,
