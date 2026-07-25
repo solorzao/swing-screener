@@ -1,6 +1,6 @@
 import raw from './glossary.data.json'
 
-/* The cockpit glossary — the ONE source of vocabulary truth. The 112 terms live
+/* The cockpit glossary — the ONE source of vocabulary truth. Every term lives
    in glossary.data.json (imported here, read by tests/cockpit/test_glossary.py);
    there is no second, forkable copy. Behavioral terms carry a `source` citation to
    the maintained truth that governs them (a North Star principle # and/or a source

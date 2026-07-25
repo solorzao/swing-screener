@@ -17,6 +17,7 @@ import type {
   GuardrailsPostResult,
 } from '../lib/api'
 import { fmtStamp, localTodayIso } from '../lib/fmt'
+import { HelpTerm } from './HelpTerm'
 import { HoldToConfirm } from './HoldToConfirm'
 
 /* GUARDRAILS — the brake, on the Execution Safety screen (screen 7).
@@ -108,7 +109,9 @@ function StateBanner({ g }: { g: Guardrails }) {
   if (g.state === 'ok') {
     return (
       <div className="gr-banner gr-ok">
-        <div className="gr-state">OK</div>
+        <div className="gr-state">
+          <HelpTerm term="brake state">OK</HelpTerm>
+        </div>
         <div className="gr-banner-note">
           the brake is released — the breakers below are consulted before every
           dispatch, and hourly while the market is open
@@ -119,7 +122,9 @@ function StateBanner({ g }: { g: Guardrails }) {
   if (g.state === 'halted') {
     return (
       <div className="gr-banner gr-halted" role="status">
-        <div className="gr-state">HALTED</div>
+        <div className="gr-state">
+          <HelpTerm term="brake state">HALTED</HelpTerm>
+        </div>
         <div className="gr-banner-note">
           an operator brake is engaged — nothing dispatches until it is cleared.
           Positions and their stops are untouched.
@@ -133,7 +138,14 @@ function StateBanner({ g }: { g: Guardrails }) {
   const reason = g.trip_reason ?? 'no reason recorded'
   return (
     <div className="gr-banner gr-tripped" role="alert">
-      <div className="gr-state">TRIPPED — {retrying ? 'SWEEP RETRYING' : reason}</div>
+      <div className="gr-state">
+        <HelpTerm term="brake state">TRIPPED</HelpTerm> —{' '}
+        {retrying ? (
+          <HelpTerm term="sweep (guardrail)">SWEEP RETRYING</HelpTerm>
+        ) : (
+          reason
+        )}
+      </div>
       {retrying && <div className="gr-banner-reason">{reason}</div>}
       <div className="gr-banner-note">
         {g.trip_id !== null && `trip #${g.trip_id} · `}
@@ -223,6 +235,10 @@ interface LimitField {
   note: string
   /** No unset: the column is NOT NULL, so a null is a 422 and never a disarm. */
   required?: boolean
+  /** Glossary key — when set, the LABEL becomes an inline HelpTerm (the
+   * JournalScreen Metric idiom). Only the fields whose meaning is a defined
+   * term carry one; the three day/count caps say what they are on the tin. */
+  term?: string
 }
 
 const LIMIT_FIELDS: LimitField[] = [
@@ -249,12 +265,14 @@ const LIMIT_FIELDS: LimitField[] = [
     label: 'loss streak halt',
     kind: 'int',
     note: 'consecutive losing closes',
+    term: 'loss streak',
   },
   {
     key: 'hwm_anchor_date',
     label: 'drawdown anchor date',
     kind: 'date',
     note: 'the day the drawdown is measured from',
+    term: 'drawdown anchor / high-water mark',
   },
   {
     key: 'hwm_baseline_usd',
@@ -262,6 +280,7 @@ const LIMIT_FIELDS: LimitField[] = [
     kind: 'num',
     required: true,
     note: 'equity at that anchor — NOT NULL, so it has no unset',
+    term: 'drawdown anchor / high-water mark',
   },
 ]
 
@@ -424,7 +443,10 @@ function LimitsForm({
         {LIMIT_FIELDS.map((f) => (
           <label className="gr-field" key={f.key}>
             <span className="gr-lab">
-              {f.label}
+              {/* A HelpTerm is a <button>, i.e. interactive content, so the
+                  wrapping <label> does NOT forward its click to the input — the
+                  popover opens without also focusing the field. */}
+              {f.term === undefined ? f.label : <HelpTerm term={f.term}>{f.label}</HelpTerm>}
               <em className="gr-lab-note">{f.note}</em>
             </span>
             <input
@@ -1028,7 +1050,9 @@ function AnchorReset({ g, onWrote }: { g: Guardrails; onWrote: () => void }) {
   return (
     <div className="gr-anchor">
       <div className="gr-sub">
-        RESET THE DRAWDOWN ANCHOR
+        <HelpTerm term="drawdown anchor / high-water mark">
+          RESET THE DRAWDOWN ANCHOR
+        </HelpTerm>
         <span className="gr-sub-note">
           re-bases the high-water mark so the cumulative breaker stops measuring an
           old peak
@@ -1120,7 +1144,7 @@ function ClearTripControl({
   return (
     <div className="gr-clear">
       <div className="gr-sub">
-        CLEAR THE TRIP
+        CLEAR THE <HelpTerm term="trip">TRIP</HelpTerm>
         <span className="gr-sub-note">
           releases the brake · the breach that caused it is NOT resolved by clearing
         </span>
@@ -1245,7 +1269,7 @@ export function GuardrailsPanel({ wake }: { wake: number }) {
   return (
     <section className="panel">
       <div className="panel-head">
-        GUARDRAILS
+        <HelpTerm term="guardrail">GUARDRAILS</HelpTerm>
         <span className="panel-caption">
           a brake, not a knob — env stays the master arm · scope: the shared
           agent_guardrails row, read by EVERY process (not this process&apos;s env)
@@ -1272,6 +1296,16 @@ export function GuardrailsPanel({ wake }: { wake: number }) {
                 brake 409s; an acknowledgement of a superseded trip is rejected)
               </div>
             )}
+            {/* The one head the controls row lacked: the HALT is the panel's
+                only hand-thrown brake, and (unlike a gr-sub over a form) it
+                exists to carry the term — a HelpTerm is a <button> and cannot
+                live inside the HALT button's own label. */}
+            <div className="gr-sub">
+              <HelpTerm term="HALT (brake)">HALT</HelpTerm>
+              <span className="gr-sub-note">
+                the hand brake · releasing it arms nothing — the env master arm still decides
+              </span>
+            </div>
             <div className="gr-controls">
               <HaltControl g={last} onWrote={onWrote} />
               {last.state === 'halted' && (

@@ -13,7 +13,7 @@ babysitting.
 
 > New to the vocabulary (Heiken Ashi, R-multiples, shadow book, conviction)? The cockpit
 > has a built-in glossary: press `g` then `r` (the Reference screen) and open the
-> **Glossary** panel — 112 terms, each linked to where it's used.
+> **Glossary** panel — the whole vocabulary, each term linked to where it's used.
 
 ## The first two weeks (onboarding path)
 

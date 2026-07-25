@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ApiError, D503_SWEEP, postDisarm } from '../lib/api'
 import type { DisarmRaw, DisarmResult, DisarmResumePreview, Gate } from '../lib/api'
+import { HelpTerm } from './HelpTerm'
 import { HoldToConfirm } from './HoldToConfirm'
 
 /* The DISARM subsystem (the sixth action — plan Task 15 / scope decision 1),
@@ -144,7 +145,10 @@ function DisarmOutcome({ result }: { result: DisarmResult }) {
             The arrays are empty on this path and are NOT rendered. */}
         <div className="dz-row">{result.detail}</div>
         <div className="dz-row">
-          <span className="dz-verb">sweep</span> {result.sweep_state ?? 'unknown'}
+          <span className="dz-verb">
+            <HelpTerm term="sweep (guardrail)">sweep</HelpTerm>
+          </span>{' '}
+          {result.sweep_state ?? 'unknown'}
         </div>
         {/* The one array this mode DOES fill (routers/safety.py `_sweep_record`):
             a position with no stop anywhere is an alarm, not a count. */}

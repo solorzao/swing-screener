@@ -71,6 +71,18 @@ function SafetyBody({
 }
 
 
+/** A config row's setting name — an inline HelpTerm for the rows whose meaning IS
+ * a defined term, plain text for the rest. Explicit per row rather than passing
+ * `row.key` straight to HelpTerm: a config key is an env-var label, not
+ * vocabulary, and the glossary's substring lookup would hand unrelated rows a
+ * neighbouring term's definition. */
+function CfgKey({ name }: { name: string }) {
+  if (name === 'execute play types') {
+    return <HelpTerm term="execution scope (ceiling)">{name}</HelpTerm>
+  }
+  return <>{name}</>
+}
+
 /** The read-only CONFIGURATION panel: every live knob, its env var, and where
  * the real edit lives. The cockpit shows; git changes (North Star #1/#3) —
  * env is per-process, so a cockpit "edit" could not reach the Azure jobs. */
@@ -107,7 +119,9 @@ function ConfigPanel({ wake }: { wake: number }) {
                   <tbody>
                     {sec.rows.map((row) => (
                       <tr key={row.key}>
-                        <td>{row.key}</td>
+                        <td>
+                          <CfgKey name={row.key} />
+                        </td>
                         <td className="mono cfg-env">{row.env ?? '— (code)'}</td>
                         <td className="mono ref-num">
                           {row.value === null || row.value === undefined
