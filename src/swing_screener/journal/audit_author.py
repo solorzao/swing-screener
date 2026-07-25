@@ -78,6 +78,12 @@ def breach_narrative(findings: dict) -> str:
         # code owns the numbers: audit_run composes 'detail' (and the honest 'caveat'
         # on the two day-granularity rules); this only frames them.
         detail = str(guardrail.get("detail") or "guardrail conduct breach")
+        cleared_at = guardrail.get("cleared_at")
+        if cleared_at:
+            # a breach row is permanent: when the trip was released AFTER the window
+            # the rule could read, the prose says so rather than leaving the reader to
+            # infer a brake that is still on.
+            detail += f"; later cleared {str(cleared_at)[:10]}"
         text = (f"Guardrail conduct ({guardrail.get('rule')}) "
                 f"{guardrail.get('day')}: {detail}.")
         caveat = str(guardrail.get("caveat") or "")

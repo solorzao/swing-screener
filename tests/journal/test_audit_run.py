@@ -610,3 +610,62 @@ def test_trip_alert_kind_matches_the_module_that_writes_it():
     """Anti-drift pin: the auditor restates the trip-alert EmailLog kind as a literal
     (no journal -> notify import); ``notify.alerts`` OWNS it."""
     assert audit_run._TRIP_ALERT_KIND == alerts.TRIP_ALERT_KIND
+
+
+# ---- review round 3: window-stable keys + what the bridge can honestly claim ----
+
+
+def test_unmailed_episode_spanning_the_window_edge_keys_on_its_first_trip(monkeypatch):
+    """The breach key must be a property of the EPISODE, not of the sliding window.
+    An open episode whose trips straddle two scans (07-08 and 07-10) would otherwise
+    emit one row per window -- same trip ids, different day keys, and the daily re-scan
+    makes that a recurring duplicate rather than a one-off."""
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        first = _gevent(s, kind="trip", source="digest")
+        later = _gevent(s, kind="trip", at=datetime(2026, 7, 10, 9, 30), source="screen")
+        _brake(s, state="tripped", trip_id=first, sweep_state="complete")
+        early = run_breach_scan(s, settings=s_, day_from=date(2026, 7, 6),
+                                day_to=date(2026, 7, 12), now=_NOW)
+        assert _keys(early) == {"guardrail-unmailed-trip:2026-07-08"}
+        assert json.loads(early[0].findings_json)["guardrail_breach"][
+            "trip_event_ids"] == [first, later]
+        # the window slides past the episode's first trip: SAME episode, same key.
+        late = run_breach_scan(s, settings=s_, day_from=date(2026, 7, 9),
+                               day_to=date(2026, 7, 15),
+                               now=datetime(2026, 7, 15, 20, 0, tzinfo=UTC))
+        assert late == []
+        assert s.query(SystemAudit).filter_by(kind="breach").count() == 1
+
+
+def test_submit_breach_records_a_clear_that_landed_after_the_bridge_window(monkeypatch):
+    """The bridge window can only see events through R+4, so it must not claim a trip
+    was NEVER cleared -- only that no clear landed inside the window it read. When the
+    operator cleared later, the permanent row says so."""
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        trip_id = _gevent(s, kind="trip")                      # 07-08, bridge -> 07-12
+        s.add_all([_mailed(trip_id), _live_log(key="a")])
+        _gevent(s, kind="clear", at=datetime(2026, 7, 15, 9, 0), source="cockpit",
+                breaker="", reason=f"trip {trip_id} acknowledged and cleared")
+        _brake(s)
+        rows = run_breach_scan(s, settings=s_, day_from=_DAY, day_to=date(2026, 7, 16),
+                               now=datetime(2026, 7, 16, 20, 0, tzinfo=UTC))
+        assert _keys(rows) == {"guardrail-submit-while-tripped:2026-07-08"}
+        f = json.loads(rows[0].findings_json)["guardrail_breach"]
+        assert f["cleared_at"].startswith("2026-07-15")
+        assert "never cleared" not in f["detail"]          # a claim it cannot make
+        assert "bridge window" in f["detail"]
+        assert "later cleared 2026-07-15" in rows[0].narrative
+
+
+def test_genuinely_uncleared_trip_records_no_clear(monkeypatch):
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        trip_id = _gevent(s, kind="trip")
+        s.add_all([_mailed(trip_id), _live_log(key="a")])
+        _brake(s, state="tripped", trip_id=trip_id, sweep_state="complete")
+        rows = run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW)
+        f = json.loads(rows[0].findings_json)["guardrail_breach"]
+        assert f["cleared_at"] is None
+        assert "later cleared" not in rows[0].narrative

@@ -81,9 +81,10 @@ _LIVE_COUNTING_STATUSES = ("submitted_live", "filled_live")
 
 #: how many calendar days after a ``run_date`` the submit-while-tripped rule still
 #: bridges to a trip event's wall clock. FOUR: the digest dispatches orders stamped
-#: with the PRIOR session's run_date, so the routine offset is +1 -- +4 buys a weekend
-#: plus a holiday (Friday's run_date dispatched the following Tuesday) without reaching
-#: into the next week's own sessions. See ``_submit_while_tripped``'s "two clocks".
+#: with the PRIOR session's run_date, so the routine offset is +1 -- +4 is bounded
+#: headroom for weekend/holiday offsets (a Friday run_date dispatched the following
+#: Tuesday), deliberately small so the ordering caveat stays meaningful rather than
+#: swallowing whole weeks. See ``_submit_while_tripped``'s "two clocks".
 _RUN_DATE_BRIDGE_DAYS = 4
 
 #: sweep_state values that mean the trip's sweep never finished.
@@ -361,6 +362,22 @@ def _trip_in_force_through(
     return in_force
 
 
+def _cleared_at(session: Session, *, trip_id: int) -> datetime | None:
+    """When the named trip was released, if it ever was -- over the FULL timeline.
+
+    Deliberately UNBOUNDED, unlike ``_trip_in_force_through``'s bridge-window walk: the
+    breach row it annotates is PERMANENT, so it must not imply "never cleared" when all
+    it read was a four-day window. A clear that landed after the window is exactly the
+    context an operator needs when they open the row later. Ordered by id (the append
+    sequence), so the FIRST clear after the trip is its release."""
+    return session.scalars(
+        select(AgentGuardrailEvent.created_at)
+        .where(AgentGuardrailEvent.kind == "clear", AgentGuardrailEvent.id > trip_id)
+        .order_by(AgentGuardrailEvent.id)
+        .limit(1)
+    ).first()
+
+
 def _submit_while_tripped(
     session: Session, *, live_days: dict[date, int]
 ) -> list[_GuardrailBreach]:
@@ -375,28 +392,35 @@ def _submit_while_tripped(
     an equality test finds nothing on a book that plainly breached.
 
     So the rule BRIDGES: for a run_date R carrying counting live rows, it asks whether
-    a trip was in force -- tripped and not released by a later 'clear' -- at any point
-    through ``R + _RUN_DATE_BRIDGE_DAYS``, which spans the run_date -> dispatch-day
-    offset even across a weekend. A trip predating R that was never cleared counts too
-    (the brake was in force the whole time).
+    a trip was in force -- tripped and not released by a 'clear' WITHIN THE WINDOW IT
+    READS -- at any point through ``R + _RUN_DATE_BRIDGE_DAYS``, which spans the
+    run_date -> dispatch-day offset even across a weekend. A trip predating R and still
+    unreleased counts too (the brake was in force the whole time).
 
     The bridge's cost is ORDERING, and it is admitted rather than hidden: within that
     span the auditor cannot prove a submission FOLLOWED the trip rather than preceding
     it (there is no submit timestamp to compare, and the trip may be days after the
     stamped session). So the finding is filed **warn, never alert**, with the caveat
-    stated verbatim in the narrative. The provable, alert-grade version of this signal
+    stated verbatim in the narrative. A clear landing AFTER the bridge window is
+    invisible to the in-force walk, so the row never claims "never cleared": the detail
+    scopes its claim to the window, and ``cleared_at`` (``_cleared_at``, full timeline)
+    carries the release when one exists. The provable, alert-grade version of this signal
     is the submit-side clamp itself: a blocked order writes a ``guardrail: ...``
     skipped row (counted as expected conduct), so a day of correct braking shows clamps
     and NO counting live rows.
     """
     out: list[_GuardrailBreach] = []
     for day in sorted(live_days):
-        in_force = _trip_in_force_through(
-            session, day + timedelta(days=_RUN_DATE_BRIDGE_DAYS))
+        bridge_end = day + timedelta(days=_RUN_DATE_BRIDGE_DAYS)
+        in_force = _trip_in_force_through(session, bridge_end)
         if in_force is None:
             continue
         trip_id, trip_at = in_force
         n = live_days[day]
+        # what the WINDOW saw is "no clear through bridge_end"; what is TRUE at scan
+        # time may be a later clear. Both go on the row -- the detail claims only the
+        # former, ``cleared_at`` carries the latter (None when genuinely uncleared).
+        cleared = _cleared_at(session, trip_id=trip_id)
         out.append(_GuardrailBreach(
             day=day, key=f"guardrail-submit-while-tripped:{day.isoformat()}",
             severity="warn",
@@ -405,9 +429,11 @@ def _submit_while_tripped(
                 "n_live_counting": n, "trip_id": trip_id,
                 "trip_day": trip_at.date().isoformat(),
                 "bridge_days": _RUN_DATE_BRIDGE_DAYS,
+                "cleared_at": cleared.isoformat() if cleared is not None else None,
                 "detail": (f"{n} counting live order(s) stamped for this trading day "
-                           f"while trip {trip_id} ({trip_at.date().isoformat()}) was "
-                           f"in force, never cleared"),
+                           f"with trip {trip_id} ({trip_at.date().isoformat()}) in "
+                           f"force during the bridge window, not cleared within it "
+                           f"(through {bridge_end.isoformat()})"),
                 "caveat": ("run_date is the trading day of record, not a wall clock, "
                            "and execution rows carry no submit time -- the auditor "
                            "cannot prove these orders were submitted after the trip "
@@ -507,13 +533,16 @@ def _unmailed_trips(
     for episode in _trip_episodes(session):
         if episode.closed_by_clear:
             continue  # the operator cleared it -> awareness (see the docstring)
-        in_window = [t for t in episode.trips
-                     if day_from <= t.created_at.date() <= day_to]
-        if not in_window:
+        if not any(day_from <= t.created_at.date() <= day_to for t in episode.trips):
             continue  # nothing of this episode happened in the scanned window
         if any(str(t.id) in mailed for t in episode.trips):
             continue  # one alert covers the whole episode
-        by_day.setdefault(in_window[0].created_at.date(), []).append(episode)
+        # KEY ON THE EPISODE, NOT THE WINDOW: an open episode whose trips straddle two
+        # scans (07-08 and 07-10) would otherwise key on whichever of its trips the
+        # current window happened to include, and the daily re-scan would file the SAME
+        # episode again under a second day. The episode's earliest trip is intrinsic to
+        # it, so the idempotency key is stable however the window slides.
+        by_day.setdefault(episode.trips[0].created_at.date(), []).append(episode)
     out: list[_GuardrailBreach] = []
     for day in sorted(by_day):
         episodes = by_day[day]
