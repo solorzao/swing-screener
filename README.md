@@ -250,11 +250,15 @@ unknown value coerces to `off`):
 - **The broker owns live fills.** A `live` order is submitted, then **reconciled** from the
   broker's real fill price (`pipeline/reconcile.py`) — never simulated; the bar-stepper never
   touches a live position.
-- **Real money needs three independent locks + hard caps**, checked in code before any
-  real-money order: `SWING_EXECUTION_MODE=live` **and** `SWING_BROKER_ALLOW_REAL_MONEY=yes`
-  **and** the advisory **autonomy gate** reads `ready` — plus per-day notional / loss /
-  max-concurrent caps must all be set. A paper endpoint bypasses these (fake money); an unknown
-  broker host is treated as real money (fail-safe).
+- **Real money needs three independent locks + hard caps + the guardrails brake**, all
+  checked in code before any real-money order: `SWING_EXECUTION_MODE=live` **and**
+  `SWING_BROKER_ALLOW_REAL_MONEY=yes` **and** the advisory **autonomy gate** reads `ready` —
+  plus per-day notional / loss / max-concurrent caps must all be set, **plus** the brake's
+  three mandatory breakers (max daily loss $, max trades/day, max drawdown $) must be set
+  and the brake released. Any unset breaker is a hard refusal (`rejected_live`, no broker
+  order), exactly like an unset cap. A paper endpoint bypasses the locks/caps/mandate (fake
+  money) — though a *set* breaker and an engaged brake still block there; an unknown broker
+  host is treated as real money (fail-safe).
 - **The autonomy gate is advisory and read-only** (`pipeline/autonomy.py`). It runs a real
   **calibration test with teeth** — does `high`-conviction out-earn `low`, on a clustered CI
   where a placebo can't pass? — and surfaces a **countdown** to the floors (20+20 scored calls
@@ -262,10 +266,13 @@ unknown value coerces to `off`):
   *may be considered*. It cannot pass for a while yet (calibration data accrues with closed
   trades) — that's by design.
 - **Arming is a deliberate human flip.** When the gate reads ready, you run a read-only
-  **preflight** GO/NO-GO check (`python -m swing_screener.pipeline.preflight`), then set the live
-  config by hand following [`docs/runbooks/arming-alpaca-live.md`](docs/runbooks/arming-alpaca-live.md).
+  **preflight** GO/NO-GO check (`python -m swing_screener.pipeline.preflight`), set the three
+  mandatory breakers on the cockpit's Safety screen, choose the strategy scope
+  (`SWING_EXECUTE_PLAY_TYPES` — unset means *all* play types), then set the live config by
+  hand following [`docs/runbooks/arming-alpaca-live.md`](docs/runbooks/arming-alpaca-live.md).
   The **kill switch** is the same act in mirror: set `SWING_EXECUTION_MODE=off` (re-read before
-  every order) to halt the next order and cancel resting ones.
+  every order) to halt the next order and cancel resting ones mid-run — and the cockpit's
+  **HALT** is the one stop that reaches an already-running job.
 - **Robinhood stays human-in-the-loop.** A sourced feasibility spike found Robinhood's agentic
   MCP can't authenticate headlessly for an unattended cron (interactive desktop auth, undocumented
   token longevity, ToS lockout risk), so Robinhood is **not** an autonomous backend — the

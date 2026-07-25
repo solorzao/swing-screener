@@ -90,11 +90,22 @@ param maxConcurrent = '3'
 //
 //   param broker = 'alpaca'
 //   param allowRealMoney = 'yes'          // real money. Read the runbook first.
+//   param executePlayTypes = 'reversal'   // WHICH strategy. Unset = ALL, incl. continuation.
+//
+// (executionMode above is NOT repeated here -- it already has a line at ~:71. The
+// ceremony CHANGES that existing line to 'live'; a second `param executionMode` in
+// this file is a duplicate assignment and will not compile.)
 //
 // Three locks gate a real-money order, and env carries only two of them:
 // execution_mode == 'live' (executionMode above, currently 'paper'), broker +
 // allowRealMoney here, and a READY autonomy gate that lives in the database --
 // no bicep param can set that one.
+//
+// executePlayTypes is not a lock -- it is the execution SCOPE ceiling, and its
+// default is the permissive one. Left unset, an armed agent trades every play type
+// including continuation, which has no confirmed edge (2026-07-18 audit). It sits in
+// this block so path A of the arming ceremony can express the scope at all: without
+// it, a drift-safe re-provision is structurally allow-all.
 //
 // ALPACA SECRETS NEED NO BICEP CHANGE. broker_alpaca.py resolves SWING_ALPACA_KEY /
 // SWING_ALPACA_SECRET / SWING_ALPACA_HOST through config_secrets.get_secret, whose

@@ -176,7 +176,7 @@ mode).
 
 Once anything is armed, the Safety screen is where you drive. Its **guardrails panel**
 (between ARMING LOCKS and HARD CAPS) is the one control that can stop the machine
-*without* touching env — its caption says the whole design in seven words:
+*without* touching env — and its caption states the whole design in one line:
 *"a brake, not a knob — env stays the master arm."*
 
 - **The model.** `SWING_EXECUTION_MODE` is the **master arm** and lives in env (per Azure
@@ -194,8 +194,10 @@ Once anything is armed, the Safety screen is where you drive. Its **guardrails p
   real-money order is refused outright. Editing a limit can never move the brake state
   (editing a cap while tripped leaves it tripped).
 - **A trip** persists first, then sweeps, then emails you, then shows `TRIPPED — <reason>`
-  on the banner (and `SWEEP PARTIAL` if the sweep hasn't finished — that means *retrying*,
-  not failed; every cycle re-runs it, and DISARM is the manual retry).
+  on the banner. If the sweep hasn't finished the headline reads `TRIPPED — SWEEP
+  RETRYING` instead, with the reason on the line below — the unfinished sweep outranks the
+  breaker's text because the venue may still hold working entry orders. It means
+  *retrying*, not failed: every cycle re-runs it, and DISARM resumes that same sweep.
 - **Clearing** is acknowledge-then-hold: ticking the box is what enables the hold. Clearing
   releases the brake but **never resolves the breach**, so the panel tells you what actually
   does, per breaker:

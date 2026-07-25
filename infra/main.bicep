@@ -94,6 +94,12 @@ param broker string = ''
 @description('Explicit real-money flag (SWING_BROKER_ALLOW_REAL_MONEY): "yes"/"true"/"1"/"on". Empty = false. One of the three live locks.')
 param allowRealMoney string = ''
 
+// Not a lock -- it decides WHICH strategy the money goes behind. Empty (the default) is
+// the PERMISSIVE answer: every play type dispatches, continuation included. Set it in the
+// same act as the two params above so a drift-safe re-provision can express the scope.
+@description('Play types the agent may execute (SWING_EXECUTE_PLAY_TYPES), comma separated, e.g. "reversal". Empty = allow-all.')
+param executePlayTypes string = ''
+
 @description('Hard cap: dollars of recorded order notional per account-day (SWING_MAX_DAILY_NOTIONAL). Empty = unbounded.')
 param maxDailyNotional string = ''
 
@@ -255,6 +261,7 @@ module jobs 'modules/jobs.bicep' = {
     executionMode: executionMode
     broker: broker
     allowRealMoney: allowRealMoney
+    executePlayTypes: executePlayTypes
     maxDailyNotional: maxDailyNotional
     maxDailyLoss: maxDailyLoss
     maxConcurrent: maxConcurrent

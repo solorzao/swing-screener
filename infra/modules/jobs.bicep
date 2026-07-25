@@ -115,6 +115,23 @@ autonomy gate -- settings.can_arm_real_money). A real-money Alpaca host WITHOUT 
 still refused.''')
 param allowRealMoney string = ''
 
+// The execution SCOPE ceiling. Not a lock -- it does not gate arming -- but it belongs to
+// the same ceremony because it decides WHICH strategy real money is put behind, and the
+// default is the permissive one: absent = ALL play types dispatch, continuation included.
+// The 2026-07-18 audit's finding is that continuation has no confirmed edge, so arming
+// without setting this puts money behind a strategy the evidence does not support. It
+// lives here (rather than only in the CLI ceremony) because path A of the arming runbook
+// -- uncomment the params, re-provision -- must be able to express the scope at all;
+// without this param a drift-safe arming is structurally allow-all.
+@description('''The play types the agent may execute (SWING_EXECUTE_PLAY_TYPES), comma
+separated: "reversal" | "continuation" | "reversal,continuation". Empty = absent ->
+allow-ALL (today's behaviour, and the PERMISSIVE default -- set it deliberately in the
+arming ceremony). Garbage parses fail-CLOSED to the empty set: nothing dispatches, with a
+loud warning -- but a PARTLY valid list keeps its valid members (the unknown ones are
+dropped with a warning); only an all-garbage list collapses to allow-none. Task 22's
+cockpit subtraction sits BENEATH this ceiling and can only narrow it, never widen it.''')
+param executePlayTypes string = ''
+
 @description('''The three hard caps the adapter's submit() clamp enforces per
 account-day (empty = that cap absent -> unbounded, the code's None sentinel).
 maxDailyNotional is DOLLARS of recorded order notional; maxDailyLoss is an R
@@ -264,13 +281,25 @@ var allowRealMoneyEnv = allowRealMoney == ''
         value: allowRealMoney
       }
     ]
+// Same absent-not-empty hygiene as broker/executionMode: settings treats a BLANK
+// SWING_EXECUTE_PLAY_TYPES exactly like an absent one (both -> None = unscoped), so
+// omitting the var is behaviour-neutral -- it just keeps `az containerapp job show` an
+// honest record of what is actually configured.
+var executePlayTypesEnv = executePlayTypes == ''
+  ? []
+  : [
+      {
+        name: 'SWING_EXECUTE_PLAY_TYPES'
+        value: executePlayTypes
+      }
+    ]
 var capsEnv = concat(
   maxDailyNotional == '' ? [] : [{ name: 'SWING_MAX_DAILY_NOTIONAL', value: maxDailyNotional }],
   maxDailyLoss == '' ? [] : [{ name: 'SWING_MAX_DAILY_LOSS', value: maxDailyLoss }],
   maxConcurrent == '' ? [] : [{ name: 'SWING_MAX_CONCURRENT', value: maxConcurrent }]
 )
 
-var commonEnv = concat(equityEnv, riskPctEnv, executionModeEnv, brokerEnv, allowRealMoneyEnv, capsEnv, [
+var commonEnv = concat(equityEnv, riskPctEnv, executionModeEnv, brokerEnv, allowRealMoneyEnv, executePlayTypesEnv, capsEnv, [
   {
     name: 'ANTHROPIC_API_KEY'
     secretRef: 'anthropic-api-key'

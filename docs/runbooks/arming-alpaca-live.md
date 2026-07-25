@@ -107,11 +107,15 @@ evening screen (after its live reconcile), and the hourly intraday-exit job — 
 3. **You get an email** — `Swing Screener — GUARDRAIL TRIPPED: <breaker> (<run_date>)`, one
    per trip (`EmailLog(kind='guardrail')`, deduped on the trip event id). The reason (with
    its dollar figures) leads the body, so a lock-screen preview already answers "why".
-4. **The Safety screen banner** reads `TRIPPED — <reason>`, and loudly `SWEEP PARTIAL` if
-   the sweep didn't finish. Partial/pending means **retrying**, not failed: every
-   subsequent digest/screen/hourly cycle re-runs it (stop restoration skips
-   already-protected symbols, so re-runs are safe), and the cockpit's **DISARM** button is
-   the manual retry.
+4. **The Safety screen banner** reads `TRIPPED — <reason>` once the sweep is done. While
+   it is **not** done the headline changes to `TRIPPED — SWEEP RETRYING` — the unfinished
+   sweep *replaces* the reason in the headline (the venue may still hold working entry
+   orders, which outranks the breaker's own text) and the reason drops to the line below.
+   A `pending`/`partial` sweep means **retrying**, not failed: every subsequent
+   digest/screen/hourly cycle re-runs it (stop restoration skips already-protected
+   symbols, so re-runs are safe), and the cockpit's **DISARM** button resumes that same
+   sweep. Only `sweep_state='complete'` earns the "entry orders were pulled, protective
+   stops kept" sentence.
 5. **Clearing is yours, and it is deliberate**: tick the acknowledge box (which is what
    enables the hold), then a 900 ms hold. Re-arming is never automatic.
 
@@ -202,14 +206,22 @@ the recognized paper host — the live host above, or any typo'd/unknown host. O
 `paper-api.alpaca.markets` is treated as fake money. (In Azure these are Key Vault secrets
 injected as env vars; locally, your shell/secret store.)
 
-> **Ordering hazard — credentials before the mode flip.** `build_broker` resolves the key
-> and secret through `require_secret`, which **raises** when they are missing, and two call
-> sites are **unguarded**: `notify/run.py` (the digest's live-broker build) and
-> `pipeline/run.py` (the screen's). With `SWING_BROKER=alpaca` and
-> `SWING_EXECUTION_MODE=live` but no credentials resolvable, those jobs **crash before
-> sending anything** — no digest, no screen, no email telling you why. Always create the
-> secrets first and flip the mode last. On Azure this means: **create the Key Vault secrets
-> before `executionMode` goes to `live`** (see the appendix).
+> **Ordering hazard — credentials before anything else.** `build_broker` resolves the key
+> and secret through `require_secret`, which **raises** when they are missing, and four
+> call sites are **unguarded**:
+>
+> - the two **job** sites — `notify/run.py` (the digest's live-broker build) and
+>   `pipeline/run.py` (the screen's). With `SWING_BROKER=alpaca` and
+>   `SWING_EXECUTION_MODE=live` but no credentials resolvable, those jobs **crash before
+>   sending anything** — no digest, no screen, no email telling you why.
+> - the two **CLI** sites — `preflight.main` and `disarm.main`. So step 7 run before the
+>   secrets exist gives you a **traceback, not a `NO-GO`**, and the emergency `disarm` CLI
+>   is equally unavailable. A traceback here is a missing-secret symptom, not a preflight
+>   verdict; don't read it as one.
+>
+> Always create the credentials first. On Azure this means: **create the Key Vault secrets
+> before `executionMode` goes to `live`** (see the appendix), and before you lean on
+> preflight or `disarm` against the armed config.
 
 ### 3. Set ALL caps + the allow-real-money flag (lock 2 + the caps)
 
@@ -223,6 +235,15 @@ export SWING_BROKER_ALLOW_REAL_MONEY=yes
 All three caps are mandatory — omit any one and a real-money order is refused
 (`rejected_live`). `SWING_BROKER_ALLOW_REAL_MONEY=yes` is the explicit, loud second lock;
 keep it **unset** until you genuinely mean to arm.
+
+> **Orientation, if you are deployed on Azure** (you are): these `export`s configure
+> **your shell** and reach nothing remote. The Azure jobs already carry the three caps from
+> `infra/main.bicepparam` (`maxDailyNotional` / `maxDailyLoss` / `maxConcurrent`, currently
+> sized to the $1,000 starter account) — so for the jobs this step is already done, and
+> changing it is a bicepparam edit + re-provision. The local exports matter for the
+> read-only CLIs you run next (`preflight` reads *this* process's env) and for a local
+> drill. The same split applies to every `export` in this ceremony; the appendix is where
+> the Azure half actually happens.
 
 ### 4. Set the three MANDATORY breakers — before the live flip
 
@@ -251,12 +272,23 @@ breakeven net of cost), while `reversal` is the confirmed one. Arming with the s
 therefore puts real money behind a strategy the evidence does not support. Set it
 explicitly to what you mean to trade.
 
-Behavior as built: unset → allow-all (today's behavior); a valid list → only those play
-types dispatch, the rest get a `skipped` ticket (`play type not in execution scope`) in the
-digest; **garbage → fail-closed** (the empty set: *nothing* dispatches, with a loud
-warning), matching the mode-coercion posture — garbage never widens scope. Valid members
-are `continuation` and `reversal`. The knob is visible on the cockpit's read-only CONFIG
-panel.
+Behavior as built (`settings._parse_play_types`): unset **or blank** → allow-all (today's
+behavior); a valid list → only those play types dispatch, the rest get a `skipped` ticket
+(`play type not in execution scope`) in the digest. An **unknown member is dropped** with a
+loud warning and the **valid members survive** (`"reversal,typo"` → `{reversal}`); only when
+*nothing* valid survives does it collapse to the **empty set = allow-none**, again loudly.
+Garbage never widens scope. Valid members are `continuation` and `reversal`. The knob is
+visible on the cockpit's read-only CONFIG panel.
+
+> This one has a bicep param (`executePlayTypes`) — see the appendix. It is the knob that
+> makes path A of the ceremony able to scope execution at all.
+
+This env value is the **ceiling**, not the final word: the cockpit can *subtract* from it
+(`agent_guardrails.disabled_play_types`, resolved by
+`guardrails_repo.effective_execution_scope`), one-click disabling a strategy without an env
+change. It can only narrow, and re-enabling is capped at this ceiling — same algebra as
+releasing HALT. So set the env to the widest set you would ever want traded, and use the
+cockpit to tighten day to day.
 
 ### 6. Fund the Alpaca account
 
@@ -270,8 +302,16 @@ brake row, and the gate — and **writes nothing, arms nothing** (the brake read
 `peek_guardrails`, a plain column select that never even seeds the row):
 
 ```bash
-python -m swing_screener.pipeline.preflight
+SWING_EXECUTION_MODE=paper python -m swing_screener.pipeline.preflight
 ```
+
+> **Run it under `paper`, not `off` — and do NOT set `live` to make it pass.** The `config`
+> check requires a mode that actually trades, so from the default `off` you get
+> `NO-GO: config — execution_mode is 'off' (not paper/live)` no matter how correct
+> everything else is. That is expected, not a problem to fix by arming: **`paper` is not
+> arming** — with the paper host it is fake money, and even against the live host `paper`
+> resolves to the PaperAdapter, which never reaches a broker. Preflight is the check you
+> run *before* step 9, so give it `paper` and read the other six lines.
 
 Confirm the verdict line reads **`GO`**. The critical checks (all must pass for GO) are
 `config` (broker selected + mode is paper/live), `reachable` (`get_account` succeeds),
@@ -295,6 +335,15 @@ env]` so it can't be confused with the near-identical caps line.
 gate READY` here, consistent with steps 1–2. A `NO-GO` names the failing critical check;
 fix it and re-run.
 
+> **ENV-SCOPE CAVEAT — whose readiness is this?** Preflight reads **this process's**
+> environment. `config`, `caps`, `reachable`, `funded` and `is_real_money` therefore
+> describe *your shell*, not the Azure jobs: a `GO` locally says nothing about whether the
+> jobs carry the same broker, host, credentials or caps. Only two lines are **shared
+> state** every process sees — `guardrails` (the `agent_guardrails` row) and
+> `autonomy_gate` (the scored-call book + verdict sidecars). To check the jobs themselves,
+> read their actual env (`az containerapp job show --name <job> -g <rg>`) or the cockpit's
+> Safety screen, which labels exactly this split with `env_scope`.
+
 ### 8. Kill-switch drill (rehearse the abort before you arm)
 
 Before arming for real, rehearse the disarm. With a live adapter wired, the dispatch loop
@@ -305,20 +354,25 @@ bracket's protective stop legs off open positions. Any position whose stop leg i
 dead gets a plain GTC stop re-submitted at the ExecutionLog ticket's recorded level
 (copied, never computed); a position with no restorable level is reported `UNPROTECTED`.
 
-Rehearse it: start a run with execution armed, then **while it is running** put the process
-into a non-`live` mode (the loop re-reads settings fresh per intent) and confirm in the logs
-that dispatch halted (`execution kill switch: halting dispatch ... and pulling entry-side
-resting orders`), that entry orders were cancelled, and that every open position still shows
-a live sell stop at the venue. Satisfy yourself the abort works **before** any real order
-rests at the venue.
+> **You cannot rehearse this by typing `export`.** The re-read is of the **running
+> process's own environment**, and a process's env cannot be mutated from another shell —
+> `export SWING_EXECUTION_MODE=off` in your terminal does not reach the digest that is
+> already running, and on Azure a `job update` reaches the *next* execution, never a live
+> replica. The mid-dispatch abort you can actually exercise is the cockpit **HALT**: it is
+> a DB row every process re-reads per intent. **Rehearse it as
+> [D2](#d2--forced-halt-mid-dispatch-the-1-order-leak-bound) in the Stage-0 drill** — the
+> assertions are the same ones (batch stops, entry orders pulled, every position still stop
+> protected, ≤1-order leak bound), and D2 runs them against fake money.
 
-> **The re-read is of the process's own environment.** A mode already `off` when the process
-> starts means the dispatch loop never runs at all — nothing is submitted *and nothing is
-> swept*. Setting the mode off between runs is a valid disarm of *future* submits; to
-> actually pull resting entries, use the cockpit **DISARM** button or
-> `python -m swing_screener.pipeline.disarm` (see Rollback). On Azure, an env change reaches
-> the **next** execution, never a running replica — the cockpit **HALT** is the only control
-> that reaches a job mid-dispatch.
+What you *can* verify here without a running batch: that a mode already `off` at process
+start submits nothing (start a run and confirm the dispatch loop is skipped entirely), and
+that the standalone sweep works — `python -m swing_screener.pipeline.disarm --dry-run`,
+then for real. Note the asymmetry that makes this necessary: a mode `off` at start means
+the dispatch loop never runs, so **nothing is submitted *and nothing is swept*.** Setting
+the mode off between runs is a valid disarm of *future* submits only; pulling resting
+entries is the cockpit **DISARM** button's job, or that CLI's (see Rollback).
+
+Satisfy yourself both halves work **before** any real order rests at the venue.
 
 ### 9. Flip `SWING_EXECUTION_MODE=live` — arm
 
@@ -333,6 +387,12 @@ export SWING_EXECUTION_MODE=live
 The next dispatch run submits one live order per pick (idempotent per pick/run/side), records
 the `broker_order_id` to the `ExecutionLog`, and opens **no** position at submit (the
 reconciler materializes the position from the broker's eventual fill).
+
+> **On Azure this `export` arms nothing.** It arms the shell you are sitting in. The Azure
+> jobs are armed by the appendix — path A (`executionMode = 'live'` in `main.bicepparam`
+> plus a re-provision) or path B (`az containerapp job update … SWING_EXECUTION_MODE=live`
+> on the three broker-touching jobs). Until one of those runs, the deployed cadence stays
+> on whatever `main.bicepparam` last set (today: `paper`).
 
 ### 10. Monitor
 
@@ -370,7 +430,7 @@ setting it to `off` (or anything other than `live`):
    working** — they are the protection.
 
 If the mode is already `off` when the process starts, the dispatch loop is skipped
-entirely: nothing submits, but nothing sweeps either. To pull resting entries on a
+entirely: nothing submits, but nothing sweeps either. To pull resting entries on an
 already-disarmed book, use one of:
 
 - the cockpit's **DISARM** button (Safety screen / masthead), or
@@ -406,12 +466,20 @@ live and the credentials don't resolve).
 No bicep change is needed. `config_secrets.get_secret` maps an env **name** to a vault
 secret name by lower-casing and replacing `_` → `-`, and every job already carries
 `KEY_VAULT_URL` with the UAMI holding *Key Vault Secrets User*. Creating the three secrets
-is sufficient:
+is sufficient.
+
+The vault name is **generated** by `main.bicep` (name prefix + a resource token), so look it
+up rather than guessing:
 
 ```bash
-az keyvault secret set --vault-name <vault> --name swing-alpaca-key    --value <LIVE Alpaca key id>
-az keyvault secret set --vault-name <vault> --name swing-alpaca-secret --value <LIVE Alpaca secret>
-az keyvault secret set --vault-name <vault> --name swing-alpaca-host   --value https://api.alpaca.markets
+VAULT=$(az keyvault list -g <rg> --query "[].name" -o tsv)
+echo "$VAULT"        # sanity-check: exactly one name, not an empty string or a list
+```
+
+```bash
+az keyvault secret set --vault-name "$VAULT" --name swing-alpaca-key    --value <LIVE Alpaca key id>
+az keyvault secret set --vault-name "$VAULT" --name swing-alpaca-secret --value <LIVE Alpaca secret>
+az keyvault secret set --vault-name "$VAULT" --name swing-alpaca-host   --value https://api.alpaca.markets
 ```
 
 Do **not** add them to `keyvault.bicep`'s seeded secrets or to the jobs' `secretDefs`:
@@ -421,15 +489,25 @@ run would blank the real values), and a `secretDefs` entry would make all ten jo
 
 ### A. CANONICAL — bicep params + a re-provision (drift-safe)
 
-`infra/main.bicepparam` carries `broker` and `allowRealMoney` **commented out** so a routine
-re-provision keeps every job disarmed. Uncommenting them *is* the arming ceremony:
+`infra/main.bicepparam` carries `broker`, `allowRealMoney` and `executePlayTypes`
+**commented out** so a routine re-provision keeps every job disarmed and unscoped.
+Uncommenting them *is* the arming ceremony:
 
 ```bicep
-// infra/main.bicepparam -- uncomment BOTH (and set executionMode) to arm:
+// infra/main.bicepparam -- UNCOMMENT these three (they exist only as comments today):
 param broker = 'alpaca'
 param allowRealMoney = 'yes'          // real money. Read this runbook first.
-param executionMode = 'live'
+param executePlayTypes = 'reversal'   // WHICH strategy. Unset = ALL, incl. continuation.
 ```
+
+…and then **change the `executionMode` line that already exists** (near the top of the
+same file, currently `param executionMode = 'paper'`) to `'live'`. Do **not** add a second
+`param executionMode` line — a duplicate assignment in a `.bicepparam` is a compile error,
+so the ceremony would fail at `az deployment sub create` rather than arm anything.
+
+`executePlayTypes` is what makes this path able to scope execution at all: without it a
+drift-safe re-provision is structurally allow-all, i.e. it would put real money behind
+continuation too (step 5).
 
 Then re-provision by hand — **CD never applies bicep** (`cd.yml` only repoints job images),
 so nothing in that file reaches Azure until you run:
@@ -455,22 +533,33 @@ reproduces the armed state instead of silently undoing it. It applies the broker
 
 ### B. FAST PATH — per-job `az containerapp job update` (survives CD, dies on re-provision)
 
-Only three jobs need a broker:
+This path arms **three** of the ten jobs, and the two it leaves out are the ones to
+understand before you choose it:
 
-| Job | Entrypoint | Why it needs the broker |
+| Job | Entrypoint | Broker role under this path |
 |---|---|---|
-| `evening-screen` | `pipeline.run` | live reconcile, the guardrails consult, the nightly stop re-assert |
-| `daily-digest` | `notify.run --kind daily` | the dispatch loop — this is the one that **submits** |
-| `intraday-exit` | `notify.run --kind exit` | hourly live reconcile, sweep resume, rejection-alert retries |
+| `evening-screen` | `pipeline.run` | **armed** — live reconcile, the guardrails consult, the nightly stop re-assert |
+| `daily-digest` | `notify.run --kind daily` | **armed** — the dispatch loop; this is the one that **submits** |
+| `intraday-exit` | `notify.run --kind exit` | **armed** — hourly live reconcile, sweep resume, rejection-alert retries |
+| `weekly-digest` | `notify.run --kind weekly` | **NOT armed** — but it runs the *same* dispatch loop and would submit if it were. Left on `executionMode='paper'` from bicep, it takes the **PaperAdapter**: simulated fills into the `account="paper"` book. No venue, no dollars — but also *not* a no-op, and its tickets will read `paper`, not `skipped` |
+| `monthly-digest` | `notify.run --kind monthly` | **NOT armed** — same as weekly (last business day of the month) |
 
-The other seven (`on-demand-analysis`, `weekly-digest`, `monthly-digest`, `market-weather`,
-`journal-coach`, `journal-audit-weekly`, `journal-audit-breach`) do not need one.
+The remaining five (`on-demand-analysis`, `market-weather`, `journal-coach`,
+`journal-audit-weekly`, `journal-audit-breach`) never dispatch and need no broker at all.
+
+So the fast path creates a **weekend/month-end divergence**: Friday's and the month-end
+digest go to paper while the weekday cadence goes live. It is safe (paper moves no money),
+but it is a real difference from path A, which arms all ten uniformly. **Scoping to
+`reversal` (step 5) makes the divergence moot for continuation** — weekly/monthly build
+continuation picks only, so with the scope set they have nothing in scope to dispatch
+either way. Use path A if you want the weekly/monthly cadences genuinely trading.
 
 ```bash
-# 1) broker + the loud flag (inert on their own -- the mode is still not live)
+# 1) broker + the loud flag + the scope ceiling (inert on their own -- mode is still not live)
 for job in evening-screen daily-digest intraday-exit; do
   az containerapp job update --name "$job" -g <rg> \
-    --set-env-vars SWING_BROKER=alpaca SWING_BROKER_ALLOW_REAL_MONEY=yes
+    --set-env-vars SWING_BROKER=alpaca SWING_BROKER_ALLOW_REAL_MONEY=yes \
+                   SWING_EXECUTE_PLAY_TYPES=reversal
 done
 
 # 2) LAST, and only after the vault secrets exist: the arm
@@ -483,19 +572,20 @@ done
 updates the image, not the env).
 
 > **It is silently stripped by any re-provision.** `az deployment sub create` rewrites the
-> job templates from bicep, and with `broker`/`allowRealMoney` still commented out in
-> `main.bicepparam` the template default is `''` = ABSENT — the CLI-set vars vanish with no
-> error and no log line. A job that was armed becomes disarmed (fail-safe, but *silent*).
+> job templates from bicep, and with `broker` / `allowRealMoney` / `executePlayTypes` still
+> commented out in `main.bicepparam` every one of those template defaults is `''` = ABSENT
+> — the CLI-set vars vanish with no error and no log line. A job that was armed becomes
+> disarmed (fail-safe, but *silent*).
+>
+> The scope var is the nastier half: `SWING_EXECUTE_PLAY_TYPES` disappearing does **not**
+> disarm anything, it **widens** the scope back to allow-all. Pair that with an
+> `executionMode` still set to `live` in the param file and a re-provision would arm
+> continuation. Which is exactly why:
 >
 > **THE PAIRING RULE: if you flip via CLI, update `infra/main.bicepparam` in the same act —
-> or never re-provision while armed.** Pick one. The bicep comments say the same thing from
-> the other side.
-
-> **Divergence to know about:** `weekly-digest` and `monthly-digest` run the *same* dispatch
-> loop as `daily-digest` and would submit if they had a broker. The fast path leaves them
-> without one, so they fall back to the NoOp adapter with a warning (fail-safe, submits
-> nothing) — while the canonical bicep path arms them too. If you want the weekly/monthly
-> cadences trading, use path A.
+> or never re-provision while armed.** Pick one. It now covers all four settings (broker,
+> allowRealMoney, executePlayTypes, executionMode), and the bicep comments say the same
+> thing from the other side.
 
 ### Disarming on Azure
 
@@ -511,9 +601,12 @@ done
 # 2) then, once the book is quiet, drop the broker wiring
 for job in evening-screen daily-digest intraday-exit; do
   az containerapp job update --name "$job" -g <rg> \
-    --remove-env-vars SWING_BROKER SWING_BROKER_ALLOW_REAL_MONEY
+    --remove-env-vars SWING_BROKER SWING_BROKER_ALLOW_REAL_MONEY SWING_EXECUTE_PLAY_TYPES
 done
 ```
+
+(Dropping `SWING_EXECUTE_PLAY_TYPES` last is safe here precisely because step 1 already
+disarmed: with no broker and no live mode, a widened scope has nothing to widen.)
 
 Then re-comment the params in `main.bicepparam` (the pairing rule, in reverse). Remember
 that mode-off does not sweep: pull resting entries with the cockpit **DISARM** button.
@@ -549,6 +642,23 @@ meaningful rather than a no-op.
 
 Preflight first: expect `GO` with `is_real_money: paper host -> fake money (paper)`.
 
+**How to start a dispatch cycle on demand** (D2 and D3 both need one):
+
+```bash
+# local: run the daily digest's dispatch loop directly
+python -m swing_screener.notify.run --kind daily
+```
+
+```bash
+# Azure: force the hour gate open, fire the job, then remove the override
+az containerapp job update --name daily-digest -g <rg> --set-env-vars RUN_GATE_FORCE=1
+az containerapp job start  --name daily-digest -g <rg>
+az containerapp job update --name daily-digest -g <rg> --remove-env-vars RUN_GATE_FORCE
+```
+
+(The `RUN_GATE_FORCE` idiom is [azure-deploy.md](../azure-deploy.md)'s — `job update` +
+`job start`, never `job start --env-vars`.)
+
 ### D1 — Bracket child-leg TIF (the open question Task 19 hedges)
 
 Verbatim from the Task-19 handoff:
@@ -577,8 +687,10 @@ can't happen.
 
 ### D2 — Forced HALT mid-dispatch (the ≤1-order leak bound)
 
-With a batch of several intents dispatching, press **HALT** on the cockpit's guardrails
-panel mid-run. Assert:
+Start a cycle (above) with several intents to dispatch, and while it is running press
+**HALT** on the cockpit's guardrails panel. The brake is a DB row every process re-reads
+per intent, so this is the *only* control that lands mid-dispatch — an env flip cannot,
+which is exactly what this drill proves. Assert:
 
 - the batch stops;
 - **at most one** in-flight submit lands after the HALT commit (the accepted, bounded
@@ -589,22 +701,42 @@ panel mid-run. Assert:
 
 Then release the HALT and confirm dispatch resumes on the next cycle.
 
-### D3 — Forced drawdown trip with a tight limit
+### D3 — Forced trip with a tight limit
 
-Set `max_drawdown_usd` deliberately low (tight enough that the paper book's realized $
-already breaches it), then let a cycle run. Walk the whole flow:
+**Prerequisite for the drawdown breaker:** it is computed from *realized* dollars —
+`(exit − entry) × qty` over **closed** live trades, ordered by `ExitEvent.id`, since the
+anchor. A fresh paper book has none, so `max_drawdown_usd` set on day one simply reads 0
+and never fires. You need **at least one closed, `qty`-stamped live losing trade** first
+(D1's bracket entry, stopped out, reconciled). Legacy rows with a NULL `qty` contribute 0
+and are never guessed at.
+
+So run this in two passes:
+
+1. **The deterministic forced trip — `max_trades_per_day = 1`.** This breaker counts
+   counting-status live `ExecutionLog` rows for the run date, so it needs no closes at all
+   and fires on the *second* order of any cycle. Set it on the Safety panel, start a cycle
+   with ≥2 intents, and walk the flow below (substituting `max trades/day: …` for the
+   reason). This is the one to use if you want the trip on demand.
+2. **The drawdown pass — once a real closed loss exists.** Set `max_drawdown_usd` below the
+   book's realized drawdown and let the next cycle run. Only this pass exercises the
+   anchor-reset remedy, which is why it is worth doing rather than skipping.
+
+Either way, walk the whole flow:
 
 - **sweep** — entry-side orders pulled, stops verified/restored, `DisarmEvent(reason=
-  'guardrail:max_drawdown_usd')` written;
+  'guardrail:<breaker>')` written;
 - **email** — exactly one `GUARDRAIL TRIPPED` mail (re-runs must not re-send: the
   `EmailLog(kind='guardrail')` key is the trip event id);
-- **banner** — `TRIPPED — max drawdown: …` on the Safety screen, plus `SWEEP PARTIAL` if the
-  sweep didn't finish (then confirm the next cycle retries it and it flips to complete);
+- **banner** — `TRIPPED — <reason>` on the Safety screen; if the sweep hasn't finished the
+  headline instead reads `TRIPPED — SWEEP RETRYING` with the reason on the line below
+  (then confirm the next cycle retries it and the headline flips back to the reason once
+  `sweep_state` reaches `complete`);
 - **clear flow** — the ack checkbox gates the 900 ms hold, and clearing works;
-- **re-trip warning** — with the drawdown *still* breached, confirm the clear dialog warns
-  that it will re-trip within the hour unless you also reset the anchor, then confirm it
-  **does** re-trip on the next hourly cycle. Finally reset the anchor and confirm the book
-  stays released.
+- **re-trip warning** — with the breach *still* active, confirm the clear dialog says so
+  and names the per-breaker remedy, then confirm it **does** re-trip on the next cycle.
+  The remedy differs: on pass 1 the count only resets at the next trading day of record
+  (or raise the cap); on pass 2 the dialog additionally offers the **anchor reset** beside
+  the clear — take it, and confirm the book then stays released.
 
 Also confirm the brake blocks submits while engaged: a dispatch attempt while tripped must
 produce `skipped` `ExecutionLog` rows with a `guardrail: …` detail and **no** broker call.
