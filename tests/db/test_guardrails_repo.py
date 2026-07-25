@@ -388,6 +388,28 @@ def test_realized_usd_on_sums_closed_live_trades_with_qty(session: Session) -> N
     assert gr.realized_usd_on(session, run_date=date(2026, 7, 15)) == 0.0
 
 
+def test_live_realized_usd_total_sums_all_time_and_counts_unsized(session: Session) -> None:
+    session.add_all([
+        # +50 and -60 across two different days: all-time, no day filter.
+        _live_trade(ticker="WIN", entry_price=100.0, exit_price=110.0, qty=5,
+                    exit_date=date(2026, 7, 10)),
+        _live_trade(ticker="LOSE", entry_price=50.0, exit_price=44.0, qty=10),
+        # unpriceable closes: 0 to the sum, 1 each to the honesty count.
+        _live_trade(ticker="LEGACY", qty=None),
+        _live_trade(ticker="NOPRICE", exit_price=None),
+        # other book / still open: neither summed nor counted.
+        _live_trade(ticker="RSRCH", account="research", qty=9),
+        _live_trade(ticker="OPEN", status="open", exit_date=None, exit_price=None),
+    ])
+    session.commit()
+    assert gr.live_realized_usd_total(session) == (pytest.approx(-10.0), 2)
+    # `since` cuts on the CLOSE date (the scoreboard's window axis).
+    assert gr.live_realized_usd_total(
+        session, since=date(2026, 7, 15))[0] == pytest.approx(-60.0)
+    # an empty window coalesces to 0.0, never NULL.
+    assert gr.live_realized_usd_total(session, since=date(2026, 8, 1)) == (0.0, 0)
+
+
 def test_live_drawdown_from_anchor(session: Session) -> None:
     # three closed live trades whose ExitEvents land in this order:
     #   T1 -100, T2 +50, T3 -20  (P&L = (exit-entry)*qty)

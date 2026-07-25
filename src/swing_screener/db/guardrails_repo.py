@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, ScalarSelect, Update, func, select, update
+from sqlalchemy import CursorResult, ScalarSelect, Update, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from swing_screener.db.models import AgentGuardrailEvent, AgentGuardrails, ExitEvent, PaperTrade
@@ -462,6 +462,59 @@ def realized_usd_on(session: Session, *, run_date: date) -> float:
         PaperTrade.entry_price.is_not(None),
     )
     return float(session.scalar(stmt) or 0.0)
+
+
+def live_realized_usd_total(
+    session: Session, *, since: date | None = None
+) -> tuple[float, int]:
+    """The live book's realized ``$`` and the count of closes it could not price.
+
+    Returns ``(total_usd, n_unsized)``: the sum of ``(exit - entry) * qty`` over
+    closed ``live`` trades carrying all three, and the number of closed ``live``
+    trades missing any of them. An unpriceable row adds 0 to the sum and 1 to the
+    count -- ``$`` math skips NULL and never guesses (``PaperTrade.qty``'s column
+    contract), and the count is what lets a surface SAY dollars are missing
+    instead of quietly under-reporting. NULL ``qty`` is the legacy live row
+    (booked before fill materialization stamped share counts); R needs no share
+    count, so those rows still carry their full weight in every R aggregate.
+
+    ALL-TIME by default (the scoreboard's "all" window) -- unlike
+    ``realized_usd_on``, which is the daily-loss breaker's single-day input.
+    ``since`` cuts on ``exit_date >= since``, the same CLOSE-date axis
+    ``cockpit.scoreboard`` windows its R on (a NULL ``exit_date`` drops from a
+    windowed view exactly as ``scoreboard._in_window`` drops it), so a windowed
+    card's dollars can never contradict its own R. NOTE for any future
+    per-window variant: ``exit_date`` is the DAY OF RECORD stamped at close, not
+    necessarily the session the fill printed -- a late reconcile books the close
+    on the day it was recorded.
+
+    Portability mirrors ``realized_usd_on``: ``== "closed"`` renders ``col = 'x'``
+    (SQL Server-safe) rather than a boolean ``.is_()``, and ``func.coalesce``
+    makes an empty book 0.0 rather than NULL.
+    """
+    scope = [
+        PaperTrade.status == "closed",
+        PaperTrade.account == LIVE_ACCOUNT,
+    ]
+    if since is not None:
+        scope.append(PaperTrade.exit_date >= since)
+    priced = (PaperTrade.qty, PaperTrade.exit_price, PaperTrade.entry_price)
+    total = session.scalar(
+        select(
+            func.coalesce(
+                func.sum(
+                    (PaperTrade.exit_price - PaperTrade.entry_price) * PaperTrade.qty
+                ),
+                0.0,
+            )
+        ).where(*scope, *(col.is_not(None) for col in priced))
+    )
+    n_unsized = session.scalar(
+        select(func.count())
+        .select_from(PaperTrade)
+        .where(*scope, or_(*(col.is_(None) for col in priced)))
+    )
+    return float(total or 0.0), int(n_unsized or 0)
 
 
 def live_drawdown_usd(

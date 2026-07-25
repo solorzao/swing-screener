@@ -66,19 +66,27 @@ def _add_robinhood_episode(
 def _add_paper_trade(
     session: Session,
     ticker: str,
-    r: float,
+    r: float | None,
     *,
     account: str = "paper",
     would_surface: bool | None = None,  # PROD-FAITHFUL: the paper adapter never stamps it
     arm: str = "baseline",
     variant: str = "default",
-    exit_date: date = date(2026, 1, 10),
+    exit_date: date | None = date(2026, 1, 10),
+    status: str = "closed",
+    entry_price: float | None = None,
+    exit_price: float | None = None,
+    qty: int | None = None,
 ) -> None:
+    """One ``PaperTrade`` row. The ``$`` columns (``entry_price``/``exit_price``/
+    ``qty``) default to NULL on purpose: that IS the legacy live-row shape (booked
+    before fills stamped a share count), so only the live-dollar tests stamp them."""
     session.add(PaperTrade(
         ticker=ticker, timeframe="1d", horizon="medium", signal_score=0.8, rank=1,
         account=account, fill_status="filled", stop=95.0, target=110.0, risk=5.0,
-        status="closed", realized_r=r, exit_date=exit_date, opened_date=exit_date,
+        status=status, realized_r=r, exit_date=exit_date, opened_date=exit_date,
         would_surface=would_surface, arm=arm, variant=variant,
+        entry_price=entry_price, exit_price=exit_price, qty=qty,
     ))
     session.commit()
 
@@ -156,11 +164,64 @@ def test_combined_equity_curve_merges_and_resorts(session):
     assert combined["equity_r"] == [["2026-01-03", 1.0], ["2026-01-05", 3.0]]
 
 
-def test_live_realized_usd_is_deferred_none(session):
-    _add_paper_trade(session, "BBB", 1.0, account="live")
+def test_live_card_sums_realized_dollars(session):
+    # (12 - 10) * 100 = +$200 ; (44 - 50) * 10 = -$60  ->  +$140 on the live card.
+    _add_paper_trade(session, "AAA", 2.0, account="live",
+                     entry_price=10.0, exit_price=12.0, qty=100)
+    _add_paper_trade(session, "BBB", -1.2, account="live",
+                     entry_price=50.0, exit_price=44.0, qty=10)
     card = _card(build_scoreboard(session, window="all"), "live")
-    assert card["realized_usd"] is None       # ExecutionLog share-join deferred
-    assert card["n_closed"] == 1
+    assert card["realized_usd"] == pytest.approx(140.0)
+    assert card["n_unsized"] == 0
+    assert card["n_closed"] == 2               # R fields untouched by the $ addition
+
+
+def test_live_card_counts_unsized_legacy_rows(session):
+    # A NULL-qty legacy live row contributes 0 to the $ sum (never a guess) and 1 to
+    # the honesty count -- while still counting in R, which needs no share count.
+    _add_paper_trade(session, "AAA", 2.0, account="live",
+                     entry_price=10.0, exit_price=12.0, qty=100)
+    _add_paper_trade(session, "OLD", 1.0, account="live",
+                     entry_price=10.0, exit_price=90.0, qty=None)
+    card = _card(build_scoreboard(session, window="all"), "live")
+    assert card["realized_usd"] == pytest.approx(200.0)
+    assert card["n_unsized"] == 1
+    assert card["n_closed"] == 2
+
+
+def test_combined_includes_live_dollars(session):
+    _add_manual_trade(session, "AAA", entry=10, stop=9, exit=12, size=100)   # +$200
+    _add_paper_trade(session, "BBB", 1.0, account="live",
+                     entry_price=20.0, exit_price=25.0, qty=8)              # +$40
+    board = build_scoreboard(session, window="all")
+    assert _card(board, "live")["realized_usd"] == pytest.approx(40.0)
+    assert board["combined"]["realized_usd"] == pytest.approx(240.0)
+
+
+def test_open_live_trades_do_not_count(session):
+    # An open position has no realized $ (and is not an unsized CLOSED row either).
+    _add_paper_trade(session, "AAA", None, account="live", status="open",
+                     exit_date=None, entry_price=10.0, exit_price=None, qty=100)
+    card = _card(build_scoreboard(session, window="all"), "live")
+    assert card["realized_usd"] == 0.0
+    assert card["n_unsized"] == 0
+    assert card["n_closed"] == 0
+
+
+def test_live_dollars_obey_the_window(session):
+    # The $ sum rides the SAME close-date window as the card's R, so a windowed card
+    # can never pair 90-day R with an all-time dollar figure.
+    _add_paper_trade(session, "OLD", 1.0, account="live", entry_price=10.0,
+                     exit_price=20.0, qty=10,                        # +$100, 400d ago
+                     exit_date=date.today() - timedelta(days=400))
+    _add_paper_trade(session, "NEW", 1.0, account="live", entry_price=10.0,
+                     exit_price=15.0, qty=10,                        # +$50, 10d ago
+                     exit_date=date.today() - timedelta(days=10))
+    all_card = _card(build_scoreboard(session, window="all"), "live")
+    win_card = _card(build_scoreboard(session, window="90"), "live")
+    assert all_card["realized_usd"] == pytest.approx(150.0)
+    assert win_card["realized_usd"] == pytest.approx(50.0)
+    assert win_card["n_closed"] == 1
 
 
 def test_paper_card_populates_without_would_surface(session):
@@ -192,10 +253,11 @@ def test_shape_and_order_with_empty_books(session):
         "manual_equity", "robinhood", "live", "paper"
     ]
     card_keys = {"book", "unit", "expectancy", "win_rate", "n_wins", "n_losses",
-                 "n_closed", "profit_factor", "realized_usd", "equity_r"}
+                 "n_closed", "profit_factor", "realized_usd", "equity_r", "n_unsized"}
     for c in board["cards"]:
         assert set(c) == card_keys
         assert c["n_closed"] == 0
+        assert c["n_unsized"] == 0              # every card carries it; only live can be > 0
         assert c["expectancy"] is None          # empty book -> honest-empty
         assert c["equity_r"] is None
     combined = board["combined"]

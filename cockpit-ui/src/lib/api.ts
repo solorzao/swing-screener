@@ -240,10 +240,17 @@ export interface ScoreboardStats {
   profit_factor: number | null
   /** Cumulative realized R by ascending close date, as (ISO date, cum R) pairs. */
   equity_r: [string, number][] | null
+  /** Closed trades DROPPED from `realized_usd` for want of a share count / price
+   * (legacy live rows booked before fills stamped qty) — the honesty counter on the
+   * $ figure, > 0 only on the live card. Optional because every CARD sends it but the
+   * combined pool does not: the pool's dollars carry the same exclusions, and the live
+   * card is where they are disclosed. */
+  n_unsized?: number
 }
 
 /** One book's scoreboard tile — the wire form of scoreboard.py `BookCard.as_dict()`.
- * `realized_usd` is null where the book has no dollars (an R-only or empty book). */
+ * `realized_usd` is null where the book keeps no dollars at all (the paper book); the
+ * three real-money books always send a number, 0 when nothing has closed. */
 export interface ScoreboardCard extends ScoreboardStats {
   book: 'manual_equity' | 'robinhood' | 'live' | 'paper'
   unit: ScoreboardUnit
