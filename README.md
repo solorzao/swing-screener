@@ -331,7 +331,7 @@ See [`docs/email-digests.md`](docs/email-digests.md).
 # advisory autonomy gate + the calibration countdown to the floors
 .\.venv\Scripts\python -m swing_screener.pipeline.autonomy
 
-# go/no-go readiness check before arming a live broker (reachable / funded / caps / gate)
+# go/no-go check before arming a live broker (config / reachable / funded / caps / guardrails / gate)
 .\.venv\Scripts\python -m swing_screener.pipeline.preflight
 ```
 
@@ -449,6 +449,7 @@ own variants. **Autonomy is always the last step, and always a human's.**
   and are **off by default** (`SWING_DEEP_ANALYSIS`).
 - **On money:** the default posture is `off` and the system moves **no money** until a human
   deliberately arms it (paper first, real money last, behind three locks + hard caps + the
-  autonomy gate). It can place **paper** orders on Alpaca and, once armed, **real** ones — but
-  arming is always a conscious human act with a kill switch. This is a personal
+  autonomy gate + a cockpit **guardrails brake** whose three dollar/count breakers are
+  mandatory for real money). It can place **paper** orders on Alpaca and, once armed, **real**
+  ones — but arming is always a conscious human act with a kill switch. This is a personal
   research/decision-support tool; **nothing here is financial advice.**

@@ -122,7 +122,7 @@ Meridian's self-improvement is weekly, and it all arrives as things **for you to
 | Sunday ~9am | **Market Weather** email — the weekly macro read (SPY regime, VIX, yields) | read it; it sets your posture for the week (also on screen `8`) |
 | Sunday morning | up to two **GitHub PRs**: the optimizer's config-change proposal (only on a trusted out-of-sample winner) and the reflection's playbook update | review and merge — or close with a comment; these are the system *proposing*, you *deciding* |
 | Friday ~4pm | the **weekly digest** | read |
-| Saturday ~4pm | the **System Behavior Auditor's** weekly conduct report | skim + **acknowledge** on System Audit (`g` `a`); breaches (caps exceeded, disarms) come daily and deserve a real look |
+| Saturday ~4pm | the **System Behavior Auditor's** weekly conduct report | skim + **acknowledge** on System Audit (`g` `a`); breaches (caps exceeded, unsanctioned disarms, guardrail conduct) come daily and deserve a real look |
 | rolling | **Coach reviews** of your closed manual trades + the weekly Weaknesses Profile | read on Journal (`g` `j`); add your own edit beside the Coach's text; confirm or ignore its parked tag proposals |
 | rolling | **Forward Books** (`4`) — when an experiment's stopping rule fires, its card goes decision-forcing | work the DECIDE box; the card hands you the exact retire checklist |
 | rolling | **Playbooks** (`5`) — queued variant proposals + the reflection-due counter | approve/withdraw; approve *marks* — the promotion is a separate deliberate commit, and the response hands you the checklist |
@@ -161,7 +161,7 @@ commands tell you where you stand at any time:
 # the advisory autonomy gate + the calibration countdown to its floors
 .\.venv\Scripts\python -m swing_screener.pipeline.autonomy
 
-# GO/NO-GO preflight for arming a live broker (reachable / funded / caps / gate)
+# GO/NO-GO preflight (config / reachable / funded / caps / guardrails / gate)
 .\.venv\Scripts\python -m swing_screener.pipeline.preflight
 ```
 
@@ -171,6 +171,60 @@ reads ready and preflight is GO, the deliberate flip is the
 `SWING_EXECUTION_MODE=off`; the cockpit's **DISARM** button is the venue sweep (cancels
 entry-side orders, keeps bracket stops — it never closes positions and never flips the
 mode).
+
+### The Safety screen (`7`) — the guardrails brake
+
+Once anything is armed, the Safety screen is where you drive. Its **guardrails panel**
+(between ARMING LOCKS and HARD CAPS) is the one control that can stop the machine
+*without* touching env — its caption says the whole design in seven words:
+*"a brake, not a knob — env stays the master arm."*
+
+- **The model.** `SWING_EXECUTION_MODE` is the **master arm** and lives in env (per Azure
+  job, per process); the brake is a **DB row** the cockpit writes. Dispatch happens only
+  when the mode is `live` **and** the brake is released. Releasing the brake on a disarmed
+  system does nothing — the cockpit can make the machine safer, never more aggressive. That
+  also makes the brake the **only** control that reaches a *running* Azure job mid-dispatch;
+  an env change reaches the next execution, never the one already going.
+- **HALT** — a 900 ms hold (the venue-adjacent tier), with a dry-run sweep preview fired on
+  hold-start so you see what it would move before it moves. It stops the batch and runs the
+  protective sweep: pull the resting **entry-side** orders, verify/restore protective stops.
+  It never closes a position. Release it when you're ready.
+- **The four breakers** — max daily loss ($), max trades/day, max drawdown ($) and an
+  optional loss streak. The first three are **mandatory before real money**: unset, a
+  real-money order is refused outright. Editing a limit can never move the brake state
+  (editing a cap while tripped leaves it tripped).
+- **A trip** persists first, then sweeps, then emails you, then shows `TRIPPED — <reason>`
+  on the banner (and `SWEEP PARTIAL` if the sweep hasn't finished — that means *retrying*,
+  not failed; every cycle re-runs it, and DISARM is the manual retry).
+- **Clearing** is acknowledge-then-hold: ticking the box is what enables the hold. Clearing
+  releases the brake but **never resolves the breach**, so the panel tells you what actually
+  does, per breaker:
+
+| Breaker tripped | What clears it |
+|---|---|
+| max drawdown ($) | measured from the high-water anchor, which has not moved — **re-anchor it** (the form is offered beside the clear) or raise the cap. Clearing alone re-trips within the hour. |
+| max trades/day | the count resets at the next trading day of record — or raise the cap |
+| max daily loss ($) | the day's realized loss resets at the next trading day of record — or raise the cap |
+| loss streak | the streak resets on the next winning close — or raise the threshold |
+
+Whenever the brake is engaged, the **masthead** carries a `HALTED` / `TRIPPED` chip beside
+the execution-mode chip, clickable straight to this screen. No chip means released.
+
+**What the System Behavior Auditor makes of all this** (System Audit, `g` `a`): correct
+brake behavior is **expected conduct, counted as facts, never a breach** — the `guardrail:`
+clamps, the trip's own sweep `DisarmEvent`, halt and kill-switch sweeps. **A correctly-braked
+week grades `info`** — so the trip email and the Safety banner are your operator signal, not
+this screen. The Auditor only raises four guardrail rules, all day-keyed:
+
+| Rule | Severity | Means |
+|---|---|---|
+| `guardrail-submit-while-tripped` | warn | counting live orders on a day a trip was in force |
+| `guardrail-unmailed-trip` | alert | a trip episode you were never emailed about |
+| `guardrail-stuck-sweep` | alert | a sweep left unfinished for a full day |
+| `guardrail-unset-mandate` | warn | live orders while a mandatory breaker was unset |
+
+The warn-grade rules render with a **caveat** on screen (day granularity can't prove
+intra-day ordering) — read it; it's the honest half of the finding.
 
 ## When something looks off
 

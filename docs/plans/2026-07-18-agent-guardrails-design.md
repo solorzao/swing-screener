@@ -1,8 +1,17 @@
 # Agent Guardrails — cockpit brake state for the live agent
 
 **Date:** 2026-07-18
-**Status:** approved by Oliver (trip action, writable scope, mandatory set); verified against the
-codebase by a 4-lens seam review (enforcement, cockpit, data model, red-team)
+**Status:** **implemented (Tasks 1–19)**; Strategy Board **Tasks 22–24 pending**. Originally
+approved by Oliver (trip action, writable scope, mandatory set) and verified against the
+codebase by a 4-lens seam review (enforcement, cockpit, data model, red-team).
+Built on branch `claude/robinhood-agent-deploy-4df19b`, commits `3c0dac8`…`c4317c6`
+(Task 20, the docs/runbook pass, is the commit that carries this status line).
+Every **as-built amendment** noted inline below and in the
+[implementation plan](2026-07-18-agent-guardrails-implementation.md) is binding where it
+diverges from the original design text. Operator-facing truth lives in
+[the arming runbook](../runbooks/arming-alpaca-live.md) (brake model, trip protocol,
+mode-off caveat, Azure appendix, Stage-0 drill) and
+[using-meridian.md](../using-meridian.md#the-safety-screen-7--the-guardrails-brake).
 **Context:** the first-live-agent readiness audit (same date). The live Alpaca path is built
 (three locks, caps, preflight, disarm, reconcile) but there is no one-click stop that reaches the
 Azure jobs, no drawdown/trade-count breakers, and the cockpit deliberately writes no config.

@@ -1,5 +1,16 @@
 # Agent Guardrails + Stage-1 Live-Agent Fixes — Implementation Plan
 
+> **STATUS: execution complete through Task 20.** Phases 1–3, 4 and 5 are built (Tasks 1–20);
+> **Task 21** is the operator-run final verification + Stage-0 paper drill (its checklist now
+> lives in [the arming runbook](../runbooks/arming-alpaca-live.md#stage-0-drill--the-paper-host-rehearsal-do-this-before-real-money)),
+> and **Phase 4b — the Strategy Board (Tasks 22–24) — is not started.**
+> Where a task carries an **AS-BUILT AMENDMENT**, that amendment is the truth and the
+> surrounding original text is historical. Task 10's step-(3) sketch of the rejection alert
+> (`rejected_live`/`canceled`, an `sha1(sorted log ids)` key) was **superseded during Task 11**
+> — see Task 11's amendments (a)–(d): coverage is per-row (`kind='execution-cover'`,
+> `alert_key='xlog-{id}'`) with one `kind='execution'` display row per email, and only
+> `rejected_live` is mailed.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Build the DB-backed guardrails brake (HALT + four breakers, cockpit-writable, hard-DISARM on trip) and close the Stage-1 gaps from the 2026-07-18 readiness audit, so the first live agent can be deployed on Alpaca with one-click stop, accurate $ accounting, and same-day failure visibility.
@@ -511,7 +522,7 @@ The sweep body mirrors the kill-switch block at `notify/run.py:715-729` (`pull_e
 - Modify: `src/swing_screener/notify/alerts.py` (compose), `src/swing_screener/notify/run.py` (wire `_trip_emailer` into the Task-6 seam; emit `rejected_live`/`canceled` alerts), `src/swing_screener/pipeline/run.py` (minimal sender for evening trips: `resolve_sender()` + `get_secret("DIGEST_TO")`, isolated try/except)
 - Test: `tests/notify/test_guardrail_alerts.py`
 
-**Failing tests:** (1) a trip sends exactly one email (send-then-log, `EmailLog(kind="guardrail", alert_key=str(trip_event_id))`), re-run no-ops; (2) send failure leaves no EmailLog row (retried next cycle) and never aborts the sweep; (3) a reconcile pass that flips a log to `rejected_live`/`canceled` emits one `EmailLog(kind="execution", alert_key=sha1(sorted log ids))` alert email listing the rows (clone `_exit_alert_key`/`_exit_already_sent` idiom at `notify/run.py:118-186`). **Implementation:** compose functions in `alerts.py` mirroring `compose_exit_alert`; emitters mirroring `_emit_pending_exit_alert` exactly (SEND then LOG, IntegrityError catch). Evening screen: build the sender lazily inside the trip path only (no transport at import). Commit `feat: guardrail trip + live-rejection alert emails`.
+**Failing tests:** (1) a trip sends exactly one email (send-then-log, `EmailLog(kind="guardrail", alert_key=str(trip_event_id))`), re-run no-ops; (2) send failure leaves no EmailLog row (retried next cycle) and never aborts the sweep; (3) ~~a reconcile pass that flips a log to `rejected_live`/`canceled` emits one `EmailLog(kind="execution", alert_key=sha1(sorted log ids))` alert email listing the rows~~ (clone `_exit_alert_key`/`_exit_already_sent` idiom at `notify/run.py:118-186`). **SUPERSEDED in Task 11 (as-built):** the id-set hash key is undecidable across processes, so coverage is PER-ROW (`EmailLog kind='execution-cover'`, `alert_key='xlog-{id}'`) with ONE `kind='execution'` display row per sent email; and only `rejected_live` is mailed — `canceled` covers benign EOD expiry and the system's own sweep-cancels (see `alerts.REJECTED_STATUSES`). **Implementation:** compose functions in `alerts.py` mirroring `compose_exit_alert`; emitters mirroring `_emit_pending_exit_alert` exactly (SEND then LOG, IntegrityError catch). Evening screen: build the sender lazily inside the trip path only (no transport at import). Commit `feat: guardrail trip + live-rejection alert emails`.
 
 ### Task 11 (Stage-1): Hourly live reconcile
 
