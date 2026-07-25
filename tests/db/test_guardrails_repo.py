@@ -287,7 +287,29 @@ def test_sweep_outcome_never_stamps_a_newer_trip(session: Session) -> None:
     assert g.sweep_state == "pending"       # the NEW trip's sweep is untouched
     # ... but the sweep DID run -- its event row is journaled regardless.
     ev = session.query(AgentGuardrailEvent).filter_by(kind="sweep").one()
-    assert json.loads(ev.values_json) == {"trip_id": old_eid, "outcome": "complete"}
+    assert json.loads(ev.values_json) == {"trip_id": old_eid, "outcome": "complete",
+                                          "unprotected": []}
+
+
+def test_sweep_outcome_journals_the_unprotected_list_structurally(
+        session: Session) -> None:
+    """``unprotected`` rides ``values_json`` as DATA, not only as prose inside the
+    detail sentence. The cockpit's DISARM resume reads it back to raise the same
+    red no-Escape alarm the raw sweep path raises from its own return value -- an
+    alarm that exists only as a substring of a human sentence cannot be branched on
+    without string-sniffing, and the two disarm modes would then render identical
+    venue state loudly and calmly."""
+    eid = gr.trip(session, breaker="max_drawdown_usd", reason="breach",
+                  source="digest")
+    assert eid is not None
+    gr.record_sweep_outcome(session, trip_id=eid, outcome="complete",
+                            detail="swept: 1 cancelled; UNPROTECTED: NVDA, AMD",
+                            source="digest", unprotected=["NVDA", "AMD"])
+
+    ev = session.query(AgentGuardrailEvent).filter_by(kind="sweep").one()
+    assert json.loads(ev.values_json) == {"trip_id": eid, "outcome": "complete",
+                                          "unprotected": ["NVDA", "AMD"]}
+    assert gr.load_guardrails(session).sweep_state == "complete"
 
 
 def test_sweep_outcome_rejects_unknown_vocabulary(session: Session) -> None:

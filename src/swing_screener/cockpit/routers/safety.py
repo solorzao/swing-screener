@@ -4,6 +4,7 @@ endpoints. Moved verbatim out of ``cockpit/api.py``; lock semantics (single-flig
 non-blocking acquire, release in the outer ``finally``) and every status code are
 unchanged."""
 
+import json
 import logging
 import threading
 from collections.abc import Callable, Iterator
@@ -138,14 +139,15 @@ def _rollback_quietly(session: Session, *, what: str) -> None:
 def _event_watermark(session: Session) -> int:
     """``max(agent_guardrail_events.id)`` right now, or 0 on an empty table.
 
-    Taken BEFORE a sweep so ``_sweep_detail`` can prove the row it reports was
+    Taken BEFORE a sweep so ``_sweep_record`` can prove the row it reports was
     written by THIS request -- see there for why a bare "newest sweep event" is
     not good enough."""
     return int(session.scalar(select(func.max(AgentGuardrailEvent.id))) or 0)
 
 
-def _sweep_detail(session: Session, *, after: int) -> str:
-    """This request's ``sweep`` event detail, VERBATIM -- or an honest admission.
+def _sweep_record(session: Session, *, after: int) -> tuple[str, list[str]]:
+    """This request's ``sweep`` event: its detail VERBATIM (or an honest admission)
+    and the STRUCTURED ``unprotected`` list ``record_sweep_outcome`` wrote beside it.
 
     The resume path cannot itemize what it moved (``resume_incomplete_sweep``
     returns a bool), but the sweep it just ran recorded its own summary -- "swept: N
@@ -161,13 +163,30 @@ def _sweep_detail(session: Session, *, after: int) -> str:
     PRIOR sweep's text -- an old success narrating a run that just failed, which is
     the worst possible lie on this endpoint. Scoped, that case falls through to a
     detail that says exactly what is known: the sweep ran, its bookkeeping did not
-    land, and the state may lag."""
-    reason = session.scalar(
-        select(AgentGuardrailEvent.reason)
+    land, and the state may lag.
+
+    ``unprotected`` is read from the event's ``values_json`` -- the STRUCTURED fact
+    ``record_sweep_outcome`` stores, never parsed back out of the detail sentence --
+    so the resume carries the same field the raw sweep returns and the panel can
+    apply ONE alarm rule across every disarm mode. An absent/garbage blob answers
+    ``[]``, which is safe HERE specifically: the only path that renders this to a
+    client is the 200, and a failed outcome write leaves ``sweep_state`` incomplete
+    and 503s first -- so the empty list never stands in for "unknown"."""
+    row = session.execute(
+        select(AgentGuardrailEvent.reason, AgentGuardrailEvent.values_json)
         .where(AgentGuardrailEvent.kind == "sweep", AgentGuardrailEvent.id > after)
         .order_by(AgentGuardrailEvent.id.desc())
-        .limit(1))
-    return reason or "sweep ran; outcome write failed — state may lag"
+        .limit(1)
+    ).first()
+    if row is None:
+        return "sweep ran; outcome write failed — state may lag", []
+    try:
+        blob = json.loads(row.values_json or "{}")
+        raw = blob.get("unprotected") if isinstance(blob, dict) else None
+    except ValueError:  # a malformed blob must never 500 the emergency path
+        raw = None
+    return (row.reason or "sweep ran; outcome write failed — state may lag",
+            [str(s) for s in raw] if isinstance(raw, list) else [])
 
 
 class GuardrailAction(BaseModel):
@@ -467,10 +486,13 @@ def build_safety_router(
         ``dry_run`` previews: ``resume_incomplete_sweep`` has no dry-run mode (it is
         the response protocol, not a query), so the preview composes the two disarm
         helpers directly with ``dry_run=True`` under the key the real resume WOULD
-        use. That is the only path here with itemized arrays; a REAL resume cannot
-        itemize (the pipeline returns a bool), so its counts ride ``detail`` --
-        the sweep event's own recorded summary, verbatim -- and the four arrays stay
-        empty. The full row is in the guardrails event history either way.
+        use. That is the only path here with itemized COUNTS; a REAL resume cannot
+        itemize them (the pipeline returns a bool), so they ride ``detail`` -- the
+        sweep event's own recorded summary, verbatim -- and those arrays stay empty.
+        ``unprotected`` is the exception: it is an ALARM, not a count, so the real
+        resume reports it structurally off the sweep event's ``values_json`` (see
+        ``_sweep_record``) rather than leaving it as prose the client would have to
+        parse. The full row is in the guardrails event history either way.
 
         WIRE (the ``mode``-tagged union -- see ``disarm_book``): ``resume_key`` is
         the venue-side client_order_id prefix both processes derive from the trip.
@@ -530,7 +552,7 @@ def build_safety_router(
                      "running the raw disarm sweep instead")
             return None
         after = guardrails_repo.peek_guardrails(session)
-        detail = _sweep_detail(session, after=watermark)
+        detail, unprotected = _sweep_record(session, after=watermark)
         if after.sweep_state != "complete":
             # A human pressed DISARM and the book is NOT clean: never a 200.
             raise HTTPException(
@@ -544,14 +566,19 @@ def build_safety_router(
             "sweep_state": after.sweep_state,
             "resume_key": key,
             "detail": detail,
-            # Not itemized on this path (the pipeline returns a bool, not the
-            # orders): ``detail`` carries the sweep's own recorded summary, and the
-            # guardrails event history has the row. Kept as empty lists rather than
-            # dropped so the wire shape stays a superset of a plain disarm.
+            # The counts are not itemized on this path (the pipeline returns a
+            # bool, not the orders): ``detail`` carries the sweep's own recorded
+            # summary and the guardrails event history has the row. Kept as empty
+            # lists rather than dropped so the wire stays a superset of a plain
+            # disarm. ``unprotected`` is the ONE exception and it is deliberate:
+            # a position left with no stop anywhere is an ALARM, and an alarm that
+            # only exists as prose inside ``detail`` cannot be branched on -- the
+            # panel would render the identical venue state loudly on the raw path
+            # and calmly here. It comes off the sweep event's values_json.
             "cancelled": [],
             "sells_kept": 0,
             "stops_restored": [],
-            "unprotected": [],
+            "unprotected": unprotected,
         }
 
     @router.post("/api/disarm", dependencies=[Depends(_require_cockpit)])
@@ -607,11 +634,12 @@ def build_safety_router(
 
         WIRE: a ``mode``-TAGGED UNION, and ``mode`` alone is what a client branches
         on -- ``raw`` (the body below: itemized ``cancelled`` / ``sells_kept`` /
-        ``stops_restored`` / ``unprotected``), ``guardrail-resume`` (counts ride
-        ``detail``; the arrays are empty because the pipeline returns a bool, NOT
+        ``stops_restored`` / ``unprotected``), ``guardrail-resume`` (the counts ride
+        ``detail``; those arrays are empty because the pipeline returns a bool, NOT
         because nothing moved) or ``guardrail-resume-preview``. All three carry
         ``dry_run`` + ``state`` (the brake state this ran against; null when the
-        brake row could not be read).
+        brake row could not be read) -- and all three report ``unprotected``
+        FAITHFULLY, so one client-side alarm rule covers every mode.
 
         503 DETAILS: three stable prefixes, and the only thing a client may branch
         on -- ``database error (``, ``broker error (``, ``guardrail sweep did not

@@ -34,6 +34,8 @@ export function HoldToConfirm({
   className,
   title,
   disabled = false,
+  ariaDisabled = false,
+  describedBy,
   armed,
   vetoed = false,
   buttonRef,
@@ -48,6 +50,14 @@ export function HoldToConfirm({
   className?: string
   title?: string
   disabled?: boolean
+  /** For a `disabled` that is a LIFTABLE GATE (an unticked acknowledgement)
+   * rather than a permanent condition. A native disabled button is unfocusable,
+   * so assistive tech meets a dead control with no stated reason; this states
+   * the state, and `describedBy` points at the thing that lifts it. Purely
+   * additive — `disabled` stays the hard gate, so nothing can fire early. */
+  ariaDisabled?: boolean
+  /** id of the element explaining the control (or how to enable it). */
+  describedBy?: string
   /** The external fire gate — see the contract above. */
   armed?: boolean
   /** Flip true to force-abort an in-progress hold (the preview REJECTED —
@@ -148,6 +158,8 @@ export function HoldToConfirm({
         className={classes.join(' ')}
         title={title}
         disabled={disabled}
+        aria-disabled={ariaDisabled || undefined}
+        aria-describedby={describedBy}
         aria-pressed={holding}
         onPointerDown={(e) => {
           if (e.button === 0) begin()

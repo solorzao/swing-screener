@@ -613,6 +613,9 @@ def test_disarm_routes_through_resume_when_tripped(tmp_path: Path) -> None:
     assert body["trip_id"] == trip_id
     assert body["sweep_state"] == "complete"
     assert "1 entry order(s) cancelled" in body["detail"]
+    # every position ended protected -- the alarm field is empty because it is
+    # TRUE here, not because this path cannot report it (see the test below).
+    assert body["unprotected"] == []
 
     restored = broker.submitted_specs[-1]
     assert restored.client_order_id == f"disarm-stop-NVDA-guardrail-{trip_id}"
@@ -623,6 +626,38 @@ def test_disarm_routes_through_resume_when_tripped(tmp_path: Path) -> None:
         assert (row.state, row.sweep_state) == ("tripped", "complete")
         ev = s.query(DisarmEvent).one()          # the resume path's row, and ONLY it
         assert ev.reason == "guardrail:max_drawdown_usd"
+
+
+def test_resume_reports_unprotected_positions_structurally(tmp_path: Path) -> None:
+    """A resumed sweep that leaves a position with NO recorded stop level anywhere
+    reports it in ``unprotected`` -- the same field the raw sweep returns.
+
+    The alarm posture must not depend on which disarm MODE ran: the raw path gets
+    the list straight off ``ensure_stop_protection``, so before this the resume
+    (whose pipeline returns only a bool) could describe the identical venue state
+    as calm body text while the raw path rendered a red, no-Escape alarm. The fact
+    now rides ``record_sweep_outcome``'s ``values_json`` and is read back by
+    ``_sweep_record`` -- never parsed out of the ``detail`` sentence, which is
+    prose for humans and may be re-worded."""
+    broker = _disarm_broker()
+    _kill_sell_legs(broker)                       # NVDA holds, its stop leg is gone
+    client, engine, _calls = _broker_app(tmp_path, broker)
+    with Session(engine) as s:
+        # deliberately NO _recorded_stop_row: there is no level to restore from,
+        # so the sweep leaves NVDA unprotected and says so.
+        trip_id = gr.trip(s, breaker="max_drawdown_usd", reason="dd breach",
+                          source="digest")
+        assert trip_id is not None
+        gr.record_sweep_outcome(s, trip_id=trip_id, outcome="partial",
+                                detail="venue died", source="digest")
+
+    body = client.post("/api/disarm", headers=_HDR).json()
+    assert body["mode"] == "guardrail-resume"
+    assert body["sweep_state"] == "complete"      # everything it COULD do, it did
+    assert body["unprotected"] == ["NVDA"]
+    assert "UNPROTECTED: NVDA" in body["detail"]  # the prose agrees with the data
+    # nothing was invented: no stop went out for the level-less position.
+    assert [o for o in broker.list_open_orders() if o.side == "sell"] == []
 
 
 @pytest.mark.parametrize("brake", ["ok", "halted", "tripped-swept"])

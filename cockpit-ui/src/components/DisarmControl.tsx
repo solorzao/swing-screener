@@ -95,14 +95,24 @@ function DisarmItemized({ result }: { result: DisarmRaw | DisarmResumePreview })
             : 'none'
           : `stops for ${result.stops_restored.join(', ')} — at the recorded level, copied never computed`}
       </div>
-      {result.unprotected.length > 0 && (
-        <div className="dz-alarm" role="alert">
-          UNPROTECTED — no recorded stop level anywhere for{' '}
-          {result.unprotected.join(', ')}. Left alone (never auto-closed) — this
-          needs your hand at the broker.
-        </div>
-      )}
+      <UnprotectedAlarm unprotected={result.unprotected} />
     </>
+  )
+}
+
+/** The UNPROTECTED alarm, rendered from `result.unprotected` and from nothing
+ * else — SAME component, SAME condition, every mode. The wire now reports the
+ * field faithfully on all three (the resume reads it back off its sweep event's
+ * values_json), so the alarm posture can no longer depend on which disarm path
+ * ran: identical venue state used to render red-and-no-Escape on the raw path
+ * and as calm body text on the resume. */
+function UnprotectedAlarm({ unprotected }: { unprotected: string[] }) {
+  if (unprotected.length === 0) return null
+  return (
+    <div className="dz-alarm" role="alert">
+      UNPROTECTED — no recorded stop level anywhere for {unprotected.join(', ')}.
+      Left alone (never auto-closed) — this needs your hand at the broker.
+    </div>
   )
 }
 
@@ -136,6 +146,9 @@ function DisarmOutcome({ result }: { result: DisarmResult }) {
         <div className="dz-row">
           <span className="dz-verb">sweep</span> {result.sweep_state ?? 'unknown'}
         </div>
+        {/* The one array this mode DOES fill (routers/safety.py `_sweep_record`):
+            a position with no stop anywhere is an alarm, not a count. */}
+        <UnprotectedAlarm unprotected={result.unprotected} />
         <ResumeKey resumeKey={result.resume_key} />
       </>
     )
@@ -175,6 +188,9 @@ export function DisarmControl({ gate }: { gate: Gate | null }) {
     phase.kind === 'done' || phase.kind === 'blocked' || phase.kind === 'failed'
   // Alarm panels: unprotected positions, or a partial disarm. These demand an
   // explicit focused/pointered dismissal (no Escape) — deliberate friction.
+  // MODE-BLIND on purpose: `unprotected` is on every member of the wire union
+  // and every mode fills it faithfully, so the loud/no-Escape posture is decided
+  // by the VENUE STATE, never by which code path reported it.
   const alarmUp =
     (phase.kind === 'done' && phase.result.unprotected.length > 0) ||
     (phase.kind === 'failed' && phase.partial)

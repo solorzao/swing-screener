@@ -23,7 +23,7 @@ venue hosts and credentials); the full traceback goes to the log.
 """
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime
 from typing import Literal
 
@@ -162,9 +162,11 @@ def respond_to_trip(
     else:
         # (2) the sweep + (3) its recorded outcome, keyed on THE trip we won so a
         # late finish can never stamp a newer trip's bookkeeping.
-        outcome, detail = _run_sweep(session, broker, trip_id=trip_id, breaker=breaker)
+        outcome, detail, unprotected = _run_sweep(
+            session, broker, trip_id=trip_id, breaker=breaker)
         _record_outcome_guarded(
-            session, trip_id=trip_id, outcome=outcome, detail=detail, source=source)
+            session, trip_id=trip_id, outcome=outcome, detail=detail, source=source,
+            unprotected=unprotected)
     # (4) the alert email -- isolated: a mail failure never aborts (or unwinds)
     # anything above.
     if emailer is not None:
@@ -201,14 +203,17 @@ def resume_incomplete_sweep(
     breaker = trip_event.breaker if trip_event is not None else ""
     log.warning("resuming incomplete guardrail sweep for trip %d (sweep_state=%s)",
                 g.trip_id, g.sweep_state)
-    outcome, detail = _run_sweep(session, broker, trip_id=g.trip_id, breaker=breaker)
+    outcome, detail, unprotected = _run_sweep(
+        session, broker, trip_id=g.trip_id, breaker=breaker)
     _record_outcome_guarded(
-        session, trip_id=g.trip_id, outcome=outcome, detail=detail, source=source)
+        session, trip_id=g.trip_id, outcome=outcome, detail=detail, source=source,
+        unprotected=unprotected)
     return True
 
 
 def _record_outcome_guarded(
-    session: Session, *, trip_id: int, outcome: str, detail: str, source: str
+    session: Session, *, trip_id: int, outcome: str, detail: str, source: str,
+    unprotected: Sequence[str] = (),
 ) -> None:
     """``record_sweep_outcome``, isolated: the sweep already MOVED VENUE STATE,
     so a failed outcome write (dead DB, mid-UPDATE failure) must neither unwind
@@ -218,7 +223,8 @@ def _record_outcome_guarded(
     and the next cycle's resume re-runs the (idempotent) sweep and re-records."""
     try:
         guardrails_repo.record_sweep_outcome(
-            session, trip_id=trip_id, outcome=outcome, detail=detail, source=source)
+            session, trip_id=trip_id, outcome=outcome, detail=detail, source=source,
+            unprotected=unprotected)
     except Exception:  # noqa: BLE001 -- bookkeeping must never outrank the caller
         log.error("failed to record sweep outcome for trip %d (%s) -- sweep_state "
                   "stays re-runnable", trip_id, outcome, exc_info=True)
@@ -230,8 +236,9 @@ def _record_outcome_guarded(
 
 def _run_sweep(
     session: Session, broker: BrokerClient, *, trip_id: int, breaker: str
-) -> tuple[str, str]:
-    """The trip's disarm sweep -> ``(outcome, detail)``: entry pulls + stop protection.
+) -> tuple[str, str, list[str]]:
+    """The trip's disarm sweep -> ``(outcome, detail, unprotected)``: entry pulls +
+    stop protection, and the positions left with no protective stop anywhere.
 
     The venue work is ``disarm.run_protective_sweep`` -- the SAME body the
     kill-switch and manual-HALT paths run (one definition of "the sweep") --
@@ -251,6 +258,7 @@ def _run_sweep(
     ``pull_entry_orders`` dies mid-cancel (``entries`` stays empty) --
     best-effort telemetry, never the ledger; the venue is the ledger."""
     entries: list[BrokerOrder] = []
+    unprotected: list[str] = []
     try:
         entries, restored, unprotected = run_protective_sweep(
             broker,
@@ -270,9 +278,13 @@ def _run_sweep(
                   "re-runnable ('partial')", trip_id, exc_info=True)
         outcome = "partial"
         detail = broker_error_detail(e)
+        # The exception may have landed anywhere inside the sweep, so what IS
+        # protected is unknown -- report nothing rather than a stale/partial list.
+        # A 'partial' outcome is itself the loud signal (the resume 503s on it).
+        unprotected = []
     record_disarm_event(
         session, reason=f"guardrail:{breaker}", orders_cancelled=len(entries))
-    return outcome, detail
+    return outcome, detail, unprotected
 
 
 def record_disarm_event(session: Session, *, reason: str, orders_cancelled: int) -> None:

@@ -22,6 +22,8 @@ All in-memory sqlite + FakeBroker -- no venue, no network, no mail.
 
 from datetime import date
 
+import json
+
 import pytest
 from sqlalchemy.orm import Session
 
@@ -297,6 +299,9 @@ def test_unprotected_positions_still_complete_the_sweep() -> None:
         assert gr.load_guardrails(s).sweep_state == "complete"
         sweep_event = s.query(AgentGuardrailEvent).filter_by(kind="sweep").one()
         assert "UNPROTECTED: NVDA" in sweep_event.reason
+        # ... and STRUCTURALLY, beside the prose: the cockpit resume reads this to
+        # raise its alarm rather than sniffing the sentence above.
+        assert json.loads(sweep_event.values_json)["unprotected"] == ["NVDA"]
         # nothing was invented: no stop went out for the level-less position.
         assert [o for o in broker.list_open_orders() if o.side == "sell"] == []
 

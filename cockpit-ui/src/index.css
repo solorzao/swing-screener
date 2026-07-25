@@ -6579,9 +6579,12 @@ button.release .dz-btn-label small {
   text-transform: uppercase;
 }
 
+/* --dim, not --faint: these lines carry the NEGATIONS ("the venue was not
+   touched", "the preview changed nothing") — the sentence that tells an operator
+   what did NOT happen must not be the least legible thing in the panel. */
 .gr-foot {
   font-size: 10px;
-  color: var(--faint);
+  color: var(--dim);
   line-height: 1.4;
 }
 
@@ -6608,6 +6611,15 @@ button.release .dz-btn-label small {
   font-size: 10.5px;
   color: var(--txt);
   margin-top: 4px;
+}
+
+/* What actually resolves the breach — per breaker, never the drawdown remedy by
+   default. Calmer than the alarm around it: it is the way OUT, not the alarm. */
+.gr-alarm-remedy {
+  font-size: 10.5px;
+  color: var(--txt);
+  margin-top: 4px;
+  line-height: 1.4;
 }
 
 button.gr-dismiss {
@@ -6701,13 +6713,15 @@ button.gr-dismiss:hover {
   padding: 0;
 }
 
+/* Same reason as .gr-foot: these notes say what a control does NOT do
+   ("blank = that breaker is OFF"), which is the half people misread. */
 .gr-sub-note {
   margin-left: 8px;
   letter-spacing: normal;
   text-transform: none;
   font-family: var(--ui);
   font-size: 10px;
-  color: var(--faint);
+  color: var(--dim);
 }
 
 .gr-fields {
@@ -6750,13 +6764,24 @@ button.gr-dismiss:hover {
   min-width: 0;
 }
 
+/* Pointer focus keeps the quiet border; KEYBOARD focus gets a real ring — the
+   bare border shift is too weak to track by eye. Verbatim the .ltf-in/.ctf-in
+   treatment (one focus idiom for every input in the app). */
 .gr-in:focus {
   outline: none;
-  border-color: var(--blue);
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
 }
 
-.gr-in[aria-invalid="true"] {
-  border-color: var(--red);
+.gr-in:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--blue) 60%, transparent);
+  outline-offset: 1px;
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+
+/* An input the server flagged reads red, paired with the role=alert message so
+   it is never hue-only — again matching .ltf-in/.ctf-in. */
+.gr-in[aria-invalid='true'] {
+  border-color: color-mix(in srgb, var(--red) 55%, var(--line2));
 }
 
 .gr-field-err {

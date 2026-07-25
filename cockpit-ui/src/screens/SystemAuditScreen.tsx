@@ -41,19 +41,24 @@ function findingsPreview(findings: Record<string, unknown>): string {
   if (comp.n_disarms != null) bits.push(`${String(comp.n_disarms)} disarm(s)`)
   // Guardrail conduct: the brake FIRING is expected behaviour and is counted
   // here, never graded a breach (audit_run.py draws that line deliberately).
-  if (comp.n_guardrail_trips != null) bits.push(`${String(comp.n_guardrail_trips)} trip(s)`)
-  if (comp.n_guardrail_clamps != null)
-    bits.push(`${String(comp.n_guardrail_clamps)} brake clamp(s)`)
-  if (comp.n_guardrail_sweeps != null)
-    bits.push(`${String(comp.n_guardrail_sweeps)} trip sweep(s)`)
-  if (comp.n_killswitch_sweeps != null)
-    bits.push(`${String(comp.n_killswitch_sweeps)} kill sweep(s)`)
-  if (comp.n_halt_sweeps != null) bits.push(`${String(comp.n_halt_sweeps)} halt sweep(s)`)
-  // The one alarming counter of the set: disarms the auditor could NOT explain.
+  // ZEROES ARE SUPPRESSED: a quiet week would otherwise spend the whole preview
+  // line saying nothing happened five different ways, burying the counters that
+  // did fire. The lone exception is below.
+  const activity = (key: string, label: string) => {
+    const v = comp[key]
+    if (v != null && Number(v) > 0) bits.push(`${String(v)} ${label}`)
+  }
+  activity('n_guardrail_trips', 'trip(s)')
+  activity('n_guardrail_clamps', 'brake clamp(s)')
+  activity('n_guardrail_sweeps', 'trip sweep(s)')
+  activity('n_killswitch_sweeps', 'kill sweep(s)')
+  activity('n_halt_sweeps', 'halt sweep(s)')
+  activity('n_guardrail_alerts', 'trip alert(s)')
+  // ALWAYS shown, zero included: this is the one counter whose zero is the good
+  // news ("every disarm was explained"). Suppressing it would make "the auditor
+  // did not check" and "the auditor found none" look identical.
   if (comp.n_unexplained_disarms != null)
     bits.push(`${String(comp.n_unexplained_disarms)} unexplained disarm(s)`)
-  if (comp.n_guardrail_alerts != null)
-    bits.push(`${String(comp.n_guardrail_alerts)} trip alert(s)`)
   if (anom.drought_days != null) bits.push(`${String(anom.drought_days)} drought day(s)`)
   if (anom.orphan_exit_events != null) bits.push(`${String(anom.orphan_exit_events)} orphan exit(s)`)
   if (findings.cap_breach != null) bits.push('cap breach')

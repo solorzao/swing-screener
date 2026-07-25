@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
 import {
   ApiError,
   D503_DB,
@@ -9,13 +8,13 @@ import {
   usePolling,
 } from '../lib/api'
 import type {
+  GuardrailBreach,
   GuardrailEditBody,
   GuardrailEvent,
   GuardrailLimits,
   GuardrailSweep,
   Guardrails,
   GuardrailsPostResult,
-  Polled,
 } from '../lib/api'
 import { fmtStamp, localTodayIso } from '../lib/fmt'
 import { HoldToConfirm } from './HoldToConfirm'
@@ -35,7 +34,13 @@ import { HoldToConfirm } from './HoldToConfirm'
 
    HONESTY RULES, inherited from the screen:
    - a failed read force-nulls to a dashed UNKNOWN block. A stale "OK" banner is
-     the one thing a brake panel may never show.
+     the one thing a brake panel may never show. The swap covers the DATA
+     sections ONLY (banner, history): every control keeps rendering from the
+     retained last-good snapshot, because unmounting them would destroy
+     in-flight OPERATOR state — a HALT result carrying an UNPROTECTED alarm, a
+     typed limits edit, a ticked acknowledgement — and would drop the result of
+     any request still in flight. A poll failure is not an operator's fault and
+     must not cost them their work.
    - a lingering `sweep_state` of pending/partial is RETRYING, never "failed":
      every hourly cycle re-runs that sweep and DISARM resumes the same one. Same
      wording as the auditor's guardrail-stuck-sweep rule.
@@ -47,6 +52,10 @@ import { HoldToConfirm } from './HoldToConfirm'
 //: the sweep_state values that mean the trip's sweep has not finished. Same
 //: vocabulary as pipeline/guardrails.py's _INCOMPLETE_SWEEPS.
 const SWEEP_RETRYING = ['pending', 'partial']
+
+//: how much history the panel shows. Mirrors routers/safety.py's _EVENT_HISTORY
+//: so the caption below the HISTORY heading is true whatever the server sends.
+const EVENT_LIMIT = 25
 
 /** A write rejection → one human line + whether to show the G7 write-grant hint.
  * `database error (` is one of the three prefixes routers/safety.py documents as
@@ -77,9 +86,12 @@ function fieldErrorsOf(err: unknown): Record<string, string> {
   return out
 }
 
-function ErrLine({ err }: { err: WriteErr }) {
+/** `announce` false when the PARENT is already a live region (the result pops
+ * carry role=alert/status): a nested role="alert" double-announces the same
+ * sentence, which on a safety surface reads as two separate failures. */
+function ErrLine({ err, announce = true }: { err: WriteErr; announce?: boolean }) {
   return (
-    <div className="gr-err" role="alert">
+    <div className="gr-err" role={announce ? 'alert' : undefined}>
       {err.text}
       {err.g7 && (
         <div className="gr-err-hint">
@@ -125,13 +137,78 @@ function StateBanner({ g }: { g: Guardrails }) {
       {retrying && <div className="gr-banner-reason">{reason}</div>}
       <div className="gr-banner-note">
         {g.trip_id !== null && `trip #${g.trip_id} · `}
+        {/* Only 'complete' earns the completed sentence. A null sweep_state is
+            the row not SAYING — never evidence the venue was swept. */}
         {retrying
           ? `the trip's venue sweep has not finished (sweep_state: ${g.sweep_state}) — ` +
             'every cycle RETRIES it, and DISARM resumes that same sweep. Retrying, ' +
             'not failed: entry orders may still be working at the broker until it ' +
             'completes.'
-          : 'the sweep completed — entry orders were pulled, protective stops kept. ' +
-            'Nothing dispatches until the trip is cleared.'}
+          : g.sweep_state === 'complete'
+            ? 'the sweep completed — entry orders were pulled, protective stops ' +
+              'kept. Nothing dispatches until the trip is cleared.'
+            : (g.sweep_state === null
+                ? 'sweep state not reported'
+                : `sweep state: ${g.sweep_state}`) +
+              ' — nothing dispatches until the trip is cleared.'}
+      </div>
+    </div>
+  )
+}
+
+/* ---------- what actually resolves a breach ---------- */
+
+/** Clearing a trip NEVER resolves the breach that caused it — it only releases
+ * the brake, and the next hourly consult re-trips on the same breaker. What the
+ * operator needs is therefore per-BREAKER: the drawdown is cumulative and only a
+ * re-anchored high-water mark moves it, while the day-scoped breakers simply
+ * roll over and the streak breaks on a win. Naming the drawdown remedy at every
+ * breach (the first cut did) sends an operator to reset an anchor that has
+ * nothing to do with the cap they actually hit. */
+const BREACH_REMEDY: Record<string, string> = {
+  max_drawdown_usd:
+    'the drawdown is measured from the high-water anchor, which has not moved — ' +
+    're-anchor it (beside this) or raise the cap',
+  max_trades_per_day:
+    'the count resets at the next trading day of record — or raise the cap in ' +
+    'BREAKERS below',
+  max_daily_loss_usd:
+    "the day's realized loss resets at the next trading day of record — or raise " +
+    'the cap in BREAKERS below',
+  loss_streak_halt:
+    'the streak resets on the next winning close — or raise the threshold in ' +
+    'BREAKERS below',
+}
+
+/** The drawdown is the ONE breaker with a cockpit-side remedy, so it is the one
+ * breach that gets the anchor-reset form offered beside the clear. */
+function isAnchorBreach(breaker: string): boolean {
+  return breaker === 'max_drawdown_usd'
+}
+
+/** The re-trip warning. `pending` = the clear has not happened yet (the dialog);
+ * false = it already has (the result panel), which only changes the tense. */
+function BreachAlarm({
+  breach,
+  pending,
+  announce = true,
+}: {
+  breach: GuardrailBreach
+  pending: boolean
+  announce?: boolean
+}) {
+  return (
+    <div className="gr-alarm" role={announce ? 'alert' : undefined}>
+      breach still active — {pending ? 'clearing' : 'this'} will re-trip (sweep +
+      email) within the hour
+      {isAnchorBreach(breach.breaker) && ' unless you also reset the drawdown anchor'}
+      <div className="gr-alarm-detail mono">
+        {breach.breaker}: {breach.reason}
+      </div>
+      <div className="gr-alarm-remedy">
+        what clears it:{' '}
+        {BREACH_REMEDY[breach.breaker] ??
+          'this breaker has no remedy on record — the breach is real either way'}
       </div>
     </div>
   )
@@ -227,7 +304,18 @@ function shown(v: string): string {
   return v === '' ? 'unset' : v
 }
 
-function LimitsForm({ g, onWrote }: { g: Guardrails; onWrote: () => void }) {
+function LimitsForm({
+  g,
+  stale,
+  onWrote,
+}: {
+  g: Guardrails
+  /** The poll is failing: the values below are the last GOOD read, not current.
+   * The form still renders (drafts must survive a bad poll) — it just stops
+   * claiming the numbers are live. */
+  stale: boolean
+  onWrote: () => void
+}) {
   const wire = draftOf(g)
   // Separator-joined: '1'+'2' and '12'+'' must not alias into one key.
   const wireKey = LIMIT_FIELDS.map((f) => wire[f.key]).join('|')
@@ -325,6 +413,13 @@ function LimitsForm({ g, onWrote }: { g: Guardrails; onWrote: () => void }) {
           each one is consulted before dispatch · blank = that breaker is OFF
         </span>
       </div>
+      {stale && (
+        <div className="gr-note-row">
+          the brake read is failing — these are the LAST GOOD values, not
+          necessarily the current ones. Your edit still sends (the server is the
+          authority); it just cannot be previewed against fresh state.
+        </div>
+      )}
       <div className="gr-fields">
         {LIMIT_FIELDS.map((f) => (
           <label className="gr-field" key={f.key}>
@@ -462,14 +557,24 @@ function SweepOutcome({ sweep, dry }: { sweep: GuardrailSweep; dry: boolean }) {
   )
 }
 
+/** The four actions in operator English. The wire's `action` is a snake_case
+ * enum; an operator reading a result panel mid-emergency should not have to
+ * translate `clear_trip` in their head. */
+const COMMITTED_PHRASE: Record<string, string> = {
+  edit: 'limits saved',
+  halt: 'the brake is now HALTED',
+  clear_halt: 'the HALT is cleared',
+  clear_trip: 'the trip is cleared',
+}
+
 /** The wire's own account of what a committed write did. */
 function CommitLine({ r }: { r: GuardrailsPostResult }) {
   return (
     <>
       <div className="gr-row">
         {r.committed
-          ? `${r.action} committed — the brake row moved`
-          : `${r.action} previewed — nothing moved: not the state, not a row, not the venue`}
+          ? `${COMMITTED_PHRASE[r.action] ?? 'the write landed'} — the brake row moved`
+          : 'preview only — nothing moved: not the state, not a row, not the venue'}
       </div>
       {r.enrichment_error != null && (
         <div className="gr-warn-row">
@@ -516,12 +621,14 @@ function HaltControl({ g, onWrote }: { g: Guardrails; onWrote: () => void }) {
   // 'ok' is the only state HALT can leave: the repo's transition is ok -> halted.
   const disabled = g.state !== 'ok' || phase.kind === 'firing' || panelUp
 
-  const title =
-    g.state !== 'ok'
+  // The result panel is the NEAREST reason the button is dead — say that first,
+  // or an operator staring at their own HALT result is told about the state
+  // instead of about the dismiss button in front of them.
+  const title = panelUp
+    ? 'dismiss the HALT result first'
+    : g.state !== 'ok'
       ? `nothing to halt — the brake is already engaged (state: ${g.state})`
-      : panelUp
-        ? 'dismiss the HALT result first'
-        : 'hold 900 ms to HALT — stops dispatch and sweeps resting entry orders'
+      : 'hold 900 ms to HALT — stops dispatch and sweeps resting entry orders'
 
   const focusBackRef = useRef(false)
   const dismiss = () => {
@@ -704,7 +811,7 @@ function HaltControl({ g, onWrote }: { g: Guardrails; onWrote: () => void }) {
             HALT FAILED
             {phase.partial && <span className="gr-head-alarm"> — SWEEP UNCERTAIN</span>}
           </div>
-          <ErrLine err={phase.err} />
+          <ErrLine err={phase.err} announce={false} />
           {phase.partial ? (
             <div className="gr-alarm">
               The BRAKE IS ON — it lands before the venue is touched, so the halt
@@ -749,6 +856,8 @@ function ReleaseControl({
   caption,
   title,
   disabled = false,
+  ariaDisabled = false,
+  describedBy,
   body,
   onWrote,
   onOutcome,
@@ -757,6 +866,11 @@ function ReleaseControl({
   caption: string
   title: string
   disabled?: boolean
+  /** States the dead-ness for AT when `disabled` is a GATE the operator can
+   * lift (the trip acknowledgement), not a permanent condition. */
+  ariaDisabled?: boolean
+  /** The element that explains how to lift that gate. */
+  describedBy?: string
   body: () => { action: 'clear_halt' } | { action: 'clear_trip'; ack_trip_id: number }
   onWrote: () => void
   onOutcome: (o: ReleaseOutcome) => void
@@ -790,6 +904,8 @@ function ReleaseControl({
         className="release"
         title={title}
         disabled={disabled || firing}
+        ariaDisabled={ariaDisabled}
+        describedBy={describedBy}
         label={
           <span className="dz-btn-label">
             <b>{firing ? 'CLEARING…' : label}</b>
@@ -830,16 +946,17 @@ function ReleaseResult({
         <>
           <CommitLine r={outcome.result} />
           {outcome.result.current_breach != null && (
-            <div className="gr-alarm">
-              breach still active — {outcome.result.current_breach.breaker}:{' '}
-              {outcome.result.current_breach.reason}. This will re-trip (sweep +
-              email) within the hour unless you also reset the drawdown anchor.
-            </div>
+            // announce=false: this panel IS the live region (role above).
+            <BreachAlarm
+              breach={outcome.result.current_breach}
+              pending={false}
+              announce={false}
+            />
           )}
         </>
       ) : (
         <>
-          <ErrLine err={outcome.err} />
+          <ErrLine err={outcome.err} announce={false} />
           <div className="gr-foot">
             {outcome.blocked
               ? 'a state, not a failure — the brake was not where this screen thought it was (a stale screen cannot release a newer trip); the panel re-polls'
@@ -859,11 +976,26 @@ function ReleaseResult({
  * for a cumulative breaker whose breach is still real — clearing alone just
  * re-trips on the next hourly consult, by design. */
 function AnchorReset({ g, onWrote }: { g: Guardrails; onWrote: () => void }) {
+  const wireBaseline = String(g.hwm_baseline_usd)
   const [day, setDay] = useState(localTodayIso())
-  const [baseline, setBaseline] = useState(String(g.hwm_baseline_usd))
+  const [baseline, setBaseline] = useState(wireBaseline)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<WriteErr | null>(null)
   const [done, setDone] = useState(false)
+  // Untouched = still exactly what the row said when this was seeded, so a row
+  // that moves under an untouched form re-seeds. This control now lives across
+  // read failures and across trips; without it the operator would be offered a
+  // baseline from a snapshot two trips old. A TOUCHED field is never overwritten.
+  const [seeded, setSeeded] = useState(wireBaseline)
+  const liveRef = useRef({ wireBaseline, touched: baseline !== seeded })
+  liveRef.current = { wireBaseline, touched: baseline !== seeded }
+  useEffect(() => {
+    if (liveRef.current.touched) return
+    setSeeded(liveRef.current.wireBaseline)
+    setBaseline(liveRef.current.wireBaseline)
+    setDay(localTodayIso())
+    setDone(false)
+  }, [wireBaseline])
 
   const n = Number(baseline.trim())
   const parsable = baseline.trim() !== '' && Number.isFinite(n)
@@ -914,7 +1046,12 @@ function AnchorReset({ g, onWrote }: { g: Guardrails; onWrote: () => void }) {
           />
         </label>
         <label className="gr-field">
-          <span className="gr-lab">high-water baseline $</span>
+          <span className="gr-lab">
+            high-water baseline $
+            <em className="gr-lab-note">
+              realized $ at the new anchor — 0 starts fresh from here
+            </em>
+          </span>
           <input
             className="gr-in mono"
             type="number"
@@ -959,6 +1096,15 @@ function ClearTripControl({
   const tripId = g.trip_id
   const breach = g.current_breach
 
+  // A NEW trip must never inherit the previous acknowledgement. This control now
+  // survives read failures and state changes, so without the reset a box ticked
+  // for trip #3 would still be ticked when #4 lands — under a label that then
+  // reads "I have read trip #4". (The server's ack_trip_id election would still
+  // refuse the stale clear; this is about the screen not lying first.)
+  useEffect(() => {
+    setAcked(false)
+  }, [tripId])
+
   // A tripped row with no trip_id cannot be acknowledged: the clear is keyed on
   // the id the operator READ, and there is nothing to key on. Say so plainly.
   if (tripId === null) {
@@ -970,6 +1116,7 @@ function ClearTripControl({
     )
   }
 
+  const ackId = `gr-ack-${tripId}`
   return (
     <div className="gr-clear">
       <div className="gr-sub">
@@ -978,18 +1125,10 @@ function ClearTripControl({
           releases the brake · the breach that caused it is NOT resolved by clearing
         </span>
       </div>
-      {breach !== null && (
-        <div className="gr-alarm" role="alert">
-          breach still active — clearing will re-trip (sweep + email) within the hour
-          unless you also reset the drawdown anchor
-          <div className="gr-alarm-detail mono">
-            {breach.breaker}: {breach.reason}
-          </div>
-        </div>
-      )}
+      {breach !== null && <BreachAlarm breach={breach} pending />}
       <div className="gr-clear-body">
         <div className="gr-clear-ack">
-          <label className="gr-check">
+          <label className="gr-check" id={ackId}>
             <input
               type="checkbox"
               checked={acked}
@@ -1008,12 +1147,20 @@ function ClearTripControl({
                 : 'acknowledge the trip first'
             }
             disabled={!acked}
+            ariaDisabled={!acked}
+            describedBy={ackId}
             body={() => ({ action: 'clear_trip', ack_trip_id: tripId })}
             onWrote={onWrote}
             onOutcome={onOutcome}
           />
         </div>
-        {breach !== null && <AnchorReset g={g} onWrote={onWrote} />}
+        {/* The anchor reset is the DRAWDOWN's remedy and only its remedy — a
+            day-scoped cap or a loss streak is not resolved by re-anchoring, and
+            offering the form there sends the operator to move a number that has
+            nothing to do with the cap they hit (BREACH_REMEDY says what does). */}
+        {breach !== null && isAnchorBreach(breach.breaker) && (
+          <AnchorReset g={g} onWrote={onWrote} />
+        )}
       </div>
     </div>
   )
@@ -1031,7 +1178,9 @@ function EventHistory({ events }: { events: GuardrailEvent[] }) {
   }
   return (
     <div className="gr-events">
-      {events.map((e) => (
+      {/* Sliced client-side too: the caption promises "last 25", and a server
+          that ever widens its page must not silently make that caption a lie. */}
+      {events.slice(0, EVENT_LIMIT).map((e) => (
         <div className="gr-ev" key={e.id}>
           <div className="gr-ev-meta mono">
             <span className={`gr-kind gr-kind-${e.kind}`}>{e.kind}</span>
@@ -1049,22 +1198,13 @@ function EventHistory({ events }: { events: GuardrailEvent[] }) {
 
 /* ---------- the panel ---------- */
 
-/** The force-null wrapper, mirroring SafetyScreen's SafetyBody: children render
- * only from a LIVE read. A brake panel showing a stale "OK" is the exact failure
- * this screen's doctrine exists to prevent. */
-function GuardBody({
-  polled,
-  children,
-}: {
-  polled: Polled<Guardrails>
-  children: (g: Guardrails) => ReactNode
-}) {
-  const g = polled.error === null ? polled.data : null
-  if (g !== null) return <>{children(g)}</>
+/** What replaces a DATA section when the read failed. Only truth CLAIMS route
+ * through here — never a control, never a form (see the panel). */
+function DataUnknown({ error, noun }: { error: string | null; noun: string }) {
   return (
     <div className="sfy-unknown-block">
-      {polled.error !== null
-        ? `UNKNOWN — the brake read failed (${polled.error}). Not "ok": the row was not read.`
+      {error !== null
+        ? `UNKNOWN — the brake read failed (${error}). Not "ok": the ${noun} was not read.`
         : 'waiting for first fetch…'}
     </div>
   )
@@ -1080,6 +1220,28 @@ export function GuardrailsPanel({ wake }: { wake: number }) {
   const gr = usePolling(getGuardrails, POLL_MS, wake + bump)
   const onWrote = () => setBump((b) => b + 1)
 
+  // ONE poll, read TWO ways, and the split is the design:
+  //
+  // * `live` is force-nulled on any fetch error and drives every truth CLAIM —
+  //   the state banner and the history. A brake panel showing a stale "OK" is
+  //   the exact failure this screen's doctrine exists to prevent.
+  //
+  // * `last` is usePolling's RETAINED last-good snapshot and drives the
+  //   CONTROLS, which therefore never unmount on a failed poll. That is not a
+  //   convenience: unmounting them destroys in-flight OPERATOR state — a HALT
+  //   result panel holding an UNPROTECTED alarm, a half-typed limits edit, a
+  //   ticked acknowledgement — and a request still in flight resolves into a
+  //   dead component, dropping its result silently. A poll failure is not the
+  //   operator's doing and must never cost them their work or their alarm.
+  //
+  // Acting on a stale snapshot is safe because the SERVER is the authority on
+  // every one of these actions: HALT 409s if the brake already moved, and
+  // clear_trip's conditional UPDATE refuses an acknowledgement of a trip that is
+  // no longer current. The stale line below says so rather than pretending.
+  const live = gr.error === null ? gr.data : null
+  const last = gr.data
+  const stale = gr.error !== null
+
   return (
     <section className="panel">
       <div className="panel-head">
@@ -1089,16 +1251,30 @@ export function GuardrailsPanel({ wake }: { wake: number }) {
           agent_guardrails row, read by EVERY process (not this process&apos;s env)
         </span>
       </div>
-      <GuardBody polled={gr}>
-        {(g) => (
-          <div className="gr-body">
-            <StateBanner g={g} />
-            {release !== null && (
-              <ReleaseResult outcome={release} onDismiss={() => setRelease(null)} />
+      <div className="gr-body">
+        {live !== null ? (
+          <StateBanner g={live} />
+        ) : (
+          <DataUnknown error={gr.error} noun="row" />
+        )}
+
+        {/* OUTSIDE the read swap, all of it — see the split above. */}
+        {release !== null && (
+          <ReleaseResult outcome={release} onDismiss={() => setRelease(null)} />
+        )}
+
+        {last !== null && (
+          <>
+            {stale && (
+              <div className="gr-note-row">
+                the controls below still act — they read the last good snapshot,
+                and the server refuses a stale action (a HALT on an already-halted
+                brake 409s; an acknowledgement of a superseded trip is rejected)
+              </div>
             )}
             <div className="gr-controls">
-              <HaltControl g={g} onWrote={onWrote} />
-              {g.state === 'halted' && (
+              <HaltControl g={last} onWrote={onWrote} />
+              {last.state === 'halted' && (
                 <ReleaseControl
                   label="CLEAR HALT"
                   caption="releases the operator brake"
@@ -1109,20 +1285,25 @@ export function GuardrailsPanel({ wake }: { wake: number }) {
                 />
               )}
             </div>
-            {g.state === 'tripped' && (
-              <ClearTripControl g={g} onWrote={onWrote} onOutcome={setRelease} />
+            {last.state === 'tripped' && (
+              <ClearTripControl g={last} onWrote={onWrote} onOutcome={setRelease} />
             )}
-            <LimitsForm g={g} onWrote={onWrote} />
-            <div className="gr-sub">
-              HISTORY
-              <span className="gr-sub-note">
-                the append-only audit trail — last 25, newest first
-              </span>
-            </div>
-            <EventHistory events={g.events} />
-          </div>
+            <LimitsForm g={last} stale={stale} onWrote={onWrote} />
+          </>
         )}
-      </GuardBody>
+
+        <div className="gr-sub">
+          HISTORY
+          <span className="gr-sub-note">
+            the append-only audit trail — last {EVENT_LIMIT}, newest first
+          </span>
+        </div>
+        {live !== null ? (
+          <EventHistory events={live.events} />
+        ) : (
+          <DataUnknown error={gr.error} noun="history" />
+        )}
+      </div>
     </section>
   )
 }

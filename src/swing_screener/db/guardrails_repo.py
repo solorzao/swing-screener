@@ -21,6 +21,7 @@ NULL checks is fine.
 
 import json
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any, cast
@@ -392,7 +393,8 @@ def edit_limits(session: Session, *, source: str, **limits: object) -> None:
 
 
 def record_sweep_outcome(
-    session: Session, *, trip_id: int, outcome: str, detail: str, source: str
+    session: Session, *, trip_id: int, outcome: str, detail: str, source: str,
+    unprotected: Sequence[str] = (),
 ) -> None:
     """Record how the trip's sweep ended: 'complete' | 'partial' | 'pending'.
 
@@ -402,6 +404,13 @@ def record_sweep_outcome(
     even if the trip was already cleared). The outcome vocabulary is validated
     up front so a typo fails loudly on every backend, not just Azure SQL
     (sweep_state is String(16)); UPDATE and event share ONE commit.
+
+    ``unprotected`` is the STRUCTURED half of what ``detail`` already says in
+    prose ("; UNPROTECTED: NVDA, AMD"). It rides ``values_json`` so a consumer
+    can branch on the FACT instead of parsing the sentence: the cockpit's DISARM
+    resume reads it back to raise the same red no-Escape alarm the raw sweep path
+    raises from its own return value (one alarm rule, all disarm modes). Prose is
+    for humans; this is the wire.
     """
     if outcome not in _SWEEP_OUTCOMES:
         raise ValueError(
@@ -419,7 +428,8 @@ def record_sweep_outcome(
     )
     session.add(_event(
         kind="sweep", source=source, reason=detail,
-        values_json=json.dumps({"trip_id": trip_id, "outcome": outcome}),
+        values_json=json.dumps({"trip_id": trip_id, "outcome": outcome,
+                                "unprotected": list(unprotected)}),
     ))
     session.commit()
 
