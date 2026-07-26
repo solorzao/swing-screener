@@ -1098,11 +1098,13 @@ export interface StrategyCalibration {
 
 /** One play type on the Strategy Board, ranked by evidence.
  *
- * THE THREE-STATE TIER LAW: `tier: null` is UNGRADED — a missing or unreadable
- * sidecar, or one carrying no rung of the ladder. It is NOT `hunch`. "we never
- * measured this" and "we measured it and it is speculative" are different
- * claims, and a renderer that defaults null to hunch tells the operator the
- * second one. Same for `best_cohort: null`.
+ * THE FOUR-STATE TIER LAW: a renderer has ABSENT (`playbook_present: false` —
+ * no tier cell at all), UNGRADED (`tier: null`), GRADED BUT UNCONFIRMED
+ * (`hunch` / `replay_screened`), and `forward_confirmed`. `tier: null` is a
+ * missing or unreadable sidecar, or one carrying no rung of the ladder — it is
+ * NOT `hunch`. "no rung was reached" and "we graded it and it is speculative"
+ * are different claims, and a renderer that defaults null to hunch tells the
+ * operator the second one. Same for `best_cohort: null`.
  *
  * THE SCOPE TRIAD, and they are three different questions:
  * - `in_ceiling` — is it in `SWING_EXECUTE_PLAY_TYPES`? `null` = the env

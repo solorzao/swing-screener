@@ -7012,6 +7012,13 @@ button.gr-submit {
   color: var(--faint);
 }
 
+/* Rank is a CLAIM (the ranking law's answer), so a failed poll gives it the
+   same dashed withheld treatment every other unread claim wears. */
+.sb-rank-stale {
+  border-bottom: 1px dashed var(--line2);
+  opacity: 0.6;
+}
+
 .sb-pt {
   font-size: 12px;
   color: var(--txt);
@@ -7096,6 +7103,32 @@ button.gr-submit {
   font-size: 10px;
   color: var(--faint);
   line-height: 1.4;
+}
+
+/* The gold forward book, through StatChip (the app's only numeric renderer).
+   Scoped overrides only — the chip keeps its own face, provenance affordance and
+   n-gating; it just sits narrower here than in a full-width KPI column. */
+.sb-forward {
+  margin-top: 1px;
+}
+
+.sb-forward .statchip-label {
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
+.sb-forward .stat-block {
+  width: 132px;
+}
+
+/* What that chip is a statistic OF — the wire's own sentence, verbatim, once
+   per panel (it is one module constant for every row). Fine print that repeats
+   four times stops being read. */
+.sb-fwd-note {
+  font-size: 9px;
+  color: var(--faint);
+  line-height: 1.4;
+  padding: 6px 12px 0;
 }
 
 /* The gate's own countdown sentence, verbatim. Mono because it is a quoted
