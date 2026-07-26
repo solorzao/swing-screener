@@ -83,6 +83,18 @@ enforce everywhere, paper included — which is what makes the Stage-0 drill mea
 These are **dollars and counts** and they are **separate from the env caps above** (which
 are R-denominated / notional). Both nets stay in place; neither replaces the other.
 
+> **KNOWN LIMIT — the Batch-wait freshness window (merge of 2026-07-25).** With the
+> deep-analysis **Batch** path enabled (`deepAnalysisBatch`, ON in prod since 2026-07-24),
+> the digest's batch pre-pass runs *between* the dispatch-time live reconcile and the
+> dispatch loop's breaker consult, and can wait up to ~60 minutes. A venue stop-out that
+> fires **during** that wait is not reflected in the daily-loss/drawdown reads for that
+> morning's dispatch — the exact realized-only freshness hole the dispatch-time reconcile
+> exists to close. A trip recorded by another process IS still seen (the consult reads
+> DB state fresh); only venue→DB realized P&L goes stale. The submit-side clamp and the
+> mandate re-read remain the hard backstops. **Before arming with batching on**: either
+> disable batching for the live trial, or land the pre-arming code item that moves (or
+> repeats) the reconcile after the batch wait.
+
 > **KNOWN LIMIT — the partial-fill residual (verify this before you size up).** A
 > `partially_filled` order is materialized **once**, at its `filled_avg_price` with
 > `qty = filled_qty`, and the residual (unfilled) shares are **never reconciled** if the venue
