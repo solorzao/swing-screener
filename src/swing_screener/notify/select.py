@@ -40,13 +40,22 @@ def _fresh_enough(session: Session, run_date: date,
 
 def daily_picks(session: Session, run_date: date, *, top_n: int = 3,
                 max_age_days: int | None = None,
-                max_per_sector: int | None = None) -> list[Signal]:
+                max_per_sector: int | None = None,
+                surface_continuation: bool = True) -> list[Signal]:
     """Top-N CONTINUATION signals overall for the run date (any timeframe).
 
     The daily digest is the day's best continuation picks across all timeframes;
     weekly_picks/monthly_picks are the timeframe-specific cadences, and
     reversal_picks is the separate oversold-bounce list. ``max_age_days`` applies the
     staleness cooldown (see ``_fresh_enough``).
+
+    ``surface_continuation=False`` PARKS the whole list (returns []) -- enforced here,
+    the same layer as reversal_picks' tier/strength flags, so the digest and the cockpit
+    agree by construction. Continuation stays detected/scored/shadow-booked; only
+    surfacing stops (Q6 NULL completed the falsification, 2026-07-25 -- see
+    ``StrategyConfig.surface_continuation`` and docs/plans/2026-07-25-q6-q7-sweep-results.md).
+    The function-layer default stays permissive (True), mirroring how the reversal flags
+    default False here while config carries the real posture.
 
     One slot per TICKER: a name firing on several timeframes keeps only its
     best-ranked row (``first_per_ticker``), the rest backfill from below -- one
@@ -57,6 +66,8 @@ def daily_picks(session: Session, run_date: date, *, top_n: int = 3,
     sector can't fill the list. Picks whose ticker has no sector are never capped
     (fail-open). None leaves the result a pure rank-ordered top-N.
     """
+    if not surface_continuation:  # parked: nothing surfaces (the rows stay stored)
+        return []
     where = (Signal.run_date == run_date, Signal.play_type == "continuation",
              *_fresh_enough(session, run_date, max_age_days))
     if max_per_sector is None:
@@ -169,14 +180,22 @@ def _by_timeframe(session: Session, run_date: date, timeframe: str, top_n: int,
 
 
 def weekly_picks(session: Session, run_date: date, *, top_n: int = 3,
-                 max_age_days: int | None = None) -> list[Signal]:
-    """Top-N weekly-timeframe signals for the run date."""
+                 max_age_days: int | None = None,
+                 surface_continuation: bool = True) -> list[Signal]:
+    """Top-N weekly-timeframe signals for the run date. ``surface_continuation=False``
+    parks the list (see ``daily_picks`` -- the slow cadences are continuation-only)."""
+    if not surface_continuation:
+        return []
     return _by_timeframe(session, run_date, "1wk", top_n, max_age_days)
 
 
 def monthly_picks(session: Session, run_date: date, *, top_n: int = 3,
-                  max_age_days: int | None = None) -> list[Signal]:
-    """Top-N monthly-timeframe signals for the run date."""
+                  max_age_days: int | None = None,
+                  surface_continuation: bool = True) -> list[Signal]:
+    """Top-N monthly-timeframe signals for the run date. ``surface_continuation=False``
+    parks the list (see ``daily_picks`` -- the slow cadences are continuation-only)."""
+    if not surface_continuation:
+        return []
     return _by_timeframe(session, run_date, "1mo", top_n, max_age_days)
 
 

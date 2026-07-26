@@ -98,6 +98,40 @@ def test_atr_percent_row_in_levels_table():
     assert ["ATR (% of price)", "4.0%"] in table_rows
 
 
+def test_parked_daily_story_omits_placeholder_and_reversal_leads():
+    """Continuation parking in the ATTACHMENT (Q6 NULL, 2026-07-25): ``picks=None``
+    must omit BOTH the continuation story and the 'No picks.' placeholder -- a page-1
+    placeholder would re-introduce in the PDF the exact quiet-market ambiguity the
+    email body's omitted section avoids -- and REVERSAL PLAYS must lead directly under
+    the header (no leading PageBreak, no near-empty first page)."""
+    from reportlab.platypus import PageBreak
+
+    from swing_screener.notify.pdf import build_digest_story
+
+    story = build_digest_story(None, reversal_picks=[_pick("GME", None, name="GameStop")],
+                               header="Swing Screener - Daily Picks (Jun 15, 2026)")
+    texts = [f.text for f in story if hasattr(f, "text")]
+    assert not any("No picks." in t for t in texts)
+    assert "Daily Picks" in texts[0]        # the header still opens the PDF
+    assert "REVERSAL PLAYS" in texts[1]     # ...and reversal leads right under it
+    assert not any(isinstance(f, PageBreak) for f in story)  # single section: no break
+    assert any("GME" in t for t in texts)
+
+
+def test_empty_continuation_story_keeps_placeholder():
+    """``picks=[]`` (continuation SURFACED but nothing qualified today) keeps the
+    'No picks.' placeholder AND the reversal page break -- a quiet market must stay
+    visibly different from a parked book, in the attachment as in the body."""
+    from reportlab.platypus import PageBreak
+
+    from swing_screener.notify.pdf import build_digest_story
+
+    story = build_digest_story([], reversal_picks=[_pick("GME", None, name="GameStop")])
+    texts = [f.text for f in story if hasattr(f, "text")]
+    assert any("No picks." in t for t in texts)
+    assert any(isinstance(f, PageBreak) for f in story)  # reversal still starts a page
+
+
 def test_builds_nonempty_pdf_with_and_without_chart(tmp_path):
     chart = tmp_path / "AMD.png"
     chart.write_bytes(_PNG)

@@ -145,6 +145,22 @@ def test_weekly_and_monthly_default_trims_to_top_3():
         assert [p.ticker for p in sel.monthly_picks(s, RUN)] == ["M1", "M2", "M3"]
 
 
+def test_continuation_pickers_park_when_surfacing_off():
+    """Continuation parking (Q6 NULL, docs/plans/2026-07-25-q6-q7-sweep-results.md) is
+    enforced at THIS layer -- the same one the reversal tier/strength flags live at --
+    so the digest and the cockpit agree by construction: surface_continuation=False
+    empties every continuation picker while the rows stay stored (detection/scoring/
+    shadow-booking untouched) and the reversal list is unaffected."""
+    s, _ = _seed()
+    assert sel.daily_picks(s, RUN, surface_continuation=False) == []
+    assert sel.weekly_picks(s, RUN, surface_continuation=False) == []
+    assert sel.monthly_picks(s, RUN, surface_continuation=False) == []
+    # the function-layer default stays permissive (True), mirroring how the reversal
+    # flags default False here while config carries the real posture -- and PROVES the
+    # rows are still in the store: parking is surfacing-only.
+    assert [p.ticker for p in sel.daily_picks(s, RUN, top_n=2)] == ["AMD", "AEP"]
+
+
 def test_exit_alerts_only_real_trades():
     s, _ = _seed()
     alerts = sel.pending_exit_alerts(s, RUN)
