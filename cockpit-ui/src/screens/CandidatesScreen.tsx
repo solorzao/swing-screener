@@ -12,7 +12,7 @@ import { Segmented } from '../components/Segmented'
 
 /* Screen 2 — Candidates (plan Task 17): the digest's surfaced picks in digest
    ORDER (daily continuation + reversal) plus the liveness-dropped EXTRAS,
-   shown-and-flagged and never counted in the surfaced five (scope decision 7).
+   shown-and-flagged and never counted in the surfaced three (scope decision 7).
    A client-side view toggle defaults to the "digest" set (exactly the email);
    "with extras" reveals the flagged drops. Beneath: the reversal FunnelBar.
 
@@ -108,7 +108,7 @@ export function CandidatesScreen({
         <div className="panel-head">
           CANDIDATES
           <span className="panel-caption">
-            <HelpTerm term="Digest">digest</HelpTerm> order · the <HelpTerm term="the surfaced five">surfaced five</HelpTerm> match the email · prices as of <HelpTerm term="last close">last close</HelpTerm>
+            <HelpTerm term="Digest">digest</HelpTerm> order · the <HelpTerm term="the surfaced three">surfaced three</HelpTerm> match the email · prices as of <HelpTerm term="last close">last close</HelpTerm>
             {picks.data?.run_date != null && ` · run ${picks.data.run_date}`}
             {picks.data !== null && ` · quotes ${fmtClock(picks.data.quotes_as_of)}`}
           </span>
@@ -155,7 +155,7 @@ export function CandidatesScreen({
                 {view === 'all' && (
                   <PickSection
                     title="FLAGGED EXTRAS"
-                    caption="liveness-dropped from the digest — shown-and-flagged, never counted in the surfaced five"
+                    caption="liveness-dropped from the digest — shown-and-flagged, never counted in the surfaced three"
                     picks={data.extras}
                     cohortRows={cohortRows}
                     onLog={setLogging}

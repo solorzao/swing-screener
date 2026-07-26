@@ -65,7 +65,7 @@ when deployed, or you running the equivalent commands locally.
 
 ### Morning (~8am): read the digest
 
-The **daily digest** lands in your inbox: the top-5 picks with a one-line reason each,
+The **daily digest** lands in your inbox: the top-3 picks with a one-line reason each,
 the Reversal Plays list, and a detailed PDF (charts, levels, rationale). Most mornings
 this is the whole check-in — if nothing grabs you, you're done.
 

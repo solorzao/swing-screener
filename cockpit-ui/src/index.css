@@ -2387,7 +2387,7 @@ button.pos-close:hover {
   border-radius: 5px;
 }
 
-/* A liveness-dropped extra: dashed + dimmed, visibly not one of the five. */
+/* A liveness-dropped extra: dashed + dimmed, visibly not one of the three. */
 .pk-extra {
   border-style: dashed;
   border-color: var(--line2);

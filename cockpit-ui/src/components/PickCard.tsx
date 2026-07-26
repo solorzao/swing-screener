@@ -22,7 +22,7 @@ import { StatChip } from './StatChip'
    - the cohort StatChip is the TIER's measured edge, not the pick's score, and
      is simply absent when the facet has no read;
    - `is_extra` marks a liveness-dropped pick — visually distinct, and it never
-     consumed one of the surfaced five (the caller keeps it out of that count). */
+     consumed one of the surfaced three (the caller keeps it out of that count). */
 
 /** Actionability status → the shared Lamp color. The `.plamp-*` vocabulary
  * (green circle / amber triangle / red square / dashed hollow) is reused via
@@ -106,7 +106,7 @@ export function PickCard({
         {isExtra && (
           <span
             className="pk-flag"
-            title="liveness-dropped from the digest — flagged, never counted in the surfaced five"
+            title="liveness-dropped from the digest — flagged, never counted in the surfaced three"
           >
             dropped
           </span>

@@ -447,10 +447,10 @@ def _surface_sig(play_type, strength=None, tier="base"):
                         strength=strength, conviction_tier=tier)
 
 
-def test_would_surface_stamps_strength_and_top5_rank():
+def test_would_surface_stamps_strength_and_top3_rank():
     """The booking-time surfacing estimate (North Star #7): reversal EARLY is hidden
     under confirmed_only, the premium bar composes, and rank must hold the digest's
-    top-5 within the play type. Continuation is un-parked here (surface_continuation=True)
+    top-3 within the play type. Continuation is un-parked here (surface_continuation=True)
     because this test exercises its RANK bar, not the parking default."""
     from dataclasses import replace
 
@@ -459,11 +459,11 @@ def test_would_surface_stamps_strength_and_top5_rank():
     cfg = replace(StrategyConfig(), surface_continuation=True)
     sig = _surface_sig
 
-    assert _would_surface(sig("continuation"), 5, cfg) is True
-    assert _would_surface(sig("continuation"), 6, cfg) is False        # below the top-5
+    assert _would_surface(sig("continuation"), 3, cfg) is True
+    assert _would_surface(sig("continuation"), 4, cfg) is False        # below the top-3
     assert _would_surface(sig("reversal", "confirmed"), 1, cfg) is True
     assert _would_surface(sig("reversal", "early"), 1, cfg) is False   # confirmed_only hides EARLY
-    assert _would_surface(sig("reversal", "confirmed"), 6, cfg) is False
+    assert _would_surface(sig("reversal", "confirmed"), 4, cfg) is False
     prem = replace(cfg, reversal_surface_premium_only=True)
     assert _would_surface(sig("reversal", "confirmed", "premium"), 1, prem) is True
     assert _would_surface(sig("reversal", "confirmed", "base"), 1, prem) is False

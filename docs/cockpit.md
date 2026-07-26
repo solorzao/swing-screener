@@ -47,7 +47,7 @@ digitless links, and every placeholder title render from it.
 | Key | Screen | What it is |
 |---|---|---|
 | `1` | **Mission Control** | the home dashboard: the masthead lamps, heartbeat pulse, COHORTS, plus the Phase-3 zones — Zone B (open positions / risk strip), Zone D (today's surfaced picks), Zone E (the event ticker) — and the SINCE YOU LAST LOOKED recap: new events per source since your last visit, computed from the ticker feed against a localStorage watermark |
-| `2` | **Candidates** | today's picks in digest order (continuation + reversal), each graded live against its latest close (✅ actionable / 🏃 already ran / ⛔ stopped), with the flagged extras that never consume the top-5 slots, plus the reversal funnel |
+| `2` | **Candidates** | today's picks in digest order (continuation + reversal), each graded live against its latest close (✅ actionable / 🏃 already ran / ⛔ stopped), with the flagged extras that never consume the top-3 slots, plus the reversal funnel |
 | `3` | **Positions & Ledger** | open real + live-book positions with live P/L, bracket lamps and risk badges; the closed-trade ledger + equity curve; the **log-trade** and **close-trade** forms |
 | `4` | **Forward Books** | the settlement wall — one card per registered experiment with its verbatim stopping rule, decision-forcing states first; an awaiting-decision card carries its **DECIDE box** (reason + hold-to-retire — marks the registry, hands back the roster/commit checklist), and the OPEN paper book rides alongside as a browsable running-trades table (`/api/books/open`) |
 | `5` | **Playbooks** | each strategy's edge file rendered from its sidecar: verdict rows with tier chips, the drift lamp, reflection-due counter, and the proposal decisions block (**approve** / **withdraw**) |
@@ -313,7 +313,7 @@ All GET unless noted. Each route's docstring in
 
 | Endpoint | What it answers |
 |---|---|
-| `/api/picks` | today's surfaced picks in **digest order** (the five always match the email) + the liveness-dropped picks as flagged extras that never consume cap slots |
+| `/api/picks` | today's surfaced picks in **digest order** (the three always match the email) + the liveness-dropped picks as flagged extras that never consume cap slots |
 | `/api/positions` | open real Trades + open live PaperTrades with per-row P/L (per-row degradation — one bad row never 503s the zone), bracket lamps, the three cap gauges, closed trades + equity points, `quotes_as_of`. The caps payload carries the execution mode; under mode `off` the concurrent gauge counts the accounts actually displayed (manual + live), not the research shadow grid |
 | `/api/trade-defaults?signal_id=` | log-trade prefill: signal levels, actionability at the cached quote, `size_order` (shares==0 → "sizing unconfigured"), suggested entry clamped to the zone |
 | `/api/analysis?limit=` | the deep-analysis queue: queued/running/done/failed + `stalled` flag + `worker` mode copy |

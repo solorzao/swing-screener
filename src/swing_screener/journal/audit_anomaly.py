@@ -32,7 +32,7 @@ class AnomalyFindings:
 
 def _unexplained_surfacing_gap(funnel: ReversalFunnel) -> int:
     """Actionable picks that failed to surface WITHOUT being recorded as routine
-    top-5/sector-cap overflow -- the genuine leak. The actionable->surfaced stage IS
+    top-N/sector-cap overflow -- the genuine leak. The actionable->surfaced stage IS
     the top-N/sector trim, and the digest records every name it trims there in
     ``overflow_tickers``, so a bare ``actionable - surfaced`` counts routine machinery
     as an anomaly on every busy day (eroding the $0 dead-week gate). Residual caveat:

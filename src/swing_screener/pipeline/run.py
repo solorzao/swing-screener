@@ -199,7 +199,7 @@ def _digest_chart_indices(
     per-timeframe slices a weekly/monthly pick ranked below the global top-N
     would reach the digest with no chart. ``results`` is sorted by score
     descending, so a timeframe's first ``top_n`` entries are exactly its picks.
-    Kept in sync with notify.select, whose pickers all default to top_n=5.
+    Kept in sync with notify.select, whose pickers all default to top_n=3.
 
     The daily slice is chosen TICKER-wise, mirroring daily_picks' per-ticker dedup:
     first (best-scored) row per ticker, then the sector cap / prefix picks ``depth``
@@ -259,9 +259,11 @@ def _bar_row(frame: pd.DataFrame) -> dict[str, float | bool]:
     return row
 
 
-# The digest's list depth (mirrors notify.select's top_n=5 default): the would_surface
-# stamp calls a signal surfaced when it holds a top-5 rank within its play type.
-_SURFACE_TOP_N = 5
+# The digest's list depth (mirrors notify.select's top_n=3 default): the would_surface
+# stamp calls a signal surfaced when it holds a top-3 rank within its play type.
+# 2026-07-26: 5 -> 3 alongside the digest (research note: would_surface gold-book
+# membership narrows from this run_date forward; earlier rows were stamped at 5).
+_SURFACE_TOP_N = 3
 
 
 def _passes_reversal_surface(pr: SignalResult, cfg: StrategyConfig) -> bool:
@@ -394,7 +396,7 @@ def _render_and_attach(r: SignalResult, signal: Signal, chart_dir: Path, today: 
 
 
 def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: Path,
-               top_charts: int = 5, cfg: StrategyConfig | None = None,
+               top_charts: int = 3, cfg: StrategyConfig | None = None,
                today: date | None = None, max_tickers: int | None = None,
                migrate_fn: Callable[[str], None] | None = None,
                broker: BrokerClient | None = None) -> RunResult:
@@ -638,7 +640,7 @@ def main() -> None:
                         default=Path("src/swing_screener/data/universe_seed.csv"))
     parser.add_argument("--cache-dir", type=Path, default=settings.cache_dir)
     parser.add_argument("--chart-dir", type=Path, default=settings.chart_dir)
-    parser.add_argument("--top-charts", type=int, default=5)
+    parser.add_argument("--top-charts", type=int, default=3)
     parser.add_argument("--max-tickers", type=int, default=None)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)

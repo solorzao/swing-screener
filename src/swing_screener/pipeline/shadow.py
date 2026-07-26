@@ -76,7 +76,7 @@ class FillCandidate:
     # (with ticker/timeframe/play_type/variant). None = no dedup (legacy/test callers).
     trigger_ts: datetime | None = None
     # booking-time estimate of "would the digest have surfaced this signal?" (strength +
-    # top-5 rank under the live surfacing config; see pipeline.run._shadow_candidates).
+    # top-N rank under the live surfacing config; see pipeline.run._shadow_candidates).
     # None = not stamped (replay's ticker-major walk has degenerate ranks; legacy/tests).
     would_surface: bool | None = None
 

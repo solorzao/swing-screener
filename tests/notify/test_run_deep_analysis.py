@@ -70,7 +70,7 @@ def test_deep_analysis_runs_for_top_n_only_when_enabled(tmp_path, monkeypatch):
         edge_dir=tmp_path))  # pin to an EMPTY edge dir: no .verdicts.json -> deep fallback,
         # independent of the repo's real edge/ contents (no hidden ambient-state dependency).
 
-    assert res.sent is True and res.n_picks == 4
+    assert res.sent is True and res.n_picks == 3  # daily list trims to the top-3 default
     assert deep_calls == ["AMD", "AEP"]          # only the top-2 picks
     assert fund_calls == ["AMD", "AEP"]          # fundamentals fetched for those
     assert loaded == ["20260615/AMD_1d_20260615.png", "20260615/AEP_1d_20260615.png"]

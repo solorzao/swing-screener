@@ -729,7 +729,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         collected_intents: list[OrderIntent] = []  # the run's built intents, for dispatch
         digest_picks, pdf_picks = _build_picks(
             picks, play_type="continuation", collect_intents=collected_intents)
-        # Reversal "Top 5" -- daily digest only for now (weekly/monthly stay continuation).
+        # Reversal "Top 3" -- daily digest only for now (weekly/monthly stay continuation).
         reversal_digest: list[DigestPick] | None = None
         reversal_pdf: list[PdfPick] = []
         rev_funnel: tuple[int, ...] | None = None
@@ -753,10 +753,10 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                 pool = _drop_already_ran(pool, latest_closes_fn)
             n_actionable = len(pool)
             reversal_sigs = sel.cap_signals_by_sector(
-                session, pool, max_per_sector=scfg.reversal_max_per_sector, limit=5)
+                session, pool, max_per_sector=scfg.reversal_max_per_sector, limit=3)
             _warn_chartless("daily-reversal", reversal_sigs)
             rev_funnel = (detected, confirmed_n, n_fresh, n_actionable)
-            # Overflow: names that cleared every bar but lost the top-5/sector race. On a
+            # Overflow: names that cleared every bar but lost the top-3/sector race. On a
             # broad rotation day these ARE the story (2026-07-02: CRM/WDAY/PTC at rank
             # 9-12 -- present, invisible); one compact line keeps them visible.
             surfaced = {s.ticker for s in reversal_sigs}

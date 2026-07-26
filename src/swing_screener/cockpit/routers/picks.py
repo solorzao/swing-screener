@@ -5,9 +5,9 @@ disagree (Phase 3 plan, scope decision 7: show-and-flag, never widen).
 Parity is BY CONSTRUCTION, not by copied output: the endpoint calls the same
 ``notify.select`` pickers with the same StrategyConfig-read knobs in the same
 order the digest does (``notify/run.py``) -- daily: ``daily_picks`` (sector cap
-INSIDE, top-5) then the liveness drop, NO backfill; reversal: ``reversal_picks``
+INSIDE, top-3) then the liveness drop, NO backfill; reversal: ``reversal_picks``
 over the ``REVERSAL_POOL_N`` pool, liveness drop BEFORE the sector cap so dropped
-picks free their top-5 slots for backfill (the Jul-2 rotation lesson). Every knob
+picks free their top-3 slots for backfill (the Jul-2 rotation lesson). Every knob
 is read from ``StrategyConfig()`` per request -- including
 ``digest_drop_already_ran``, which gates the digest's drop in ``notify.run.main``
 -- so a config change moves both surfaces together, today's defaults nowhere
@@ -50,7 +50,7 @@ def build_picks_router(
         The module docstring carries the parity contract (digest call sites, digest
         order, config-read knobs). Wire shape:
 
-        * ``daily`` / ``reversal``: the digest's two top-5 lists, in digest order.
+        * ``daily`` / ``reversal``: the digest's two top-3 lists, in digest order.
         * ``extras``: the liveness-DROPPED picks (daily-dropped first, then
           reversal-dropped, each in its list's order), same row shape -- the UI
           flags them visually; they never consumed a cap slot.
@@ -87,7 +87,7 @@ def build_picks_router(
         # threaded exactly like the reversal flags below so the cockpit's daily list
         # parks with the digest's -- parked -> ``daily`` is [] and (never selected)
         # nothing continuation rides the extras.
-        daily_five = sel.daily_picks(
+        daily_top = sel.daily_picks(
             session, run_d, max_age_days=cooldown,
             max_per_sector=scfg.daily_max_per_sector,
             surface_continuation=scfg.surface_continuation)
@@ -97,18 +97,18 @@ def build_picks_router(
             confirmed_only=scfg.reversal_surface_confirmed_only)
 
         quote_result = quote_cache.get(
-            [s.ticker for s in daily_five + rev_pool])
+            [s.ticker for s in daily_top + rev_pool])
         prices = quote_result.prices
 
         if scfg.digest_drop_already_ran:  # the digest's gate (notify.run.main)
-            daily, daily_dropped = _split_by_liveness(daily_five, prices)
+            daily, daily_dropped = _split_by_liveness(daily_top, prices)
             rev_kept, rev_dropped = _split_by_liveness(rev_pool, prices)
         else:  # drop disabled -> the digest keeps everything; so do we
-            daily, daily_dropped = daily_five, []
+            daily, daily_dropped = daily_top, []
             rev_kept, rev_dropped = rev_pool, []
         reversal = sel.cap_signals_by_sector(
             session, rev_kept, max_per_sector=scfg.reversal_max_per_sector,
-            limit=5)
+            limit=3)
         extras = daily_dropped + rev_dropped
 
         calls = _todays_calls(

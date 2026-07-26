@@ -41,7 +41,7 @@ Sanity-check on a small slice first:
 | `--universe` | `src/swing_screener/data/universe_seed.csv` | ticker list to scan |
 | `--cache-dir` | `.cache` | parquet bar cache (keyed per ticker/interval/day) |
 | `--chart-dir` | `.charts` | annotated HA chart PNGs for the top picks |
-| `--top-charts` | `5` | how many top-ranked signals get a chart |
+| `--top-charts` | `3` | how many top-ranked signals get a chart |
 | `--max-tickers` | (all) | cap the universe for a quick run |
 
 ## What a run does

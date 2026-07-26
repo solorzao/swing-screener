@@ -99,7 +99,7 @@ digest, only on the last business day). Unattended, day to day:
 | Job | Cadence (ET) | What it does on its own |
 |---|---|---|
 | `evening-screen` | every weekday, ~4pm (after close) | the full screen → persist + charts → advance the shadow book → (deep on) the insight engine + order intents → execution-adapter dispatch (`off` by default) |
-| `daily-digest` | every weekday, ~8am | emails the daily digest (summary + PDF) + the reversal Top-5 + (deep on) the order intents + the autonomy-gate countdown |
+| `daily-digest` | every weekday, ~8am | emails the daily digest (summary + PDF) + the reversal Top-3 + (deep on) the order intents + the autonomy-gate countdown |
 | `intraday-exit` | weekdays, hourly 9am–4pm | checks open trades for exit triggers → emails exit alerts (deduped per event) |
 | `on-demand-analysis` | hourly | drains the cockpit's deep-analysis request queue |
 | `weekly-digest` | Fridays, ~4pm | the weekly digest |

@@ -192,7 +192,7 @@ def load_settings() -> Settings:
         deep_analysis_enabled=(env.get("SWING_DEEP_ANALYSIS", "").strip().lower() in _TRUE),
         analysis_model=env.get("SWING_ANALYSIS_MODEL", "claude-opus-4-8"),
         analysis_reasoning=reasoning,
-        deep_analysis_top_n=_int(env.get("SWING_DEEP_ANALYSIS_TOP_N"), 5),
+        deep_analysis_top_n=_int(env.get("SWING_DEEP_ANALYSIS_TOP_N"), 3),
         deep_analysis_kinds=kinds,
         analysis_max_searches=_int(env.get("SWING_ANALYSIS_MAX_SEARCHES"), 4),
         deep_analysis_batch=(env.get("SWING_DEEP_ANALYSIS_BATCH", "").strip().lower() in _TRUE),

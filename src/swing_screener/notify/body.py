@@ -20,8 +20,8 @@ if TYPE_CHECKING:
 
 _BADGE = {"hard": "🔴", "strong": "🟠", "advisory": "🟡"}
 _KIND_TITLE = {"daily": "Daily", "weekly": "Weekly", "monthly": "Monthly"}
-CONTINUATION_TITLE = "Top 5 - Continuation Plays"
-REVERSAL_TITLE = "Top 5 - Reversal Plays"
+CONTINUATION_TITLE = "Top 3 - Continuation Plays"
+REVERSAL_TITLE = "Top 3 - Reversal Plays"
 
 
 @dataclass(frozen=True)
@@ -199,7 +199,7 @@ def compose_digest_body(
 
     ``reversal_overflow`` (tickers that cleared every surfacing bar but lost the top-N /
     sector-cap race) renders one compact "also confirmed:" line under the funnel, so a
-    broad rotation day is VISIBLE even when the rotating names don't win the five slots
+    broad rotation day is VISIBLE even when the rotating names don't win the three slots
     (on 2026-07-02 CRM/WDAY/PTC were rank 9-12 -- present, invisible). None/empty omits.
 
     ``proposals_text``/``proposals_html`` (the manual-mode "Proposed orders — place on
@@ -226,7 +226,7 @@ def compose_digest_body(
         funnel_line = f"Reversal funnel: {mid} · {len(reversal_picks)} surfaced"
     overflow_line: str | None = None
     if reversal_picks is not None and reversal_overflow:
-        overflow_line = "Also confirmed (lost the top-5/sector race): " + ", ".join(
+        overflow_line = "Also confirmed (lost the top-3/sector race): " + ", ".join(
             reversal_overflow)
 
     # --- plain text ---

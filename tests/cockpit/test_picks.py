@@ -68,19 +68,19 @@ def _digest_reversal_surfaced(engine: Engine, prices: dict[str, float]) -> list[
             confirmed_only=scfg.reversal_surface_confirmed_only)
         pool = _drop_already_ran(pool, lambda tickers: prices)
         return [x.ticker for x in sel.cap_signals_by_sector(
-            s, pool, max_per_sector=scfg.reversal_max_per_sector, limit=5)]
+            s, pool, max_per_sector=scfg.reversal_max_per_sector, limit=3)]
 
 
 def test_picks_match_digest_surfaced_set(tmp_path: Path) -> None:
-    """PARITY BY CONSTRUCTION: the endpoint's reversal five equal the digest's own
+    """PARITY BY CONSTRUCTION: the endpoint's reversal three equal the digest's own
     call chain over the same store -- a liveness-broken pick frees its slot for
-    backfill from below the top-5 AND rides as a flagged extra; a cooldown-stale
+    backfill from below the top-3 AND rides as a flagged extra; a cooldown-stale
     pick and an ``early`` pick (confirmed_only bar) appear NOWHERE. R5 has NO
     quote at all, so the fail-open ``unknown`` status flows through BOTH the
     digest chain and the endpoint in this same test. Mutation-proof:
     dropping ``confirmed_only=`` surfaces EARLY (rank 0 -- it would sort FIRST),
     dropping ``max_age_days=`` surfaces STALE, reordering drop-after-cap loses the
-    R6 backfill; each diverges from both the computed AND the literal pin."""
+    R5 backfill; each diverges from both the computed AND the literal pin."""
     prices = {"R1": 100.0, "R2": 108.0, "R3": 94.0, "R4": 100.0,
               "R6": 100.0, "STALE": 100.0, "EARLY": 100.0}  # R5: quote miss
     client, engine = _positions_client(tmp_path, prices)
@@ -88,14 +88,16 @@ def test_picks_match_digest_surfaced_set(tmp_path: Path) -> None:
         # a prior run anchors the cooldown calendar (cutoff = second-newest run)
         s.add(_pick_signal("OLDRUN", 1, play_type="continuation", strength=None,
                            run_date=_PRIOR_RUN, first_seen=_PRIOR_RUN))
-        for i, t in enumerate(["R1", "R2", "R3", "R4", "R5", "R6"], start=1):
+        # R3 (broken) ranks INSIDE the top-3 so its liveness drop frees a slot;
+        # R5 (quote miss) ranks 4th and backfills it -- the fail-open pick surfaces.
+        for i, t in enumerate(["R1", "R2", "R3", "R5", "R4", "R6"], start=1):
             s.add(_pick_signal(t, i))  # R2 extended at 108 -- NORMAL for a reversal
         s.add(_pick_signal("STALE", 0, first_seen=date(2026, 7, 1)))  # aged out
         s.add(_pick_signal("EARLY", 0, strength="early"))  # confirmed_only bar
         s.commit()
 
     expected = _digest_reversal_surfaced(engine, prices)
-    assert expected == ["R1", "R2", "R4", "R5", "R6"]  # literal pin: R3 backfilled
+    assert expected == ["R1", "R2", "R5"]  # literal pin: R5 backfilled
 
     r = client.get("/api/picks")
     assert r.status_code == 200
@@ -154,10 +156,10 @@ def test_picks_daily_matches_digest_cap_then_drop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The DAILY side mirrors the digest's order exactly: sector cap INSIDE
-    ``daily_picks`` (T3 capped out by the 2-per-sector default, O4/O5/F6 promoted),
-    THEN the liveness drop with NO backfill (O4 extended -> four survivors).
-    Mutation-proof: dropping ``max_per_sector=`` puts T3 in the five; swapping to
-    drop-then-cap backfills a fifth row; both diverge from the digest chain.
+    ``daily_picks`` (T3 capped out by the 2-per-sector default, O4 promoted),
+    THEN the liveness drop with NO backfill (O4 extended -> two survivors).
+    Mutation-proof: dropping ``max_per_sector=`` puts T3 in the three; swapping to
+    drop-then-cap backfills a third row (O5); both diverge from the digest chain.
     Continuation is un-parked here: the test exercises the daily cap/drop order,
     not the parking default."""
     unparked = dataclasses.replace(StrategyConfig(), surface_continuation=True)
@@ -180,7 +182,7 @@ def test_picks_daily_matches_digest_cap_then_drop(
                                max_age_days=scfg.digest_repeat_cooldown_days,
                                max_per_sector=scfg.daily_max_per_sector)
         expected = [x.ticker for x in _drop_already_ran(pool, lambda t: prices)]
-    assert expected == ["T1", "T2", "O5", "F6"]  # literal pin: capped + shrunk
+    assert expected == ["T1", "T2"]  # literal pin: capped + shrunk
 
     body = client.get("/api/picks").json()
     assert [p["ticker"] for p in body["daily"]] == expected

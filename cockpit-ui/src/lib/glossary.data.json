@@ -420,7 +420,7 @@
   "risk": "high"
  },
  {
-  "term": "Surfaced / the surfaced five",
+  "term": "Surfaced / the surfaced three",
   "cat": "status-lamp",
   "short": "The handful of picks the system actually put in front of you, matching the email digest exactly.",
   "why": "These are the real recommendations; everything else on the screen is context, not a call to act.",
@@ -434,7 +434,7 @@
  {
   "term": "Extras / flagged / liveness-dropped",
   "cat": "status-lamp",
-  "short": "Picks that were in the running but dropped at the last moment because price ran away. They are shown for transparency but never counted among the surfaced five.",
+  "short": "Picks that were in the running but dropped at the last moment because price ran away. They are shown for transparency but never counted among the surfaced three.",
   "why": "Lets you see what nearly made it without mistaking a stale pick for a live recommendation.",
   "appears": [
    "Candidates FLAGGED EXTRAS",
@@ -443,7 +443,7 @@
   "risk": "medium"
  },
  {
-  "term": "Overflow / top-5-sector race",
+  "term": "Overflow / top-3-sector race",
   "cat": "status-lamp",
   "short": "Good candidates bumped only because the day already hit its per-day or per-sector limit, not because they were weak.",
   "why": "Shows quality that got crowded out by capacity rules rather than by failing a quality test.",
