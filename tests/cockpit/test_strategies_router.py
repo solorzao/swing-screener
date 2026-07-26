@@ -197,6 +197,34 @@ def test_md_without_sidecar_is_not_a_present_playbook(tmp_path: Path) -> None:
     assert row["tier"] is None
 
 
+def test_sidecar_without_md_is_not_a_present_playbook(tmp_path: Path) -> None:
+    """The converse: a code-owned sidecar with no prose beside it. The NUMBERS are
+    real (the sidecar is the honest source, so tier and cohort still render off it)
+    but the playbook itself is not present -- ``playbook_present`` is about the pair,
+    never about whether there is something to rank."""
+    client, _engine = _client_and_engine(tmp_path)
+    (tmp_path / verdicts_filename("reversal")).write_text(
+        verdicts_to_json([_verdict(tier="replay_screened", ci_low=0.14)]),
+        encoding="utf-8")
+
+    row = _rows(client)["reversal"]
+    assert row["playbook_present"] is False
+    assert row["tier"] == "replay_screened"          # the sidecar still speaks
+    assert row["best_cohort"]["ci_low"] == pytest.approx(0.14)
+
+
+def test_ci_note_is_the_string_playbooks_serves(tmp_path: Path) -> None:
+    """The reuse contract, pinned: ``ci_note`` is IMPORTED from the playbooks router,
+    not re-worded here. Two surfaces that render the same verdict bound must define
+    it with the same sentence, or one of them will eventually describe a plain 95%
+    bound where the number is Bonferroni-corrected."""
+    client, _engine = _client_and_engine(tmp_path)
+
+    board = client.get("/api/strategies").json()["ci_note"]
+    assert board == client.get("/api/playbooks").json()["ci_note"]
+    assert "Bonferroni" in board
+
+
 def test_corrupt_sidecar_degrades_to_nulls(tmp_path: Path) -> None:
     """A corrupt sidecar reads as no evidence (the GATE's own missing/unreadable
     posture, reused verbatim) -- never a 500 on a polled screen. The loud
@@ -227,6 +255,39 @@ def test_unknown_tier_string_never_outranks_a_real_one(tmp_path: Path) -> None:
     assert rows["reversal"]["best_cohort"]["bucket"] == "bull"
     assert rows["continuation"]["tier"] is None
     assert rows["continuation"]["best_cohort"] is None
+
+
+def test_integer_bound_ranks_as_the_number_it_is(tmp_path: Path) -> None:
+    """JSON has one number type and ``load_verdicts`` does NO coercion, so a
+    hand-edited sidecar hands us ``ci_low: 1`` as a Python int. It is a real bound
+    and must rank as one: treating it as absent would file a +1.00R floor BEHIND a
+    +0.01R one while the row prints 1 beside it -- the wire contradicting the very
+    order it was served in, which is worse than either answer alone."""
+    client, _engine = _client_and_engine(tmp_path)
+    _write_playbook(tmp_path, "reversal", [_verdict(tier="replay_screened", ci_low=1)])
+    _write_playbook(tmp_path, "continuation",
+                    [_verdict(play_type="continuation", tier="replay_screened",
+                              ci_low=0.01)])
+
+    body = client.get("/api/strategies").json()
+    assert [r["play_type"] for r in body["strategies"]] == ["reversal", "continuation"]
+    assert body["strategies"][0]["best_cohort"]["ci_low"] == 1
+
+
+def test_non_numeric_bound_is_null_and_ranks_last(tmp_path: Path) -> None:
+    """``ci_low: true`` is not a measurement. Python would rank a bool as +1.0 --
+    ahead of every honest bound in its tier -- so it takes the SAME null posture a
+    non-finite bound takes, on the wire AND in the order. Same rung, so only the
+    bound decides: the honest +0.01R floor wins."""
+    client, _engine = _client_and_engine(tmp_path)
+    _write_playbook(tmp_path, "reversal", [_verdict(tier="replay_screened", ci_low=True)])
+    _write_playbook(tmp_path, "continuation",
+                    [_verdict(play_type="continuation", tier="replay_screened",
+                              ci_low=0.01)])
+
+    body = client.get("/api/strategies").json()
+    assert [r["play_type"] for r in body["strategies"]] == ["continuation", "reversal"]
+    assert body["strategies"][1]["best_cohort"]["ci_low"] is None
 
 
 def test_non_finite_verdict_bound_serializes_as_null(tmp_path: Path) -> None:
@@ -388,6 +449,25 @@ def test_forward_stats_are_the_gold_slice_reflection_grades(tmp_path: Path) -> N
     assert "would_surface" in row["forward"]["source"]
     # an empty book is an honest zero-n Stat, never an absent key
     assert _rows(client)["continuation"]["forward"]["stat"]["n"] == 0
+
+
+def test_forward_excludes_non_baseline_arms_and_variants(tmp_path: Path) -> None:
+    """The other half of what ``source`` promises: the book is PINNED to
+    (arm=baseline, variant=default). The exit-arm A/B and the screen-variant grid
+    duplicate every fill, so an unpinned read would count the same entry several
+    times and inflate n -- the shadow-grid multiplication ``load_closed_paper_trades``
+    exists to dedupe. Only the one baseline/default gold row may count."""
+    client, engine = _client_and_engine(tmp_path)
+    with Session(engine) as s:
+        s.add(_book_trade("AMD", 1.0, would_surface=True))
+        s.add(_book_trade("AMD", 9.0, arm="trail", would_surface=True))
+        s.add(_book_trade("AMD", 9.0, variant="tighter", would_surface=True))
+        s.commit()
+
+    stat = _rows(client)["reversal"]["forward"]["stat"]
+    assert stat["n"] == 1
+    assert stat["value"] == pytest.approx(1.0)
+    assert "arm=baseline" in _rows(client)["reversal"]["forward"]["source"]
 
 
 # --- the G7 pin: read-only, always -----------------------------------------------------

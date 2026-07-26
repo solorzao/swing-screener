@@ -8,18 +8,21 @@ keys on.
 
 HONESTY POSTURE (North Star #2), and every one of these is a rule, not a habit:
 
-* NOTHING IS RECOMPUTED HERE. The calibration counts + readiness are
+* NO STATISTIC IS RECOMPUTED HERE. The calibration counts + readiness are
   ``pipeline.autonomy``'s own report, field for field, and the countdown line is the
   verbatim string ``gate_countdown`` builds (its format is pinned by
   tests/pipeline/test_autonomy_countdown.py). The verdicts sidecar is read through
   the GATE's own loader, so the board and the gate can never disagree about what a
   play type has proven. The forward stats are ``analytics.performance.summarize``
   over ``settlement.facet_filter``'s gold slice -- the exact composition
-  ``pipeline.reflect`` grades. This module contributes NO arithmetic of its own.
+  ``pipeline.reflect`` grades. The only arithmetic this module OWNS is ranking and
+  selection -- the sort key's negations, and picking the best tier and the best
+  cohort within it -- which decide ORDER, never a number.
 * UNKNOWN IS NEVER GREEN. A missing (or unreadable) sidecar serves ``tier: null`` and
   ``best_cohort: null`` -- never a defaulted ``hunch``, which would read as "graded,
-  and it's speculative" instead of "never graded". Same for a non-finite bound: JSON
-  has no infinity, so it serves as an explicit null (``_finite_or_none``).
+  and it's speculative" instead of "never graded". Same for a bound that is not a
+  finite number -- JSON has no infinity, and a hand-edited sidecar can store a bool
+  or a string where a float belongs (see ``_bound``).
 * READ-ONLY, AND PROVABLY SO. ``peek_guardrails`` + the PURE
   ``effective_scope_from_state`` -- never the seeding ``effective_execution_scope``,
   which is the ENFORCEMENT entry and would INSERT the brake row on a poll (503-ing
@@ -95,25 +98,52 @@ def _best_tier(verdicts: list[Verdict]) -> str | None:
     return max(known, key=lambda v: _TIER_RANK[v.tier]).tier
 
 
-def _best_cohort(verdicts: list[Verdict], tier: str | None) -> dict[str, object] | None:
+def _bound(value: object) -> float | None:
+    """A verdict's stored bound as a number, or None when it is not one.
+
+    ``Verdict`` is a plain frozen dataclass over parsed JSON and ``load_verdicts``
+    does NO coercion, so a hand-edited sidecar -- this module's stated threat model,
+    the same one ``_read_verdicts`` tolerates -- can hand a declared ``float`` field
+    an int, a bool, or a string. The adjudication:
+
+    * an INT is a real bound and is kept as a number. JSON has one numeric type, so
+      ``"ci_low": 1`` is how a human writes +1.00R; filing it as absent would rank a
+      +1.00R floor BEHIND a +0.01R one while the row still printed 1 beside it -- the
+      wire contradicting the order it was served in.
+    * a BOOL is NOT. ``True`` is not a measurement, and because ``bool`` subclasses
+      ``int`` Python would happily rank it as +1.0 -- ahead of every honest bound in
+      its tier. It takes the null posture instead, and so does anything non-numeric.
+    * a non-finite float is null for the reason ``_finite_or_none`` states: JSON
+      cannot carry it, and a rendered 'inf' would read as something we measured.
+
+    ONE call decides both the served value and the sort position, so the two can
+    never disagree about what a row's floor is."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return _finite_or_none(float(value))
+
+
+def _best_verdict(verdicts: list[Verdict], tier: str | None) -> Verdict | None:
     """The strongest cell WITHIN ``tier``: the highest ``ci_low`` among its rows.
 
     Scoped to the best tier on purpose -- a hunch with a fatter bound is not better
     evidence, it is unproven evidence, and letting it win the cohort slot would put
-    the board's headline number on the rung nothing has cleared. ``expectancy`` and
-    ``ci_low`` route through ``_finite_or_none``: an empty bucket's bound is ``-inf``,
-    which JSON cannot carry and which must never render as a measured number."""
+    the board's headline number on the rung nothing has cleared."""
     rows = [v for v in verdicts if v.tier == tier]
-    if not rows:
+    return max(rows, key=lambda v: v.ci_low) if rows else None
+
+
+def _best_cohort(best: Verdict | None) -> dict[str, object] | None:
+    """``_best_verdict``'s pick as the wire row (None stays None)."""
+    if best is None:
         return None
-    best = max(rows, key=lambda v: v.ci_low)
     return {
         "dimension": best.dimension,
         # The bucket rides along because ``dimension`` alone names no condition --
         # the gate's own confirmed-edge label is "<dimension>=<bucket>".
         "bucket": best.bucket,
-        "expectancy": _finite_or_none(best.expectancy_r),
-        "ci_low": _finite_or_none(best.ci_low),
+        "expectancy": _bound(best.expectancy_r),
+        "ci_low": _bound(best.ci_low),
         "n": best.n,
     }
 
@@ -240,7 +270,8 @@ def build_strategies_router(
         for pt in PLAY_TYPES:
             verdicts = _read_verdicts(edir, pt)
             tier = _best_tier(verdicts)
-            cohort = _best_cohort(verdicts, tier)
+            best = _best_verdict(verdicts, tier)
+            cohort = _best_cohort(best)
             gate_entry = report.per_play_type[pt]
             row: dict[str, object] = {
                 "play_type": pt,
@@ -260,12 +291,17 @@ def build_strategies_router(
                 "forward": _forward(session, pt),
             }
             # The sort key IS the ranking law: tier DESC, ci_low DESC, name ASC.
-            # Ungraded ranks below every tier (-1) and an absent cohort sorts last
-            # (-(-inf) = +inf) -- nulls last, never silently ahead of measured rows.
+            # Ungraded ranks below every tier (-1), and an unreadable/absent bound
+            # sorts last (-(-inf) = +inf) -- nulls last, never silently ahead of a
+            # measured row. The floor comes off ``_bound`` -- the SAME call that
+            # produced the served number -- so the order can never disagree with the
+            # figure printed beside it.
             tier_rank = _TIER_RANK.get(tier or "", -1)
-            ci_low = cohort["ci_low"] if cohort else None
-            floor = float(ci_low) if isinstance(ci_low, float) else float("-inf")
-            ranked.append(((-tier_rank, -floor, pt), row))
+            floor = _bound(best.ci_low) if best is not None else None
+            ranked.append((
+                (-tier_rank, -(floor if floor is not None else float("-inf")), pt),
+                row,
+            ))
 
         ranked.sort(key=lambda pair: pair[0])
         rows: list[dict[str, object]] = []
