@@ -150,6 +150,15 @@ def test_digest_chart_indices_per_timeframe_slice_uses_cadence_horizon():
     assert 8 not in idx                # ancient + beyond depth everywhere
 
 
+def test_tf_cooldown_horizons_stay_synced_with_digest():
+    """_TF_COOLDOWN_RUNS mirrors notify.run._COOLDOWN_RUNS by convention; silent
+    drift would quietly reopen the chartless gap for the slow cadences."""
+    from swing_screener.notify.run import _COOLDOWN_RUNS
+
+    assert run._TF_COOLDOWN_RUNS == {"1wk": _COOLDOWN_RUNS["weekly"],
+                                     "1mo": _COOLDOWN_RUNS["monthly"]}
+
+
 def test_reversal_chart_indices_fresh_pool_union():
     """The digest's reversal pool is FRESH-first (reversal_picks with max_age_days),
     so stale eligible tickers crowding the raw pool walk used to push the actual
