@@ -93,6 +93,45 @@ simulated fills into the curated account="paper" intent book, no broker, fenced 
 of research aggregates -- the North-Star Mid-term order-flow proving leg.''')
 param executionMode string = ''
 
+// --- Broker arming (the two locks that live in env; the third is the autonomy gate in
+// the database). BOTH default '' = ABSENT, which is the intended prod state today: no
+// broker configured, real money disallowed. That is the same
+// template-default-must-match-prod lesson as deepAnalysisEnabled below, pointed the
+// other way -- deep analysis is ON in prod so its default is '1'; arming is OFF in prod
+// so these defaults are ''. A bicep redeploy must never be able to arm real money as a
+// side effect, and it must never silently DISARM a deliberately armed job either: the
+// day these are set in prod, they get set in main.bicepparam in the same act (the
+// arming ceremony, docs/runbooks/arming-alpaca-live.md).
+@description('''Broker adapter for the LIVE path (SWING_BROKER): "alpaca" is the only
+impl. Empty = absent -> no broker configured, so even execution_mode=live falls back to
+the NoOp adapter and submits nothing (fail-safe). This is lock #1 of three; setting it
+alone arms NOTHING.''')
+param broker string = ''
+
+@description('''The explicit, LOUD real-money flag (SWING_BROKER_ALLOW_REAL_MONEY):
+"1"/"true"/"yes"/"on" allows real-money orders; empty = absent -> false, and any
+unrecognised value is also false. Lock #2 of three (mode==live AND this AND a ready
+autonomy gate -- settings.can_arm_real_money). A real-money Alpaca host WITHOUT this is
+still refused.''')
+param allowRealMoney string = ''
+
+// The execution SCOPE ceiling. Not a lock -- it does not gate arming -- but it belongs to
+// the same ceremony because it decides WHICH strategy real money is put behind, and the
+// default is the permissive one: absent = ALL play types dispatch, continuation included.
+// The 2026-07-18 audit's finding is that continuation has no confirmed edge, so arming
+// without setting this puts money behind a strategy the evidence does not support. It
+// lives here (rather than only in the CLI ceremony) because path A of the arming runbook
+// -- uncomment the params, re-provision -- must be able to express the scope at all;
+// without this param a drift-safe arming is structurally allow-all.
+@description('''The play types the agent may execute (SWING_EXECUTE_PLAY_TYPES), comma
+separated: "reversal" | "continuation" | "reversal,continuation". Empty = absent ->
+allow-ALL (today's behaviour, and the PERMISSIVE default -- set it deliberately in the
+arming ceremony). Garbage parses fail-CLOSED to the empty set: nothing dispatches, with a
+loud warning -- but a PARTLY valid list keeps its valid members (the unknown ones are
+dropped with a warning); only an all-garbage list collapses to allow-none. Task 22's
+cockpit subtraction sits BENEATH this ceiling and can only narrow it, never widen it.''')
+param executePlayTypes string = ''
+
 @description('''The three hard caps the adapter's submit() clamp enforces per
 account-day (empty = that cap absent -> unbounded, the code's None sentinel).
 maxDailyNotional is DOLLARS of recorded order notional; maxDailyLoss is an R
@@ -244,13 +283,45 @@ var executionModeEnv = executionMode == ''
         value: executionMode
       }
     ]
+// Same absent-not-empty rule as executionMode: SWING_BROKER='' would still be "set" on
+// the container, and settings reads it as an empty broker id -- behaviourally identical
+// to absent, so this is hygiene rather than a behaviour change. Omitting the var keeps
+// `az containerapp job show` an honest record of what is configured.
+var brokerEnv = broker == ''
+  ? []
+  : [
+      {
+        name: 'SWING_BROKER'
+        value: broker
+      }
+    ]
+var allowRealMoneyEnv = allowRealMoney == ''
+  ? []
+  : [
+      {
+        name: 'SWING_BROKER_ALLOW_REAL_MONEY'
+        value: allowRealMoney
+      }
+    ]
+// Same absent-not-empty hygiene as broker/executionMode: settings treats a BLANK
+// SWING_EXECUTE_PLAY_TYPES exactly like an absent one (both -> None = unscoped), so
+// omitting the var is behaviour-neutral -- it just keeps `az containerapp job show` an
+// honest record of what is actually configured.
+var executePlayTypesEnv = executePlayTypes == ''
+  ? []
+  : [
+      {
+        name: 'SWING_EXECUTE_PLAY_TYPES'
+        value: executePlayTypes
+      }
+    ]
 var capsEnv = concat(
   maxDailyNotional == '' ? [] : [{ name: 'SWING_MAX_DAILY_NOTIONAL', value: maxDailyNotional }],
   maxDailyLoss == '' ? [] : [{ name: 'SWING_MAX_DAILY_LOSS', value: maxDailyLoss }],
   maxConcurrent == '' ? [] : [{ name: 'SWING_MAX_CONCURRENT', value: maxConcurrent }]
 )
 
-var commonEnv = concat(equityEnv, riskPctEnv, executionModeEnv, capsEnv, [
+var commonEnv = concat(equityEnv, riskPctEnv, executionModeEnv, brokerEnv, allowRealMoneyEnv, executePlayTypesEnv, capsEnv, [
   {
     name: 'ANTHROPIC_API_KEY'
     secretRef: 'anthropic-api-key'

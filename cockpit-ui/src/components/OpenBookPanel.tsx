@@ -78,7 +78,7 @@ export function OpenBookPanel({ facet, wake }: { facet: Facet; wake: number }) {
       <div className="panel-head">
         OPEN BOOK
         <span className="panel-caption">
-          the running <HelpTerm term="paper trade">paper trades</HelpTerm> behind the
+          the running <HelpTerm term="paper book">paper trades</HelpTerm> behind the
           wall below · prices as of{' '}
           <HelpTerm term="last close">last close</HelpTerm>
           {book.data !== null &&

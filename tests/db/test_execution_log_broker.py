@@ -124,3 +124,21 @@ def test_latest_recorded_stop_reads_the_newest_live_ticket() -> None:
         assert repo.latest_recorded_stop(s, "NVDA") == 95.0
         assert repo.latest_recorded_stop(s, "AMD") == 50.0
         assert repo.latest_recorded_stop(s, "TSLA") is None
+
+
+def test_latest_recorded_stop_reads_the_side_the_adapters_actually_write() -> None:
+    """THE side-vocabulary pin: a REAL live ticket carries ``side="long"``.
+
+    Every ExecutionLog writer stamps ``intent.side`` -- and ``OrderIntent.side`` is
+    ``"long"``, the only value constructed anywhere; ``"buy"`` is the VENUE's word
+    (``BrokerOrderSpec.side``), which reaches no DB row. The lookup used to filter on
+    ``side == "buy"`` alone, so it returned None for every real ticket and each restore
+    path (disarm CLI, kill switch, halt/trip sweeps, the evening re-assert) reported
+    live positions UNPROTECTED and restored nothing. The fixtures above wrote the venue
+    word, which is exactly why it stayed invisible (2026-07-25)."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        repo.add_execution_log(s, **_fields(ticker="AMD", side="long", stop=94.0,
+                                            status="filled_live",
+                                            idempotency_key="amd-long"))
+        assert repo.latest_recorded_stop(s, "AMD") == 94.0

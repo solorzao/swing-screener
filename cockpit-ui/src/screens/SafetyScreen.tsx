@@ -5,7 +5,9 @@ import type { CockpitConfig, ExecutionSafety, Polled } from '../lib/api'
 import { fmtClock } from '../lib/fmt'
 import { BracketLamp } from '../components/BracketLamp'
 import { CapGauge } from '../components/CapGauge'
+import { GuardrailsPanel } from '../components/GuardrailsPanel'
 import { PanelBody } from '../components/PanelBody'
+import { StrategyBoard } from '../components/StrategyBoard'
 
 /* Screen 7 — Execution Safety: is real money possible, and why not.
 
@@ -70,6 +72,18 @@ function SafetyBody({
 }
 
 
+/** A config row's setting name — an inline HelpTerm for the rows whose meaning IS
+ * a defined term, plain text for the rest. Explicit per row rather than passing
+ * `row.key` straight to HelpTerm: a config key is an env-var label, not
+ * vocabulary, and the glossary's substring lookup would hand unrelated rows a
+ * neighbouring term's definition. */
+function CfgKey({ name }: { name: string }) {
+  if (name === 'execute play types') {
+    return <HelpTerm term="execution scope (ceiling)">{name}</HelpTerm>
+  }
+  return <>{name}</>
+}
+
 /** The read-only CONFIGURATION panel: every live knob, its env var, and where
  * the real edit lives. The cockpit shows; git changes (North Star #1/#3) —
  * env is per-process, so a cockpit "edit" could not reach the Azure jobs. */
@@ -106,7 +120,9 @@ function ConfigPanel({ wake }: { wake: number }) {
                   <tbody>
                     {sec.rows.map((row) => (
                       <tr key={row.key}>
-                        <td>{row.key}</td>
+                        <td>
+                          <CfgKey name={row.key} />
+                        </td>
                         <td className="mono cfg-env">{row.env ?? '— (code)'}</td>
                         <td className="mono ref-num">
                           {row.value === null || row.value === undefined
@@ -182,8 +198,9 @@ export function SafetyScreen({ wake }: { wake: number }) {
                       {s.env_scope}
                       <span className="sfy-note">
                         {' '}
-                        — the Azure jobs read their own env; the remote mode flip
-                        stays the runbook&apos;s az command
+                        · the remote mode flip stays the runbook&apos;s az command ·
+                        does NOT cover the GUARDRAILS panel: the brake is one shared
+                        DB row every process reads
                       </span>
                     </span>
                   </div>
@@ -226,10 +243,42 @@ export function SafetyScreen({ wake }: { wake: number }) {
                       <span className="sfy-warn">{s.caps_mandate.reason}</span>
                     )}
                   </div>
+                  {/* The brake's own mandate verdict — the SAME definition execution
+                      enforces at submit time. Shared DB state, NOT this process's
+                      env, so an Azure job's trip shows here (and in the panel
+                      below); the note says so rather than inheriting the row above. */}
+                  <div className="sfy-row">
+                    <span className="sfy-name">guardrails mandate</span>
+                    {s.guardrails.ok ? (
+                      <span className="sfy-val">
+                        {s.guardrails.reason || 'brake released'}
+                        <span className="sfy-note"> · shared DB state (all processes)</span>
+                      </span>
+                    ) : (
+                      <span className="sfy-warn">
+                        {s.guardrails.reason} (state: {s.guardrails.state}
+                        {s.guardrails.sweep_state !== null &&
+                          ` · sweep ${s.guardrails.sweep_state}`}
+                        )
+                      </span>
+                    )}
+                  </div>
                 </>
               )}
             </SafetyBody>
           </section>
+
+          {/* The brake's own panel: state banner, the six breaker limits, HALT and
+              the clear flow, and the append-only history. Its own DB-only poll —
+              it deliberately does not ride the broker-calling safety read. */}
+          <GuardrailsPanel wake={wake} />
+
+          {/* The Strategy Board, directly under the brake it shares plumbing
+              with: the same agent_guardrails row, the same 'edit' event trail,
+              the same subordinate posture — it can subtract a strategy from
+              execution scope, never widen past the env ceiling. Its own DB +
+              file poll (no broker), like the brake's. */}
+          <StrategyBoard wake={wake} />
 
           <section className="panel">
             <div className="panel-head">

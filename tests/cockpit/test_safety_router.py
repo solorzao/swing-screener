@@ -6,10 +6,13 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from swing_screener.analytics.calibration import _CLUSTER_FLOOR, MIN_LEADERBOARD_N
 from swing_screener.cockpit.api import create_app
+from swing_screener.db import guardrails_repo as gr
+from swing_screener.db.models import AgentGuardrails
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.broker import BrokerAccount, BrokerOrderSpec, FakeBroker
 from tests.cockpit.conftest import (
@@ -17,6 +20,7 @@ from tests.cockpit.conftest import (
     _broker_app,
     _call,
     _db_url,
+    _deny_writes,
     _disarm_broker,
     _kill_sell_legs,
     _nonce_of,
@@ -47,7 +51,7 @@ def test_gate_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert r.status_code == 200
     body = r.json()
     assert set(body) == {"ready", "countdown", "execution_mode",
-                         "analyst_spend_today_usd", "broker_configured"}
+                         "analyst_spend_today_usd", "broker_configured", "brake_state"}
     assert body["ready"] is False  # no verdicts sidecars in tmp_path, no scored calls
     # gate_countdown VERBATIM (line format pinned by tests/pipeline/
     # test_autonomy_countdown.py); denominators are the live floor constants.
@@ -74,11 +78,34 @@ def test_gate_carries_broker_configured_from_settings_truthiness(
     assert r.json()["broker_configured"] is True
 
 
+def test_gate_carries_brake_state(tmp_path: Path) -> None:
+    """The masthead chip's data source: the brake state rides the already-polled gate
+    (one extra column select, no second poll and no venue call). It is ``g.state``
+    rendered DIRECTLY -- never a consult verdict -- and it is read fresh per request,
+    so a HALT committed by ANOTHER process (a cockpit action, an Azure job's trip)
+    shows on the very next poll rather than out of a cached entity."""
+    url = _db_url(tmp_path)
+    engine = get_engine(url)
+    client = TestClient(create_app(url, edge_dir=tmp_path))
+
+    assert client.get("/api/gate").json()["brake_state"] == "ok"
+    with Session(engine) as s:  # a SECOND session, as a cockpit action would be
+        assert gr.halt(s, source="test") is True
+    assert client.get("/api/gate").json()["brake_state"] == "halted"
+
+    with Session(engine) as s:
+        assert gr.clear_halt(s, source="test") is True
+        assert gr.trip(s, breaker="max_trades_per_day", reason="cap", source="test")
+    assert client.get("/api/gate").json()["brake_state"] == "tripped"
+
+
 # ---- POST /api/disarm + GET /api/execution/safety (Task 9) ----
 
-DISARM_KEYS = {"dry_run", "cancelled", "sells_kept", "stops_restored", "unprotected"}
+DISARM_KEYS = {"dry_run", "mode", "state", "cancelled", "sells_kept", "stops_restored",
+               "unprotected"}
 SAFETY_KEYS = {"broker_configured", "mode", "env_scope", "locks", "caps_mandate",
-               "preflight", "bracket_shield"}
+               "guardrails", "preflight", "bracket_shield"}
+GUARDRAIL_KEYS = {"ok", "reason", "state", "sweep_state"}
 LOCK_KEYS = {"mode_is_live", "allow_real_money", "gate_ready"}
 CHECK_KEYS = {"name", "ok", "detail", "critical"}
 
@@ -117,6 +144,10 @@ def test_disarm_dry_run_cancels_nothing_and_previews_everything(
     body = r.json()
     assert set(body) == DISARM_KEYS
     assert body["dry_run"] is True
+    # the mode-tagged union: an untripped book is always the ``raw`` variant, and
+    # ``state`` names the brake this ran against.
+    assert body["mode"] == "raw"
+    assert body["state"] == "ok"
     assert body["cancelled"] == [{"symbol": "AMD", "broker_order_id": "fake-0"}]
     assert body["sells_kept"] == 0  # the legs are dead; nothing sell-side survives
     assert body["stops_restored"] == ["NVDA"]  # the hold preview names the symbol
@@ -232,7 +263,9 @@ def test_disarm_is_single_flight(tmp_path: Path) -> None:
     try:
         r = client.post("/api/disarm", headers=_HDR)
         assert r.status_code == 409
-        assert r.json()["detail"] == "disarm already in flight"
+        # ONE wording for the shared lock: HALT contends for it too, and an operator
+        # who pressed HALT must not be told about a "disarm" nobody ran.
+        assert r.json()["detail"] == "a protective action is already in flight"
         assert calls["n"] == 0                       # rejected before the factory
         assert len(broker.list_open_orders()) == 3   # venue untouched
     finally:
@@ -293,7 +326,8 @@ def test_execution_safety_none_factory_is_200_never_a_500(
     assert set(body) == SAFETY_KEYS
     assert body["broker_configured"] is False
     assert body["mode"] == "off"
-    assert body["env_scope"] == "this process"
+    # the SAME honesty label /api/config carries -- one string, one meaning.
+    assert body["env_scope"] == "this process — the Azure jobs run under their own env"
     assert set(body["locks"]) == LOCK_KEYS
     assert body["locks"] == {"mode_is_live": False, "allow_real_money": False,
                              "gate_ready": False}
@@ -309,6 +343,10 @@ def test_execution_safety_none_factory_is_200_never_a_500(
         assert checks[name]["ok"] is False
         assert checks[name]["detail"] == "not applicable -- no broker"
     assert checks["caps"]["ok"] is False  # the mandate line, evaluated for real
+    # the brake line too -- it reads the DB, never the venue, so no broker is no
+    # excuse; ADVISORY here because with no client real-vs-paper is UNKNOWN.
+    assert checks["guardrails"]["ok"] is False
+    assert checks["guardrails"]["critical"] is False
     shield = body["bracket_shield"]
     assert shield == {"known": False, "as_of": None, "positions": []}
 
@@ -361,6 +399,81 @@ def test_execution_safety_reports_locks_caps_and_bracket_shield(
     states = {row["symbol"]: row["state"] for row in shield["positions"]}
     assert states == {"AMD": "armed", "NVDA": "db-only", "XYZY": "unprotected"}
     assert all(row["qty"] > 0 for row in shield["positions"])
+
+
+def test_safety_report_carries_guardrails_entry(tmp_path: Path) -> None:
+    """The safety screen's brake row: the mandate verdict + its reason + the RAW state
+    and sweep bookkeeping (state rendered DIRECTLY, never a consult verdict).
+
+    Unlike the env-derived rows beside it, this one is a DB read -- the venue of record
+    EVERY process shares -- so a trip landed by an Azure job shows here, and the
+    ``env_scope: this process`` label never applies to it."""
+    client, engine, _calls = _broker_app(tmp_path, FakeBroker())
+
+    body = client.get("/api/execution/safety").json()
+    assert set(body["guardrails"]) == GUARDRAIL_KEYS
+    # the default row: breakers unset -> the mandate refuses, naming the FIRST gap.
+    assert body["guardrails"] == {"ok": False, "reason": "max_daily_loss_usd is not set",
+                                  "state": "ok", "sweep_state": None}
+
+    with Session(engine) as s:
+        gr.edit_limits(s, source="test", max_daily_loss_usd=500.0,
+                       max_trades_per_day=3, max_drawdown_usd=1_000.0)
+    assert client.get("/api/execution/safety").json()["guardrails"] == {
+        "ok": True, "reason": "", "state": "ok", "sweep_state": None}
+
+    with Session(engine) as s:  # a trip landed by ANOTHER process (the screen job)
+        assert gr.trip(s, breaker="max_drawdown_usd", reason="dd breach", source="screen")
+    assert client.get("/api/execution/safety").json()["guardrails"] == {
+        "ok": False, "reason": "guardrails state is tripped",
+        "state": "tripped", "sweep_state": "pending"}
+
+
+def test_gate_and_safety_never_write_the_brake_row(tmp_path: Path) -> None:
+    """The G7 scenario: a virgin ``agent_guardrails`` table AND no write grant.
+
+    Both polls must answer 200 -- the masthead and the safety screen cannot go dark
+    because a row was never seeded -- with the brake reading its honest default ('ok',
+    mandate refusing on the first unset breaker) and NOT ONE write attempted. A poll
+    that get-or-created would 503 here, on the two most-polled endpoints in the app.
+    The denial is a class-level Engine listener because the app builds its OWN engine
+    from the URL (``get_engine`` is not a cache), so it covers the app's writes too."""
+    client, engine, _calls = _broker_app(tmp_path, FakeBroker())
+    with _deny_writes("agent_guardrails") as attempted:
+        gate = client.get("/api/gate")
+        safety = client.get("/api/execution/safety")
+
+    assert attempted == []                       # no INSERT/UPDATE even attempted
+    assert gate.status_code == 200
+    assert gate.json()["brake_state"] == "ok"    # the honest default, not a seeded row
+    assert safety.status_code == 200
+    body = safety.json()
+    assert body["guardrails"] == {"ok": False, "reason": "max_daily_loss_usd is not set",
+                                  "state": "ok", "sweep_state": None}
+    # preflight rides this endpoint: its brake row is a peek too (no seed, no 503).
+    checks = {c["name"]: c for c in body["preflight"]["checks"]}
+    assert checks["guardrails"]["ok"] is False
+    with Session(engine) as s:
+        assert s.query(AgentGuardrails).count() == 0  # the table is still virgin
+
+
+def test_deny_writes_listener_actually_fires(tmp_path: Path) -> None:
+    """POSITIVE CONTROL for the test above.
+
+    "No write was attempted" passes just as happily when the listener never bound --
+    a silently-inert guard would turn the G7 pin into a test of nothing. This proves
+    the same helper, over the same table, DOES refuse a write on the app's own engine
+    and that the refusal is a ``SQLAlchemyError`` (so an endpoint that let it
+    propagate would 503, not 500)."""
+    client, engine, _calls = _broker_app(tmp_path, FakeBroker())
+    client.get("/api/gate")                      # force the app's engine into being
+
+    with _deny_writes("agent_guardrails") as attempted:
+        with Session(engine) as s, pytest.raises(OperationalError):
+            gr.halt(s, source="test")
+    assert attempted and attempted[0].startswith(("insert into", "update"))
+    with Session(engine) as s:
+        assert s.query(AgentGuardrails).count() == 0   # the refusal held
 
 
 def test_execution_safety_broker_error_degrades_by_class_name(

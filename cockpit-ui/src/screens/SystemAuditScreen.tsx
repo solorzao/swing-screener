@@ -9,6 +9,7 @@ import {
 } from '../lib/api'
 import { HelpTerm } from '../components/HelpTerm'
 import type { AuditReport } from '../lib/api'
+import { fmtStamp } from '../lib/fmt'
 import { PanelBody } from '../components/PanelBody'
 
 /* SYSTEM AUDIT — the System Behavior Auditor's surface (screen 13, masthead-link).
@@ -24,7 +25,12 @@ function sevClass(severity: string): string {
   return 'jr-up'
 }
 
-/** A compact, code-owned findings preview (never the prose) for one audit row. */
+/** A compact, code-owned findings preview (never the prose) for one audit row.
+ *
+ * FINDINGS SCHEMA (journal/audit_run.py's module docstring is the contract):
+ * every key beyond a shape's stable core is OPTIONAL — a row written by an older
+ * revision simply lacks the newer ones, and these rows are permanent. So each
+ * bit is gated on presence, never assumed. */
 function findingsPreview(findings: Record<string, unknown>): string {
   const comp = (findings.compliance ?? {}) as Record<string, unknown>
   const anom = (findings.anomaly ?? {}) as Record<string, unknown>
@@ -33,6 +39,26 @@ function findingsPreview(findings: Record<string, unknown>): string {
   if (Array.isArray(caps)) bits.push(`${caps.length} cap breach(es)`)
   if (comp.reject_rate != null) bits.push(`reject ${String(comp.reject_rate)}`)
   if (comp.n_disarms != null) bits.push(`${String(comp.n_disarms)} disarm(s)`)
+  // Guardrail conduct: the brake FIRING is expected behaviour and is counted
+  // here, never graded a breach (audit_run.py draws that line deliberately).
+  // ZEROES ARE SUPPRESSED: a quiet week would otherwise spend the whole preview
+  // line saying nothing happened five different ways, burying the counters that
+  // did fire. The lone exception is below.
+  const activity = (key: string, label: string) => {
+    const v = comp[key]
+    if (v != null && Number(v) > 0) bits.push(`${String(v)} ${label}`)
+  }
+  activity('n_guardrail_trips', 'trip(s)')
+  activity('n_guardrail_clamps', 'brake clamp(s)')
+  activity('n_guardrail_sweeps', 'trip sweep(s)')
+  activity('n_killswitch_sweeps', 'kill sweep(s)')
+  activity('n_halt_sweeps', 'halt sweep(s)')
+  activity('n_guardrail_alerts', 'trip alert(s)')
+  // ALWAYS shown, zero included: this is the one counter whose zero is the good
+  // news ("every disarm was explained"). Suppressing it would make "the auditor
+  // did not check" and "the auditor found none" look identical.
+  if (comp.n_unexplained_disarms != null)
+    bits.push(`${String(comp.n_unexplained_disarms)} unexplained disarm(s)`)
   if (anom.drought_days != null) bits.push(`${String(anom.drought_days)} drought day(s)`)
   if (anom.orphan_exit_events != null) bits.push(`${String(anom.orphan_exit_events)} orphan exit(s)`)
   if (findings.cap_breach != null) bits.push('cap breach')
@@ -40,7 +66,48 @@ function findingsPreview(findings: Record<string, unknown>): string {
   return bits.join(' · ')
 }
 
+function str(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : null
+}
+
+/** A findings stamp for display. Only a value carrying a TIME ('T') is localised
+ * — a bare '2026-07-23' parsed as a Date is UTC midnight, which in a western
+ * local zone renders as the day BEFORE. A day of record must never shift. */
+function stamp(v: string): string {
+  return v.includes('T') ? fmtStamp(v) : v
+}
+
+/** The `guardrail_breach` shape — one of the four conduct rules. Stable core is
+ * {rule, day, detail}; everything else is optional by contract.
+ *
+ * The CAVEAT is rendered VISIBLY, not as a tooltip: rules 1 and 4 carry one
+ * because they cannot fully prove what they flag (two clocks, a bridged
+ * run_date), and a warn-grade finding is only honest with its own limits on the
+ * same screen. `cleared_at` likewise: a breach the operator already resolved
+ * must not keep reading as live. */
+function GuardrailBreachBlock({ gb }: { gb: Record<string, unknown> }) {
+  const rule = str(gb.rule) ?? 'unrecognised rule'
+  const day = str(gb.day)
+  const detail = str(gb.detail)
+  const caveat = str(gb.caveat)
+  const clearedAt = str(gb.cleared_at)
+  return (
+    <div className="au-gb">
+      <div className="au-gb-head mono">
+        guardrail · {rule}
+        {day !== null && ` · ${day}`}
+      </div>
+      {detail !== null && <div className="au-gb-detail">{detail}</div>}
+      {clearedAt !== null && (
+        <div className="au-gb-cleared">later cleared {stamp(clearedAt)}</div>
+      )}
+      {caveat !== null && <div className="au-gb-caveat">caveat: {caveat}</div>}
+    </div>
+  )
+}
+
 function AuditRow({ a, onAck }: { a: AuditReport; onAck: (id: number) => void }) {
+  const gb = a.findings.guardrail_breach
   return (
     <div className="jr-note">
       <div className="jr-note-meta">
@@ -59,6 +126,9 @@ function AuditRow({ a, onAck }: { a: AuditReport; onAck: (id: number) => void })
           </button>
         )}
       </div>
+      {typeof gb === 'object' && gb !== null && (
+        <GuardrailBreachBlock gb={gb as Record<string, unknown>} />
+      )}
       <div className="jr-note-text">{a.narrative ?? '(no narrative)'}</div>
       <span className="jr-note-hint mono">{findingsPreview(a.findings)}</span>
     </div>
@@ -89,7 +159,7 @@ function BreachesPanel({ wake }: { wake: number }) {
     <section className="panel">
       <div className="panel-head">
         <HelpTerm term="BREACH">BREACHES</HelpTerm>
-        <span className="panel-caption">immediate hard breaches (caps, <HelpTerm term="DISARM">disarms</HelpTerm>) — flagged on the next run</span>
+        <span className="panel-caption">immediate hard breaches (caps, <HelpTerm term="DISARM">disarms</HelpTerm>, guardrail conduct) — flagged on the next run</span>
       </div>
       {ackError !== null && (
         <div className="gex-err" role="alert">
@@ -128,7 +198,12 @@ function ReportsPanel({ wake }: { wake: number }) {
     <section className="panel">
       <div className="panel-head">
         <HelpTerm term="weekly conduct">WEEKLY CONDUCT</HelpTerm>
-        <span className="panel-caption">the <HelpTerm term="auditor">auditor</HelpTerm>'s weekly sweep — did the agents follow their own rules</span>
+        <span className="panel-caption">
+          the <HelpTerm term="auditor">auditor</HelpTerm>'s weekly sweep — did the agents follow their own rules · a
+          correctly-braked week grades <em>info</em>: the brake firing IS good conduct,
+          so the trip email and the Safety screen banner are the operator signal, not
+          this screen
+        </span>
       </div>
       {ackError !== null && (
         <div className="gex-err" role="alert">

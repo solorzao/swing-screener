@@ -20,7 +20,7 @@ pluggable adapters behind a single :class:`ExecutionAdapter` protocol:
   real-money endpoint arms ONLY behind all three locks AND every cap; a paper broker
   bypasses that guard. See the class for the full safety contract.
 
-The load-bearing safety lives in two places, both INSIDE ``submit`` (never trusting
+The load-bearing safety lives in three places, all INSIDE ``submit`` (never trusting
 the caller):
 
 1. The hard-limit clamp (:func:`_limit_block`): before recording anything, ``submit``
@@ -37,6 +37,14 @@ the caller):
    ``rejected``) superseded by a counting write is UPGRADED in place, so a submit that
    ACTED after an earlier same-day clamp is never silently swallowed. One order per pick
    per run.
+3. The guardrails brake (:func:`_guardrail_block`, live adapter only -- the one
+   adapter with a venue): the ``agent_guardrails`` row (state + the four breakers) is
+   loaded FRESH on every submit and consulted UNCONDITIONALLY (paper host included),
+   BEFORE the real-money guard. An engaged brake or a breached breaker clamps to a
+   logged ``skipped`` row with a ``guardrail: ...`` detail -- non-counting, so the
+   idempotency key is never burned. The real-money MANDATE
+   (``guardrails_repo.guardrails_mandate_ok``) additionally refuses a real-money
+   dispatch while any mandatory breaker is unset (paper hosts stay exempt).
 
 PER-DAY-LOSS UNIT DECISION: ``Limits.max_daily_loss`` is interpreted as an **R
 threshold**, NOT a dollar amount. The design left $ vs R open; we choose R because the
@@ -63,6 +71,7 @@ from typing import Protocol
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from swing_screener.db import guardrails_repo
 from swing_screener.db.models import PaperTrade
 from swing_screener.db.repo import (
     add_execution_log,
@@ -73,9 +82,8 @@ from swing_screener.db.repo import (
     save_paper_trades,
 )
 from swing_screener.pipeline.arms import BASELINE
-from swing_screener.pipeline.broker import BrokerClient, BrokerOrderSpec
+from swing_screener.pipeline.broker import BrokerClient, BrokerOrderSpec, broker_error_detail
 from swing_screener.pipeline.insight import OrderIntent
-from swing_screener.pipeline.preflight import broker_error_detail
 from swing_screener.pipeline.variants import DEFAULT_VARIANT
 from swing_screener.settings import (
     Limits,
@@ -100,6 +108,30 @@ OFF_ACCOUNT = "research"
 # live orders keep their limit sums cleanly separate from manual / paper / research, and the
 # reconciler (Task 5) materializes the eventual position under the same tag.
 LIVE_ACCOUNT = "live"
+
+# the zero-qty clamp's log/ticket detail, shared with the dispatch loop's own filter
+# (notify/run.py). Deliberately NOT a "guardrail: ..." detail -- the Auditor greps that
+# prefix, and an unsized intent is inert config noise, not a tripped safety rail.
+UNSIZED_DETAIL = "unsized (0 shares)"
+# the execution-scope clamp's log/ticket detail (SWING_EXECUTE_PLAY_TYPES, Task 8),
+# shared the same way: the dispatch loop's filter and the live adapter's own step-0.6
+# consult (never trusting the caller) both stamp it. Not "guardrail: ..." either --
+# an out-of-scope play type is operator scoping, not a tripped safety rail.
+OUT_OF_SCOPE_DETAIL = "play type not in execution scope"
+# the orphan-adoption detail (the live adapter recovered a venue order whose log write
+# died with the process). A FIXED internal string -- the stored detail reaches the
+# cockpit wire verbatim, so it must never embed exception/venue text (leak posture:
+# anything exception-shaped goes through broker_error_detail's class-name-only wording).
+ADOPTED_ORPHAN_DETAIL = "adopted orphaned venue order"
+# The broker order states an orphan is NOT adopted from: terminal-dead, nothing can fill.
+# "filled" is deliberately ADOPTABLE -- the adopted submitted_live row is exactly what the
+# reconciler materializes into the live position on its next pass. KNOWN residual blind
+# spot: a partially-filled-then-canceled orphan reads "canceled" here and falls through to
+# rejected_live, its filled shares uncounted -- the same canceled-with-fills posture the
+# reconciler itself takes (reconcile._materialize_fills books `canceled` as canceled
+# regardless of filled_qty). Documented, not fixed: closing it belongs to both consumers
+# at once, not to the adoption path alone.
+_UNADOPTABLE_STATUSES = ("canceled", "rejected")
 
 
 @dataclass(frozen=True)
@@ -190,6 +222,32 @@ def _limit_block(
                 f"<= -{limits.max_daily_loss:.2f}R"
             )
     return None
+
+
+def _guardrail_block(
+    session: Session, g: guardrails_repo.GuardrailsState, *, run_date: date
+) -> str | None:
+    """Return a human reason if the guardrails brake refuses this submit, else None.
+
+    Mirrors ``_limit_block``: a pure READ + decide; the caller clamps (skip + log).
+    Consulted UNCONDITIONALLY (paper host included -- the Stage-0 drill must rehearse
+    every trip path), BEFORE the real-money guard. Each breaker is skipped when unset.
+
+    LEAK CONTRACT (binding on Task 6's trip callers): the state refusal echoes
+    ``trip_reason`` VERBATIM into cockpit-visible ``ExecutionLog.detail``, so trip
+    reasons must always be internally formatted breaker strings -- never built from
+    exception text, which would bypass ``broker_error_detail``'s class-name-only
+    posture.
+
+    The four per-breaker checks live in ``guardrails_repo.breached_breaker`` --
+    shared with the dispatch loop's trip evaluation
+    (``pipeline.guardrails.evaluate_breakers``), so "breached" has exactly one
+    definition; this wrapper adds only the state refusal the submit clamp needs."""
+    if g.state != "ok":
+        detail = f": {g.trip_reason}" if g.trip_reason else ""
+        return f"brake engaged ({g.state}{detail})"
+    breach = guardrails_repo.breached_breaker(session, g, run_date=run_date)
+    return None if breach is None else breach[1]
 
 
 class NoOpAdapter:
@@ -390,8 +448,11 @@ class PaperAdapter:
 def _default_gate_ready(session: Session) -> bool:
     """Whether the advisory autonomy gate is ready (the live adapter's default seam).
 
-    Imported locally so ``execution`` -> ``autonomy`` stays a runtime edge, not an import-time
-    cycle (autonomy pulls in heavier analytics/repo modules). Tests inject ``gate_ready_fn``
+    Imported locally so ``execution`` -> ``autonomy`` stays a RUNTIME edge: a WEIGHT guard,
+    not a cycle break (``autonomy`` does not reach back to ``execution`` today, so a
+    module-level import would import fine). What it drags is the point -- autonomy pulls
+    reflect -> optimize -> replay -> run -> charts.render, i.e. mplfinance and the whole
+    analytics chain, into every importer of the dispatch path. Tests inject ``gate_ready_fn``
     instead, so this is consulted only against a real DB-backed book in production."""
     from swing_screener.pipeline.autonomy import autonomy_gate
 
@@ -415,15 +476,43 @@ class LiveAdapter:
        any broker call -- a re-submit can never place a venue order whose status write
        would be swallowed by the unique key (an untracked position the reconciler,
        which scans ``submitted_live`` rows only, would never materialize).
+    0.25. The zero-qty clamp: an unsized intent (``shares <= 0``) logs a ``skipped`` row
+       with detail ``unsized (0 shares)`` (:data:`UNSIZED_DETAIL`) and refuses -- qty<=0
+       at the venue is a guaranteed 422 reject the log would carry as ``rejected_live``
+       noise. Inert, so it runs BEFORE the brake / locks / limits: an order that was
+       never placeable must not log a ``guardrail: ...`` or ``rejected_live`` row.
+    0.5. The GUARDRAILS BRAKE (``_guardrail_block``): the ``agent_guardrails`` state +
+       breakers, loaded FRESH per submit and consulted UNCONDITIONALLY (paper host
+       included -- the Stage-0 drill rehearses every trip path), BEFORE the real-money
+       guard. An engaged brake (any non-'ok' state -- fail-safe on unknown states) or
+       a breached breaker clamps to a logged ``skipped`` row with a ``guardrail: ...``
+       detail -- non-counting, so the key is never burned and a later submit (brake
+       released) upgrades the row.
+    0.6. The EXECUTION SCOPE (``guardrails_repo.effective_execution_scope``): an
+       intent whose play type is outside the effective scope -- the
+       SWING_EXECUTE_PLAY_TYPES ceiling (Task 8) MINUS the cockpit's
+       ``disabled_play_types`` (Task 22) -- clamps to a logged ``skipped`` row with
+       :data:`OUT_OF_SCOPE_DETAIL` -- non-counting, so the key upgrades in place if
+       the operator later widens the scope (either level). The dispatch loop filters
+       these first; this is the adapter's own last line (never trusting the caller),
+       through the SAME seam, which is why the Strategy Board needed no change
+       here.
     1. The REAL-MONEY guard, consulted ONLY when ``broker.is_real_money()`` -- a paper broker
        (Alpaca paper) needs no locks and skips it entirely. For a real-money endpoint it
        demands all THREE arming locks (``can_arm_real_money``: mode=live AND allow_real_money
-       AND a ready gate) AND every hard cap set (``real_money_limits_ok``); either failing
-       logs a ``rejected_live`` row and refuses, placing no broker order.
+       AND a ready gate) AND every hard cap set (``real_money_limits_ok``) AND every
+       mandatory guardrails breaker set (``guardrails_repo.guardrails_mandate_ok``);
+       any failing logs a ``rejected_live`` row and refuses, placing no broker order.
     2. The hard-limit clamp (``_limit_block``): a breach logs a ``skipped`` row and refuses
        BEFORE any broker call -- the venue is never touched on a clamped order.
     3. A graceful broker boundary: an exception from ``submit_order`` is caught and logged as
        ``rejected_live`` (never propagated); a broker-returned ``rejected`` order likewise.
+       Before giving up, ORPHAN ADOPTION (``_adopt_orphan``): the crash window (venue
+       accepted, process died before the log write) makes the retry's duplicate
+       ``client_order_id`` a venue reject -- so on any submit exception the adapter asks
+       the venue for an order under the key and, if one is working, logs it
+       ``submitted_live`` with the real broker id (best-effort: any adoption failure
+       falls through to ``rejected_live`` exactly as before).
 
     The settings + gate-readiness seams are injected so tests drive the real-money guard
     without a real gate or DB: ``settings`` defaults to ``load_settings()`` at submit, and
@@ -464,6 +553,49 @@ class LiveAdapter:
                 broker_order_id=prior.broker_order_id,
             )
 
+        # 0.25 The zero-qty clamp: an UNSIZED intent (``size_order`` floored to 0 --
+        #      unconfigured/tiny risk unit, or an 'avoid' conviction) must never reach
+        #      the venue, where qty<=0 is a guaranteed 422 logged as rejected_live
+        #      noise. It is INERT, so it runs BEFORE the brake / locks / limits: an
+        #      order that was never placeable must not log 'guardrail: ...' (Auditor
+        #      grep) or 'rejected_live' -- nor pay their DB reads. The dispatch loop
+        #      filters these before submit; this is the adapter's own last line
+        #      (never trusting the caller).
+        if intent.shares <= 0:
+            self._log(session, intent, run_date=run_date, key=key,
+                      status="skipped", detail=UNSIZED_DETAIL)
+            return OrderResult(status="skipped", account=LIVE_ACCOUNT, detail=UNSIZED_DETAIL)
+
+        # 0.5 THE GUARDRAILS BRAKE -- unconditional (paper host included, so the drill
+        #     rehearses every trip path), BEFORE the real-money guard and the venue.
+        #     Loaded FRESH per submit (a raw column select -- the cockpit can HALT
+        #     mid-dispatch and this read must see it). A refusal is a clamp: a logged
+        #     'skipped' row with a 'guardrail: ...' detail (non-counting, upgradeable --
+        #     the key is never burned). The dispatch loop owns the trip RESPONSE
+        #     (sweep/email, Task 6); submit only refuses.
+        g = guardrails_repo.load_guardrails(session)
+        brake_reason = _guardrail_block(session, g, run_date=run_date)
+        if brake_reason is not None:
+            detail = f"guardrail: {brake_reason}"
+            self._log(session, intent, run_date=run_date, key=key,
+                      status="skipped", detail=detail[:512])
+            return OrderResult(status="skipped", account=LIVE_ACCOUNT, detail=detail)
+
+        # 0.6 THE EXECUTION SCOPE -- the env ceiling MINUS the cockpit's disabled
+        #     set, consulted through the same seam as the dispatch loop's filter
+        #     (which is why the session is threaded here). The loop filters these
+        #     first; this is the adapter's own last line (never trusting the
+        #     caller). Out of scope clamps to a logged 'skipped' row -- non-counting,
+        #     so the key is never burned and a later submit (the operator widened
+        #     the ceiling, or re-enabled the strategy) upgrades the row in place.
+        scope = guardrails_repo.effective_execution_scope(
+            self._settings or load_settings(), session=session)
+        if scope is not None and intent.play_type not in scope:
+            self._log(session, intent, run_date=run_date, key=key,
+                      status="skipped", detail=OUT_OF_SCOPE_DETAIL)
+            return OrderResult(
+                status="skipped", account=LIVE_ACCOUNT, detail=OUT_OF_SCOPE_DETAIL)
+
         # 1. REAL-MONEY guard -- consulted ONLY for a real-money endpoint. A paper broker
         #    (is_real_money() False) needs no locks and skips this block entirely.
         if self._broker.is_real_money():
@@ -479,6 +611,17 @@ class LiveAdapter:
                 self._log(session, intent, run_date=run_date, key=key,
                           status="rejected_live", detail=reason2)
                 return OrderResult(status="rejected", account=LIVE_ACCOUNT, detail=reason2)
+            # The guardrails MANDATE: real money may not dispatch with an unset
+            # mandatory breaker (mirrors real_money_limits_ok's posture -- paper hosts
+            # stay exempt). Deliberately guardrails_mandate_ok(session), which re-loads
+            # the row internally, rather than reusing `g` from step 0.5: one extra cheap
+            # column select buys a maximally-fresh read at the arming decision, and
+            # keeps the mandate's single source of truth in guardrails_repo.
+            ok3, reason3 = guardrails_repo.guardrails_mandate_ok(session)
+            if not ok3:
+                self._log(session, intent, run_date=run_date, key=key,
+                          status="rejected_live", detail=reason3)
+                return OrderResult(status="rejected", account=LIVE_ACCOUNT, detail=reason3)
 
         # 2. The hard-limit clamp -- BEFORE any broker call, so a clamped order never reaches
         #    the venue. A breach logs a skipped row (audit) and refuses.
@@ -504,13 +647,22 @@ class LiveAdapter:
                 stop_loss=intent.stop if bracket else None,
                 take_profit=intent.target if bracket else None,
             ))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- a venue boundary: any failure must not raise.
+            log.exception("broker submit failed for %s", intent.ticker)
+            # ORPHAN ADOPTION (the crash-window recovery): before giving up as
+            # rejected_live, ask the venue whether an order ALREADY exists under our
+            # key. Deliberately attempted on ANY submit exception -- Alpaca's
+            # duplicate-client_order_id error text is not reliably parseable -- and
+            # harmless universally: on a genuine (non-duplicate) failure the lookup
+            # finds nothing and we fall through to rejected_live exactly as before.
+            adopted = self._adopt_orphan(session, intent, run_date=run_date, key=key)
+            if adopted is not None:
+                return adopted
             # Leak posture: the stored detail reaches the cockpit wire (the Zone E
             # ticker serves ExecutionLog.detail verbatim), and broker/httpx messages
-            # embed venue hosts and credentials -- class name only (preflight's
-            # broker_error_detail, the one home for this wording); the full
-            # traceback goes to the LOG for the operator.
-            log.exception("broker submit failed for %s", intent.ticker)
+            # embed venue hosts and credentials -- class name only
+            # (``pipeline.broker.broker_error_detail``, the one home for this
+            # wording); the full traceback goes to the LOG for the operator.
             detail = broker_error_detail(e)
             self._log(session, intent, run_date=run_date, key=key,
                       status="rejected_live", detail=detail)
@@ -533,6 +685,50 @@ class LiveAdapter:
         return OrderResult(
             status="submitted_live", account=LIVE_ACCOUNT, detail="order submitted",
             broker_order_id=order.broker_order_id,
+        )
+
+    def _adopt_orphan(
+        self, session: Session, intent: OrderIntent, *, run_date: date, key: str
+    ) -> OrderResult | None:
+        """Best-effort recovery for the CRASH WINDOW: the venue accepted a prior submit
+        but the process died before the ExecutionLog write, so the retry's duplicate
+        ``client_order_id`` is rejected -- leaving a real, fillable venue order with NO
+        counting row: invisible to the reconciler (which scans ``submitted_live`` rows
+        only) and to every guardrail counter (trades/day, daily loss, drawdown, streak).
+
+        Looks the key up at the venue (``get_order_by_client_id``); an order that exists
+        and is not terminal-dead (canceled/rejected) is ADOPTED: logged ``submitted_live``
+        with the REAL broker id/status (``add_execution_log``'s upgrade path lifts a prior
+        non-counting row in place), and the reconciler picks the row up on its next pass
+        -- no reconcile changes needed. Returns None (caller falls through to the normal
+        ``rejected_live`` path) when the lookup finds nothing, finds a canceled/rejected
+        order (the truth IS the rejection), or itself fails in ANY way -- adoption is
+        best-effort recovery and must never become a new failure mode.
+
+        RESIDUAL EXPOSURE: adoption only runs when a retry actually reaches step 3 -- a
+        retry clamped earlier in the ladder (brake / scope / limits), or no retry at all,
+        leaves the orphan unadopted. Bounded by construction: the entry goes out with
+        ``time_in_force="day"`` (an unfilled orphan dies at the close) and the disarm
+        sweep's venue-wide cancels kill it on any trip."""
+        try:
+            existing = self._broker.get_order_by_client_id(key)
+        except Exception:  # noqa: BLE001 -- best-effort: adoption must never add a failure mode.
+            log.warning(
+                "orphan-adoption lookup failed for %s", intent.ticker, exc_info=True)
+            return None
+        if existing is None or existing.status in _UNADOPTABLE_STATUSES:
+            return None
+        # A real order is working (or already filled) at the venue under our key:
+        # record the truth, loudly, so the operator sees the crash window was crossed.
+        log.warning(
+            "adopted orphaned venue order %s for %s (status %s)",
+            existing.broker_order_id, intent.ticker, existing.status)
+        self._log(session, intent, run_date=run_date, key=key, status="submitted_live",
+                  detail=ADOPTED_ORPHAN_DETAIL, broker_order_id=existing.broker_order_id,
+                  broker_status=existing.status)
+        return OrderResult(
+            status="submitted_live", account=LIVE_ACCOUNT, detail=ADOPTED_ORPHAN_DETAIL,
+            broker_order_id=existing.broker_order_id,
         )
 
     def _log(

@@ -20,10 +20,11 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
+from swing_screener.db import guardrails_repo
 from swing_screener.db.models import ExecutionLog, PaperTrade
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.broker import BrokerOrder, BrokerOrderSpec, FakeBroker
-from swing_screener.pipeline.execution import LiveAdapter
+from swing_screener.pipeline.execution import LiveAdapter, idempotency_key
 from swing_screener.pipeline.insight import OrderIntent
 from swing_screener.settings import Limits, Settings
 
@@ -188,10 +189,15 @@ def test_real_money_mode_not_live_is_rejected() -> None:
 
 
 # ---------------------------------------------------------------------------
-# the real-money guard: ALL three locks AND every cap -> submitted_live.
+# the real-money guard: ALL three locks AND every cap AND every mandatory
+# guardrails breaker (the Task 4 mandate) -> submitted_live.
 # ---------------------------------------------------------------------------
 def test_real_money_with_all_locks_and_caps_submits() -> None:
     with _session() as s:
+        # the guardrails MANDATE: real money also demands the three mandatory
+        # breakers set (guardrails_mandate_ok) -- the full arming floor.
+        guardrails_repo.edit_limits(s, source="test", max_daily_loss_usd=50.0,
+                                    max_trades_per_day=5, max_drawdown_usd=200.0)
         broker = FakeBroker(real_money=True)
         adapter = LiveAdapter(broker, settings=_live_settings(mode="live", allow=True),
                               gate_ready_fn=lambda _s: True)
@@ -238,7 +244,7 @@ def test_broker_raise_on_submit_is_graceful() -> None:
 
         assert result.status == "rejected"
         # Leak posture: the stored detail reaches the cockpit wire, so it carries
-        # the exception CLASS only (preflight's broker_error_detail wording) --
+        # the exception CLASS only (pipeline.broker's broker_error_detail wording) --
         # the raw message (which can embed venue hosts) lives in the LOG.
         assert result.detail == "broker error (RuntimeError)"
         assert s.query(PaperTrade).count() == 0
@@ -347,3 +353,162 @@ def test_bracket_off_falls_back_to_a_plain_limit_entry() -> None:
 
         (spec,) = broker.submitted_specs
         assert spec.stop_loss is None and spec.take_profit is None
+
+
+# ---------------------------------------------------------------------------
+# orphan adoption (Task 9): the crash window (process died between venue accept
+# and the ExecutionLog write) leaves a REAL, fillable venue order with no
+# counting row; the retry's duplicate client_order_id makes the venue REJECT the
+# re-submit. Before giving up as rejected_live, the adapter looks the key up at
+# the venue and ADOPTS a working orphan -- otherwise the reconciler (which scans
+# submitted_live rows only) never materializes the fill and every guardrail
+# counter (trades/day, daily loss, drawdown, streak) silently undercounts.
+# ---------------------------------------------------------------------------
+class _DuplicateRejectingBroker(FakeBroker):
+    """The crash-window venue: ``submit_order`` always raises (the duplicate-id
+    reject); a test that wants the orphan pre-seeds it straight through
+    ``FakeBroker.submit_order`` (the crashed run's order that really landed)."""
+
+    def submit_order(self, spec: BrokerOrderSpec) -> BrokerOrder:
+        raise RuntimeError("client order id must be unique")
+
+
+def _seed_orphan(broker: FakeBroker, key: str) -> BrokerOrder:
+    """Plant the crashed run's venue order under ``key`` (bypassing any override)."""
+    return FakeBroker.submit_order(broker, BrokerOrderSpec(
+        client_order_id=key, symbol="AMD", side="buy", qty=10,
+        order_type="limit", limit_price=101.0, time_in_force="day"))
+
+
+def test_duplicate_client_order_id_adopts_working_orphan() -> None:
+    with _session() as s:
+        broker = _DuplicateRejectingBroker(real_money=False)
+        orphan = _seed_orphan(broker, idempotency_key(_intent(), RUN))
+
+        adapter = LiveAdapter(broker, settings=_live_settings(),
+                              gate_ready_fn=lambda _s: True)
+        result = adapter.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
+
+        assert result.status == "submitted_live"
+        assert result.broker_order_id == orphan.broker_order_id == "fake-0"
+        assert "adopted" in result.detail
+
+        row = s.query(ExecutionLog).one()
+        assert row.status == "submitted_live"       # what the reconciler scans for
+        assert row.broker_order_id == "fake-0"      # the REAL venue id, not None
+        assert row.broker_status == "new"
+        assert "adopted" in row.detail
+
+
+def test_adoption_upgrades_prior_noncounting_row() -> None:
+    with _session() as s:
+        broker = _DuplicateRejectingBroker(real_money=False)
+        adapter = LiveAdapter(broker, settings=_live_settings(),
+                              gate_ready_fn=lambda _s: True)
+
+        # First attempt: NO orphan at the venue -> the adoption lookup finds nothing
+        # (None) and the submit failure lands as the normal, non-counting
+        # rejected_live row -- a genuine failure behaves exactly as today.
+        first = adapter.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
+        assert first.status == "rejected"
+        assert s.query(ExecutionLog).one().status == "rejected_live"
+
+        # The crashed run's order surfaces at the venue; the retry adopts it and the
+        # SAME row (unique key) is upgraded in place -- status + broker id both land.
+        _seed_orphan(broker, idempotency_key(_intent(), RUN))
+        second = adapter.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
+        assert second.status == "submitted_live"
+
+        row = s.query(ExecutionLog).one()           # still ONE row (unique key)
+        assert row.status == "submitted_live"
+        assert row.broker_order_id == "fake-0"
+
+
+def test_filled_orphan_adopts_and_reconciler_materializes_the_position() -> None:
+    """The highest-stakes adoption: the crashed submit's order FILLED at the venue --
+    real money is deployed with no counting row. The retry must adopt it ('filled' is
+    deliberately adoptable), and END-TO-END the reconciler's next pass must turn the
+    adopted submitted_live row into the account='live' position at the venue fill
+    price -- the docstring's 'the reconciler picks the row up' claim, pinned."""
+    from swing_screener.pipeline.reconcile import reconcile_live
+
+    with _session() as s:
+        broker = _DuplicateRejectingBroker(real_money=False)
+        orphan = _seed_orphan(broker, idempotency_key(_intent(), RUN))
+        broker.fill(orphan.broker_order_id, 100.5)   # the orphan FILLED (10 shares)
+
+        adapter = LiveAdapter(broker, settings=_live_settings(),
+                              gate_ready_fn=lambda _s: True)
+        result = adapter.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
+
+        assert result.status == "submitted_live"
+        row = s.query(ExecutionLog).one()
+        assert row.status == "submitted_live"
+        assert row.broker_order_id == "fake-0"
+        assert row.broker_status == "filled"         # the venue truth, stamped at adoption
+
+        # ...and the reconciler materializes the adopted row on its next pass.
+        changed = reconcile_live(s, broker, today=RUN)
+        assert changed == 1
+        trade = s.query(PaperTrade).one()
+        assert trade.account == "live"
+        assert trade.status == "open"
+        assert trade.entry_price == 100.5            # the VENUE fill price, not our limit
+        assert trade.qty == 10                       # the broker's filled_qty, stamped
+        assert trade.stop == 94.0 and trade.target == 110.0
+        assert s.query(ExecutionLog).one().status == "filled_live"
+
+
+def test_canceled_orphan_falls_through_to_rejected_live() -> None:
+    with _session() as s:
+        broker = _DuplicateRejectingBroker(real_money=False)
+        orphan = _seed_orphan(broker, idempotency_key(_intent(), RUN))
+        broker.cancel_order(orphan.broker_order_id)  # the orphan is DEAD at the venue
+
+        adapter = LiveAdapter(broker, settings=_live_settings(),
+                              gate_ready_fn=lambda _s: True)
+        result = adapter.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
+
+        # a canceled orphan is not adoptable -- the truth is the rejection.
+        assert result.status == "rejected"
+        assert result.detail == "broker error (RuntimeError)"
+        assert s.query(ExecutionLog).one().status == "rejected_live"
+
+
+def test_rejected_orphan_falls_through_to_rejected_live() -> None:
+    """The other arm of _UNADOPTABLE_STATUSES: a venue-rejected orphan is just as dead."""
+    with _session() as s:
+        broker = _DuplicateRejectingBroker(real_money=False)
+        orphan = _seed_orphan(broker, idempotency_key(_intent(), RUN))
+        broker.reject(orphan.broker_order_id)
+
+        adapter = LiveAdapter(broker, settings=_live_settings(),
+                              gate_ready_fn=lambda _s: True)
+        result = adapter.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
+
+        assert result.status == "rejected"
+        assert s.query(ExecutionLog).one().status == "rejected_live"
+
+
+def test_adoption_lookup_failure_falls_through() -> None:
+    class _LookupExplodingBroker(_DuplicateRejectingBroker):
+        # a DIFFERENT exception type than submit_order's RuntimeError, so the detail
+        # assertion below pins WHICH exception is reported.
+        def get_order_by_client_id(self, client_order_id: str) -> BrokerOrder | None:
+            raise ValueError("lookup transport down")
+
+    with _session() as s:
+        broker = _LookupExplodingBroker(real_money=False)
+        _seed_orphan(broker, idempotency_key(_intent(), RUN))  # adoptable, but unreachable
+
+        adapter = LiveAdapter(broker, settings=_live_settings(),
+                              gate_ready_fn=lambda _s: True)
+        # adoption is BEST-EFFORT recovery: its own failure must never become a new
+        # failure mode -- the submit failure lands exactly as before Task 9.
+        result = adapter.submit(_intent(), session=s, run_date=RUN, limits=NO_LIMITS)
+
+        assert result.status == "rejected"
+        # the ORIGINAL submit exception's class is reported, never the lookup's
+        # (RuntimeError from submit_order, not the ValueError the lookup raised).
+        assert result.detail == "broker error (RuntimeError)"
+        assert s.query(ExecutionLog).one().status == "rejected_live"

@@ -1,19 +1,30 @@
 """Auditor author firewall + audit_run weekly/breach sweeps (idempotent, read-only)."""
 
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
+from datetime import time as dtime
 
 from sqlalchemy.orm import Session
 
-from swing_screener.db.models import DisarmEvent, ExecutionLog, SystemAudit
+from swing_screener.db.models import (
+    AgentGuardrailEvent,
+    AgentGuardrails,
+    DisarmEvent,
+    EmailLog,
+    ExecutionLog,
+    SystemAudit,
+)
+from swing_screener.db.repo import LIMIT_COUNTING_STATUSES
 from swing_screener.db.session import get_engine
 from swing_screener.journal import audit_run
 from swing_screener.journal.audit_author import _AUDIT_SYSTEM, draft_audit
 from swing_screener.journal.audit_run import _breach_scan_window, run_breach_scan, run_weekly
+from swing_screener.notify import alerts
 from swing_screener.settings import load_settings
 
 _NOW = datetime(2026, 7, 12, 14, 0, tzinfo=UTC)
 _FROM, _TO = date(2026, 7, 6), date(2026, 7, 12)
+_DAY = date(2026, 7, 8)  # the single-day breach window the guardrail tests scan
 
 
 class _Block:
@@ -204,6 +215,14 @@ def test_breach_recorded_after_yesterdays_scan_is_caught_today(monkeypatch):
         assert {r.breach_key for r in rows} == {"cap:2026-07-08:paper"}
 
 
+def test_guardrail_breach_scan_is_a_no_op_on_an_empty_book(monkeypatch):
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        assert run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW) == []
+        # the auditor is READ-ONLY: peeking at the brake must not seed its row.
+        assert s.query(AgentGuardrails).count() == 0
+
+
 def test_weekend_disarm_is_recorded_by_mondays_scan(monkeypatch):
     s_ = _settings(monkeypatch, audit_enabled=False)
     with Session(get_engine("sqlite:///:memory:")) as s:
@@ -217,3 +236,530 @@ def test_weekend_disarm_is_recorded_by_mondays_scan(monkeypatch):
         assert run_breach_scan(s, settings=s_, day_from=day_from, day_to=day_to,
                                now=_NOW) == []
         assert s.query(SystemAudit).filter_by(kind="breach").count() == 1
+
+
+# ---- guardrail conduct (Task 14): expected activity vs the four hard breach rules ----
+
+
+def _gevent(s, *, kind, at=datetime(2026, 7, 8, 10, 0), source="digest",
+            breaker="max_drawdown_usd", reason="max drawdown: $600.00 >= $500.00") -> int:
+    """Append one AgentGuardrailEvent and return its id (the trip's alert_key)."""
+    e = AgentGuardrailEvent(created_at=at, kind=kind, breaker=breaker, reason=reason,
+                            values_json="{}", source=source)
+    s.add(e)
+    s.commit()
+    s.refresh(e)
+    return e.id
+
+
+def _brake(s, *, state="ok", trip_id=None, sweep_state=None, mandate=True, missing=()):
+    """Seed the single agent_guardrails row in a chosen state. ``missing`` leaves just
+    those mandatory breakers unset (the realistic half-configured brake); ``mandate``
+    False leaves all three unset."""
+    def _limit(name, value):
+        return None if (not mandate or name in missing) else value
+
+    s.add(AgentGuardrails(
+        state=state, trip_id=trip_id, sweep_state=sweep_state,
+        trip_reason="max drawdown: $600.00 >= $500.00" if trip_id else None,
+        max_daily_loss_usd=_limit("max_daily_loss_usd", 200.0),
+        max_trades_per_day=_limit("max_trades_per_day", 3),
+        max_drawdown_usd=_limit("max_drawdown_usd", 500.0),
+        hwm_baseline_usd=0.0, updated_at=datetime(2026, 7, 8, 9, 0)))
+    s.commit()
+
+
+def _live_log(*, key, run_day=_DAY, status="submitted_live"):
+    """A COUNTING live execution row (what the trades/day breaker counts)."""
+    return ExecutionLog(
+        created_date=run_day, ticker="AMD", timeframe="1d", play_type="continuation",
+        run_date=run_day, account="live", mode="live", side="buy", limit_price=100.0,
+        shares=10, stop=95.0, target=110.0, risk_dollars=50.0, notional=1000.0,
+        status=status, detail="", idempotency_key=key)
+
+
+def _mailed(trip_id, *, kind="guardrail"):
+    return EmailLog(sent_at=datetime(2026, 7, 8, 10, 1), kind=kind,
+                    subject="GUARDRAIL TRIP", run_date=_DAY, alert_key=str(trip_id))
+
+
+def _keys(rows):
+    return {r.breach_key for r in rows}
+
+
+def _trip_ids(findings):
+    """The unmailed payload states trip ids ONCE, inside ``trips``."""
+    return [t["id"] for t in findings["trips"]]
+
+
+def test_live_counting_statuses_are_the_live_half_of_the_limit_engine():
+    # The submit-while-tripped rule must count EXACTLY what the limit engine counts.
+    assert set(audit_run._LIVE_COUNTING_STATUSES) <= set(LIMIT_COUNTING_STATUSES)
+
+
+def test_guardrail_sweep_disarm_grades_expected_not_a_breach(monkeypatch):
+    # A DisarmEvent authored by the trip protocol is the brake WORKING: counted in the
+    # weekly facts, never a breach row (the trip itself already emailed the operator).
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        trip_id = _gevent(s, kind="trip")
+        s.add_all([
+            DisarmEvent(created_at=datetime(2026, 7, 8, 10, 0),
+                        reason="guardrail:max_drawdown_usd", orders_cancelled=2),
+            _mailed(trip_id),
+        ])
+        _brake(s, state="tripped", trip_id=trip_id, sweep_state="complete")
+        assert run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW) == []
+
+
+def test_killswitch_and_halt_sweeps_grade_expected(monkeypatch):
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        s.add_all([
+            DisarmEvent(created_at=datetime(2026, 7, 8, 10, 0), reason="kill-switch",
+                        orders_cancelled=4),
+            DisarmEvent(created_at=datetime(2026, 7, 8, 11, 0), reason="halt"),
+        ])
+        _brake(s)
+        assert run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW) == []
+
+
+def test_unexplained_disarm_beside_a_sanctioned_sweep_still_breaches(monkeypatch):
+    # A day mixing the brake's own sweep with an UNEXPLAINED disarm still gets its
+    # breach row -- carrying only the disarm nobody sanctioned.
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        s.add_all([
+            DisarmEvent(created_at=datetime(2026, 7, 8, 10, 0), reason="halt"),
+            DisarmEvent(created_at=datetime(2026, 7, 8, 12, 0), reason="mystery",
+                        orders_cancelled=1),
+        ])
+        _brake(s)
+        rows = run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW)
+        assert _keys(rows) == {"disarm:2026-07-08"}
+        f = json.loads(rows[0].findings_json)
+        assert [d["reason"] for d in f["disarms"]] == ["mystery"]
+
+
+def test_live_submit_on_a_tripped_day_warns_with_the_ordering_caveat(monkeypatch):
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        trip_id = _gevent(s, kind="trip")
+        s.add_all([_mailed(trip_id), _live_log(key="a"),
+                   _live_log(key="b", status="filled_live")])
+        _brake(s, state="tripped", trip_id=trip_id, sweep_state="complete")
+        rows = run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW)
+        assert _keys(rows) == {"guardrail-submit-while-tripped:2026-07-08"}
+        row = rows[0]
+        # day-granularity imprecision is ADMITTED, not hidden: warn, not alert.
+        assert row.severity == "warn"
+        assert "order" in row.narrative.lower() and "2026-07-08" in row.narrative
+        assert "cannot" in row.narrative.lower()
+        f = json.loads(row.findings_json)["guardrail_breach"]
+        assert f["rule"] == "submit-while-tripped" and f["n_live_counting"] == 2
+        assert f["caveat"]
+
+
+def test_non_counting_live_rows_on_a_tripped_day_are_not_a_submit_breach(monkeypatch):
+    # A 'guardrail: ...' clamp and a rejection never reserved anything -- they are the
+    # brake working, and counting them would flag exactly the correct days.
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        trip_id = _gevent(s, kind="trip")
+        s.add_all([_mailed(trip_id), _live_log(key="a", status="skipped"),
+                   _live_log(key="b", status="rejected_live")])
+        _brake(s, state="tripped", trip_id=trip_id, sweep_state="complete")
+        assert run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW) == []
+
+
+def test_live_submit_after_the_trip_cleared_is_not_a_submit_breach(monkeypatch):
+    # State at the END of the day is what the rule reads: a clear that landed the same
+    # day means the book was released -- submitting again is sanctioned.
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        trip_id = _gevent(s, kind="trip")
+        _gevent(s, kind="clear", at=datetime(2026, 7, 8, 11, 0), source="cockpit",
+                breaker="", reason=f"trip {trip_id} acknowledged and cleared")
+        s.add_all([_mailed(trip_id), _live_log(key="a")])
+        _brake(s)
+        assert run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW) == []
+
+
+def test_trip_with_no_alert_email_is_a_breach(monkeypatch):
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        trip_id = _gevent(s, kind="trip", source="screen")
+        _brake(s, state="tripped", trip_id=trip_id, sweep_state="complete")
+        rows = run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW)
+        assert _keys(rows) == {"guardrail-unmailed-trip:2026-07-08"}
+        assert rows[0].severity == "alert"
+        f = json.loads(rows[0].findings_json)["guardrail_breach"]
+        assert _trip_ids(f) == [trip_id] and f["rule"] == "unmailed-trip"
+
+
+def test_mailed_trip_is_not_a_breach(monkeypatch):
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        trip_id = _gevent(s, kind="trip")
+        s.add(_mailed(trip_id))
+        _brake(s, state="tripped", trip_id=trip_id, sweep_state="complete")
+        assert run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW) == []
+
+
+def test_execution_cover_bookkeeping_never_counts_as_the_trip_alert(monkeypatch):
+    # kind hygiene (Task 11): 'execution-cover' rows are per-row coverage markers, not
+    # sent emails -- one must never satisfy the trip-alert contract.
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        trip_id = _gevent(s, kind="trip")
+        s.add(_mailed(trip_id, kind="execution-cover"))
+        _brake(s, state="tripped", trip_id=trip_id, sweep_state="complete")
+        rows = run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW)
+        assert _keys(rows) == {"guardrail-unmailed-trip:2026-07-08"}
+
+
+def test_cleared_trip_is_exempt_from_the_unmailed_breach(monkeypatch):
+    # Task 10's emitter deliberately never mails a trip the operator already CLEARED
+    # (clearing implies awareness); the auditor must exempt it for the same reason.
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        trip_id = _gevent(s, kind="trip")
+        _gevent(s, kind="clear", at=datetime(2026, 7, 8, 11, 0), source="cockpit",
+                breaker="", reason=f"trip {trip_id} acknowledged and cleared")
+        _brake(s)
+        assert run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW) == []
+
+
+def test_stuck_partial_sweep_older_than_a_day_is_a_breach(monkeypatch):
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        trip_id = _gevent(s, kind="trip")
+        s.add(_mailed(trip_id))
+        _brake(s, state="tripped", trip_id=trip_id, sweep_state="partial")
+        rows = run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW)
+        assert _keys(rows) == {"guardrail-stuck-sweep:2026-07-08"}
+        assert rows[0].severity == "alert"
+        f = json.loads(rows[0].findings_json)["guardrail_breach"]
+        assert f["sweep_state"] == "partial" and f["trip_id"] == trip_id
+
+
+def test_todays_pending_sweep_is_not_yet_stuck(monkeypatch):
+    # The resume owner runs every cycle; a sweep is only "stuck" once it has survived
+    # a full day of retries.
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        trip_id = _gevent(s, kind="trip", at=datetime(2026, 7, 12, 9, 0))
+        s.add(_mailed(trip_id))
+        _brake(s, state="tripped", trip_id=trip_id, sweep_state="pending")
+        assert run_breach_scan(s, settings=s_, day_from=_DAY, day_to=date(2026, 7, 12),
+                               now=_NOW) == []
+
+
+def test_completed_sweep_is_never_stuck(monkeypatch):
+    """``sweep_state`` is the whole discriminator: a trip a WEEK old (long past the
+    one-day grace, and long out of the scan window that the rule deliberately does not
+    apply to itself) grades clean purely because its sweep finished."""
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        trip_id = _gevent(s, kind="trip", at=datetime(2026, 7, 1, 10, 0))
+        s.add(_mailed(trip_id))
+        _brake(s, state="tripped", trip_id=trip_id, sweep_state="complete")
+        assert run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW) == []
+        # same fixture, sweep unfinished -> the rule fires on the trip's own day.
+        s.query(AgentGuardrails).update({"sweep_state": "partial"})
+        s.commit()
+        rows = run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW)
+        assert _keys(rows) == {"guardrail-stuck-sweep:2026-07-01"}
+
+
+def test_live_submissions_with_no_mandatory_breakers_set_warns(monkeypatch):
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        s.add(_live_log(key="a"))
+        _brake(s, mandate=False)
+        rows = run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW)
+        assert _keys(rows) == {"guardrail-unset-mandate:2026-07-08"}
+        assert rows[0].severity == "warn"
+        # it cannot know the host: a paper-endpoint drill reads identically.
+        assert "paper" in rows[0].narrative.lower()
+
+
+def test_live_submissions_under_a_full_mandate_are_clean(monkeypatch):
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        s.add(_live_log(key="a"))
+        _brake(s, mandate=True)
+        assert run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW) == []
+
+
+def test_guardrail_breach_rows_are_idempotent(monkeypatch):
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        trip_id = _gevent(s, kind="trip")
+        s.add_all([_live_log(key="a"), _live_log(key="b", status="filled_live")])
+        _brake(s, state="tripped", trip_id=trip_id, sweep_state="partial", mandate=False)
+        first = run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW)
+        assert _keys(first) == {
+            "guardrail-submit-while-tripped:2026-07-08",
+            "guardrail-unmailed-trip:2026-07-08",
+            "guardrail-stuck-sweep:2026-07-08",
+            "guardrail-unset-mandate:2026-07-08",
+        }
+        assert run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW) == []
+        assert s.query(SystemAudit).filter_by(kind="breach").count() == 4
+
+
+def test_weekly_grades_a_sanctioned_brake_week_as_expected_conduct(monkeypatch):
+    # The brake firing correctly is INFO-grade conduct: counted in the facts, never
+    # escalated. Only a disarm nobody sanctioned pushes the week to 'warn'.
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        trip_id = _gevent(s, kind="trip")
+        s.add_all([
+            DisarmEvent(created_at=datetime(2026, 7, 8, 10, 0),
+                        reason="guardrail:max_drawdown_usd", orders_cancelled=2),
+            DisarmEvent(created_at=datetime(2026, 7, 8, 11, 0), reason="halt"),
+            _mailed(trip_id),
+        ])
+        a = run_weekly(s, settings=s_, period_from=_FROM, period_to=_TO, now=_NOW)
+        assert a.severity == "info"
+        comp = json.loads(a.findings_json)["compliance"]
+        assert comp["n_guardrail_sweeps"] == 1 and comp["n_halt_sweeps"] == 1
+        assert comp["n_guardrail_trips"] == 1 and comp["n_unexplained_disarms"] == 0
+        assert "1 guardrail trip" in a.narrative
+
+
+def test_weekly_still_warns_on_an_unexplained_disarm(monkeypatch):
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        s.add(DisarmEvent(created_at=datetime(2026, 7, 8, 10, 0), reason="mystery"))
+        s.commit()
+        a = run_weekly(s, settings=s_, period_from=_FROM, period_to=_TO, now=_NOW)
+        assert a.severity == "warn"
+
+
+# ---- review round: the two clocks (rule 1) and trip EPISODES (rule 2) ----
+
+
+def test_friday_run_date_orders_meet_mondays_trip(monkeypatch):
+    """THE PRODUCTION LAYOUT, and why the rule bridges two clocks: the evening screen
+    stamps ``run_date=Friday``, the digest DISPATCHES those orders Monday morning, and
+    Monday's consult trips the brake. Matching run_date to the trip's wall-clock day
+    would compare Friday to Monday, see nothing, and leave the rule structurally inert
+    on the only path that submits live orders."""
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        friday, monday = date(2026, 7, 10), date(2026, 7, 13)
+        trip_id = _gevent(s, kind="trip", at=datetime(2026, 7, 13, 9, 35))
+        s.add_all([_mailed(trip_id), _live_log(key="a", run_day=friday),
+                   _live_log(key="b", run_day=friday, status="filled_live")])
+        _brake(s, state="tripped", trip_id=trip_id, sweep_state="complete")
+        rows = run_breach_scan(s, settings=s_, day_from=friday, day_to=monday,
+                               now=datetime(2026, 7, 13, 20, 0, tzinfo=UTC))
+        assert _keys(rows) == {"guardrail-submit-while-tripped:2026-07-10"}
+        f = json.loads(rows[0].findings_json)["guardrail_breach"]
+        assert f["n_live_counting"] == 2 and f["trip_day"] == "2026-07-13"
+        assert rows[0].severity == "warn" and f["caveat"]
+
+
+def test_trip_cleared_before_the_dispatch_day_does_not_fire(monkeypatch):
+    """The inverse: Friday's trip was acknowledged and cleared before Monday's dispatch
+    of the Friday-stamped orders, so submitting them was sanctioned."""
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        friday, monday = date(2026, 7, 10), date(2026, 7, 13)
+        trip_id = _gevent(s, kind="trip", at=datetime(2026, 7, 10, 16, 5))
+        _gevent(s, kind="clear", at=datetime(2026, 7, 10, 17, 0), source="cockpit",
+                breaker="", reason=f"trip {trip_id} acknowledged and cleared")
+        s.add_all([_mailed(trip_id), _live_log(key="a", run_day=friday)])
+        _brake(s)
+        assert run_breach_scan(s, settings=s_, day_from=friday, day_to=monday,
+                               now=datetime(2026, 7, 13, 20, 0, tzinfo=UTC)) == []
+
+
+def test_election_loser_trip_event_rides_the_winners_alert(monkeypatch):
+    """``guardrails_repo.trip()`` appends the trip event UNCONDITIONALLY, BEFORE the
+    rows-affected election: on a concurrent breach the loser's event is permanently
+    unmailed by design (``respond_to_trip`` touches nothing on a lost election, and the
+    alert is keyed on the WINNER's id). One episode, one required email."""
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        winner = _gevent(s, kind="trip", source="digest")
+        _gevent(s, kind="trip", source="exitcheck", at=datetime(2026, 7, 8, 10, 0, 1))
+        s.add(_mailed(winner))
+        _brake(s, state="tripped", trip_id=winner, sweep_state="complete")
+        assert run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW) == []
+
+
+def test_wholly_unmailed_episode_still_breaches_once(monkeypatch):
+    """A genuinely unmailed episode -- neither the winner nor the loser mailed -- is
+    still ONE breach, carrying every trip id in the episode."""
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        winner = _gevent(s, kind="trip", source="digest")
+        loser = _gevent(s, kind="trip", source="exitcheck",
+                        at=datetime(2026, 7, 8, 10, 0, 1))
+        _brake(s, state="tripped", trip_id=winner, sweep_state="complete")
+        rows = run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW)
+        assert _keys(rows) == {"guardrail-unmailed-trip:2026-07-08"}
+        f = json.loads(rows[0].findings_json)["guardrail_breach"]
+        assert _trip_ids(f) == [winner, loser] and f["n_episodes"] == 1
+        assert "episode" in rows[0].narrative.lower()
+
+
+def test_second_episode_after_a_clear_breaches_alone(monkeypatch):
+    """A 'clear' ENDS an episode: the mailed first episode covers only its own trips,
+    and the unmailed episode that follows breaches on its own day."""
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        first = _gevent(s, kind="trip")
+        s.add(_mailed(first))
+        _gevent(s, kind="clear", at=datetime(2026, 7, 8, 11, 0), source="cockpit",
+                breaker="", reason=f"trip {first} acknowledged and cleared")
+        second = _gevent(s, kind="trip", at=datetime(2026, 7, 9, 10, 0), source="screen")
+        _brake(s, state="tripped", trip_id=second, sweep_state="complete")
+        rows = run_breach_scan(s, settings=s_, day_from=_DAY, day_to=date(2026, 7, 9),
+                               now=_NOW)
+        assert _keys(rows) == {"guardrail-unmailed-trip:2026-07-09"}
+        f = json.loads(rows[0].findings_json)["guardrail_breach"]
+        assert _trip_ids(f) == [second]
+
+
+def test_trip_alert_kind_matches_the_module_that_writes_it():
+    """Anti-drift pin: the auditor restates the trip-alert EmailLog kind as a literal
+    (no journal -> notify import); ``notify.alerts`` OWNS it."""
+    assert audit_run._TRIP_ALERT_KIND == alerts.TRIP_ALERT_KIND
+
+
+# ---- review round 3: window-stable keys + what the bridge can honestly claim ----
+
+
+def test_unmailed_episode_spanning_the_window_edge_keys_on_its_first_trip(monkeypatch):
+    """The breach key must be a property of the EPISODE, not of the sliding window.
+    An open episode whose trips straddle two scans (07-08 and 07-10) would otherwise
+    emit one row per window -- same trip ids, different day keys, and the daily re-scan
+    makes that a recurring duplicate rather than a one-off."""
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        first = _gevent(s, kind="trip", source="digest")
+        later = _gevent(s, kind="trip", at=datetime(2026, 7, 10, 9, 30), source="screen")
+        _brake(s, state="tripped", trip_id=first, sweep_state="complete")
+        early = run_breach_scan(s, settings=s_, day_from=date(2026, 7, 6),
+                                day_to=date(2026, 7, 12), now=_NOW)
+        assert _keys(early) == {"guardrail-unmailed-trip:2026-07-08"}
+        assert _trip_ids(
+            json.loads(early[0].findings_json)["guardrail_breach"]) == [first, later]
+        # the window slides past the episode's first trip: SAME episode, same key.
+        late = run_breach_scan(s, settings=s_, day_from=date(2026, 7, 9),
+                               day_to=date(2026, 7, 15),
+                               now=datetime(2026, 7, 15, 20, 0, tzinfo=UTC))
+        assert late == []
+        assert s.query(SystemAudit).filter_by(kind="breach").count() == 1
+
+
+def test_submit_breach_records_a_clear_that_landed_after_the_bridge_window(monkeypatch):
+    """The bridge window can only see events through R+4, so it must not claim a trip
+    was NEVER cleared -- only that no clear landed inside the window it read. When the
+    operator cleared later, the permanent row says so."""
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        trip_id = _gevent(s, kind="trip")                      # 07-08, bridge -> 07-12
+        s.add_all([_mailed(trip_id), _live_log(key="a")])
+        _gevent(s, kind="clear", at=datetime(2026, 7, 15, 9, 0), source="cockpit",
+                breaker="", reason=f"trip {trip_id} acknowledged and cleared")
+        _brake(s)
+        rows = run_breach_scan(s, settings=s_, day_from=_DAY, day_to=date(2026, 7, 16),
+                               now=datetime(2026, 7, 16, 20, 0, tzinfo=UTC))
+        assert _keys(rows) == {"guardrail-submit-while-tripped:2026-07-08"}
+        f = json.loads(rows[0].findings_json)["guardrail_breach"]
+        assert f["cleared_at"].startswith("2026-07-15")
+        assert "never cleared" not in f["detail"]          # a claim it cannot make
+        assert "bridge window" in f["detail"]
+        assert "later cleared 2026-07-15" in rows[0].narrative
+
+
+def test_trip_uncleared_at_scan_time_records_no_clear(monkeypatch):
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        trip_id = _gevent(s, kind="trip")
+        s.add_all([_mailed(trip_id), _live_log(key="a")])
+        _brake(s, state="tripped", trip_id=trip_id, sweep_state="complete")
+        rows = run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW)
+        f = json.loads(rows[0].findings_json)["guardrail_breach"]
+        assert f["cleared_at"] is None
+        assert "later cleared" not in rows[0].narrative
+
+
+# ---- review round 4: the mandate is ALL THREE, and one trip is one row ----
+
+
+def test_one_missing_mandatory_breaker_warns_and_names_it(monkeypatch):
+    """THE REALISTIC MISCONFIGURATION: two breakers set, one forgotten. That is exactly
+    what ``guardrails_mandate_ok`` refuses on a real-money host, so the conduct record
+    must see it too -- requiring all three to be unset lets the likely case through."""
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        s.add(_live_log(key="a"))
+        _brake(s, missing=("max_drawdown_usd",))
+        rows = run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW)
+        assert _keys(rows) == {"guardrail-unset-mandate:2026-07-08"}
+        assert rows[0].severity == "warn"
+        f = json.loads(rows[0].findings_json)["guardrail_breach"]
+        assert f["missing_breakers"] == ["max_drawdown_usd"]
+        assert "max_drawdown_usd" in rows[0].narrative
+
+
+def test_missing_breakers_are_named_in_mandate_order(monkeypatch):
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        s.add(_live_log(key="a"))
+        _brake(s, missing=("max_drawdown_usd", "max_daily_loss_usd"))
+        rows = run_breach_scan(s, settings=s_, day_from=_DAY, day_to=_DAY, now=_NOW)
+        f = json.loads(rows[0].findings_json)["guardrail_breach"]
+        assert f["missing_breakers"] == ["max_daily_loss_usd", "max_drawdown_usd"]
+
+
+def test_one_trip_spanning_two_run_dates_writes_one_row(monkeypatch):
+    """One trip is ONE conduct failure however many trading days of record its bridge
+    covers: a row per day would file the same trip repeatedly, the cry-wolf shape the
+    unmailed rule already avoids by keying on the episode."""
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        trip_id = _gevent(s, kind="trip")               # 07-08
+        s.add_all([_mailed(trip_id),
+                   _live_log(key="a", run_day=date(2026, 7, 7)),
+                   _live_log(key="b", run_day=_DAY),
+                   _live_log(key="c", run_day=_DAY, status="filled_live")])
+        _brake(s, state="tripped", trip_id=trip_id, sweep_state="complete")
+        rows = run_breach_scan(s, settings=s_, day_from=date(2026, 7, 6), day_to=_DAY,
+                               now=_NOW)
+        # keyed on the EARLIEST affected run_date, not one row per day
+        assert _keys(rows) == {"guardrail-submit-while-tripped:2026-07-07"}
+        f = json.loads(rows[0].findings_json)["guardrail_breach"]
+        assert f["affected_run_dates"] == ["2026-07-07", "2026-07-08"]
+        assert f["n_live_counting"] == 3 and f["trip_id"] == trip_id
+
+
+def test_bridge_window_is_exactly_the_constant(monkeypatch):
+    """The bridge length IS the contract: a trip landing exactly
+    ``_RUN_DATE_BRIDGE_DAYS`` after the trading day of record still bridges to it; one
+    day further is out of reach and grades clean."""
+    s_ = _settings(monkeypatch, audit_enabled=False)
+    bridge = audit_run._RUN_DATE_BRIDGE_DAYS
+    edge = datetime.combine(_DAY + timedelta(days=bridge), dtime(9, 30))
+    beyond = edge + timedelta(days=1)
+    scan = dict(day_from=_DAY, day_to=_DAY + timedelta(days=bridge + 1),
+                now=datetime(2026, 7, 20, 20, 0, tzinfo=UTC))
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        trip_id = _gevent(s, kind="trip", at=edge)
+        s.add_all([_mailed(trip_id), _live_log(key="a")])
+        _brake(s, state="tripped", trip_id=trip_id, sweep_state="complete")
+        rows = run_breach_scan(s, settings=s_, **scan)
+        assert _keys(rows) == {"guardrail-submit-while-tripped:2026-07-08"}
+        f = json.loads(rows[0].findings_json)["guardrail_breach"]
+        assert f["bridge_days"] == bridge
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        trip_id = _gevent(s, kind="trip", at=beyond)
+        s.add_all([_mailed(trip_id), _live_log(key="a")])
+        _brake(s, state="tripped", trip_id=trip_id, sweep_state="complete")
+        assert run_breach_scan(s, settings=s_, **scan) == []

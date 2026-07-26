@@ -11,7 +11,8 @@ truth -- never invented by a simulated fill. It does two things each cycle:
 
    * ``filled`` (or ``partially_filled`` with ``filled_qty > 0``) -> open ONE ``account="live"``
      ``PaperTrade`` from the BROKER's fill: ``entry_price = order.filled_avg_price`` (NOT the
-     intent's limit), ``risk = entry_price - stop`` (the ``stop`` recorded on the ExecutionLog;
+     intent's limit), ``qty = order.filled_qty`` (venue truth, NOT the ticket's requested
+     shares), ``risk = entry_price - stop`` (the ``stop`` recorded on the ExecutionLog;
      a non-positive risk is logged + skipped, never booked). The runner-state fields mirror a
      fresh shadow/paper fill (``hold_bars=0``, ``remaining_frac=1.0``, ``partial_done=False``,
      ``high_water=entry_price``) so the row is shaped like any open trade. Then flip the
@@ -93,11 +94,14 @@ def _materialize_fills(session: Session, broker: BrokerClient, *, today: date) -
         order = broker.get_order(log.broker_order_id)
 
         if order.status in _FILLED_STATUSES and order.filled_qty > 0:
-            # NOTE (Phase-4 scope): a `partially_filled` order is materialized as-if-complete
-            # at its filled_avg_price and the log is flipped out of submitted_live, so the
-            # residual (unfilled) shares are NOT later reconciled. Harmless here -- PaperTrade
-            # is size-agnostic for realized_r, and whole-share Alpaca-paper fills are
-            # effectively atomic -- but a Phase-5 partial/fractional model should track qty.
+            # NOTE (Phase-4 scope): a `partially_filled` order is materialized ONCE at its
+            # filled_avg_price with qty = the broker's filled_qty (venue truth, stamped
+            # below), and the log is flipped out of submitted_live. The remaining limitation
+            # is only that the residual (unfilled) shares are NOT later reconciled if the
+            # venue fills more -- harmless in practice, since whole-share Alpaca-paper fills
+            # are effectively atomic. Real-money endpoints partially fill for real -- a stale
+            # qty understates $ exposure/loss, so residual reconciliation must land before
+            # this books against a real-money endpoint.
             if order.filled_avg_price is None:
                 continue  # filled but no price yet -> re-poll next cycle, never guess.
             entry_price = order.filled_avg_price
@@ -112,7 +116,13 @@ def _materialize_fills(session: Session, broker: BrokerClient, *, today: date) -
                     log.ticker, log.broker_order_id, entry_price, log.stop,
                 )
                 continue
-            session.add(_materialized_trade(log, entry_price=entry_price, risk=risk, today=today))
+            session.add(_materialized_trade(
+                log, entry_price=entry_price, risk=risk, today=today,
+                # Venue truth wins: the broker's filled_qty, not the ticket's requested
+                # shares. The log.shares fallback is purely defensive -- this branch is
+                # already guarded by filled_qty > 0, so in practice filled_qty always wins.
+                qty=int(order.filled_qty) if order.filled_qty > 0 else int(log.shares),
+            ))
             # The idempotency guard: flip the log out of `submitted_live` so a re-poll never
             # re-materializes this fill. `broker_status` is stamped once here (a point-in-time
             # submit/fill record); the live PaperTrade -- not this log -- tracks the position
@@ -133,7 +143,7 @@ def _materialize_fills(session: Session, broker: BrokerClient, *, today: date) -
 
 
 def _materialized_trade(
-    log: ExecutionLog, *, entry_price: float, risk: float, today: date
+    log: ExecutionLog, *, entry_price: float, risk: float, today: date, qty: int
 ) -> PaperTrade:
     """Build the ``account="live"`` open PaperTrade from the broker fill + the ExecutionLog spec.
 
@@ -141,7 +151,9 @@ def _materialized_trade(
     concrete entry + strictly-positive risk, ``status="open"``, ``hold_bars=0``, and the
     runner-state defaults (``remaining_frac=1.0``, ``partial_done=False``, ``high_water=entry``)
     seeded so the row is shaped like every other open trade. The levels come from the BROKER
-    (entry) + the deterministic ExecutionLog (``stop``/``target``/pick keys) -- never recomputed."""
+    (entry) + the deterministic ExecutionLog (``stop``/``target``/pick keys), and the SIZE
+    (``qty``) is the broker's filled share count -- what realized-$ math multiplies by.
+    Never recomputed."""
     return PaperTrade(
         account=LIVE_ACCOUNT,
         arm=BASELINE,
@@ -161,6 +173,7 @@ def _materialized_trade(
         stop=log.stop,
         target=log.target,
         risk=risk,
+        qty=qty,
         hold_bars=0,
         remaining_frac=1.0,
         partial_done=False,

@@ -202,6 +202,10 @@ class PaperTrade(Base):
     partial_r: Mapped[float | None] = mapped_column(default=None)
     remaining_frac: Mapped[float] = mapped_column(default=1.0)
     high_water: Mapped[float | None] = mapped_column(default=None)
+    # Live-book share count, stamped by reconcile._materialize_fills from the broker's
+    # filled_qty (fallback: the ExecutionLog ticket's shares). NULL on every non-live
+    # book and on legacy live rows -- realized $ math must skip NULL, never guess.
+    qty: Mapped[int | None] = mapped_column(default=None)
 
 
 class ExitEvent(Base):
@@ -233,7 +237,13 @@ class EmailLog(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     sent_at: Mapped[datetime]
-    kind: Mapped[str] = mapped_column(String(32))  # daily / weekly / monthly / exit
+    # daily / weekly / monthly / exit / guardrail (trip alerts, keyed on the trip
+    # event id) / execution (ONE display row per live-rejection alert email,
+    # keyed on the sha1 of the alerted id set) / execution-cover (bookkeeping,
+    # NOT a sent email: one row per alerted ExecutionLog id, keyed 'xlog-{id}',
+    # which Task 11's at-least-once retry joins on for coverage -- the cockpit's
+    # email surfaces exclude this kind)
+    kind: Mapped[str] = mapped_column(String(32))
     subject: Mapped[str] = mapped_column(String(256), default="")
     run_date: Mapped[date | None] = mapped_column(default=None)
     alert_key: Mapped[str] = mapped_column(String(64), default="")
@@ -643,6 +653,63 @@ class DisarmEvent(Base):
     created_at: Mapped[datetime]
     reason: Mapped[str] = mapped_column(String(256), default="")
     orders_cancelled: Mapped[int] = mapped_column(default=0)
+
+
+class AgentGuardrails(Base):
+    """The live agent's brake state: ONE mutable row (id=1 by convention), mutated only
+    by atomic conditional UPDATEs (db.guardrails_repo). Subordinate to the env master arm
+    (SWING_EXECUTION_MODE): it can only BLOCK dispatch, never arm it. ``state`` is a
+    String enum -- 'ok' | 'halted' | 'tripped' -- deliberately not a boolean so no WHERE
+    clause ever renders `IS 1` on SQL Server. History lives in agent_guardrail_events.
+    Seed the row WITHOUT an explicit id (the first insert gets id=1 naturally): on SQL
+    Server the PK is IDENTITY, and an explicit id needs IDENTITY_INSERT/ALTER permission
+    the prod managed identity may lack."""
+
+    __tablename__ = "agent_guardrails"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    state: Mapped[str] = mapped_column(String(16), default="ok", server_default="ok")
+    # breakers: NULL = unset. The three $-and-count breakers are MANDATORY for a
+    # real-money endpoint (guardrails_mandate_ok); loss_streak_halt is optional.
+    max_daily_loss_usd: Mapped[float | None] = mapped_column(default=None)
+    max_trades_per_day: Mapped[int | None] = mapped_column(default=None)
+    max_drawdown_usd: Mapped[float | None] = mapped_column(default=None)
+    loss_streak_halt: Mapped[int | None] = mapped_column(default=None)
+    # drawdown window: baseline $ at the anchor date; copied forward verbatim on every
+    # edit/trip/clear -- resetting the anchor is its own deliberate 'edit' event.
+    hwm_anchor_date: Mapped[date | None] = mapped_column(default=None)
+    hwm_baseline_usd: Mapped[float] = mapped_column(default=0.0, server_default="0")
+    # trip bookkeeping: which event tripped us, why, and whether the sweep finished
+    # ('pending' | 'partial' | 'complete'; NULL when not tripped).
+    trip_id: Mapped[int | None] = mapped_column(default=None)
+    trip_reason: Mapped[str | None] = mapped_column(String(256), default=None)
+    sweep_state: Mapped[str | None] = mapped_column(String(16), default=None)
+    # The Strategy Board's tighten-only SUBTRACTION (Task 22): a comma-separated list
+    # of play types the cockpit has disabled. "" (never NULL) = nothing subtracted.
+    # Effective execution scope = the SWING_EXECUTE_PLAY_TYPES ceiling MINUS this set
+    # (guardrails_repo.effective_execution_scope) -- the cockpit can only ever remove
+    # risk, never add a play type the env ceiling does not already allow. Bounded
+    # String(64): membership is validated against the canonical PLAY_TYPES vocabulary
+    # on write, so the stored value can never outgrow the bound.
+    disabled_play_types: Mapped[str] = mapped_column(
+        String(64), default="", server_default="")
+    updated_at: Mapped[datetime]
+
+
+class AgentGuardrailEvent(Base):
+    """Append-only guardrail history + the Auditor feed: one row per edit / halt /
+    trip / clear / sweep outcome. Mirrors DisarmEvent's role for machine conduct."""
+
+    __tablename__ = "agent_guardrail_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[datetime]
+    kind: Mapped[str] = mapped_column(String(16))  # edit | halt | trip | clear | sweep
+    breaker: Mapped[str] = mapped_column(String(32), default="")
+    reason: Mapped[str] = mapped_column(String(256), default="")
+    values_json: Mapped[str] = mapped_column(Text, default="{}")
+    # cockpit | digest | screen -- required, no default (journal convention).
+    source: Mapped[str] = mapped_column(String(16))
 
 
 class GexSnapshot(Base):

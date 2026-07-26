@@ -32,12 +32,23 @@ from swing_screener.config_secrets import get_secret
 from swing_screener.data.fetch import fetch_bars
 from swing_screener.data.quotes import latest_closes
 from swing_screener.data.universe import names_by_ticker
-from swing_screener.db import repo
-from swing_screener.db.models import EmailLog, ExitEvent, Signal
+from swing_screener.db import guardrails_repo, repo
+from swing_screener.db.guardrails_repo import INCOMPLETE_SWEEPS
+from swing_screener.db.models import (
+    EmailLog,
+    ExitEvent,
+    Signal,
+)
 from swing_screener.db.session import get_engine
 from swing_screener.notify import market_context
 from swing_screener.notify import select as sel
-from swing_screener.notify.alerts import compose_exit_alert
+from swing_screener.notify.alerts import (
+    compose_exit_alert,
+    emit_pending_guardrail_alert,
+    recent_rejection_ids,
+    send_guardrail_alert,
+    send_live_rejection_alert,
+)
 from swing_screener.notify.analysis import (
     ConvictionInput,
     ConvictionResult,
@@ -65,11 +76,14 @@ from swing_screener.notify.proposals import (
     write_proposals_artifact,
 )
 from swing_screener.notify.transport import resolve_sender
+from swing_screener.pipeline import guardrails as gpipe
 from swing_screener.pipeline.autonomy import autonomy_gate, gate_status_line
 from swing_screener.pipeline.broker import BrokerClient
 from swing_screener.pipeline.broker_alpaca import build_broker
-from swing_screener.pipeline.disarm import ensure_stop_protection, pull_entry_orders
+from swing_screener.pipeline.disarm import run_protective_sweep
 from swing_screener.pipeline.execution import (
+    OUT_OF_SCOPE_DETAIL,
+    UNSIZED_DETAIL,
     ExecutionAdapter,
     LiveAdapter,
     ManualAdapter,
@@ -85,6 +99,7 @@ from swing_screener.pipeline.insight import (
     conviction_baseline,
     record_analyst_call,
 )
+from swing_screener.pipeline.reconcile import reconcile_live
 from swing_screener.pipeline.reflect import load_verdicts, verdicts_filename
 from swing_screener.pipeline.regime import MARKET_PROXY, classify_regime
 from swing_screener.pipeline.run import _migrate_with_retry, _resolve_db_url
@@ -188,6 +203,61 @@ def _emit_pending_exit_alert(session: Session, run_date: date, recipient: str,
     except IntegrityError:  # lost the concurrent-replica race; the row already exists
         session.rollback()
     return True
+
+
+def _trip_emailer(session: Session, *, run_date: date, recipient: str,
+                  send: SmtpSend) -> Callable[[int, str, str], None]:
+    """The real ``respond_to_trip`` emailer seam (Task 10) — the IMMEDIACY half.
+
+    ``respond_to_trip`` calls it AFTER the sweep outcome is recorded (and also
+    when broker was None) and SWALLOWS anything it raises, so the send-then-log
+    dedup lives in the shared ``alerts.send_guardrail_alert`` (the one owner of
+    the ``alert_key=str(trip_event_id)`` contract), never in the protocol.
+    Trip reasons arrive pre-formatted from the repo — echoed verbatim.
+    """
+    def _emailer(trip_event_id: int, breaker: str, reason: str) -> None:
+        send_guardrail_alert(session, run_date=run_date, recipient=recipient,
+                             send=send, trip_event_id=trip_event_id,
+                             breaker=breaker, reason=reason)
+    return _emailer
+
+
+def _emit_pending_guardrail_alert(session: Session, run_date: date, recipient: str,
+                                  send: SmtpSend) -> bool:
+    """The digest's guardrail-trip retry pass — a thin delegate to the shared
+    ``notify.alerts.emit_pending_guardrail_alert`` (moved there in Task 11 so
+    the hourly exit job, a pipeline module that must never import THIS module,
+    shares the same at-least-once emitter and dedup key)."""
+    return emit_pending_guardrail_alert(session, run_date, recipient, send)
+
+
+def _rejected_ids(session: Session, *, run_date: date) -> set[int]:
+    """The ids of the RECENT REJECTED ExecutionLog rows — the before/after
+    snapshot pair around a ``reconcile_live`` pass yields THAT pass's flips (the
+    reconcile returns a count, not rows). A thin delegate to the shared
+    ``notify.alerts.recent_rejection_ids``, which owns both the window and the
+    alertable-status scope (rejected only; a ``canceled`` row is benign DAY
+    expiry or one of our own sweep cancels — never mailed)."""
+    return recent_rejection_ids(session, run_date=run_date)
+
+
+def _emit_live_rejection_alert(session: Session, run_date: date, recipient: str,
+                               send: SmtpSend, new_ids: set[int]) -> bool:
+    """One email naming every live order the venue just REJECTED.
+
+    ``new_ids`` are the ExecutionLog ids a reconcile pass flipped to
+    ``rejected_live`` (the caller's before/after set diff). A thin delegate to
+    the shared ``notify.alerts.send_live_rejection_alert``, which owns the
+    per-ROW ``kind='execution-cover'``/``alert_key='xlog-{id}'`` coverage dedup
+    plus the single ``kind='execution'`` display row (Task 11: the old
+    sha1-of-the-set coverage key made a partial overlap re-alert already-covered
+    rows). SEND-then-LOG: a failed send leaves no rows — and the hourly exit
+    job's query-based pass (``alerts.pending_rejection_ids``) is the retry
+    owner, since this digest path's next-cycle diff never re-produces the ids.
+    Returns True iff an email was sent.
+    """
+    return send_live_rejection_alert(session, run_date=run_date, recipient=recipient,
+                                     send=send, candidate_ids=new_ids)
 
 
 def _load_chart_bytes(chart_path: str | None) -> bytes | None:
@@ -464,17 +534,94 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
 
     engine = get_engine(db_url)
     with Session(engine) as session:
+        # GUARDRAIL SWEEP RESUME -- once per run, OUTSIDE every dispatch gate
+        # (2026-07-18 red-team): the in-loop resume below runs only with intents
+        # collected AND a live adapter AND a live broker, so a crash mid-trip-sweep
+        # (or the operator flipping SWING_EXECUTION_MODE off after a trip -- the
+        # natural reaction) would leave resting DAY entries fillable for hours
+        # with nothing retrying, and a zero-pick morning would never resume at
+        # all. Here: if the book is tripped with an unfinished sweep, build a
+        # broker ON DEMAND (the injected seam or settings -- REGARDLESS of the
+        # execution mode) and finish it. Swallow-everything: protection is
+        # best-effort, the digest must always send. The state check comes first
+        # so the broker is only ever built when there is a sweep to finish.
+        try:
+            g0 = guardrails_repo.load_guardrails(session)
+            if g0.state == "tripped" and g0.sweep_state in INCOMPLETE_SWEEPS:
+                resume_broker = live_broker or broker or build_broker(cfg)
+                gpipe.resume_incomplete_sweep(session, broker=resume_broker,
+                                              source="digest")
+        except Exception:  # the sweep resume must never block the digest
+            log.warning("guardrail sweep resume failed for %s", kind, exc_info=True)
+
         # The digest summarizes the LATEST screen run -- the morning digest reflects
         # the prior evening's screen (they run on different days), so defaulting to
         # date.today() would query a run_date with no signals. An explicit run_date
         # (tests / backfill) overrides.
         if run_date is None:
             run_date = repo.latest_run_date(session) or datetime.now(UTC).date()
+
+        # DISPATCH-TIME LIVE REFRESH (Task 7): poll the broker BEFORE any intent
+        # dispatches, so a same-morning venue stop-out is already a CLOSED live
+        # row -- counted by the daily-loss/drawdown breakers in the dispatch
+        # loop's consult below -- instead of realized $ the book only learns
+        # about at the evening screen (the realized-only freshness hole).
+        # reconcile_live commits internally and is idempotent on re-poll. Its
+        # own swallow-everything try/except: a dead broker poll must never
+        # block the digest (the submit-side clamp stays the hard backstop).
+        if exec_mode == "live" and live_broker is not None:
+            # LIVE-REJECTION ALERT capture (Task 10): reconcile_live returns a
+            # count, not rows, so snapshot the REJECTED id set before + after
+            # and diff — exactly THIS pass's flips. A venue stop-out is a fill +
+            # broker_close (position truth, the EXIT alert's job), so it never
+            # lands in this diff; a canceled order is out of alert scope
+            # entirely (Task-11 review — see ``alerts.REJECTED_STATUSES``).
+            new_rejects: set[int] = set()
+            try:
+                rejected_before = _rejected_ids(session, run_date=run_date)
+                n_fresh_changes = reconcile_live(session, live_broker, today=run_date)
+                log.info("dispatch-time live reconcile: %d change(s)", n_fresh_changes)
+                new_rejects = (_rejected_ids(session, run_date=run_date)
+                               - rejected_before)
+            except Exception:  # the freshness poll must never block the digest
+                log.warning("dispatch-time live reconcile failed for %s %s",
+                            kind, run_date, exc_info=True)
+                try:
+                    # a failed poll can leave the SHARED session's transaction
+                    # poisoned (PendingRollbackError on every later use) -- and
+                    # the whole digest below still needs it.
+                    session.rollback()
+                except Exception:  # noqa: BLE001 -- the email path is the priority
+                    log.warning("post-reconcile rollback failed", exc_info=True)
+            # The alert send gets its OWN guard: a dead mail transport must not
+            # masquerade as a failed broker poll in the logs (honest failure
+            # posture) -- and neither may block the digest. A failed send here
+            # leaves no coverage rows, and THIS path's next-cycle diff never
+            # re-produces the ids -- the hourly exit job's query-based pass
+            # (alerts.pending_rejection_ids) is the retry owner (Task 11).
+            try:
+                _emit_live_rejection_alert(session, run_date, recipient, send,
+                                           new_rejects)
+            except Exception:  # noqa: BLE001 -- the digest email is the priority
+                log.warning("live rejection alert email failed for %s %s",
+                            kind, run_date, exc_info=True)
+                try:
+                    session.rollback()
+                except Exception:  # noqa: BLE001 -- the email path is the priority
+                    log.warning("post-rejection-alert rollback failed", exc_info=True)
+
         # manual_close events are excluded by pending_exit_alerts BY DESIGN: this is
         # the ALERTS feed (urgent, actionable), not a daily closes ledger -- a future
         # "today's closes" section must add its own query, never widen this one.
         alerts = sel.pending_exit_alerts(session, run_date)
         _emit_pending_exit_alert(session, run_date, recipient, send, alerts=alerts)
+        # The guardrail-trip retry owner (Task 10): a tripped book whose alert
+        # never landed (the evening screen's transport-less trip, or a prior
+        # cycle's failed send) gets its email HERE — before the already-sent
+        # early return below, so even a re-run of an already-sent day retries.
+        # A trip that fires later in THIS run's dispatch loop is mailed by the
+        # in-protocol emailer instead; the shared alert_key collapses the two.
+        _emit_pending_guardrail_alert(session, run_date, recipient, send)
 
         # Staleness cooldown: drop picks whose setup has been on the list too long so the
         # same play isn't re-pitched daily (legacy NULL-first_seen rows always pass).
@@ -786,16 +933,69 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         tickets: dict[tuple[str, str], OrderTicketLine] = {}
         if collected_intents and not isinstance(adapter, NoOpAdapter):
             try:
+                # EXECUTION SCOPE: the ceremony-controlled play-type CEILING
+                # (Task 8) MINUS the cockpit's disabled set (Task 22), resolved
+                # through the one seam once per dispatch batch -- the env half is
+                # static for the run, and the DB half re-reads HERE, per batch
+                # (never per intent), so a scope change lands on the next batch
+                # without this loop knowing anything about it. None = unscoped.
+                # Inside the dispatch gate + try so the off/no-intent path never
+                # pays (or fails on) the DB read.
+                scope = guardrails_repo.effective_execution_scope(
+                    cfg, session=session)
                 for intent in collected_intents:
+                    if intent.shares <= 0:
+                        # An UNSIZED intent (size_order floored to 0: unconfigured/tiny
+                        # risk unit, or an 'avoid' conviction) is INERT -- qty<=0 at the
+                        # venue is a guaranteed 422 reject. Skip BEFORE the kill-switch
+                        # check (nothing is being armed) and before the adapter, but
+                        # ticket it so the digest renders the skip honestly. Logged
+                        # because no adapter runs -> no ExecutionLog row: without this
+                        # line the email ticket would be the ONLY trace.
+                        log.info("skipping unsized intent %s %s (0 shares)",
+                                 intent.ticker, intent.play_type)
+                        tickets[(intent.ticker, intent.play_type)] = OrderTicketLine(
+                            side=intent.side, shares=intent.shares, ticker=intent.ticker,
+                            limit_price=intent.limit_price, stop=intent.stop,
+                            target=intent.target, status="skipped",
+                            detail=UNSIZED_DETAIL)
+                        continue
+                    if scope is not None and intent.play_type not in scope:
+                        # OUT OF SCOPE: the play type is outside the effective
+                        # scope (the SWING_EXECUTE_PLAY_TYPES ceiling minus the
+                        # cockpit's disabled set), so the intent is
+                        # INERT -- same reasoning as the unsized skip above:
+                        # nothing is being armed, so this sits BEFORE the
+                        # kill-switch/guardrails consults (no live machinery
+                        # for an intent that may never submit). Ticketed so the
+                        # digest renders the skip honestly; logged because no
+                        # adapter runs -> no ExecutionLog row.
+                        log.info("skipping out-of-scope intent %s %s (scope: %s)",
+                                 intent.ticker, intent.play_type,
+                                 # an EMPTY effective scope now has two causes -- an
+                                 # all-garbage env value OR the cockpit disabling
+                                 # everything -- so the line no longer blames the env.
+                                 ", ".join(sorted(scope))
+                                 or "(empty - nothing is in scope)")
+                        tickets[(intent.ticker, intent.play_type)] = OrderTicketLine(
+                            side=intent.side, shares=intent.shares, ticker=intent.ticker,
+                            limit_price=intent.limit_price, stop=intent.stop,
+                            target=intent.target, status="skipped",
+                            detail=OUT_OF_SCOPE_DETAIL)
+                        continue
                     if _execution_halted(adapter, _mode_reader):
                         log.warning("execution kill switch: halting dispatch for %s %s "
                                     "and pulling entry-side resting orders", kind, run_date)
                         if live_broker is not None:
-                            pull_entry_orders(live_broker)
-                            restored, unprotected = ensure_stop_protection(
+                            entries, restored, unprotected = run_protective_sweep(
                                 live_broker,
                                 lambda sym: repo.latest_recorded_stop(session, sym),
                                 key_suffix=f"kill-{run_date:%Y%m%d}")
+                            # a venue-moving sweep always reaches the Auditor's
+                            # conduct record (best-effort, never raises).
+                            gpipe.record_disarm_event(
+                                session, reason="kill-switch",
+                                orders_cancelled=len(entries))
                             if restored:
                                 log.warning(
                                     "kill switch: re-submitted %d protective "
@@ -806,12 +1006,73 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                                     "kill switch: %d position(s) left UNPROTECTED: "
                                     "%s", len(unprotected), ", ".join(unprotected))
                         break
+                    # THE GUARDRAILS BRAKE (Task 6) -- LiveAdapter only, mirroring the
+                    # kill switch's isinstance gate: only the live path arms a venue.
+                    # Re-read FRESH per intent (a cockpit HALT / another process's trip
+                    # can land mid-loop) via the shared ``gpipe.consult`` (Task 11:
+                    # resume -> load -> evaluate-unless-tripped -> respond, one
+                    # definition across the digest loop / evening screen / hourly
+                    # job -- the skip-when-tripped and halted-still-trips rules live
+                    # in its docstring now). 'tripped' back means a fresh breach ran
+                    # the full ordered protocol (persist-first, sweep, outcome, the
+                    # Task-10 alert email) OR the book was already tripped; 'halted'
+                    # means a pure manual HALT with no breach. The submit-side brake
+                    # in LiveAdapter stays the hard backstop; this consult is the
+                    # RESPONSE trigger. The extra blocking-state response below --
+                    # halt the batch + the manual-HALT protective sweep -- is the
+                    # dispatch loop's OWN posture, deliberately kept outside consult
+                    # (the screen and the hourly job dispatch nothing).
+                    if isinstance(adapter, LiveAdapter):
+                        # Only the blocking VERDICT matters here: the loop's own
+                        # response (break the batch, run the manual-HALT sweep)
+                        # keys off it. The result's ``swept`` flag is for callers
+                        # that own a protection invariant (the evening screen).
+                        blocked = gpipe.consult(
+                            session, run_date=run_date, source="digest",
+                            broker=live_broker,
+                            emailer=_trip_emailer(
+                                session, run_date=run_date,
+                                recipient=recipient, send=send)).blocked
+                        if blocked is not None:
+                            log.warning("guardrails brake: halting dispatch for %s %s",
+                                        kind, run_date)
+                            if blocked == "halted" and live_broker is not None:
+                                # pure manual HALT (no breach): same protective sweep
+                                # as the kill switch, but NO trip is recorded (there
+                                # is nothing to trip on). A halted+breach run took
+                                # the respond_to_trip path inside consult instead --
+                                # its sweep supersedes this one.
+                                entries, restored, unprotected = run_protective_sweep(
+                                    live_broker,
+                                    lambda sym: repo.latest_recorded_stop(session, sym),
+                                    key_suffix=f"halt-{run_date:%Y%m%d}")
+                                gpipe.record_disarm_event(
+                                    session, reason="halt",
+                                    orders_cancelled=len(entries))
+                                if restored:
+                                    log.warning(
+                                        "halt sweep: re-submitted %d protective "
+                                        "stop(s): %s",
+                                        len(restored), ", ".join(restored))
+                                if unprotected:
+                                    log.error(
+                                        "halt sweep: %d position(s) left UNPROTECTED:"
+                                        " %s", len(unprotected),
+                                        ", ".join(unprotected))
+                            break
                     result = adapter.submit(
                         intent, session=session, run_date=run_date, limits=limits)
                     tickets[(intent.ticker, intent.play_type)] = _ticket_line(intent, result)
             except Exception:  # execution must never block the digest
                 log.warning("execution dispatch failed for %s %s", kind, run_date,
                             exc_info=True)
+                try:
+                    # a dispatch failure can leave the SHARED session's transaction
+                    # poisoned (PendingRollbackError on every later use) -- and the
+                    # email path below still needs it (2026-07-18 red-team).
+                    session.rollback()
+                except Exception:  # noqa: BLE001 -- the email path is the priority
+                    log.warning("post-dispatch rollback failed", exc_info=True)
         if tickets:  # attach each ticket to its pick (only when execution is armed)
             digest_picks = _attach_digest_tickets(digest_picks, tickets, "continuation")
             pdf_picks = _attach_pdf_tickets(pdf_picks, tickets, "continuation")
@@ -915,7 +1176,13 @@ def run_exit_check_and_alert(*, db_url: str, run_date: date | None = None, to: s
     if not recipient:
         raise RuntimeError("no recipient: set DIGEST_TO or pass to=")
 
-    kwargs: dict[str, object] = {"db_url": db_url, "today": run_date}
+    # The recipient/transport resolved above are THREADED IN (Task-11 review):
+    # the hourly job's own alert paths (live-rejection + guardrail-trip retries)
+    # then reuse this pair instead of re-resolving the secret and building a
+    # second transport -- and the whole hourly alert surface becomes injectable
+    # from here, so a test's spy send covers it without patching module globals.
+    kwargs: dict[str, object] = {"db_url": db_url, "today": run_date,
+                                 "recipient": recipient, "smtp_send": send}
     if latest_bars_fn is not None:
         kwargs["latest_bars_fn"] = latest_bars_fn
     result = run_exit_check(**kwargs)  # type: ignore[arg-type]

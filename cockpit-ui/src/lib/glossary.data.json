@@ -683,6 +683,101 @@
   "risk": "medium"
  },
  {
+  "term": "Guardrail",
+  "cat": "status-lamp",
+  "short": "The system's own brake on live trading: four breakers (daily loss $, trades per day, drawdown $, losing streak) plus a manual HALT, all held in one shared database row every process reads before it dispatches.",
+  "why": "It is the only stop that reaches a job already running in the cloud — and it is subordinate by design: it can block trading, never start it. Arming stays with the environment's master switch.",
+  "appears": [
+   "Execution Safety GUARDRAILS",
+   "Masthead brake chip"
+  ],
+  "risk": "high",
+  "source": "db/guardrails_repo.py · docs/plans/2026-07-18-agent-guardrails-design.md (master arm vs brake)"
+ },
+ {
+  "term": "Brake state",
+  "cat": "status-lamp",
+  "short": "The brake's one-word condition: ok (released), halted (an operator engaged it), or tripped (a breaker fired).",
+  "why": "Only 'ok' lets dispatch through. Any state the system does not recognize is treated as tripped, so an unexpected value blocks trading rather than waving it past.",
+  "appears": [
+   "Execution Safety GUARDRAILS",
+   "Masthead brake chip"
+  ],
+  "risk": "high",
+  "source": "pipeline/guardrails.py (consult)"
+ },
+ {
+  "term": "HALT (brake)",
+  "cat": "system-action",
+  "short": "The manual one-click brake: engage it and nothing dispatches. Firing it also runs the protective sweep — resting entry orders are pulled, protective stops kept and restored, positions never closed.",
+  "why": "The stop you reach for by hand, without waiting for a breaker to fire. Releasing it arms nothing: it returns the machine to whatever the environment already allowed.",
+  "appears": [
+   "Execution Safety GUARDRAILS (HALT)",
+   "Masthead brake chip"
+  ],
+  "risk": "high",
+  "source": "cockpit/routers/safety.py (the halt action) · pipeline/disarm.py"
+ },
+ {
+  "term": "Trip",
+  "cat": "system-action",
+  "short": "What a breached breaker triggers. Exactly one process wins the trip and runs the response in order: record the tripped state first, then sweep the venue, then send the alert email.",
+  "why": "Nothing dispatches until a human acknowledges that particular trip — and clearing releases the brake only. It does not resolve the breach, so a breaker still over its limit trips again within the hour.",
+  "appears": [
+   "Execution Safety GUARDRAILS (TRIPPED banner, CLEAR THE TRIP)",
+   "Masthead brake chip"
+  ],
+  "risk": "high",
+  "source": "pipeline/guardrails.py (respond_to_trip) · db/guardrails_repo.py (trip)"
+ },
+ {
+  "term": "Sweep (guardrail)",
+  "cat": "system-action",
+  "short": "The protective venue action a trip or a HALT runs: cancel resting entry orders, put back any missing protective stop at its recorded level, and never close a position.",
+  "why": "A TRIP's sweep left pending or partial is RETRYING, not failed — every cycle re-runs it and DISARM resumes that same one; a HALT's sweep gets no retry, so its failure is reported outright and the brake stands. What needs your hand either way is a position reported UNPROTECTED: no stop anywhere, and left alone on purpose.",
+  "appears": [
+   "Execution Safety GUARDRAILS (SWEEP RETRYING)",
+   "DISARM outcome (guardrail resume)"
+  ],
+  "risk": "high",
+  "source": "pipeline/disarm.py (run_protective_sweep) · db/guardrails_repo.py (record_sweep_outcome)"
+ },
+ {
+  "term": "Drawdown anchor / high-water mark",
+  "cat": "risk-metric",
+  "short": "Where the drawdown breaker measures from: an anchor date that starts the window, and a baseline dollar figure. The drawdown is the fall from the highest running total of realized live dollars since that anchor.",
+  "why": "It is the one breaker with a remedy in the cockpit: clearing a drawdown trip does NOT move the anchor, so the trip comes back unless you deliberately re-anchor the high-water mark (or raise the cap).",
+  "appears": [
+   "Execution Safety GUARDRAILS (BREAKERS)",
+   "Execution Safety GUARDRAILS (RESET THE DRAWDOWN ANCHOR)"
+  ],
+  "risk": "high",
+  "source": "db/guardrails_repo.py (live_drawdown_usd) · components/GuardrailsPanel.tsx (BREACH_REMEDY)"
+ },
+ {
+  "term": "Loss streak",
+  "cat": "risk-metric",
+  "short": "How many live trades closed at a loss in a row, counted newest-first in the order they closed. A close with no graded result is skipped rather than counted as a win.",
+  "why": "The optional streak breaker halts trading after that many straight losers; unlike the drawdown it needs no re-anchoring — the next winning close resets it.",
+  "appears": [
+   "Execution Safety GUARDRAILS (BREAKERS)"
+  ],
+  "risk": "medium",
+  "source": "db/guardrails_repo.py (live_loss_streak)"
+ },
+ {
+  "term": "Execution scope (ceiling)",
+  "cat": "config",
+  "short": "Which play types execution may dispatch at all, set in the environment (SWING_EXECUTE_PLAY_TYPES); unset = every play type. It is the CEILING: the Strategy Board subtracts within it and restores back up to it, never past it.",
+  "why": "It is why a live signal of an out-of-scope play type never reaches the broker, and why the board's enable control is dead for a play type the environment excludes — widening the ceiling is an env/IaC act, always. A value with no valid play type in it fails CLOSED — the scope goes empty and nothing dispatches — so a garbled list narrows the gate instead of opening it.",
+  "appears": [
+   "Execution Safety CONFIGURATION (execute play types)",
+   "Execution Safety STRATEGY SCOPE"
+  ],
+  "risk": "medium",
+  "source": "settings.py · db/guardrails_repo.py (effective_execution_scope, set_disabled_play_types) · docs/plans/2026-07-18-agent-guardrails-design.md (the Strategy Board addendum)"
+ },
+ {
   "term": "Playbook / edge file",
   "cat": "screen",
   "short": "A living, hand-editable document per strategy recording its thesis, confirmed edges, hunches, and discarded ideas.",
@@ -1317,5 +1412,18 @@
    "Positions CloseTradeForm"
   ],
   "risk": "medium"
+ },
+ {
+  "term": "Evidence tier (the ranking ladder)",
+  "cat": "provenance",
+  "short": "How much a strategy has proven, in three rungs: hunch → replay_screened → forward_confirmed. A fourth state, UNGRADED, means it was never measured at all — that is not the same as a hunch, and the board shows it as its own dashed chip.",
+  "why": "It is the FIRST sort key on the Strategy Board — tier before the number — because a hunch with a flattering lower bound is not better evidence, it is unproven evidence. Only forward_confirmed means an edge cleared the corrected bound on the live forward book, and only that rung is green.",
+  "appears": [
+   "Execution Safety STRATEGY SCOPE",
+   "Playbooks verdict table",
+   "TierChip"
+  ],
+  "risk": "high",
+  "source": "pipeline/autonomy.py (_CONFIRMED_TIER, the gate's own top rung) · cockpit/routers/strategies.py (_TIER_RANK, the ranking law) · docs/plans/2026-07-18-agent-guardrails-design.md (the Strategy Board addendum)"
  }
 ]

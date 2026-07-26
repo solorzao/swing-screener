@@ -45,6 +45,11 @@ def template_audit(findings: dict) -> str:
         f"reject rate {comp.get('reject_rate')}",
         f"{comp.get('n_clamps', 0)} clamp(s)",
         f"{comp.get('n_disarms', 0)} disarm(s)",
+        # guardrail activity is EXPECTED conduct (Task 14) -- stated as facts, in the
+        # brake's own vocabulary, so a braked week reads as the machine working.
+        f"{comp.get('n_guardrail_trips', 0)} guardrail trip(s)",
+        f"{comp.get('n_guardrail_sweeps', 0)} guardrail sweep(s)",
+        f"{comp.get('n_guardrail_clamps', 0)} guardrail clamp(s)",
         f"{anom.get('drought_days', 0)} drought day(s)",
         f"{anom.get('orphan_exit_events', 0)} orphan exit(s)",
     ]
@@ -68,6 +73,21 @@ def breach_narrative(findings: dict) -> str:
             parts.append(f"day_r {day_r:.2f} vs loss cap -{loss_cap:.2f}")
         detail = "; ".join(parts) or "cap exceeded"
         return f"Cap breach {breach.get('account')} {breach.get('date')}: {detail}."
+    guardrail = findings.get("guardrail_breach")
+    if isinstance(guardrail, dict):
+        # code owns the numbers: audit_run composes 'detail' (and the honest 'caveat'
+        # on the two day-granularity rules); this only frames them.
+        detail = str(guardrail.get("detail") or "guardrail conduct breach")
+        cleared_at = guardrail.get("cleared_at")
+        if cleared_at:
+            # a breach row is permanent: when the trip was released AFTER the window
+            # the rule could read, the prose says so rather than leaving the reader to
+            # infer a brake that is still on.
+            detail += f"; later cleared {str(cleared_at)[:10]}"
+        text = (f"Guardrail conduct ({guardrail.get('rule')}) "
+                f"{guardrail.get('day')}: {detail}.")
+        caveat = str(guardrail.get("caveat") or "")
+        return f"{text} CAVEAT: {caveat}." if caveat else text
     disarms = findings.get("disarms")
     if isinstance(disarms, list) and disarms:
         bits = [

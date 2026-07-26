@@ -59,6 +59,18 @@ export function fmtClock(iso: string): string {
   return isNaN(d.getTime()) ? iso : d.toLocaleTimeString('en-US', { hour12: false })
 }
 
+/** An ISO timestamp as a LOCAL day + 24-hour clock — "2026-07-25 14:03:21". For
+ * history lists that span days; `fmtClock`'s time-only form stays the same-session
+ * "as of" stamp. The raw string back unchanged if it does not parse. */
+export function fmtStamp(iso: string): string {
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return iso
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  const clock = d.toLocaleTimeString('en-US', { hour12: false })
+  return `${d.getFullYear()}-${mm}-${dd} ${clock}`
+}
+
 /** Today in the LOCAL calendar as YYYY-MM-DD — the day date-scoped forms and
  * filters default to. LOCAL deliberately: the cockpit runs beside its server,
  * so the client's local day matches the server-naive day the journals filter

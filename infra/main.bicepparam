@@ -78,3 +78,55 @@ param executionMode = 'paper'
 param maxDailyNotional = '1000'
 param maxDailyLoss = '2.0'
 param maxConcurrent = '3'
+
+// =============================================================================
+// --- Broker arming: DELIBERATELY UNSET. ---
+//
+// These two params exist in main.bicep / modules/jobs.bicep so the Azure jobs are
+// CAPABLE of being armed, and they are left commented here so that a routine
+// re-provision keeps every job DISARMED. Uncommenting them is the arming
+// ceremony (docs/runbooks/arming-alpaca-live.md), a deliberate manual act -- never
+// a side effect of shipping code.
+//
+//   param broker = 'alpaca'
+//   param allowRealMoney = 'yes'          // real money. Read the runbook first.
+//   param executePlayTypes = 'reversal'   // WHICH strategy. Unset = ALL, incl. continuation.
+//
+// (executionMode above is NOT repeated here -- it already has a line at ~:71. The
+// ceremony CHANGES that existing line to 'live'; a second `param executionMode` in
+// this file is a duplicate assignment and will not compile.)
+//
+// Three locks gate a real-money order, and env carries only two of them:
+// execution_mode == 'live' (executionMode above, currently 'paper'), broker +
+// allowRealMoney here, and a READY autonomy gate that lives in the database --
+// no bicep param can set that one.
+//
+// executePlayTypes is not a lock -- it is the execution SCOPE ceiling, and its
+// default is the permissive one. Left unset, an armed agent trades every play type
+// including continuation, which has no confirmed edge (2026-07-18 audit). It sits in
+// this block so path A of the arming ceremony can express the scope at all: without
+// it, a drift-safe re-provision is structurally allow-all.
+//
+// ALPACA SECRETS NEED NO BICEP CHANGE. broker_alpaca.py resolves SWING_ALPACA_KEY /
+// SWING_ALPACA_SECRET / SWING_ALPACA_HOST through config_secrets.get_secret, whose
+// Key Vault fallback maps an env NAME to a secret name by lower-casing and
+// replacing '_' -> '-' (src/swing_screener/config_secrets.py:74-87 + _secret_name).
+// So creating swing-alpaca-key / swing-alpaca-secret / swing-alpaca-host in the
+// existing vault is sufficient -- the jobs already have KEY_VAULT_URL and the UAMI
+// has Secrets User. Do NOT add them to keyvault.bicep's seeded secrets or to the
+// jobs' secretDefs. Seeding them would mean three more @secure() params to supply on
+// EVERY deploy (or a seedSecrets=true run blanking the real values with empty
+// placeholders); adding them to secretDefs would make all ten job resources FAIL to
+// provision until the vault secrets exist. Runtime fetch avoids both.
+//
+// CD NEVER APPLIES BICEP (cd.yml only repoints job images), so nothing in this
+// file reaches Azure until the ceremony runs the deployment by hand:
+//
+//   az deployment sub create --location <region> \
+//     --template-file infra/main.bicep --parameters infra/main.bicepparam \
+//     --parameters seedSecrets=false anthropicApiKey=<...> digestTo=<...> \
+//                  alertEmail=<...> sqlAadAdminLogin=<...> sqlAadAdminObjectId=<...>
+//
+// seedSecrets=false is mandatory on every re-deploy so the live vault values are
+// not overwritten by the empty placeholders above.
+// =============================================================================

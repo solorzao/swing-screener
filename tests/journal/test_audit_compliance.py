@@ -5,20 +5,28 @@ from datetime import UTC, date, datetime
 
 from sqlalchemy.orm import Session
 
-from swing_screener.db.models import DisarmEvent, ExecutionLog, PaperTrade
+from swing_screener.db.models import (
+    AgentGuardrailEvent,
+    DisarmEvent,
+    EmailLog,
+    ExecutionLog,
+    PaperTrade,
+)
 from swing_screener.db.session import get_engine
+from swing_screener.journal import audit_compliance
 from swing_screener.journal.audit_compliance import compliance_findings
+from swing_screener.notify import alerts
 
 _FROM, _TO = date(2026, 7, 6), date(2026, 7, 12)
 
 
 def _log(*, created=date(2026, 7, 7), notional=1000.0, risk=100.0, status="filled_paper",
-         account="paper"):
+         account="paper", detail=""):
     return ExecutionLog(
         created_date=created, ticker="AMD", timeframe="1d", play_type="continuation",
         run_date=created, account=account, mode="paper", side="buy", limit_price=100.0,
         shares=10, stop=95.0, target=110.0, risk_dollars=risk, notional=notional,
-        status=status, detail="",
+        status=status, detail=detail,
         idempotency_key=f"k-{created}-{notional}-{status}-{account}",
     )
 
@@ -149,3 +157,115 @@ def test_empty_period_is_all_zero_not_a_crash():
         f = compliance_findings(s, period_from=_FROM, period_to=_TO,
                                 max_daily_notional=10_000.0, max_daily_loss=500.0)
         assert f.cap_breaches == [] and f.reject_rate is None and f.n_disarms == 0
+        assert f.n_guardrail_clamps == 0 and f.n_guardrail_sweeps == 0
+        assert f.n_guardrail_trips == 0 and f.trip_sources == {}
+
+
+# ---- guardrail conduct: EXPECTED activity, counted as facts (the n_clamps precedent) ----
+
+
+def _event(*, kind, at=datetime(2026, 7, 8, 10, 0), source="digest", breaker="",
+           reason=""):
+    return AgentGuardrailEvent(created_at=at, kind=kind, breaker=breaker, reason=reason,
+                               values_json="{}", source=source)
+
+
+def test_guardrail_clamp_is_counted_as_expected_conduct_not_a_breach():
+    # The submit-side brake clamps a would-be order to a 'skipped' row whose detail
+    # starts 'guardrail: ' -- the brake DOING ITS JOB. Same posture as n_clamps:
+    # surfaced as a fact, never a cap breach (the blocked size never counted).
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        s.add_all([
+            _log(notional=900.0, status="filled_paper"),
+            _log(notional=5000.0, status="skipped",
+                 detail="guardrail: max drawdown: $600.00 >= $500.00"),
+            _log(notional=4000.0, status="skipped", risk=1.0,
+                 detail="daily notional cap reached"),   # a plain limit clamp
+        ])
+        s.commit()
+        f = compliance_findings(s, period_from=_FROM, period_to=_TO,
+                                max_daily_notional=1000.0, max_daily_loss=None)
+        assert f.cap_breaches == []          # clamped size never counted
+        assert f.n_clamps == 2               # both clamps still surfaced
+        assert f.n_guardrail_clamps == 1     # ...one of them the brake's
+
+
+def test_guardrail_killswitch_and_halt_sweeps_grade_expected():
+    # Every sanctioned venue-moving sweep is counted by NAME; only a disarm the
+    # guardrails machinery did NOT author is 'unexplained' (what the breach scan flags).
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        s.add_all([
+            DisarmEvent(created_at=datetime(2026, 7, 8, 10, 0),
+                        reason="guardrail:max_drawdown_usd", orders_cancelled=2),
+            DisarmEvent(created_at=datetime(2026, 7, 8, 11, 0), reason="kill-switch"),
+            DisarmEvent(created_at=datetime(2026, 7, 8, 12, 0), reason="halt"),
+            DisarmEvent(created_at=datetime(2026, 7, 9, 9, 0), reason="cockpit"),
+        ])
+        s.commit()
+        f = compliance_findings(s, period_from=_FROM, period_to=_TO,
+                                max_daily_notional=None, max_daily_loss=None)
+        assert f.n_disarms == 4              # the total is unchanged
+        assert f.n_guardrail_sweeps == 1 and f.n_killswitch_sweeps == 1
+        assert f.n_halt_sweeps == 1
+        assert f.n_unexplained_disarms == 1  # only the bare 'cockpit' disarm
+
+
+def test_two_sweeps_in_one_hour_is_a_resumed_sweep_not_an_anomaly():
+    # Task 11 removed the double-sweep; a second DisarmEvent an hour later is a
+    # RESUMED partial sweep. Counted, never graded as anomalous frequency.
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        s.add_all([
+            DisarmEvent(created_at=datetime(2026, 7, 8, 10, 0),
+                        reason="guardrail:max_daily_loss_usd"),
+            DisarmEvent(created_at=datetime(2026, 7, 8, 10, 59),
+                        reason="guardrail:max_daily_loss_usd"),
+        ])
+        s.commit()
+        f = compliance_findings(s, period_from=_FROM, period_to=_TO,
+                                max_daily_notional=None, max_daily_loss=None)
+        assert f.n_guardrail_sweeps == 2 and f.n_unexplained_disarms == 0
+
+
+def test_trips_from_all_four_emitters_are_legitimate_facts():
+    # digest / screen / exitcheck / cockpit all legitimately own a trip election.
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        s.add_all([_event(kind="trip", source=src, breaker="max_drawdown_usd")
+                   for src in ("digest", "screen", "exitcheck", "cockpit")])
+        s.add(_event(kind="edit", source="cockpit"))       # not a trip
+        s.add(_event(kind="trip", source="digest", at=datetime(2026, 6, 1, 10, 0)))
+        s.commit()
+        f = compliance_findings(s, period_from=_FROM, period_to=_TO,
+                                max_daily_notional=None, max_daily_loss=None)
+        assert f.n_guardrail_trips == 4      # the out-of-period trip is excluded
+        assert f.trip_sources == {"cockpit": 1, "digest": 1, "exitcheck": 1, "screen": 1}
+
+
+def test_email_counts_exclude_execution_cover_bookkeeping():
+    # 'execution-cover' rows are per-ExecutionLog coverage markers, NOT sent emails
+    # (Task 11): counting them would inflate every "emails sent" conduct number.
+    with Session(get_engine("sqlite:///:memory:")) as s:
+        s.add_all([
+            EmailLog(sent_at=datetime(2026, 7, 8, 10, 0), kind="guardrail",
+                     subject="TRIP", run_date=date(2026, 7, 8), alert_key="7"),
+            EmailLog(sent_at=datetime(2026, 7, 8, 10, 1), kind="execution",
+                     subject="3 Live Orders Rejected", run_date=date(2026, 7, 8),
+                     alert_key="sethash"),
+            EmailLog(sent_at=datetime(2026, 7, 8, 10, 1), kind="execution-cover",
+                     subject="3 Live Orders Rejected", run_date=date(2026, 7, 8),
+                     alert_key="xlog-11"),
+            EmailLog(sent_at=datetime(2026, 7, 8, 10, 1), kind="execution-cover",
+                     subject="3 Live Orders Rejected", run_date=date(2026, 7, 8),
+                     alert_key="xlog-12"),
+        ])
+        s.commit()
+        f = compliance_findings(s, period_from=_FROM, period_to=_TO,
+                                max_daily_notional=None, max_daily_loss=None)
+        assert f.n_emails_sent == 2          # the two real emails, not the 2 markers
+        assert f.n_guardrail_alerts == 1
+
+
+def test_email_kind_mirrors_match_the_module_that_writes_them():
+    # The grader restates both kinds as literals (no journal -> notify import in the
+    # pure grader); these are the anti-drift pins against the module that WRITES them.
+    assert audit_compliance._BOOKKEEPING_EMAIL_KIND == alerts.REJECTION_COVER_KIND
+    assert audit_compliance._TRIP_ALERT_KIND == alerts.TRIP_ALERT_KIND

@@ -26,6 +26,21 @@ from swing_screener.db.models import (
 )
 from swing_screener.db.repo import list_universe
 
+#: EmailLog kinds that are BOOKKEEPING, not sent emails: the live-rejection
+#: alert writes one ``execution-cover`` row per alerted ExecutionLog id purely so
+#: the at-least-once retry can join on coverage (``notify.alerts``), alongside
+#: the ONE ``execution`` display row for the email itself. Rendering the
+#: coverage rows would show N identical entries per email in both surfaces
+#: below. Excluded here rather than filtered client-side so the LIMIT counts
+#: real emails. Restated as a literal (no cockpit -> notify import for one
+#: string); tests/cockpit/test_reference.py pins it against
+#: ``notify.alerts.REJECTION_COVER_KIND`` so the two can never drift.
+#: PUBLIC because ``routers/events.py``'s email watermark must exclude exactly the
+#: same kinds -- a bookkeeping row is invisible on both email surfaces, so waking
+#: the frontend for one would be a wake with nothing to show. ONE cockpit-side
+#: spelling, pinned once.
+BOOKKEEPING_EMAIL_KINDS = ("execution-cover",)
+
 
 def build_reference_router(
     *,
@@ -89,6 +104,7 @@ def build_reference_router(
                 "detail": detail,
             }))
         for m in session.scalars(select(EmailLog)
+                                 .where(EmailLog.kind.not_in(BOOKKEEPING_EMAIL_KINDS))
                                  .order_by(EmailLog.id.desc()).limit(limit)):
             ts = _aware(m.sent_at)
             entries.append((ts, "email", m.id, {
@@ -193,9 +209,12 @@ def build_reference_router(
         its own LIMITed SELECT -- default 100 -- rather than slicing a full
         load. ``sent_at`` is served as UTC (``_utc_iso``); rows stamped by the
         digest are aware-UTC written naive, legacy rows may be naive local --
-        same bounded display caveat as the analysis queue."""
+        same bounded display caveat as the analysis queue. Bookkeeping kinds
+        (the per-row rejection coverage) are excluded: this is the log of emails
+        SENT, one row per email."""
         rows = session.scalars(
             select(EmailLog)
+            .where(EmailLog.kind.not_in(BOOKKEEPING_EMAIL_KINDS))
             .order_by(EmailLog.sent_at.desc(), EmailLog.id.desc())
             .limit(limit))
         return {"emails": [{

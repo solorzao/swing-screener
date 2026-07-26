@@ -170,6 +170,31 @@ export function Masthead({
         </span>
       )}
 
+      {/* The guardrails BRAKE, off the same already-polled gate (no extra fetch).
+          Unlike the mode chip beside it this is SHARED DB state, so a trip landed
+          by an Azure job lights it here. 'ok' renders NO chip: the masthead's
+          dark-cockpit doctrine is that a lamp means attention required — and a
+          null gate already reads "…" on the gate chip, so absence is never
+          mistaken for a green claim about a brake nobody read. */}
+      {gate !== null && gate.brake_state !== 'ok' && (
+        <button
+          type="button"
+          className={
+            gate.brake_state === 'tripped'
+              ? 'brake-chip brake-tripped'
+              : 'brake-chip brake-halted'
+          }
+          title={
+            gate.brake_state === 'tripped'
+              ? 'the guardrails brake TRIPPED — a breaker fired; click for the Safety screen'
+              : 'the guardrails brake is HALTED by an operator — click for the Safety screen'
+          }
+          onClick={() => onNavigate('safety')}
+        >
+          {gate.brake_state === 'tripped' ? 'TRIPPED' : 'HALTED'}
+        </button>
+      )}
+
       {/* Today's analyst SPEND — real $ off the gate poll (no extra fetch; the
           field was already on the wire, unrendered). Clicking opens the Analyst
           screen where the spend windows + calibration live. */}

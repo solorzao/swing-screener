@@ -49,7 +49,7 @@ _EASTERN = ZoneInfo("America/New_York")
 # (chain._fetch_chain_raw, run._default_daily/_default_5m), and raw transport
 # errors are OSError subclasses (requests' RequestException is an IOError;
 # sockets and timeouts too). A dead upstream is a 503 wearing the exception
-# CLASS only (preflight.broker_error_detail's leak posture -- fetcher messages
+# CLASS only (pipeline.broker.broker_error_detail's leak posture -- fetcher messages
 # can embed hosts and URLs); anything outside this set is a genuine bug and
 # still 500s. SQLAlchemyError is neither, so DB failures keep riding the
 # app-level handler's own 503.

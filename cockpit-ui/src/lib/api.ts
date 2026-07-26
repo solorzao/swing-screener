@@ -240,10 +240,17 @@ export interface ScoreboardStats {
   profit_factor: number | null
   /** Cumulative realized R by ascending close date, as (ISO date, cum R) pairs. */
   equity_r: [string, number][] | null
+  /** Closed trades DROPPED from `realized_usd` for want of a share count / price
+   * (legacy live rows booked before fills stamped qty) — the honesty counter on the
+   * $ figure. Only live rows can be unsized, so it is > 0 on the live card and on the
+   * combined pool that inherits them; every other tile sends 0. Typed optional so the
+   * shared tile keeps a renderer-side default rather than trusting the wire. */
+  n_unsized?: number
 }
 
 /** One book's scoreboard tile — the wire form of scoreboard.py `BookCard.as_dict()`.
- * `realized_usd` is null where the book has no dollars (an R-only or empty book). */
+ * `realized_usd` is null where the book keeps no dollars at all (the paper book); the
+ * three real-money books always send a number, 0 when nothing has closed. */
 export interface ScoreboardCard extends ScoreboardStats {
   book: 'manual_equity' | 'robinhood' | 'live' | 'paper'
   unit: ScoreboardUnit
@@ -279,6 +286,11 @@ export interface Gate {
    * masthead DISARM enablement keys on it; it rides this already-polled
    * endpoint so the always-visible masthead needs no extra poll. */
   broker_configured: boolean
+  /** The guardrails brake, rendered DIRECTLY (never a consult verdict) — it rides
+   * this already-polled endpoint so the masthead brake chip needs no extra poll.
+   * Unlike `execution_mode` this is DB state SHARED by every process: a trip landed
+   * by an Azure job shows here on the next tick. */
+  brake_state: BrakeState
   analyst_spend_today_usd: number
 }
 
@@ -659,14 +671,76 @@ export interface ProposalApproved extends ProposalDecided {
 
 /* ---------- Phase 3 wire shapes (routers/safety.py) ---------- */
 
-export interface DisarmResult {
-  dry_run: boolean
-  cancelled: { symbol: string; broker_order_id: string }[]
+/** The guardrails brake's three states, straight off the `agent_guardrails` row.
+ * DB state, not env: every process shares it, so an Azure job's trip lands here. */
+export type BrakeState = 'ok' | 'halted' | 'tripped'
+
+/** One venue order the sweep moved (or would move). */
+export interface CancelledOrder {
+  symbol: string
+  broker_order_id: string
+}
+
+/** The itemized half every disarm shape carries — a resume fills the arrays with
+ * NOTHING because the pipeline returns a bool, not because nothing moved (its
+ * counts ride `detail`). Kept on all three so the wire stays one superset. */
+interface DisarmItems {
+  cancelled: CancelledOrder[]
   sells_kept: number
   stops_restored: string[]
   /** Positions with no recorded stop level anywhere — loud, left alone. */
   unprotected: string[]
 }
+
+interface DisarmBase extends DisarmItems {
+  dry_run: boolean
+  /** The brake state this ran against; null when the brake row could not be read
+   * (a DISARM is unconditional — the emergency sweep runs anyway). */
+  state: BrakeState | null
+}
+
+/** The plain sweep: entry-side orders cancelled, bracket stops kept/restored. */
+export interface DisarmRaw extends DisarmBase {
+  mode: 'raw'
+}
+
+/** A TRIPPED book whose sweep never finished: /api/disarm routes through the
+ * trip's own `resume_incomplete_sweep` so both processes derive the SAME
+ * `guardrail-{trip_id}` client_order_ids and the venue collapses the race. */
+export interface DisarmResume extends DisarmBase {
+  mode: 'guardrail-resume'
+  trip_id: number
+  sweep_state: string | null
+  /** The venue-side client_order_id prefix — diagnostic, hide it behind a
+   * disclosure rather than showing a raw order key mid-emergency. */
+  resume_key: string
+  /** The sweep event's OWN recorded summary, verbatim (the arrays stay empty on
+   * this path — see DisarmItems). */
+  detail: string
+}
+
+/** The resume's dry run — the ONE resume path that can itemize (it composes the
+ * two disarm helpers directly under the key the real resume would use). */
+export interface DisarmResumePreview extends DisarmBase {
+  mode: 'guardrail-resume-preview'
+  trip_id: number
+  sweep_state: string | null
+  resume_key: string
+  detail: string
+}
+
+/** POST /api/disarm — a `mode`-TAGGED UNION, and `mode` alone is what a client
+ * branches on (routers/safety.py `disarm_book`). */
+export type DisarmResult = DisarmRaw | DisarmResume | DisarmResumePreview
+
+/** The 503 detail PREFIXES routers/safety.py documents as module constants — the
+ * ONLY thing a client may branch on (the text after the prefix is human-facing
+ * and may change). Exported per BRANCH that exists, not per prefix the server
+ * defines: safety.py's third prefix (`broker error (`) has no client branch —
+ * a failed broker build renders as the plain failure text — so no constant for
+ * it lives here. Add one when a component actually needs to match it. */
+export const D503_DB = 'database error ('
+export const D503_SWEEP = 'guardrail sweep did not complete'
 
 export interface PreflightCheck {
   name: string
@@ -689,10 +763,123 @@ export interface ExecutionSafety {
   env_scope: string
   locks: { mode_is_live: boolean; allow_real_money: boolean; gate_ready: boolean }
   caps_mandate: { ok: boolean; reason: string }
+  /** The brake: the mandate verdict (may real money dispatch) + the RAW state
+   * beside it, all from ONE snapshot. NOT covered by `env_scope` — it reads the
+   * shared `agent_guardrails` row, the brake's venue of record for every process. */
+  guardrails: { ok: boolean; reason: string; state: string; sweep_state: string | null }
   preflight: { go: boolean; checks: PreflightCheck[] }
   /** known: false (no broker / venue read failed) renders UNKNOWN, never green. */
   bracket_shield: { known: boolean; as_of: string | null; positions: BracketShieldRow[] }
 }
+
+/** One row of the append-only guardrail history (edit / halt / trip / clear /
+ * sweep). `breaker` and `reason` are NOT NULL columns defaulting to '' — an
+ * empty string means "not applicable", never "unknown". */
+export interface GuardrailEvent {
+  id: number
+  created_at: string
+  kind: string
+  breaker: string
+  reason: string
+  source: string
+}
+
+/** The first breaker breached RIGHT NOW — a STATE-BLIND evaluation, so it answers
+ * even while the brake is already tripped. That is exactly what lets the clear
+ * dialog warn that clearing will simply re-trip on the next hourly consult. */
+export interface GuardrailBreach {
+  breaker: string
+  reason: string
+}
+
+/** The SIX editable limit columns, under the names the POST edit body accepts —
+ * so the panel's form needs no translation layer (routers/safety.py `_state_body`).
+ * The four breakers unset as null; `hwm_baseline_usd` is NOT NULL (no unset). */
+export interface GuardrailLimits {
+  max_daily_loss_usd: number | null
+  max_trades_per_day: number | null
+  max_drawdown_usd: number | null
+  loss_streak_halt: number | null
+  hwm_anchor_date: string | null
+  hwm_baseline_usd: number
+}
+
+/** The read-only state columns: they move through the state machine (halt / trip
+ * / clear) and `edit_limits`' whitelist refuses them by name. */
+export interface GuardrailStateCols {
+  state: BrakeState
+  trip_id: number | null
+  trip_reason: string | null
+  /** 'pending' | 'partial' | 'complete' | null. pending/partial = the sweep has
+   * not finished — the hourly cycle RETRIES it; never render that as "failed". */
+  sweep_state: string | null
+  /** The cockpit SUBTRACTION from the env execution ceiling — the play types the
+   * Strategy Board has switched OFF (`routers/safety.py` `_state_body`, sorted).
+   * Read-only HERE like the other state columns: it round-trips through its own
+   * verb (`{action: 'set_scope', disabled}`), never the edit form, and `[]` is
+   * the honest "nothing subtracted", never "no ceiling". */
+  disabled_play_types: string[]
+}
+
+/** GET /api/guardrails — the brake whole: the flat state body + the live breach +
+ * the last 25 events newest-first. DB-only and cheap (never rides the broker). */
+export interface Guardrails extends GuardrailLimits, GuardrailStateCols {
+  current_breach: GuardrailBreach | null
+  events: GuardrailEvent[]
+}
+
+/** The HALT response's `sweep` block — ONE closed shape whatever happened, so the
+ * panel never type-switches. `ran` is false for a dry-run preview AND for the
+ * no-broker path (the brake still engaged: it is DB truth). */
+export interface GuardrailSweep {
+  ran: boolean
+  detail: string
+  cancelled: CancelledOrder[]
+  sells_kept: number
+  stops_restored: string[]
+  unprotected: string[]
+}
+
+/** POST /api/guardrails — the answer to a brake write. `committed` says whether
+ * the brake actually MOVED (false only on a dry-run halt).
+ *
+ * The state keys are OPTIONAL by contract: every transition commits BEFORE the
+ * response enriches itself with a fresh snapshot, and when that follow-up read
+ * fails the answer is still 200/committed with `enrichment_error` set and the
+ * state keys ABSENT — never guessed. The panel re-polls; that is one tick away. */
+export interface GuardrailsPostResult extends Partial<GuardrailLimits>,
+  Partial<GuardrailStateCols> {
+  action: 'edit' | 'halt' | 'clear_halt' | 'clear_trip' | 'set_scope'
+  committed: boolean
+  current_breach?: GuardrailBreach | null
+  /** `database error (Class)` when the post-commit read failed — the WRITE STANDS. */
+  enrichment_error?: string | null
+  dry_run?: boolean
+  /** halt only. */
+  sweep?: GuardrailSweep
+}
+
+/** POST /api/guardrails bodies. PRESENCE, not value, decides what an edit touches:
+ * omit a key to leave it alone, send an explicit null to UNSET the breaker.
+ * `hwm_baseline_usd` has no null (the column is NOT NULL — a null there is a 422). */
+export interface GuardrailEditBody extends Partial<GuardrailLimits> {
+  action: 'edit'
+  hwm_baseline_usd?: number
+}
+
+export type GuardrailActionBody =
+  | GuardrailEditBody
+  | { action: 'halt' }
+  | { action: 'clear_halt' }
+  /** The clear only matches the trip the operator actually READ, so a stale
+   * screen cannot release a newer trip (409 otherwise). */
+  | { action: 'clear_trip'; ack_trip_id: number }
+  /** The Strategy Board's tighten-only subtraction. `disabled` is the WHOLE new
+   * set, never a delta: the server SETs it (`[]` re-enables everything the env
+   * ceiling still allows), so a client that sent only its own change would wipe
+   * every other window's. Idempotent by construction — there is no 409 on this
+   * verb, so a double press is safe. Sending it on an `edit` is a 422 by design. */
+  | { action: 'set_scope'; disabled: string[] }
 
 /* ---------- Phase 3 wire shapes (routers/picks.py) ---------- */
 
@@ -871,6 +1058,103 @@ export interface Playbooks {
   due_play_types: string[]
   store_errors: string[]
   /** The one wire statement of what a verdict's bound IS. */
+  ci_note: string
+}
+
+/* ---------- Phase 4b wire shapes (routers/strategies.py) ---------- */
+
+/** The strongest verdict cell WITHIN a row's best tier — the board's headline
+ * number. `dimension`/`bucket` together are the gate's own confirmed-edge label
+ * ("<dimension>=<bucket>"): `dimension` alone names no condition. `expectancy`
+ * and `ci_low` are `_finite_or_none`d server-side — an empty bucket's bound is
+ * -inf, which JSON cannot carry, so null here is "not a measured number" and
+ * must render as the hollow not-measured tick, NEVER as a zero. */
+export interface StrategyCohort {
+  dimension: string
+  bucket: string
+  expectancy: number | null
+  ci_low: number | null
+  n: number
+}
+
+/** The advisory autonomy gate's own per-play-type calibration report, verbatim.
+ * NOTHING here is recomputed by the router and nothing may be recomputed here:
+ * `countdown` is `pipeline.autonomy._countdown_line`'s exact string (the same
+ * line the CLI and the masthead render, format pinned by
+ * tests/pipeline/test_autonomy_countdown.py) and is rendered VERBATIM — the raw
+ * counts ride along only so a renderer never has to parse that sentence. */
+export interface StrategyCalibration {
+  countdown: string
+  calibrated: boolean
+  n_high: number
+  n_low: number
+  n_clusters_high: number
+  n_clusters_low: number
+  min_per_bucket: number
+  cluster_floor: number
+  /** null = the bound is non-finite (uncertifiable), never a measured number. */
+  ci_low: number | null
+  high_minus_low: number | null
+  reason: string
+}
+
+/** One play type on the Strategy Board, ranked by evidence.
+ *
+ * THE FOUR-STATE TIER LAW: a renderer has ABSENT (`playbook_present: false` —
+ * no tier cell at all), UNGRADED (`tier: null`), GRADED BUT UNCONFIRMED
+ * (`hunch` / `replay_screened`), and `forward_confirmed`. `tier: null` is a
+ * missing or unreadable sidecar, or one carrying no rung of the ladder — it is
+ * NOT `hunch`. "no rung was reached" and "we graded it and it is speculative"
+ * are different claims, and a renderer that defaults null to hunch tells the
+ * operator the second one. Same for `best_cohort: null`.
+ *
+ * THE SCOPE TRIAD, and they are three different questions:
+ * - `in_ceiling` — is it in `SWING_EXECUTE_PLAY_TYPES`? `null` = the env
+ *   expresses NO ceiling; null is not false ("unset" is not "excluded").
+ * - `disabled` — has the cockpit subtracted it? The one knob the board moves.
+ * - `effective` — is it traded RIGHT NOW? Membership in
+ *   `effective_scope_from_state`'s answer, the SAME function execution enforces.
+ *   The lamp reads THIS, never `in_ceiling`. */
+export interface StrategyRow {
+  play_type: string
+  /** 1-based under the ranking law: tier DESC, cohort ci_low DESC, ungraded
+   * LAST, ties broken by name so the order is stable across polls. */
+  rank: number
+  in_ceiling: boolean | null
+  disabled: boolean
+  effective: boolean
+  /** `edge/<pt>.md` AND the verdicts sidecar both exist. False suppresses the
+   * tier/cohort cells entirely — prose whose numbers nothing backs is not a
+   * playbook, and a tier read off a half-present book would be a claim. */
+  playbook_present: boolean
+  tier: VerdictTier | null
+  best_cohort: StrategyCohort | null
+  calibration: StrategyCalibration
+  gate_ready: boolean
+  edge_confirmed: boolean
+  /** The gold forward book as a full Stat + the `source` note stating what the
+   * Stat is a statistic OF (a deliberately narrow would_surface slice). */
+  forward: { stat: Stat; source: string }
+}
+
+/** GET /api/strategies — the evidence ranking + the scope it is trading under.
+ *
+ * THE None-MEANS-ALL CONTRACT, and it is a trap worth naming: `effective_scope`
+ * and `ceiling` are `null` for "no scoping applies", which means EVERYTHING is
+ * in — not nothing. A falsy check (`!effective_scope`) collapses null and `[]`
+ * into one branch and would paint an unscoped board as fully OUT. Read the
+ * per-row `effective` / `in_ceiling` booleans, which the server already
+ * resolved against that contract. DB + files only: no broker, no quotes. */
+export interface Strategies {
+  strategies: StrategyRow[]
+  effective_scope: string[] | null
+  ceiling: string[] | null
+  /** The stored subtraction VERBATIM (sorted) — a member outside today's
+   * vocabulary is still visible rather than quietly dropped. */
+  disabled: string[]
+  as_of: string
+  /** The playbooks router's ONE statement of what a `ci_low` means, imported
+   * there rather than re-worded — so the board never invents a second wording. */
   ci_note: string
 }
 
@@ -1288,6 +1572,26 @@ export const postDisarm = (
 export const getExecutionSafety = (): Promise<ExecutionSafety> =>
   fetchJson<ExecutionSafety>('/api/execution/safety')
 
+/** The brake, whole: state + limits + the live breach + the last 25 events. DB-only
+ * and cheap — it deliberately does NOT ride the broker-calling safety poll. */
+export const getGuardrails = (): Promise<Guardrails> =>
+  fetchJson<Guardrails>('/api/guardrails')
+
+/** One brake action. `dry_run` is supported ONLY by halt — the server 422s the
+ * flag on the three DB-only actions rather than ignoring it (a silently-dropped
+ * dry_run would turn a "preview" into a brake release). `signal` exists for the
+ * HALT preview: an aborted hold cancels its in-flight dry run outright. */
+export const postGuardrails = (
+  body: GuardrailActionBody,
+  dryRun = false,
+  signal?: AbortSignal,
+): Promise<GuardrailsPostResult> =>
+  postAction<GuardrailsPostResult>(
+    `/api/guardrails?dry_run=${dryRun ? 1 : 0}`,
+    body,
+    signal,
+  )
+
 export const getPicks = (): Promise<Picks> => fetchJson<Picks>('/api/picks')
 
 export const getTicker = (limit = 50): Promise<TickerFeed> =>
@@ -1315,6 +1619,12 @@ export const getEmails = (limit = 100): Promise<Emails> =>
 
 export const getPlaybooks = (): Promise<Playbooks> =>
   fetchJson<Playbooks>('/api/playbooks')
+
+/** The Strategy Board: every play type ranked by evidence, plus the two-level
+ * scope it trades under. DB + FILES only (no broker, no quotes) — but it does
+ * run four seeded bootstraps server-side, so POLL_MS is the floor here too. */
+export const getStrategies = (): Promise<Strategies> =>
+  fetchJson<Strategies>('/api/strategies')
 
 export const getWeather = (): Promise<WeatherResponse> =>
   fetchJson<WeatherResponse>('/api/weather')

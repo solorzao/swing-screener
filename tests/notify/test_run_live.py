@@ -26,7 +26,7 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from swing_screener.db.models import ExecutionLog, PaperTrade, Signal
+from swing_screener.db.models import DisarmEvent, ExecutionLog, PaperTrade, Signal
 from swing_screener.db.session import get_engine
 from swing_screener.notify import run
 from swing_screener.notify.analysis import ConvictionResult, SignalAnalysis
@@ -173,6 +173,11 @@ def test_kill_switch_halts_remaining_submits_and_cancels(tmp_path, monkeypatch):
     with Session(get_engine(url)) as s:
         submitted = list(s.scalars(
             select(ExecutionLog).where(ExecutionLog.status == "submitted_live")))
+        # the kill-switch sweep moved venue state -> it is on the Auditor's
+        # conduct record, like every other venue-moving sweep.
+        ev = s.query(DisarmEvent).one()
+        assert ev.reason == "kill-switch"
+        assert ev.orders_cancelled == 1
     # ONLY the first intent was submitted; the loop halted before the second.
     assert len(submitted) == 1
     # and the kill switch pulled the resting order -> the first order is now canceled.

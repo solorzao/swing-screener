@@ -34,6 +34,7 @@ from swing_screener.analytics.performance import (
 )
 from swing_screener.cockpit.common import _finite_or_none
 from swing_screener.cockpit.stats import stat_from_summary
+from swing_screener.db.guardrails_repo import live_realized_usd_total
 from swing_screener.db.models import PaperTrade, Trade
 from swing_screener.journal.record import manual_equity_records, robinhood_records
 from swing_screener.pipeline.arms import BASELINE
@@ -57,7 +58,13 @@ class _RBody(TypedDict):
 class BookCard:
     """One book's scoreboard tile. ``expectancy`` is a serialized ``Stat`` (dict) for
     an R book with closes, else ``None`` (a ``$``-only or empty book). ``realized_usd``
-    / ``equity_r`` are ``None`` where the book has no dollars / no closes."""
+    / ``equity_r`` are ``None`` where the book has no dollars / no closes.
+
+    ``n_unsized`` is the honesty counter on the ``$`` figure: closed trades DROPPED
+    from ``realized_usd`` because they carry no share count / price (only the live
+    book can have them -- legacy rows booked before fills stamped ``qty``). It
+    defaults to 0 so every other card renders unchanged; a card whose dollars are
+    complete (or absent) says 0, never omits the field."""
 
     book: str
     unit: str
@@ -69,6 +76,7 @@ class BookCard:
     profit_factor: float | None
     realized_usd: float | None
     equity_r: list[list[object]] | None
+    n_unsized: int = 0
 
     def as_dict(self) -> dict[str, object]:
         """Explicit wire form (hand-rolled, never ``asdict`` on the wire)."""
@@ -83,6 +91,7 @@ class BookCard:
             "profit_factor": self.profit_factor,
             "realized_usd": self.realized_usd,
             "equity_r": self.equity_r,
+            "n_unsized": self.n_unsized,
         }
 
 
@@ -217,7 +226,7 @@ def build_scoreboard(
         equity_r=None,  # $-only: no cumulative-R curve
     )
 
-    # --- live agent (real PaperTrade rows; empty today under the advisor posture) ----
+    # --- live agent (real PaperTrade rows; the small-account plumbing trial's book) ---
     live_rows = _window_paper(
         list(session.scalars(select(PaperTrade).where(PaperTrade.account == "live"))),
         cutoff,
@@ -225,10 +234,14 @@ def build_scoreboard(
     live_summary = summarize(live_rows)
     live_by_ticker = closed_by_ticker(live_rows)
     live_pairs = _paper_pairs(live_rows)
+    # Real $ from the broker-stamped share counts: (exit - entry) * qty over the same
+    # close-date window this card's R rides. A row with no qty/price is EXCLUDED and
+    # counted (n_unsized) -- an under-report the card admits to, never a guess.
+    live_usd, live_unsized = live_realized_usd_total(session, since=cutoff)
     live_card = BookCard(
         book="live", unit="R",
-        # live $ P&L via ExecutionLog join deferred; live book empty under advisor posture.
-        realized_usd=None,
+        realized_usd=live_usd,
+        n_unsized=live_unsized,
         equity_r=_cumulative_r(live_pairs),
         **_r_body(live_summary, facet="live", cost_level=cost_level_for(live_rows)),
     )
@@ -271,7 +284,13 @@ def build_scoreboard(
         "books": ["manual_equity", "live"],
         "unit": "R",
         **_r_body(combined_summary, facet="combined"),
+        # Real dollars from BOTH books. Any live close the $ math had to skip is
+        # skipped HERE too, so the pool carries the live card's counter verbatim --
+        # the hero tile discloses its own gap rather than making the operator find
+        # the smaller tile below it. Only live rows can be unsized: manual $ comes
+        # from Trade.size, which is never NULL.
         "realized_usd": manual_usd + (live_card.realized_usd or 0.0),
+        "n_unsized": live_card.n_unsized,
         "equity_r": _cumulative_r(manual_pairs + live_pairs),
     }
 

@@ -6,25 +6,37 @@ gate ready? It is strictly READ-ONLY -- it performs NO writes and NEVER arms any
 
 The load-bearing properties pinned here:
 
-* ``go`` is True iff every SAFETY-CRITICAL check passes (config / reachable / funded / caps).
-  ``is_real_money`` and the autonomy gate are ADVISORY (warn, not critical) -- they never flip
-  the GO/NO-GO verdict.
+* ``go`` is True iff every SAFETY-CRITICAL check passes (config / reachable / funded / caps,
+  plus ``guardrails``). ``is_real_money`` and the autonomy gate are ADVISORY (warn, not
+  critical) -- they never flip the GO/NO-GO verdict.
+* the ``guardrails`` check splits its criticality: an ENGAGED brake (halted/tripped) is
+  critical on ANY host (the agent will not trade, so a paper drill is NO-GO too), while an
+  UNSET mandatory breaker is critical only on a real-money host -- and the line is rendered
+  honestly either way, so the gap is visible BEFORE the flip.
 * a BROKER error never raises out of ``preflight`` -- the reachability check catches it and
   records a NO-GO line (so a down broker reads as NO-GO, not a crash).
-* preflight WRITES NOTHING: no new/dirty/deleted rows on the session, no settings/env mutation.
+* preflight WRITES NOTHING: no new rows (not even the guardrails seed -- it PEEKS), no
+  settings/env mutation, no edge-file rewrite, and it never commits a caller's pending work.
 
 No live network: every test drives a ``FakeBroker`` (or a raising stub); the autonomy gate is
 driven from a verdicts sidecar + a scored-call book, exactly like the gate's own tests.
 """
 
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
 from sqlalchemy.orm import Session
 
-from swing_screener.db.models import AnalystCall, ExecutionLog
+from swing_screener.db import guardrails_repo as gr
+from swing_screener.db.models import (
+    AgentGuardrailEvent,
+    AgentGuardrails,
+    AnalystCall,
+    DisarmEvent,
+    ExecutionLog,
+)
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.broker import BrokerAccount, FakeBroker
 from swing_screener.pipeline.preflight import (
@@ -238,6 +250,156 @@ def test_go_stays_true_even_when_gate_not_ready(tmp_path) -> None:
     assert report.go is True  # ...but GO holds: every CRITICAL check passed
 
 
+# --- the guardrails brake: critical on REAL money, advisory on paper ----------
+def _set_breakers(session: Session) -> None:
+    """Set the three MANDATORY breakers through guardrails_repo's own API (never raw
+    SQL -- every brake write is event-audited and the state machine owns the columns)."""
+    gr.edit_limits(session, source="test", max_daily_loss_usd=500.0,
+                   max_trades_per_day=3, max_drawdown_usd=1_000.0)
+
+
+def test_preflight_guardrails_check_fails_real_money_when_mandate_unset(tmp_path) -> None:
+    """A REAL-money host with a mandatory breaker unset is a NO-GO: the brake mandate
+    (``guardrails_mandate_ok``) is the same one execution enforces at submit time, so
+    preflight must not hand out a GO the first live order would be refused under. The
+    detail is the mandate's own reason string, naming the FIRST missing breaker."""
+    edge_dir = _ready_edge_dir(tmp_path)
+    broker = FakeBroker(buying_power=50_000.0, status="ACTIVE", real_money=True)
+    with _session() as s:
+        s.add_all(_calibrated_calls("continuation"))
+        s.commit()
+        report = preflight(s, _settings(), broker=broker, edge_dir=edge_dir)
+
+    check = _check(report, "guardrails")
+    assert check.ok is False
+    assert check.critical is True
+    # the shared mandate string VERBATIM (it is pinned as an execution rejection
+    # detail) + preflight's own layer note, which also tells this row apart from the
+    # near-identical caps row.
+    assert check.detail == (
+        "max_daily_loss_usd is not set [brake setting — cockpit guardrails, not env]")
+    assert report.go is False
+    # nothing else failed: the brake alone carries this NO-GO.
+    assert [c.name for c in report.checks if c.critical and not c.ok] == ["guardrails"]
+
+
+def test_preflight_guardrails_check_fails_real_money_when_tripped(tmp_path) -> None:
+    """Every breaker SET but the brake TRIPPED is still a NO-GO on real money -- a
+    tripped brake blocks dispatch, so arming into one would only produce rejections.
+    The line carries the trip's id + reason: exactly what ``clear`` demands as the
+    acknowledged trip, so the operator can act straight off the checklist."""
+    edge_dir = _ready_edge_dir(tmp_path)
+    broker = FakeBroker(buying_power=50_000.0, status="ACTIVE", real_money=True)
+    with _session() as s:
+        s.add_all(_calibrated_calls("continuation"))
+        s.commit()
+        _set_breakers(s)
+        eid = gr.trip(s, breaker="max_daily_loss_usd", reason="daily loss breach",
+                      source="test")
+        assert eid is not None
+        report = preflight(s, _settings(), broker=broker, edge_dir=edge_dir)
+
+    check = _check(report, "guardrails")
+    assert check.ok is False
+    assert check.critical is True
+    assert check.detail == f"guardrails state is tripped (trip #{eid}: daily loss breach)"
+    assert report.go is False
+
+
+def test_preflight_engaged_brake_is_critical_on_a_paper_host(tmp_path) -> None:
+    """The criticality SPLIT's other half: a paper host with the brake ENGAGED is a
+    NO-GO. The brake is unconditional -- halted means the agent will not trade at all --
+    so reading it advisory on the paper drill would say 'proceed' about a run whose
+    every submit gets skipped. (Contrast the unset-breaker half, advisory on paper.)"""
+    edge_dir = _ready_edge_dir(tmp_path)
+    broker = FakeBroker(buying_power=50_000.0, status="ACTIVE")  # paper host
+    with _session() as s:
+        s.add_all(_calibrated_calls("continuation"))
+        s.commit()
+        _set_breakers(s)
+        assert gr.halt(s, source="test") is True
+        report = preflight(s, _settings(), broker=broker, edge_dir=edge_dir)
+
+    check = _check(report, "guardrails")
+    assert check.ok is False
+    assert check.critical is True          # engaged brake: critical on ANY host
+    assert check.detail == "guardrails state is halted"   # no trip id: a manual halt
+    assert report.go is False
+
+
+def test_preflight_names_both_faults_when_brake_engaged_and_breaker_unset(tmp_path) -> None:
+    """Halted AND a breaker unset (edit_limits may unset one while tripped/halted): the
+    mandate reports only its FIRST failure -- the breaker, checked before the state -- so
+    the engaged brake must be named explicitly or the row would read as a mere config gap
+    while the agent is actually braked."""
+    edge_dir = _ready_edge_dir(tmp_path)
+    broker = FakeBroker(buying_power=50_000.0, status="ACTIVE")  # paper host
+    with _session() as s:
+        _set_breakers(s)
+        assert gr.halt(s, source="test") is True
+        gr.edit_limits(s, source="test", max_daily_loss_usd=None)  # unset while halted
+        report = preflight(s, _settings(), broker=broker, edge_dir=edge_dir)
+
+    check = _check(report, "guardrails")
+    assert check.ok is False
+    assert check.critical is True   # the engaged half still binds every host
+    assert check.detail == (
+        "max_daily_loss_usd is not set [brake setting — cockpit guardrails, not env]"
+        "; brake is also halted")
+    assert report.go is False
+
+
+def test_preflight_engaged_brake_is_critical_with_no_broker(tmp_path) -> None:
+    """...and with no client to ask either: 'the agent will not trade' needs no host."""
+    edge_dir = _ready_edge_dir(tmp_path)
+    with _session() as s:
+        _set_breakers(s)
+        assert gr.halt(s, source="test") is True
+        report = preflight(s, _settings(), broker=None, edge_dir=edge_dir)
+
+    check = _check(report, "guardrails")
+    assert check.ok is False and check.critical is True
+
+
+def test_preflight_guardrails_green_on_real_money_when_breakers_set(tmp_path) -> None:
+    """The arming floor a human actually needs: real money, all three breakers set and
+    the brake 'ok' -> the check passes AS a critical line and GO holds."""
+    edge_dir = _ready_edge_dir(tmp_path)
+    broker = FakeBroker(buying_power=50_000.0, status="ACTIVE", real_money=True)
+    with _session() as s:
+        s.add_all(_calibrated_calls("continuation"))
+        s.commit()
+        _set_breakers(s)
+        report = preflight(s, _settings(), broker=broker, edge_dir=edge_dir)
+
+    check = _check(report, "guardrails")
+    assert check.ok is True
+    assert check.critical is True
+    # internally formatted only -- this detail reaches the cockpit wire.
+    assert check.detail == "all mandatory breakers set, brake state ok"
+    assert report.go is True
+
+
+def test_preflight_guardrails_advisory_on_paper_host(tmp_path) -> None:
+    """A PAPER host with the breakers unset but the brake RELEASED: the check is present
+    and HONEST (ok False -- the breakers really are unset, and the operator should see
+    that before a flip), but ADVISORY -- the unset-breaker mandate binds real money only,
+    exactly as execution's mandate block sits inside ``is_real_money()``. GO unaffected."""
+    edge_dir = _ready_edge_dir(tmp_path)
+    broker = FakeBroker(buying_power=50_000.0, status="ACTIVE")  # paper host
+    with _session() as s:
+        s.add_all(_calibrated_calls("continuation"))
+        s.commit()
+        report = preflight(s, _settings(), broker=broker, edge_dir=edge_dir)
+
+    check = _check(report, "guardrails")
+    assert check.critical is False
+    assert check.ok is False              # honest: the breakers ARE unset
+    assert check.detail == (
+        "max_daily_loss_usd is not set [brake setting — cockpit guardrails, not env]")
+    assert report.go is True              # ...but paper money never gates on that half
+
+
 # --- broker=None: the cockpit's default local setup is a REPORT, not a crash --
 def test_none_broker_is_a_no_go_report_never_a_crash(tmp_path) -> None:
     """``broker=None`` with SWING_BROKER unset (the cockpit's default local setup):
@@ -266,6 +428,12 @@ def test_none_broker_is_a_no_go_report_never_a_crash(tmp_path) -> None:
     # caps + gate never needed the broker: both evaluated for real.
     assert _check(report, "caps").ok is True
     assert _check(report, "autonomy_gate").ok is True
+    # guardrails evaluates for REAL too (it reads the DB, not the venue) but stays
+    # ADVISORY: with no client to ask, real-vs-paper is UNKNOWN -- and ``go`` is
+    # already False here on reachable/funded, so a critical line would add noise,
+    # never safety.
+    guardrails = _check(report, "guardrails")
+    assert guardrails.ok is False and guardrails.critical is False
 
 
 def test_none_broker_with_configured_settings_keeps_config_honest(tmp_path) -> None:
@@ -317,6 +485,14 @@ def test_no_go_when_broker_not_configured(tmp_path) -> None:
 
 # --- READ-ONLY: preflight writes NOTHING (load-bearing) ----------------------
 def test_preflight_writes_nothing_to_the_session(tmp_path) -> None:
+    """No new rows -- not even the guardrails seed -- and no COMMIT of the caller's work.
+
+    The commit half is the one that actually discriminates: a brake read that
+    get-or-created (``load_guardrails``) would commit the whole session, silently
+    durably-persisting whatever its caller had pending. So this seeds a DIRTY session
+    (an uncommitted DisarmEvent), runs preflight, and demands the object is STILL
+    pending afterwards and a rollback discards it. ``peek_guardrails`` also leaves the
+    ``agent_guardrails`` table empty -- a read-only check materialises nothing."""
     edge_dir = _ready_edge_dir(tmp_path)
     broker = FakeBroker()
     with _session() as s:
@@ -324,14 +500,45 @@ def test_preflight_writes_nothing_to_the_session(tmp_path) -> None:
         s.commit()
         before_calls = s.query(AnalystCall).count()
         before_logs = s.query(ExecutionLog).count()
+        # the caller's UNCOMMITTED work, pending on the very session preflight gets.
+        s.add(DisarmEvent(created_at=datetime(2026, 7, 20, 12, 0), reason="pending",
+                          orders_cancelled=0))
+        assert s.new  # genuinely dirty going in
 
         preflight(s, _settings(), broker=broker, edge_dir=edge_dir)
+        preflight(s, _settings(), broker=broker, edge_dir=edge_dir)
 
-        # No new rows of any kind; the call book is unchanged; nothing queued on the session.
+        # No new rows of any kind; the call book is unchanged.
         assert s.query(AnalystCall).count() == before_calls
         assert s.query(ExecutionLog).count() == before_logs
         assert before_logs == 0
-        assert not s.new and not s.dirty and not s.deleted
+        # The discriminator: preflight never COMMITS. Preflight's own SELECTs may have
+        # AUTOFLUSHED the event (so ``s.new`` is no longer the tell), but it must still
+        # live inside the caller's OPEN transaction -- a rollback discards it. A brake
+        # read that get-or-created would have committed right here, durably persisting
+        # work its caller never committed.
+        assert s.query(DisarmEvent).count() == 1   # visible inside the open txn
+        s.rollback()
+        assert s.query(DisarmEvent).count() == 0   # ...and gone: never committed
+        # nothing seeded, no audit event: the brake row does not exist yet.
+        assert s.query(AgentGuardrails).count() == 0
+        assert s.query(AgentGuardrailEvent).count() == 0
+
+
+def test_preflight_never_changes_the_brake_state(tmp_path) -> None:
+    """A TRIPPED brake is still tripped after preflight: the check reads the state and
+    reports it -- it never clears, never halts, never re-trips (arming and releasing
+    both stay human acts, performed elsewhere)."""
+    edge_dir = _ready_edge_dir(tmp_path)
+    broker = FakeBroker(real_money=True)
+    with _session() as s:
+        _set_breakers(s)
+        assert gr.trip(s, breaker="loss_streak_halt", reason="streak", source="test")
+        before = gr.load_guardrails(s)
+
+        preflight(s, _settings(), broker=broker, edge_dir=edge_dir)
+
+        assert gr.load_guardrails(s) == before  # state, trip_id, sweep_state: untouched
 
 
 def test_preflight_does_not_mutate_settings_or_env(tmp_path, monkeypatch) -> None:

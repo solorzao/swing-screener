@@ -6373,3 +6373,868 @@ a.needs-hand-link:hover {
   font-size: 11px;
   margin-bottom: 6px;
 }
+
+/* ---------- Masthead brake chip (Masthead.tsx) ----------
+
+   The guardrails brake beside the execution-mode chip, off the SAME gate poll.
+   Chip-shaped like gate/mode but LIT: unlike those two it only renders when
+   there is something to say (state != 'ok'), so its presence is the signal —
+   dark-cockpit doctrine, a lamp means attention required. Amber for a HALT (an
+   operator chose this), red for a TRIP (a breaker fired). Never green: this
+   chip has no "all clear" face to be stale in. */
+button.brake-chip {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button.brake-halted {
+  color: var(--amber);
+  border: 1px solid var(--lamp-amber-border);
+  background: var(--lamp-amber-bg);
+  box-shadow: var(--lamp-amber-glow);
+}
+
+button.brake-tripped {
+  color: var(--red);
+  border: 1px solid color-mix(in srgb, var(--red) 60%, var(--line2));
+  background: color-mix(in srgb, var(--red) 14%, var(--panel2));
+  box-shadow: 0 0 8px 2px color-mix(in srgb, var(--red) 45%, transparent);
+}
+
+/* The resume's venue key, behind a disclosure (DisarmControl ResumeKey): an
+   operator mid-emergency is not handed a raw client_order_id unasked. */
+.dz-key {
+  font-size: 10px;
+  color: var(--faint);
+}
+
+.dz-key summary {
+  cursor: pointer;
+}
+
+/* ---------- GUARDRAILS panel (components/GuardrailsPanel.tsx) ----------
+
+   The brake's surface on the Execution Safety screen. Colour follows that
+   screen's INVERTED doctrine: the calm state is the released one, and the lit
+   states are the ones demanding a decision. TRIPPED is the only red — a breaker
+   fired on its own; HALTED is amber (a human chose it). A stale/failed read
+   renders the shared dashed .sfy-unknown-block, never an OK banner. */
+.gr-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.gr-banner {
+  margin: 10px 12px;
+  padding: 9px 11px;
+  border-radius: 4px;
+  line-height: 1.45;
+}
+
+.gr-state {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+}
+
+.gr-banner-reason {
+  font-size: 11.5px;
+  margin-top: 3px;
+}
+
+.gr-banner-note {
+  font-size: 10.5px;
+  color: var(--dim);
+  margin-top: 4px;
+}
+
+/* Released: calm and dim — nothing glows, because nothing needs a hand. */
+.gr-ok {
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+}
+
+.gr-ok .gr-state {
+  color: var(--dim);
+}
+
+.gr-halted {
+  border: 1px solid var(--lamp-amber-border);
+  background: var(--lamp-amber-bg);
+  box-shadow: var(--lamp-amber-glow);
+}
+
+.gr-halted .gr-state {
+  color: var(--amber);
+}
+
+.gr-tripped {
+  border: 1px solid color-mix(in srgb, var(--red) 60%, var(--line2));
+  background: color-mix(in srgb, var(--red) 12%, var(--panel2));
+  box-shadow: 0 0 10px 1px color-mix(in srgb, var(--red) 35%, transparent);
+}
+
+.gr-tripped .gr-state {
+  color: var(--red);
+}
+
+.gr-tripped .gr-banner-reason {
+  color: var(--txt);
+  font-family: var(--mono);
+}
+
+.gr-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 0 12px 10px;
+}
+
+.gr-ctl {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* The brake RELEASE gesture: amber, not DISARM's red. Red is this app's
+   destructive-action colour and a release destroys nothing — but it is still a
+   held, deliberate action, so it wears the same hold chrome. */
+button.release {
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  padding: 3px 12px;
+  border-radius: 3px;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--line2));
+  color: color-mix(in srgb, var(--amber) 80%, var(--txt));
+  cursor: pointer;
+}
+
+button.release:disabled {
+  color: color-mix(in srgb, var(--amber) 30%, var(--dim));
+  border-color: color-mix(in srgb, var(--amber) 20%, var(--line2));
+  cursor: not-allowed;
+}
+
+button.release .htc-fill {
+  background: color-mix(in srgb, var(--amber) 30%, transparent);
+}
+
+button.release .dz-btn-label small {
+  color: color-mix(in srgb, var(--amber) 40%, var(--dim));
+}
+
+/* The result/preview panel. Unlike DISARM's masthead popover this one sits in
+   the document flow — there is room on the screen, and an absolutely-positioned
+   alarm inside a panel would clip. */
+.gr-pop {
+  border: 1px solid var(--line2);
+  border-radius: 5px;
+  background: var(--panel2);
+  padding: 9px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 460px;
+}
+
+/* The panel-level release result spans the panel rather than tucking under one
+   control (it outlives that control -- see ReleaseControl). */
+.gr-pop-wide {
+  margin: 0 12px 10px;
+  max-width: none;
+}
+
+.gr-pop-head {
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  color: var(--txt);
+}
+
+.gr-head-alarm {
+  color: var(--red);
+}
+
+.gr-row {
+  font-size: 11.5px;
+  color: var(--txt);
+  line-height: 1.45;
+}
+
+.gr-row.gr-dim {
+  color: var(--dim);
+}
+
+.gr-verb {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* --dim, not --faint: these lines carry the NEGATIONS ("the venue was not
+   touched", "the preview changed nothing") — the sentence that tells an operator
+   what did NOT happen must not be the least legible thing in the panel. */
+.gr-foot {
+  font-size: 10px;
+  color: var(--dim);
+  line-height: 1.4;
+}
+
+.gr-warn-row {
+  font-size: 11px;
+  color: var(--amber);
+  line-height: 1.45;
+}
+
+/* The loud states: an unprotected position, a sweep that did not finish, a
+   breach that will re-trip. Same treatment as the DISARM alarm. */
+.gr-alarm {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--red);
+  border: 1px solid color-mix(in srgb, var(--red) 55%, var(--line2));
+  background: color-mix(in srgb, var(--red) 12%, var(--panel2));
+  box-shadow: 0 0 10px 1px color-mix(in srgb, var(--red) 30%, transparent);
+  border-radius: 3px;
+  padding: 7px 9px;
+}
+
+.gr-alarm-detail {
+  font-size: 10.5px;
+  color: var(--txt);
+  margin-top: 4px;
+}
+
+/* What actually resolves the breach — per breaker, never the drawdown remedy by
+   default. Calmer than the alarm around it: it is the way OUT, not the alarm. */
+.gr-alarm-remedy {
+  font-size: 10.5px;
+  color: var(--txt);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+button.gr-dismiss {
+  align-self: flex-end;
+  font-size: 10.5px;
+  padding: 3px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  background: var(--panel);
+  color: var(--dim);
+  cursor: pointer;
+}
+
+button.gr-dismiss:hover {
+  color: var(--txt);
+  border-color: var(--line);
+}
+
+/* --- the trip-clear block: acknowledge, then hold; the anchor reset beside it --- */
+.gr-clear {
+  margin: 0 12px 10px;
+  border: 1px solid color-mix(in srgb, var(--red) 35%, var(--line2));
+  border-radius: 4px;
+  padding: 9px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.gr-clear-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.gr-clear-ack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 240px;
+  flex: 1;
+}
+
+.gr-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--txt);
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.gr-check input {
+  margin-top: 2px;
+  accent-color: var(--amber);
+}
+
+.gr-anchor {
+  flex: 1;
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  border-left: 1px dashed var(--line2);
+  padding-left: 14px;
+}
+
+/* --- the limits form (the CloseTradeForm idiom: field / label / preview / error) --- */
+.gr-form {
+  border-top: 1px solid var(--line);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.gr-sub {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  color: var(--faint);
+  text-transform: uppercase;
+  padding: 8px 12px 2px;
+}
+
+.gr-form .gr-sub,
+.gr-anchor .gr-sub,
+.gr-clear .gr-sub {
+  padding: 0;
+}
+
+/* Same reason as .gr-foot: these notes say what a control does NOT do
+   ("blank = that breaker is OFF"), which is the half people misread. */
+.gr-sub-note {
+  margin-left: 8px;
+  letter-spacing: normal;
+  text-transform: none;
+  font-family: var(--ui);
+  font-size: 10px;
+  color: var(--dim);
+}
+
+.gr-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 9px;
+}
+
+.gr-fields-2 {
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+}
+
+.gr-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.gr-lab {
+  font-size: 10px;
+  color: var(--dim);
+  display: flex;
+  flex-direction: column;
+}
+
+.gr-lab-note {
+  font-style: normal;
+  font-size: 9px;
+  color: var(--faint);
+}
+
+.gr-in {
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  color: var(--txt);
+  font-size: 11.5px;
+  padding: 4px 7px;
+  min-width: 0;
+}
+
+/* Pointer focus keeps the quiet border; KEYBOARD focus gets a real ring — the
+   bare border shift is too weak to track by eye. Verbatim the .ltf-in/.ctf-in
+   treatment (one focus idiom for every input in the app). */
+.gr-in:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+
+.gr-in:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--blue) 60%, transparent);
+  outline-offset: 1px;
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line2));
+}
+
+/* An input the server flagged reads red, paired with the role=alert message so
+   it is never hue-only — again matching .ltf-in/.ctf-in. */
+.gr-in[aria-invalid='true'] {
+  border-color: color-mix(in srgb, var(--red) 55%, var(--line2));
+}
+
+.gr-field-err {
+  font-size: 9.5px;
+  color: var(--red);
+}
+
+.gr-preview {
+  font-size: 10.5px;
+  color: var(--txt);
+  line-height: 1.45;
+}
+
+.gr-preview-note {
+  color: var(--faint);
+}
+
+.gr-note-row {
+  font-size: 10.5px;
+  color: var(--amber);
+  line-height: 1.4;
+}
+
+.gr-saved {
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
+.gr-err {
+  font-size: 11px;
+  color: var(--red);
+  line-height: 1.4;
+}
+
+.gr-err-hint {
+  font-size: 10px;
+  color: var(--amber);
+  margin-top: 3px;
+}
+
+.gr-actions-row {
+  display: flex;
+  gap: 8px;
+}
+
+button.gr-btn {
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  padding: 4px 12px;
+  border-radius: 3px;
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+  color: var(--dim);
+  cursor: pointer;
+}
+
+button.gr-btn:hover:enabled {
+  color: var(--txt);
+  border-color: var(--line);
+}
+
+button.gr-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+button.gr-submit {
+  color: var(--txt);
+  border-color: var(--line2);
+}
+
+/* --- the append-only history (a LIST: the panel column is 380px wide and the
+       reasons are full sentences — a table shreds them one character wide) --- */
+.gr-events {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 6px;
+}
+
+.gr-ev {
+  padding: 5px 12px;
+  border-top: 1px solid var(--panel2);
+}
+
+.gr-ev-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 9.5px;
+}
+
+.gr-when,
+.gr-brk,
+.gr-src {
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.gr-brk {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gr-reason {
+  font-size: 10.5px;
+  color: var(--txt);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  margin-top: 2px;
+}
+
+/* The kind badge: trip is the only red one — the others are bookkeeping. */
+.gr-kind {
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  padding: 0 5px;
+  color: var(--dim);
+}
+
+.gr-kind-trip {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 50%, var(--line2));
+}
+
+.gr-kind-halt {
+  color: var(--amber);
+  border-color: var(--lamp-amber-border);
+}
+
+/* ---------- STRATEGY SCOPE board (components/StrategyBoard.tsx) ----------
+
+   Under GUARDRAILS on the Safety screen, in that screen's fixed 380px column —
+   so a row is a CARD, not a table row (the same reason .gr-events is a list:
+   six columns of tier / bound / cohort / countdown shred one character wide).
+
+   Colour follows the screen's INVERTED doctrine, and reuses the brake's shared
+   vocabulary wholesale (.gr-pop / .gr-sub / .gr-err / .gr-note-row) rather than
+   forking a second set of result chrome: IN SCOPE is the LIT amber state (this
+   strategy may reach a real-money venue), OUT is calm and inert. Nothing here
+   is ever green — green in this app is the forward_confirmed edge claim alone,
+   and TierChip owns it. */
+.sb-body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* The result pop is a direct child here (in the brake's panel it sits inside a
+   padded .gr-controls), so it carries its own gutter. */
+.sb-body > .gr-pop {
+  margin: 0 12px 10px;
+  max-width: none;
+}
+
+/* --- the scope header: the two-level scope, stated before any row --- */
+.sb-scope {
+  padding: 9px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sb-scope-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.sb-scope-k {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  color: var(--faint);
+  text-transform: uppercase;
+  white-space: nowrap;
+  width: 96px;
+  flex: none;
+}
+
+.sb-scope-v {
+  color: var(--txt);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* "no scoping applies" = EVERYTHING is in. Dim, because it is a resting truth,
+   not an alarm — but never rendered the same as the empty set below it. */
+.sb-scope-all {
+  color: var(--dim);
+}
+
+/* The empty set is the opposite end of the same axis: nothing dispatches. Amber
+   because it is usually a garbled env var failing closed, which is worth a look. */
+.sb-scope-none {
+  color: var(--amber);
+}
+
+.sb-asof {
+  font-size: 9px;
+  color: var(--faint);
+  margin-top: 2px;
+}
+
+/* --- the ranked rows --- */
+.sb-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.sb-row {
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--panel2);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.sb-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sb-rank {
+  font-size: 10px;
+  color: var(--faint);
+}
+
+/* Rank is a CLAIM (the ranking law's answer), so a failed poll gives it the
+   same dashed withheld treatment every other unread claim wears. */
+.sb-rank-stale {
+  border-bottom: 1px dashed var(--line2);
+  opacity: 0.6;
+}
+
+.sb-pt {
+  font-size: 12px;
+  color: var(--txt);
+  letter-spacing: 0.02em;
+}
+
+/* The lamps sit right-aligned so the scope answer is scannable down the card
+   stack without reading the play type first. */
+.sb-lamp {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+}
+
+.sb-head .sb-lamp {
+  margin-left: auto;
+}
+
+.sb-in .sb-lamp-label {
+  color: var(--amber);
+}
+
+.sb-out .sb-lamp-label {
+  color: var(--dim);
+}
+
+/* Not read this poll — the dashed-unknown treatment, never a lamp with a state. */
+.sb-unread .sb-lamp-label {
+  color: var(--faint);
+}
+
+.sb-unread-note {
+  font-size: 10px;
+  color: var(--faint);
+  line-height: 1.4;
+  border-left: 2px dashed var(--line2);
+  padding-left: 8px;
+}
+
+.sb-evid {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.sb-cohort {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  flex-wrap: wrap;
+  font-size: 10.5px;
+}
+
+.sb-bound {
+  color: var(--txt);
+  font-size: 11.5px;
+}
+
+.sb-n,
+.sb-bucket {
+  font-size: 9.5px;
+  color: var(--dim);
+}
+
+.sb-bucket {
+  overflow-wrap: anywhere;
+}
+
+/* The Stat convention for "not measured": faint + a dashed underline. Same
+   treatment as .stat-value.not-measured — a hollow tick, never a zero. */
+.sb-nm {
+  font-size: 10.5px;
+  color: var(--faint);
+  border-bottom: 1px dashed var(--faint);
+}
+
+.sb-nobook {
+  font-size: 10px;
+  color: var(--faint);
+  line-height: 1.4;
+}
+
+/* The gold forward book, through StatChip (the app's only numeric renderer).
+   Scoped overrides only — the chip keeps its own face, provenance affordance and
+   n-gating; it just sits narrower here than in a full-width KPI column. */
+.sb-forward {
+  margin-top: 1px;
+}
+
+.sb-forward .statchip-label {
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
+.sb-forward .stat-block {
+  width: 132px;
+}
+
+/* What that chip is a statistic OF — the wire's own sentence, verbatim, once
+   per panel (it is one module constant for every row). Fine print that repeats
+   four times stops being read. */
+.sb-fwd-note {
+  font-size: 9px;
+  color: var(--faint);
+  line-height: 1.4;
+  padding: 6px 12px 0;
+}
+
+/* The gate's own countdown sentence, verbatim. Mono because it is a quoted
+   machine line, not prose we composed. */
+.sb-countdown {
+  font-size: 10px;
+  color: var(--dim);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/* --- the toggle --- */
+.sb-ctl {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  align-items: flex-start;
+  margin-top: 2px;
+}
+
+/* The light-decision hold tier: quieter chrome than the brake's release (this
+   moves no venue state), and DISABLE is the amber one — it is the direction
+   that changes what the machine may do. */
+button.sb-disable,
+button.sb-enable {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  padding: 3px 11px;
+  border-radius: 3px;
+  background: transparent;
+  border: 1px solid var(--line2);
+  color: var(--dim);
+  cursor: pointer;
+}
+
+button.sb-disable {
+  border-color: color-mix(in srgb, var(--amber) 40%, var(--line2));
+  color: color-mix(in srgb, var(--amber) 75%, var(--txt));
+}
+
+button.sb-disable .htc-fill {
+  background: color-mix(in srgb, var(--amber) 28%, transparent);
+}
+
+button.sb-enable .htc-fill {
+  background: color-mix(in srgb, var(--blue) 22%, transparent);
+}
+
+button.sb-disable:disabled,
+button.sb-enable:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+button.sb-disable .dz-btn-label small,
+button.sb-enable .dz-btn-label small {
+  color: var(--faint);
+}
+
+/* Why a control is dead / acting on stale data — stated on screen, not in a
+   title attribute: a disabled button's tooltip is exactly the thing a keyboard
+   user cannot reach. */
+.sb-why {
+  font-size: 9.5px;
+  color: var(--faint);
+  line-height: 1.4;
+  max-width: 340px;
+}
+
+.sb-strays {
+  padding: 0 12px 10px;
+}
+
+/* ---------- System Audit: the guardrail_breach finding (SystemAuditScreen.tsx) ----------
+
+   The caveat is rendered VISIBLY, never as a tooltip: two of the four conduct
+   rules cannot fully prove what they flag, and a warn-grade finding is only
+   honest with its own limits on the same screen. */
+.au-gb {
+  border-left: 2px solid color-mix(in srgb, var(--amber) 55%, var(--line2));
+  padding: 4px 0 4px 9px;
+  margin: 4px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.au-gb-head {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--amber);
+}
+
+.au-gb-detail {
+  font-size: 11.5px;
+  color: var(--txt);
+  line-height: 1.45;
+}
+
+.au-gb-cleared {
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
+.au-gb-caveat {
+  font-size: 10.5px;
+  color: var(--amber);
+  line-height: 1.4;
+}

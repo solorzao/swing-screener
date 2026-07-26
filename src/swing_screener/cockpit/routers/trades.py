@@ -30,6 +30,7 @@ from swing_screener.db.models import (
     Trade,
 )
 from swing_screener.db.repo import (
+    ENTRY_SIDES,
     AlreadyClosedError,
     add_trade,
     close_trade_with_event,
@@ -323,12 +324,15 @@ def build_trades_router(
           the frontend formats percents, mirroring ``analytics.pl``.
         * ``badge``: ``red`` price <= stop, ``yellow`` price >= target,
           ``green`` between, ``unknown`` without a price.
-        * LIVE rows (open ``account="live"`` PaperTrades) have NO size column:
-          ``size``/dollar P/L come from the spec'd ExecutionLog join -- the
-          NEWEST row for the ticker with status ``submitted_live``/``filled_live``
-          (``_live_shares``) -- else both stay null with the R-multiple still
-          rendered from the persisted per-share ``risk``; the size-independent
-          percent fields stay honest either way. A pending-entry live row
+        * LIVE rows (open ``account="live"`` PaperTrades) size off VENUE TRUTH:
+          ``size``/dollar P/L use ``PaperTrade.qty`` -- the broker's ``filled_qty``,
+          stamped by the reconciler -- so a PARTIAL fill renders the shares actually
+          held, never the ticket's requested shares. Only a legacy NULL-``qty`` row
+          falls back to the spec'd ExecutionLog join (the NEWEST row for the ticker
+          with status ``submitted_live``/``filled_live`` -- ``_live_shares``); with
+          neither, both stay null with the R-multiple still rendered from the
+          persisted per-share ``risk``; the size-independent percent fields stay
+          honest either way. A pending-entry live row
           (``entry_price`` null) carries ``pl: null``; its badge still reads off
           the quote (stop/target are always recorded).
         * BRACKET lamp, per kind: no broker snapshot -> ``unknown`` (absence of
@@ -388,7 +392,15 @@ def build_trades_router(
         ]
         open_rows += [
             _live_position_row(p, prices.get(p.ticker),
-                               _live_shares(session, p.ticker),
+                               # VENUE TRUTH FIRST: the reconciler stamps ``qty`` from
+                               # the broker's filled_qty, so a partial fill sizes the
+                               # tile at what is actually held -- the ticket's REQUESTED
+                               # shares would overstate it. The ExecutionLog join is the
+                               # legacy fallback only (``qty`` is NULL on rows booked
+                               # before the column existed); it also saves the per-row
+                               # query on every modern row.
+                               p.qty if p.qty is not None
+                               else _live_shares(session, p.ticker),
                                snapshot=snapshot, armed=armed)
             for p in open_live
         ]
@@ -595,18 +607,23 @@ def _real_position_row(t: Trade, price: float | None, *,
 
 
 def _live_shares(session: Session, ticker: str) -> int | None:
-    """The NEWEST live BUY ticket's share count for ``ticker``, or None -- the spec'd
-    join for a live row's missing size column. Only ``submitted_live`` /
+    """The NEWEST live ENTRY ticket's share count for ``ticker``, or None -- the
+    LEGACY fallback for a live row whose ``qty`` is NULL (rows booked before the
+    column existed). Modern rows size off ``PaperTrade.qty`` instead, because this
+    join answers with what the ticket REQUESTED, not what the venue filled.
+    Only ``submitted_live`` /
     ``filled_live`` rows count (the statuses that created venue exposure --
-    canceled/rejected tickets never did), and only ``side == "buy"`` (a sell-side
-    live ticket is an EXIT; its shares must never masquerade as position size);
-    newest-by-id mirrors ``repo.latest_recorded_stop``'s ordering AND filters.
+    canceled/rejected tickets never did), and only the ENTRY side (a sell-side live
+    ticket is an EXIT; its shares must never masquerade as position size);
+    newest-by-id mirrors ``repo.latest_recorded_stop``'s ordering AND filters --
+    literally, via the shared ``repo.ENTRY_SIDES``, whose docstring records why
+    matching the venue's "buy" alone made this join dead on production rows.
     One query per open live row; batch (windowed IN) if the live book grows."""
     stmt = (
         select(ExecutionLog.shares)
         .where(
             ExecutionLog.ticker == ticker,
-            ExecutionLog.side == "buy",
+            ExecutionLog.side.in_(ENTRY_SIDES),
             ExecutionLog.status.in_(("submitted_live", "filled_live")),
         )
         .order_by(ExecutionLog.id.desc())
@@ -641,10 +658,15 @@ def _live_grades(
 def _live_position_row(p: PaperTrade, price: float | None, shares: int | None, *,
                        snapshot: Snapshot | None,
                        armed: frozenset[str]) -> dict[str, object]:
-    """One LIVE (broker-owned) open-position row. ``size`` is the ExecutionLog
-    join's shares (``_live_shares``) or null; without it the dollar P/L is null
-    while the R-multiple still renders from the persisted per-share ``risk`` and
-    the size-independent percent fields stay honest. A pending entry
+    """One LIVE (broker-owned) open-position row. ``size`` is the caller's
+    resolved share count -- ``PaperTrade.qty`` (VENUE TRUTH: the broker's
+    ``filled_qty``, stamped by ``reconcile._materialize_fills``) when set, else the
+    ExecutionLog join (``_live_shares``) for legacy NULL-``qty`` rows -- or null;
+    without it the dollar P/L is null while the R-multiple still renders from the
+    persisted per-share ``risk`` and the size-independent percent fields stay
+    honest. Never the ticket's REQUESTED shares when a fill is on record: a
+    partially filled entry holds fewer shares than it asked for, and the dollar
+    P/L on this tile must not overstate the position. A pending entry
     (``entry_price`` null) carries ``pl: null``; the badge still reads off the
     quote (stop/target are always recorded). The size-independent fields come
     from ``_live_grades`` (shared with /api/books/open -- one home for the

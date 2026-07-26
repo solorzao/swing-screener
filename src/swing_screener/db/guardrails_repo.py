@@ -1,0 +1,898 @@
+"""Guardrails state machine + breaker queries for the live agent's brake.
+
+Every state change is an ATOMIC conditional UPDATE (rows-affected election)
+plus one appended ``AgentGuardrailEvent``; every read on the hot dispatch path
+is a COLUMN select (never a cached ORM entity, which the dispatch loop's
+long-lived Session would serve stale).
+
+Reads come in two flavours and the difference is load-bearing:
+``load_guardrails`` GET-OR-CREATES (enforcement + anything about to UPDATE --
+the row must exist or the conditional UPDATE matches nothing), while
+``peek_guardrails`` never writes (read-only surfaces: preflight, the cockpit
+polls). Same snapshot type, same freshness; only the empty-table behaviour differs. The election on ``trip`` is the ONLY
+cross-process lock the brake has -- the 8am digest job, the 4:15pm screen job
+and the cockpit all race the same WHERE clause, and whoever's UPDATE reports
+rowcount 1 owns the trip response (sweep + email); everyone else stands down.
+
+SQL Server portability (repo law): string comparisons render via ``==`` /
+``.in_()`` (``col = 'x'``), never a boolean ``.is_()``; ``.is_not(None)`` for
+NULL checks is fine.
+"""
+
+import json
+import logging
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
+from typing import Any, cast
+
+from sqlalchemy import CursorResult, ScalarSelect, Update, func, or_, select, update
+from sqlalchemy.orm import Session
+
+from swing_screener.db.models import AgentGuardrailEvent, AgentGuardrails, ExitEvent, PaperTrade
+from swing_screener.db.repo import execution_logs_for_day
+from swing_screener.settings import Settings
+
+log = logging.getLogger(__name__)
+
+# the one account whose trades are real money -- every breaker below is pinned to it.
+LIVE_ACCOUNT = "live"
+
+# the ONLY columns edit_limits may set. state / trip_id / trip_reason / sweep_state
+# move through the state machine (trip / clear / halt), NEVER through an edit --
+# the whitelist is what makes that a guarantee rather than a convention.
+# ``disabled_play_types`` is deliberately ABSENT too: scope is its own verb
+# (``set_disabled_play_types``). Three reasons it is not just a seventh limit --
+# (1) it is a SET, not a scalar, so "presence decides / null unsets" (the edit
+# body's rule) has no meaning for it; (2) it needs vocabulary validation the
+# positivity rule cannot express; (3) these six ARE the cockpit LIMITS form's
+# contract -- tests/cockpit/test_guardrails_router.py pins the REFUSAL text an edit
+# answers with ("not an editable limit column: <keys>"), so any name added here
+# silently stops being refused, and a scope change could ride an edit body that no
+# scope UI ever sent.
+_EDITABLE_LIMITS = (
+    "max_daily_loss_usd",
+    "max_trades_per_day",
+    "max_drawdown_usd",
+    "loss_streak_halt",
+    "hwm_anchor_date",
+    "hwm_baseline_usd",
+)
+# the breakers among them that must be POSITIVE numbers when set (None = unset
+# stays legal): a zero or negative cap would trip on the first close, and a
+# negative streak would trip on an empty book. The two hwm_* anchors are
+# unconstrained -- a baseline of 0.0 is a legitimate fresh-start anchor.
+_POSITIVE_LIMITS = (
+    "max_daily_loss_usd",
+    "max_trades_per_day",
+    "max_drawdown_usd",
+    "loss_streak_halt",
+)
+# the sweep_state vocabulary (matches the model comment); validated BEFORE the
+# UPDATE so a typo'd outcome fails loudly on every backend, not just Azure SQL.
+_SWEEP_OUTCOMES = ("pending", "partial", "complete")
+
+#: the ``sweep_state`` values that mean "the sweep has not finished -- RE-RUN it".
+#: PUBLIC, and owned HERE beside the vocabulary it partitions: five surfaces branch
+#: on it (``pipeline.guardrails``'s re-run owner, the digest's once-per-run resume,
+#: the hourly exit job's broker hoist, the cockpit DISARM's resume, and the
+#: Auditor's stuck-sweep rule), and they had five spellings of the same tuple.
+#: DERIVED rather than restated so the subset relation is structural -- adding an
+#: outcome above is the only way to change it, and a finished sweep is exactly the
+#: one state that is not "re-run me".
+INCOMPLETE_SWEEPS = tuple(o for o in _SWEEP_OUTCOMES if o != "complete")
+
+# the snapshot columns, selected raw so the read NEVER routes through the
+# Session's identity map (a long-lived dispatch Session would serve the entity
+# it cached before a cockpit HALT landed).
+_STATE_COLUMNS = (
+    AgentGuardrails.state,
+    AgentGuardrails.max_daily_loss_usd,
+    AgentGuardrails.max_trades_per_day,
+    AgentGuardrails.max_drawdown_usd,
+    AgentGuardrails.loss_streak_halt,
+    AgentGuardrails.hwm_anchor_date,
+    AgentGuardrails.hwm_baseline_usd,
+    AgentGuardrails.trip_id,
+    AgentGuardrails.trip_reason,
+    AgentGuardrails.sweep_state,
+    AgentGuardrails.disabled_play_types,
+)
+
+
+def _parse_disabled(raw: str | None) -> frozenset[str]:
+    """``"reversal, continuation"`` -> ``frozenset({'reversal', 'continuation'})``.
+
+    The ONE parse of the ``disabled_play_types`` column, shared by every read path
+    (the column select, and therefore both ``load_guardrails`` and
+    ``peek_guardrails``) so no two callers can disagree about what is disabled --
+    a subtraction that applied on one path and not the other would be a play type
+    the operator switched OFF still reaching the venue. Blank/NULL -> the empty set
+    (nothing subtracted); members are stripped, lowered and de-duplicated. NOT
+    validated here: validation belongs on the WRITE (``set_disabled_play_types``),
+    and a read that silently dropped an unrecognised stored member would WIDEN
+    scope -- the one direction this feature may never move.
+    """
+    return frozenset(m.strip().lower() for m in (raw or "").split(",") if m.strip())
+
+
+def _format_disabled(disabled: frozenset[str] | set[str]) -> str:
+    """The set back to its stored form: sorted, comma-joined, no spaces.
+
+    Sorted so the column is CANONICAL -- the same set always stores the same
+    string, which is what makes an old->new event diff readable and a
+    string-equality check on the column meaningful."""
+    return ",".join(sorted(disabled))
+
+
+@dataclass(frozen=True)
+class GuardrailsState:
+    """A point-in-time COLUMN snapshot of the single agent_guardrails row.
+
+    Deliberately not the ORM entity: a snapshot can't go stale in an identity
+    map, and it can't be mutated and flushed by accident. Fields mirror the
+    table minus ``id`` / ``updated_at``.
+    """
+
+    state: str
+    max_daily_loss_usd: float | None
+    max_trades_per_day: int | None
+    max_drawdown_usd: float | None
+    loss_streak_halt: int | None
+    hwm_anchor_date: date | None
+    hwm_baseline_usd: float
+    trip_id: int | None
+    trip_reason: str | None
+    sweep_state: str | None
+    #: PARSED from the comma-separated column (``_parse_disabled``) -- the snapshot
+    #: carries the set, never the raw string, so no consumer re-implements the split.
+    disabled_play_types: frozenset[str]
+
+
+def _canonical_row_id() -> "ScalarSelect[Any]":
+    """The canonical row's id, as a scalar subquery: MIN(id), oldest row wins.
+
+    Every conditional UPDATE pins on this so rowcount is capped at 1 even if the
+    empty-table seed race ever leaves TWO rows -- and MIN (not MAX) so writes
+    land on the SAME row the ascending read in ``load_guardrails`` returns.
+    ``.correlate(None)`` keeps the subquery self-contained inside an UPDATE on
+    the same table: auto-correlation would drop its FROM and turn the predicate
+    into a per-row ``id = min(id)`` tautology.
+    """
+    return select(func.min(AgentGuardrails.id)).correlate(None).scalar_subquery()
+
+
+def _select_state(session: Session) -> GuardrailsState | None:
+    """The canonical row as a snapshot, or None on an empty table.
+
+    THE one read every flavour funnels through (``load_guardrails`` and
+    ``peek_guardrails`` differ only in what they do with a None), which is what
+    keeps their parsing in lockstep: ``disabled_play_types`` is decoded HERE, once,
+    so there is no second place for the split to drift.
+    """
+    row = session.execute(
+        select(*_STATE_COLUMNS).order_by(AgentGuardrails.id).limit(1)
+    ).first()
+    if row is None:
+        return None
+    fields = dict(row._mapping)
+    fields["disabled_play_types"] = _parse_disabled(fields["disabled_play_types"])
+    return GuardrailsState(**fields)
+
+
+#: The state a brake row that does not exist yet WOULD have: byte-identical to the
+#: row ``load_guardrails`` seeds (the ``AgentGuardrails`` column defaults -- state
+#: 'ok', every breaker unset, baseline 0.0, no trip). It exists so a READ-ONLY caller
+#: (``peek_guardrails``) can answer honestly without writing: on an empty table the
+#: only truthful answer IS the default, and inventing it here beats an INSERT the
+#: caller never asked for. Keep in lockstep with the model's defaults.
+_UNSEEDED = GuardrailsState(
+    state="ok",
+    max_daily_loss_usd=None,
+    max_trades_per_day=None,
+    max_drawdown_usd=None,
+    loss_streak_halt=None,
+    hwm_anchor_date=None,
+    hwm_baseline_usd=0.0,
+    trip_id=None,
+    trip_reason=None,
+    sweep_state=None,
+    disabled_play_types=frozenset(),  # the column's "" default, parsed
+)
+
+
+def peek_guardrails(session: Session) -> GuardrailsState:
+    """The current brake state, READ-ONLY: the column select, or ``_UNSEEDED``.
+
+    Same snapshot ``load_guardrails`` returns, minus the get-or-create: an empty
+    table reads as the default row instead of creating one. For SURFACES -- preflight,
+    the cockpit polls -- which must not write: a poll that INSERTs would 503 the
+    masthead under a read-only DB grant, and a read-only check has no business
+    materialising rows.
+
+    NEVER call this before an UPDATE. Every transition (``trip`` / ``halt`` /
+    ``edit_limits``) get-or-creates FIRST precisely so its conditional UPDATE has a
+    target row; peeking there would leave the UPDATE matching nothing, and the brake
+    would silently no-op -- a halt that reports success and blocks nothing. Enforcement
+    paths keep ``load_guardrails``.
+    """
+    state = _select_state(session)
+    return state if state is not None else _UNSEEDED
+
+
+def load_guardrails(session: Session) -> GuardrailsState:
+    """The current brake state, get-or-creating the single default row.
+
+    A raw column select of the OLDEST row (``order_by(id).limit(1)`` -- the
+    canonical row; there is normally only one), bypassing the identity map so a
+    change committed by ANOTHER process/session (a cockpit HALT mid-dispatch)
+    is always visible. Every write is pinned to the same MIN(id) row (see
+    ``_canonical_row_id``), so reads and writes agree even if the empty-table
+    seed race ever leaves a stray second row. If no row exists yet, seed the
+    default row WITHOUT an explicit id: on SQL Server the PK is IDENTITY, and
+    an explicit id needs IDENTITY_INSERT permission the prod managed identity
+    may lack (see the model docstring).
+    """
+    state = _select_state(session)
+    if state is not None:
+        return state
+    session.add(AgentGuardrails(updated_at=datetime.now(UTC)))
+    session.commit()
+    seeded = _select_state(session)
+    assert seeded is not None  # we just committed the row
+    return seeded
+
+
+def _event(
+    *, kind: str, source: str, breaker: str = "", reason: str = "",
+    values_json: str = "{}",
+) -> AgentGuardrailEvent:
+    """Build one event row, truncated to the column bounds.
+
+    sqlite never enforces ``String(N)`` but Azure SQL raises -- and in ``trip``
+    the event insert runs BEFORE the state UPDATE, so an overlong breaker or
+    source would keep the brake from engaging in PROD only. Truncation makes
+    the append infallible on both backends.
+    """
+    return AgentGuardrailEvent(
+        created_at=datetime.now(UTC), kind=kind, breaker=breaker[:32],
+        reason=reason[:256], values_json=values_json, source=source[:16],
+    )
+
+
+def record_event(
+    session: Session, *, kind: str, source: str, breaker: str = "",
+    reason: str = "", values_json: str = "{}",
+) -> int:
+    """Append one AgentGuardrailEvent row and commit; returns its id."""
+    event = _event(kind=kind, source=source, breaker=breaker, reason=reason,
+                   values_json=values_json)
+    session.add(event)
+    session.commit()
+    session.refresh(event)
+    return event.id
+
+
+def _plain_update(session: Session, stmt: Update) -> int:
+    """Execute one conditional UPDATE in the CURRENT transaction; returns rowcount.
+
+    ``synchronize_session=False``: with a scalar subquery in the WHERE (the
+    MIN-id pin), the ORM's 'auto' sync falls back to 'fetch', which injects
+    RETURNING/OUTPUT and makes rowcount ride three layers of SQLAlchemy
+    internals (and OUTPUT hard-errors on SQL Server if the table ever gains a
+    trigger). No read in this module uses ORM entities, so there is nothing to
+    synchronize -- plain UPDATE, DBAPI-native rowcount on both backends.
+
+    Does NOT commit: the caller owns the transaction, so a state change and
+    its audit event can share one commit (a crash can never leave a transition
+    with no audit row). `Session.execute` is typed `Result`; an UPDATE actually
+    yields a `CursorResult`, which is what carries `rowcount` (repo.py's cast).
+    """
+    result = session.execute(stmt.execution_options(synchronize_session=False))
+    return cast("CursorResult[Any]", result).rowcount
+
+
+def trip(session: Session, *, breaker: str, reason: str, source: str) -> int | None:
+    """Trip the brake; the rows-affected election picks exactly ONE owner.
+
+    The 'trip' event is appended FIRST, unconditionally -- it is true that the
+    breaker breached, whoever wins the race. Then the conditional UPDATE
+    (``WHERE state != 'tripped'``): rowcount 1 means this caller owns the trip
+    response (sweep + email) and gets the event id back; rowcount 0 means
+    someone else already tripped and owns it -- return None, stand down. A
+    'halted' state IS overwritten: the trip is the stronger record (a breach
+    happened; the halt's dispatch block is preserved either way).
+
+    DELIBERATELY two transactions (the event commits before the UPDATE), unlike
+    every other transition: the event id must exist to become ``trip_id``, and
+    the breach record must survive even if this process dies mid-election.
+    """
+    load_guardrails(session)  # get-or-create so the UPDATE has a target
+    eid = record_event(session, kind="trip", source=source, breaker=breaker,
+                       reason=reason)
+    rowcount = _plain_update(
+        session,
+        update(AgentGuardrails)
+        .where(
+            AgentGuardrails.id == _canonical_row_id(),
+            AgentGuardrails.state != "tripped",
+        )
+        .values(state="tripped", trip_id=eid, trip_reason=reason[:256],
+                sweep_state="pending", updated_at=datetime.now(UTC)),
+    )
+    session.commit()
+    return eid if rowcount == 1 else None
+
+
+def clear(session: Session, *, acknowledged_trip_id: int, source: str) -> bool:
+    """Release a trip -- but ONLY the trip the operator actually acknowledged.
+
+    ``WHERE trip_id == acknowledged_trip_id AND state == 'tripped'``: a stale
+    ack (the brake re-tripped since the operator looked) matches nothing and
+    the brake stays on. No event on a failed clear -- nothing changed. Halts
+    release via ``clear_halt``, never through here. State change + audit event
+    share ONE commit, so a crash can't release the brake without its record.
+    """
+    rowcount = _plain_update(
+        session,
+        update(AgentGuardrails)
+        .where(
+            AgentGuardrails.id == _canonical_row_id(),
+            AgentGuardrails.trip_id == acknowledged_trip_id,
+            AgentGuardrails.state == "tripped",
+        )
+        .values(state="ok", trip_id=None, trip_reason=None, sweep_state=None,
+                updated_at=datetime.now(UTC)),
+    )
+    if rowcount != 1:
+        session.rollback()  # end the no-op write txn
+        return False
+    session.add(_event(kind="clear", source=source,
+                       reason=f"trip {acknowledged_trip_id} acknowledged and cleared"))
+    session.commit()
+    return True
+
+
+def halt(session: Session, *, source: str, reason: str = "manual HALT") -> bool:
+    """Manual brake: 'ok' -> 'halted'. Never downgrades a trip.
+
+    ``WHERE state == 'ok'``: a tripped brake stays tripped (the trip record --
+    trip_id / sweep bookkeeping -- must survive until its own clear). Event on
+    success only; returns False when the state was not 'ok'. State change +
+    audit event share ONE commit.
+    """
+    load_guardrails(session)  # get-or-create so the UPDATE has a target
+    rowcount = _plain_update(
+        session,
+        update(AgentGuardrails)
+        .where(
+            AgentGuardrails.id == _canonical_row_id(),
+            AgentGuardrails.state == "ok",
+        )
+        .values(state="halted", updated_at=datetime.now(UTC)),
+    )
+    if rowcount != 1:
+        session.rollback()  # end the no-op write txn
+        return False
+    session.add(_event(kind="halt", source=source, reason=reason))
+    session.commit()
+    return True
+
+
+def clear_halt(session: Session, *, source: str) -> bool:
+    """Release a manual halt: 'halted' -> 'ok'. Trips don't clear through here.
+
+    State change + audit event share ONE commit.
+    """
+    rowcount = _plain_update(
+        session,
+        update(AgentGuardrails)
+        .where(
+            AgentGuardrails.id == _canonical_row_id(),
+            AgentGuardrails.state == "halted",
+        )
+        .values(state="ok", updated_at=datetime.now(UTC)),
+    )
+    if rowcount != 1:
+        session.rollback()  # end the no-op write txn
+        return False
+    session.add(_event(kind="clear", source=source, reason="HALT cleared"))
+    session.commit()
+    return True
+
+
+def edit_limits(session: Session, *, source: str, **limits: object) -> None:
+    """Set breaker limits / the drawdown anchor -- and NOTHING else.
+
+    Only the whitelisted limit columns pass (ValueError otherwise), so the
+    state columns can never ride through an edit: editing a cap while tripped
+    leaves the brake tripped. The four breakers must be POSITIVE when set
+    (None = unset stays legal). Sets exactly the passed keys + ``updated_at``
+    and appends one 'edit' event whose values_json carries ``{"old": ...,
+    "new": ...}`` for those keys (dates as isoformat) -- UPDATE and event
+    share ONE commit.
+    """
+    unknown = [k for k in limits if k not in _EDITABLE_LIMITS]
+    if unknown:
+        raise ValueError(
+            f"edit_limits: not an editable limit column: {', '.join(sorted(unknown))}"
+        )
+    if not limits:
+        raise ValueError("edit_limits: no limits passed")
+    for key in _POSITIVE_LIMITS:
+        if key in limits and limits[key] is not None:
+            value = limits[key]
+            if not isinstance(value, int | float) or value <= 0:
+                raise ValueError(
+                    f"edit_limits: {key} must be a positive number or None "
+                    f"(unset), got {value!r}"
+                )
+
+    old = load_guardrails(session)  # get-or-create + the old values for the event
+
+    def _jsonable(value: object) -> object:
+        return value.isoformat() if isinstance(value, date) else value
+
+    old_values = {k: _jsonable(getattr(old, k)) for k in limits}
+    new_values = {k: _jsonable(v) for k, v in limits.items()}
+    _plain_update(
+        session,
+        update(AgentGuardrails)
+        .where(AgentGuardrails.id == _canonical_row_id())
+        .values(updated_at=datetime.now(UTC), **limits),
+    )
+    session.add(_event(
+        kind="edit", source=source,
+        reason="limits edited: " + ", ".join(sorted(limits)),
+        values_json=json.dumps({"old": old_values, "new": new_values},
+                               sort_keys=True),
+    ))
+    session.commit()
+
+
+def set_disabled_play_types(
+    session: Session, *, disabled: frozenset[str] | set[str], source: str
+) -> None:
+    """Set the cockpit's tighten-only scope SUBTRACTION -- and nothing else.
+
+    ``disabled`` is the WHOLE new set (not a delta): ``{'continuation'}`` disables
+    continuation, ``set()`` re-enables everything the env ceiling still allows. That
+    idempotent whole-set shape is what makes the board's toggle safe to press twice
+    and safe to race -- two operators cannot half-apply each other's intent.
+
+    TIGHTEN-ONLY IS STRUCTURAL, not a rule enforced here: this column can only be
+    SUBTRACTED from the env ceiling (``effective_execution_scope``), so no value
+    written here can widen scope. Re-enabling returns to the ceiling, never past it
+    -- exactly like releasing a HALT returns to what the master arm allows.
+
+    NEW members are validated against the canonical ``PLAY_TYPES`` vocabulary
+    (ValueError naming the invalid ones), which is also what keeps the stored string
+    inside ``String(64)``: an unbounded free-text set would fail on Azure SQL only.
+
+    ALREADY-STORED members are tolerated even when the vocabulary no longer contains
+    them, and that is a real case, not defensive padding: continuation has no
+    confirmed edge, so retiring a play type from ``PLAY_TYPES`` is a live
+    possibility. Validating the WHOLE set against the vocabulary would then lock the
+    board out permanently -- it POSTs the whole disabled set back on every toggle,
+    so a stale member nobody can remove would 422 every future scope change,
+    including the ones that would have removed it. Tolerating what is already there
+    keeps the operator able to act; it cannot widen scope either way, since a member
+    outside the vocabulary subtracts nothing that was ever dispatchable.
+
+    A MIN(id)-pinned plain UPDATE touches ONLY this column + ``updated_at`` -- the
+    state columns are untouchable here exactly as they are through ``edit_limits``,
+    so disabling a strategy while tripped leaves the brake tripped -- and ONE 'edit'
+    event (breaker ``'disabled_play_types'``, ``values_json`` carrying old -> new as
+    sorted lists) shares the SAME commit, so the Auditor sees every scope change.
+
+    NOT part of ``edit_limits``' whitelist by design (see ``_EDITABLE_LIMITS``):
+    scope is its own verb.
+    """
+    # Function-level import, mirroring settings._parse_play_types': a LAYERING guard,
+    # not a cycle break (``pipeline.proposed`` imports only ``config`` +
+    # ``pipeline.variants`` today, so a module-level import would not actually cycle).
+    # It is kept function-level because ``db`` sits UNDER ``pipeline`` -- the edge that
+    # exists is pipeline.execution -> this module -- and a module-level db -> pipeline
+    # import is the direction that WOULD close the loop the day anything in proposed's
+    # chain reaches back down here. See ``breached_breaker``'s "no cycle can ever form".
+    from swing_screener.pipeline.proposed import PLAY_TYPES  # noqa: PLC0415
+
+    wanted = frozenset(str(m).strip().lower() for m in disabled if str(m).strip())
+    # PEEK, not load: a REFUSED write must write nothing at all, not even the seed
+    # row. (The get-or-create the UPDATE needs happens below, after validation.)
+    # This read is also what makes the tolerance above possible: only members that
+    # are NEITHER in the vocabulary NOR already stored count as unknown.
+    stored = peek_guardrails(session).disabled_play_types
+    unknown = wanted - frozenset(PLAY_TYPES) - stored
+    if unknown:
+        raise ValueError(
+            f"set_disabled_play_types: not a known play type: "
+            f"{', '.join(sorted(unknown))} (valid: {', '.join(PLAY_TYPES)})"
+        )
+
+    old = load_guardrails(session)  # get-or-create + the old value for the event
+    _plain_update(
+        session,
+        update(AgentGuardrails)
+        .where(AgentGuardrails.id == _canonical_row_id())
+        .values(disabled_play_types=_format_disabled(wanted),
+                updated_at=datetime.now(UTC)),
+    )
+    session.add(_event(
+        kind="edit", source=source, breaker="disabled_play_types",
+        reason="execution scope: " + (
+            "disabled " + ", ".join(sorted(wanted)) if wanted
+            else "no play types disabled"),
+        values_json=json.dumps(
+            {"old": sorted(old.disabled_play_types), "new": sorted(wanted)},
+            sort_keys=True),
+    ))
+    session.commit()
+
+
+def record_sweep_outcome(
+    session: Session, *, trip_id: int, outcome: str, detail: str, source: str,
+    unprotected: Sequence[str] = (),
+) -> None:
+    """Record how the trip's sweep ended: 'complete' | 'partial' | 'pending'.
+
+    Keys on ``trip_id`` (not blindly on the row) so a sweep finishing late
+    never stamps a NEWER trip's bookkeeping; appends one 'sweep' event carrying
+    the outcome + detail either way (the sweep DID run -- the Auditor sees it
+    even if the trip was already cleared). The outcome vocabulary is validated
+    up front so a typo fails loudly on every backend, not just Azure SQL
+    (sweep_state is String(16)); UPDATE and event share ONE commit.
+
+    ``unprotected`` is the STRUCTURED half of what ``detail`` already says in
+    prose ("; UNPROTECTED: NVDA, AMD"). It rides ``values_json`` so a consumer
+    can branch on the FACT instead of parsing the sentence: the cockpit's DISARM
+    resume reads it back to raise the same red no-Escape alarm the raw sweep path
+    raises from its own return value (one alarm rule, all disarm modes). Prose is
+    for humans; this is the wire.
+    """
+    if outcome not in _SWEEP_OUTCOMES:
+        raise ValueError(
+            f"record_sweep_outcome: outcome must be one of {_SWEEP_OUTCOMES}, "
+            f"got {outcome!r}"
+        )
+    _plain_update(
+        session,
+        update(AgentGuardrails)
+        .where(
+            AgentGuardrails.id == _canonical_row_id(),
+            AgentGuardrails.trip_id == trip_id,
+        )
+        .values(sweep_state=outcome, updated_at=datetime.now(UTC)),
+    )
+    session.add(_event(
+        kind="sweep", source=source, reason=detail,
+        values_json=json.dumps({"trip_id": trip_id, "outcome": outcome,
+                                "unprotected": list(unprotected)}),
+    ))
+    session.commit()
+
+
+# ---------------------------------------------------------------- breaker inputs
+
+
+def trades_today(session: Session, *, run_date: date) -> int:
+    """Count of live orders that COUNT against the trades/day breaker today.
+
+    Reuses ``execution_logs_for_day`` so the breaker counts EXACTLY what the
+    limit engine counts (submitted_live / filled_live; a skipped clamp or a
+    rejected/canceled order never reserved anything).
+    """
+    return len(execution_logs_for_day(session, run_date=run_date, account=LIVE_ACCOUNT))
+
+
+def realized_usd_on(session: Session, *, run_date: date) -> float:
+    """The day's realized live $: sum of (exit - entry) * qty over closed trades.
+
+    The daily-loss breaker's input. Only closed ``live`` trades whose
+    ``exit_date == run_date`` AND that carry a broker-stamped ``qty`` count --
+    a NULL ``qty`` (legacy live row) contributes 0, because $ math skips
+    unsized rows, never guesses (PaperTrade.qty's contract).
+    ``func.coalesce(..., 0.0)`` makes an empty day 0.0 rather than NULL, and
+    ``== "closed"`` renders ``col = 'x'`` (portable to SQL Server), not a
+    boolean ``.is_()``.
+    """
+    stmt = select(
+        func.coalesce(
+            func.sum((PaperTrade.exit_price - PaperTrade.entry_price) * PaperTrade.qty),
+            0.0,
+        )
+    ).where(
+        PaperTrade.status == "closed",
+        PaperTrade.account == LIVE_ACCOUNT,
+        PaperTrade.exit_date == run_date,
+        PaperTrade.qty.is_not(None),
+        PaperTrade.exit_price.is_not(None),
+        PaperTrade.entry_price.is_not(None),
+    )
+    return float(session.scalar(stmt) or 0.0)
+
+
+def live_realized_usd_total(
+    session: Session, *, since: date | None = None
+) -> tuple[float, int]:
+    """The live book's realized ``$`` and the count of closes it could not price.
+
+    Returns ``(total_usd, n_unsized)``: the sum of ``(exit - entry) * qty`` over
+    closed ``live`` trades carrying all three, and the number of closed ``live``
+    trades missing any of them. An unpriceable row adds 0 to the sum and 1 to the
+    count -- ``$`` math skips NULL and never guesses (``PaperTrade.qty``'s column
+    contract), and the count is what lets a surface SAY dollars are missing
+    instead of quietly under-reporting. NULL ``qty`` is the legacy live row
+    (booked before fill materialization stamped share counts); R needs no share
+    count, so those rows still carry their full weight in every R aggregate.
+    "Closed" here is the STATUS alone (matching ``realized_usd_on``), NOT the R
+    side's closed + filled + graded (``analytics.performance._is_closed_filled``):
+    a closed-but-unfilled live row is unreachable today (reconcile refuses to close
+    a position without broker truth), and were one ever to appear it would land in
+    ``n_unsized`` -- the honest bucket for a close whose dollars cannot be proven.
+
+    ALL-TIME by default (the scoreboard's "all" window) -- unlike
+    ``realized_usd_on``, which is the daily-loss breaker's single-day input.
+    ``since`` cuts on ``exit_date >= since``, the same CLOSE-date axis
+    ``cockpit.scoreboard`` windows its R on (a NULL ``exit_date`` drops from a
+    windowed view exactly as ``scoreboard._in_window`` drops it), so a windowed
+    card's dollars can never contradict its own R. NOTE for any future
+    per-window variant: ``exit_date`` is the DAY OF RECORD stamped at close, not
+    necessarily the session the fill printed -- a late reconcile books the close
+    on the day it was recorded.
+
+    Portability mirrors ``realized_usd_on``: ``== "closed"`` renders ``col = 'x'``
+    (SQL Server-safe) rather than a boolean ``.is_()``, and ``func.coalesce``
+    makes an empty book 0.0 rather than NULL.
+    """
+    scope = [
+        PaperTrade.status == "closed",
+        PaperTrade.account == LIVE_ACCOUNT,
+    ]
+    if since is not None:
+        scope.append(PaperTrade.exit_date >= since)
+    priced = (PaperTrade.qty, PaperTrade.exit_price, PaperTrade.entry_price)
+    total = session.scalar(
+        select(
+            func.coalesce(
+                func.sum(
+                    (PaperTrade.exit_price - PaperTrade.entry_price) * PaperTrade.qty
+                ),
+                0.0,
+            )
+        ).where(*scope, *(col.is_not(None) for col in priced))
+    )
+    n_unsized = session.scalar(
+        select(func.count())
+        .select_from(PaperTrade)
+        .where(*scope, or_(*(col.is_(None) for col in priced)))
+    )
+    return float(total or 0.0), int(n_unsized or 0)
+
+
+def live_drawdown_usd(
+    session: Session, *, anchor_date: date | None, baseline_usd: float
+) -> float:
+    """Current $ drawdown from the high-water mark of cumulative realized live P&L.
+
+    Closed live trades in ExitEvent order (``ExitEvent.id`` ASC -- the close
+    sequence, not the calendar), optionally windowed to ``ExitEvent.created_date
+    >= anchor_date``. Unsized rows (NULL qty / prices) are excluded outright --
+    a guessed $ figure has no place in a breaker. ``cum`` and the high-water
+    mark both start at ``baseline_usd``; the result is ``hwm - cum`` at the end
+    of the walk (the CURRENT drawdown, not the max), floored at 0.0.
+    """
+    stmt = (
+        select(PaperTrade.entry_price, PaperTrade.exit_price, PaperTrade.qty)
+        .select_from(ExitEvent)
+        .join(PaperTrade, ExitEvent.trade_id == PaperTrade.id)
+        .where(
+            ExitEvent.account == LIVE_ACCOUNT,
+            PaperTrade.status == "closed",
+            PaperTrade.qty.is_not(None),
+            PaperTrade.exit_price.is_not(None),
+            PaperTrade.entry_price.is_not(None),
+        )
+        .order_by(ExitEvent.id)
+    )
+    if anchor_date is not None:
+        stmt = stmt.where(ExitEvent.created_date >= anchor_date)
+    cum = hwm = baseline_usd
+    for entry_price, exit_price, qty in session.execute(stmt):
+        cum += (exit_price - entry_price) * qty
+        hwm = max(hwm, cum)
+    return max(0.0, hwm - cum)
+
+
+def live_loss_streak(session: Session) -> int:
+    """Consecutive realized_r < 0 live closes, newest first (ExitEvent.id DESC).
+
+    Rows with a NULL ``trade_id`` (orphan events) or a NULL ``realized_r``
+    (ungraded close) are SKIPPED -- the scan continues past them rather than
+    resetting, so an orphan can neither extend nor break a streak. The first
+    ``realized_r >= 0`` stops the scan.
+    """
+    stmt = (
+        select(ExitEvent.trade_id, PaperTrade.realized_r)
+        .select_from(ExitEvent)
+        .outerjoin(PaperTrade, ExitEvent.trade_id == PaperTrade.id)
+        .where(ExitEvent.account == LIVE_ACCOUNT)
+        .order_by(ExitEvent.id.desc())
+    )
+    streak = 0
+    for trade_id, realized_r in session.execute(stmt):
+        if trade_id is None or realized_r is None:
+            continue
+        if realized_r < 0:
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def breached_breaker(
+    session: Session, g: GuardrailsState, *, run_date: date
+) -> tuple[str, str] | None:
+    """``(breaker_column_name, reason)`` for the FIRST breached breaker, else None.
+
+    The four per-breaker checks, extracted from ``execution._guardrail_block``
+    so the submit-side clamp and the dispatch-loop trip evaluation
+    (``pipeline.guardrails.evaluate_breakers``) share ONE definition of
+    "breached" -- same order, same thresholds, byte-identical reason strings
+    (tests/pipeline/test_execution_guardrails.py pins them, and the reasons echo
+    verbatim into cockpit-visible detail/trip_reason). Lives HERE rather than in
+    execution.py because it consumes only this module's queries + snapshot type,
+    and guardrails_repo must never import the pipeline layer (no cycle can ever
+    form). A pure READ + decide: no state consult (state is a trip's OUTCOME,
+    not an input), no clamp, no write. Each breaker is skipped when unset."""
+    if g.max_trades_per_day is not None:
+        n = trades_today(session, run_date=run_date)
+        if n >= g.max_trades_per_day:
+            return "max_trades_per_day", f"max trades/day: {n} >= {g.max_trades_per_day}"
+    if g.max_daily_loss_usd is not None:
+        day_usd = realized_usd_on(session, run_date=run_date)
+        if day_usd <= -g.max_daily_loss_usd:
+            return ("max_daily_loss_usd",
+                    f"max daily loss: ${day_usd:.2f} <= -${g.max_daily_loss_usd:.2f}")
+    if g.max_drawdown_usd is not None:
+        dd = live_drawdown_usd(
+            session, anchor_date=g.hwm_anchor_date, baseline_usd=g.hwm_baseline_usd)
+        if dd >= g.max_drawdown_usd:
+            return ("max_drawdown_usd",
+                    f"max drawdown: ${dd:.2f} >= ${g.max_drawdown_usd:.2f}")
+    if g.loss_streak_halt is not None:
+        s = live_loss_streak(session)
+        if s >= g.loss_streak_halt:
+            return "loss_streak_halt", f"loss streak: {s} >= {g.loss_streak_halt}"
+    return None
+
+
+def effective_scope_from_state(
+    settings: Settings, g: GuardrailsState
+) -> frozenset[str] | None:
+    """Effective execution scope = env CEILING - cockpit DISABLED. PURE -- no DB.
+
+    The two-level scope of the Strategy Board addendum, resolved:
+
+    * ceiling SET (``SWING_EXECUTE_PLAY_TYPES``) -> ``ceiling - disabled``. The
+      subtraction can only ever shrink it, so no cockpit state can dispatch a play
+      type the env ceremony did not already allow -- that is the whole tighten-only
+      guarantee, and it holds by the ALGEBRA of ``-``, not by a check someone could
+      forget. An empty result means nothing dispatches (fail-closed, same as an
+      all-garbage env value).
+    * ceiling UNSET (None = the operator has expressed no ceiling) -> the board may
+      still subtract, so the answer is ``frozenset(PLAY_TYPES) - disabled``: the
+      cockpit can tighten below an unset ceiling without an env deploy.
+    * ceiling UNSET and NOTHING disabled -> None. Two honest reasons, and neither is
+      "stale-vocabulary protection" -- that argument does not survive contact with
+      the bullet above: the moment ANYTHING is disabled the answer materialises
+      ``frozenset(PLAY_TYPES) - disabled``, so a stale vocabulary is load-bearing
+      from the first disable either way. The reasons are (a) NO REGRESSION: with
+      both knobs unset the seam returns exactly what it returned before Task 22, so
+      the subtraction is a pure addition and no existing dispatch path changes
+      behaviour until an operator actually disables something; and (b) the RETURN
+      TYPE cannot express "everything except X" -- ``frozenset[str] | None`` has one
+      token for "all" (None) and no way to say "all, minus X", so the None case is
+      simply the only one where "all" can still be said without naming names.
+
+    CONSUMER CONTRACT: ``None`` means ALL play types are in scope, never none --
+    display consumers must map None -> all-armed. Beware the falsy-None trap:
+    ``scope or frozenset()`` collapses the unscoped answer to the EMPTY set and
+    renders everything OUT of scope, which is the exact inverse of the truth. Test
+    ``is None`` explicitly (that is what both enforcement call sites do).
+
+    Split from the seeding entry point below the way ``mandate_from_state`` is split
+    from ``guardrails_mandate_ok``: ONE definition of effective scope, two ways in --
+    enforcement takes the ``load``-backed function, a read-only surface (Task 23's
+    ``GET /api/strategies``) pairs this with ``peek_guardrails`` and writes nothing.
+    """
+    ceiling = settings.execute_play_types
+    disabled = g.disabled_play_types
+    if ceiling is None:
+        if not disabled:
+            return None
+        # Function-level for the same LAYERING reason as ``set_disabled_play_types``'
+        # (see there): db must own no module-level edge INTO pipeline.
+        from swing_screener.pipeline.proposed import PLAY_TYPES  # noqa: PLC0415
+        return frozenset(PLAY_TYPES) - disabled
+    return ceiling - disabled
+
+
+def effective_execution_scope(
+    settings: Settings, *, session: Session
+) -> frozenset[str] | None:
+    """The set of play types execution may dispatch, or None = unscoped (all).
+
+    The ENFORCEMENT entry: the env ceiling MINUS the cockpit's ``disabled_play_types``
+    (see ``effective_scope_from_state`` for the algebra). Both call sites are the
+    dispatch loop's per-batch filter (``notify.run``) and ``LiveAdapter.submit``'s
+    step 0.6 -- the reason ``session`` was made REQUIRED keyword-only back in Task 8,
+    so no call site could silently skip this subtraction when it landed.
+
+    ``load_guardrails``, NOT ``peek``: both callers are WRITERS on paths that already
+    seed (submit's step 0.5 loads the brake one line earlier; the dispatch loop is a
+    job identity), and enforcement uniformly reads the seeding load -- the same
+    posture ``guardrails_mandate_ok`` takes. Nothing here is display: a read-only
+    surface must use ``effective_scope_from_state(settings, peek_guardrails(session))``
+    instead. (``GET /api/config``'s execution row is unaffected either way: it renders
+    the ENV knob only and reads no DB, so the read-only-grant poll stays write-free.)
+
+    Lives HERE rather than in settings.py because settings stays deliberately
+    import-light (a module-level PLAY_TYPES/ORM import there would hand every
+    settings importer those edges) and because ``disabled_play_types`` is an
+    ``agent_guardrails`` column this module owns (its tighten-only edit walks the
+    same event-audited state machine as every other brake write).
+    """
+    return effective_scope_from_state(settings, load_guardrails(session))
+
+
+#: the breakers a real-money endpoint MUST have set, in the order the mandate reports
+#: them. ``loss_streak_halt`` is deliberately absent -- it is optional by design.
+MANDATORY_BREAKERS = ("max_daily_loss_usd", "max_trades_per_day", "max_drawdown_usd")
+
+
+def missing_mandate_breakers(g: GuardrailsState) -> list[str]:
+    """The mandatory breakers this snapshot leaves unset, in mandate order. PURE.
+
+    The completeness half of the mandate, split out so the ENFORCEMENT verdict
+    (``mandate_from_state``, which also refuses on a non-'ok' state) and READERS that
+    want the configuration alone share ONE definition -- the System Behavior Auditor's
+    unset-mandate rule grades conduct off this list, and a restated copy there could
+    drift from what actually gates real money."""
+    return [name for name in MANDATORY_BREAKERS if getattr(g, name) is None]
+
+
+def mandate_from_state(g: GuardrailsState) -> tuple[bool, str]:
+    """The mandate, evaluated over a snapshot you already hold. PURE -- no DB, no write.
+
+    Returns ``(True, "")`` only if ``max_daily_loss_usd``, ``max_trades_per_day``
+    AND ``max_drawdown_usd`` are ALL set and the brake state is 'ok'. Otherwise
+    refuses, naming the FIRST failing item so a misconfig reads as one concrete
+    cause (mirrors ``settings.real_money_limits_ok``). ``loss_streak_halt`` is
+    optional and never part of the mandate.
+
+    The reason strings are PINNED: they are logged verbatim as ``rejected_live``
+    execution details and rendered verbatim on the cockpit's safety screen, so a
+    surface that wants extra context appends to them at ITS layer, never here.
+
+    Split out of ``guardrails_mandate_ok`` so a read-only surface can pair it with
+    ``peek_guardrails`` (one snapshot, no seed) while enforcement keeps the seeding
+    entry point below -- ONE definition of "may real money dispatch", two ways in.
+    """
+    missing = missing_mandate_breakers(g)
+    if missing:
+        return False, f"{missing[0]} is not set"  # the FIRST failing item, in order
+    if g.state != "ok":
+        return False, f"guardrails state is {g.state}"
+    return True, ""
+
+
+def guardrails_mandate_ok(session: Session) -> tuple[bool, str]:
+    """The ENFORCEMENT entry to the mandate: ``mandate_from_state(load_guardrails(...))``.
+
+    Unchanged behaviour for every enforcement caller (execution's real-money guard,
+    the dispatch-loop consult): it get-or-creates the row, so the brake always has a
+    target for the UPDATE a trip would issue moments later. Read-only SURFACES use
+    ``mandate_from_state(peek_guardrails(session))`` instead -- same verdict, no write.
+    """
+    return mandate_from_state(load_guardrails(session))

@@ -92,6 +92,14 @@ class Settings:
     # absent env preserves today's behavior. Only an EXPLICIT off value disables (a
     # garbage value must not silently kill a scheduled report -- bracket_orders parse).
     market_report_enabled: bool = True
+    # Execution-scope CEILING (SWING_EXECUTE_PLAY_TYPES): the play types the dispatch
+    # loop may submit, or None = unscoped (all -- today's behavior). Parsed like
+    # deep_analysis_kinds then VALIDATED against the canonical PLAY_TYPES vocabulary:
+    # an unknown member is dropped with a loud warning, and an all-garbage value
+    # leaves the EMPTY set = allow-NONE (fail-closed, the mode-coercion posture --
+    # garbage never widens scope). Task 22's cockpit subtraction sits BENEATH this
+    # ceiling (see guardrails_repo.effective_execution_scope).
+    execute_play_types: frozenset[str] | None = None
     # Route the digest's per-pick conviction calls through the Message Batches API (50%
     # off ALL tokens) instead of synchronous calls (SWING_DEEP_ANALYSIS_BATCH). Default
     # OFF -- opt-in only: it trades up-to-~1h added digest-email latency for the discount,
@@ -155,6 +163,43 @@ def _float(value: str | None, default: float) -> float:
         return float(value)
     except ValueError:
         return default
+
+
+def _parse_play_types(value: str | None) -> frozenset[str] | None:
+    """Parse ``SWING_EXECUTE_PLAY_TYPES`` -- the execution-scope CEILING (fail-closed).
+
+    Unset or blank -> ``None`` = unscoped (every play type may dispatch -- today's
+    behavior, so the default changes nothing). Otherwise the value is split /
+    stripped / lowered like ``deep_analysis_kinds``, then each member is validated
+    against the canonical ``PLAY_TYPES`` vocabulary: an unknown member is DROPPED
+    with a loud warning (the unknown-mode posture), and if NOTHING valid survives
+    the result is the EMPTY set = allow-NONE (nothing dispatches). Garbage never
+    widens scope.
+    """
+    if value is None or not value.strip():
+        return None
+    # Function-level import: a LAYERING guard, not a cycle break. ``pipeline.proposed``
+    # imports only ``config`` + ``pipeline.variants``, so a module-level import here
+    # would not cycle today -- but this module is the import-light LEAF every layer
+    # pulls in, and a module-level pipeline edge would hand every settings importer
+    # (db, notify, cockpit, the CLIs) the pipeline layer, and would close a real loop
+    # the day anything in proposed's chain imports settings. Kept function-level so
+    # neither can happen.
+    from swing_screener.pipeline.proposed import PLAY_TYPES  # noqa: PLC0415
+    members = {m.strip().lower() for m in value.split(",") if m.strip()}
+    scope = frozenset(m for m in members if m in PLAY_TYPES)
+    for unknown in sorted(members - scope):
+        log.warning(
+            "Unknown play type %r in SWING_EXECUTE_PLAY_TYPES; dropping it "
+            "(valid: %s).", unknown, ", ".join(PLAY_TYPES))
+    if not scope:
+        # Unconditional whenever a NON-BLANK value leaves nothing valid (an
+        # all-garbage list, or a member-free value like ","): the operator set
+        # the knob, so the allow-NONE outcome must be said out loud.
+        log.warning(
+            "SWING_EXECUTE_PLAY_TYPES=%r contains no valid play types; execution "
+            "scope is EMPTY -- nothing will dispatch.", value)
+    return scope
 
 
 def load_settings() -> Settings:
@@ -222,6 +267,7 @@ def load_settings() -> Settings:
             env.get("SWING_MARKET_REPORT", "on").strip().lower()
             not in {"off", "0", "false", "no"}
         ),
+        execute_play_types=_parse_play_types(env.get("SWING_EXECUTE_PLAY_TYPES")),
     )
 
 

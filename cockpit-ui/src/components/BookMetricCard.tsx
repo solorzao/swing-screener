@@ -15,7 +15,12 @@ import { StatChip } from './StatChip'
    THIN faces); a $-only book shows formatted realized dollars with no chip; an empty
    book (n_closed === 0), or the shouldn't-happen R-book-with-null-expectancy, shows a
    muted em dash — an honest-empty face, never a fabricated zero. No per-tile equity
-   curve here: the combined curve is a MetricsScreen footer (design decision). */
+   curve here: the combined curve is a MetricsScreen footer (design decision).
+
+   The realized-$ line admits its own gaps: a tile sending n_unsized > 0 (the live book
+   and the pool that inherits its rows) says how many closes were left OUT of that
+   figure for want of a broker share count — an under-report the tile names rather than
+   an estimate it invents. */
 
 export function BookMetricCard({
   card,
@@ -27,6 +32,10 @@ export function BookMetricCard({
   caption?: string
 }) {
   const empty = card.n_closed === 0
+  // Closed trades whose dollars are MISSING from realized_usd (no share count on a
+  // legacy live row; the combined pool inherits the live book's). > 0 turns the
+  // realized line into an admitted under-report — never a quietly padded guess.
+  const unsized = card.n_unsized ?? 0
   // An R book whose expectancy is null despite closes shouldn't occur, but the
   // union types it Stat | null — treat it as the honest-empty face too.
   const noRead = empty || (card.unit === 'R' && card.expectancy === null)
@@ -90,7 +99,17 @@ export function BookMetricCard({
       )}
 
       {!noRead && card.unit === 'R' && card.realized_usd !== null && (
-        <div className="bmc-realized">realized {fmtSignedUsd(card.realized_usd)}</div>
+        <div
+          className="bmc-realized"
+          title={
+            unsized > 0
+              ? `${unsized} closed trade${unsized === 1 ? '' : 's'} carried no share count — those dollars are missing here, never estimated`
+              : undefined
+          }
+        >
+          realized {fmtSignedUsd(card.realized_usd)}
+          {unsized > 0 && ` · ${unsized} unsized excluded`}
+        </div>
       )}
 
       {caption !== undefined && <div className="bmc-caption">{caption}</div>}

@@ -7,12 +7,13 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from swing_screener.cockpit.heartbeats import _eod_utc
-from swing_screener.cockpit.routers.reference import _day_ts
+from swing_screener.cockpit.routers.reference import BOOKKEEPING_EMAIL_KINDS, _day_ts
 from swing_screener.db.models import (
     EmailLog,
     ExitEvent,
     Universe,
 )
+from swing_screener.notify import alerts
 from tests.cockpit.conftest import (
     _analysis_row,
     _client_and_engine,
@@ -161,6 +162,32 @@ def test_emails_limit_default_100(tmp_path: Path) -> None:
     assert emails[-1]["subject"] == "digest 5"
     assert len(client.get("/api/emails", params={"limit": 5}).json()["emails"]) == 5
     assert client.get("/api/emails", params={"limit": 0}).status_code == 422
+
+
+def test_email_surfaces_hide_per_row_rejection_coverage(tmp_path: Path) -> None:
+    """``execution-cover`` rows are BOOKKEEPING, not sent emails: the
+    live-rejection alert writes one per alerted ExecutionLog id so the hourly
+    retry can join on coverage (``notify.alerts``), plus ONE ``execution``
+    display row for the email itself. Both surfaces that render EmailLog -- the
+    digest log and the Zone E ticker -- must show the one email, not N rows."""
+    client, engine = _client_and_engine(tmp_path)
+    with Session(engine) as s:
+        s.add(EmailLog(sent_at=datetime(2026, 7, 10, 12, 0), kind="execution",
+                       subject="Swing Screener — 3 Live Orders Rejected",
+                       run_date=date(2026, 7, 10), alert_key="sethash"))
+        for i in (11, 12, 13):
+            s.add(EmailLog(sent_at=datetime(2026, 7, 10, 12, 0), kind="execution-cover",
+                           subject="Swing Screener — 3 Live Orders Rejected",
+                           run_date=date(2026, 7, 10), alert_key=f"xlog-{i}"))
+        s.commit()
+
+    emails = client.get("/api/emails").json()["emails"]
+    assert [m["kind"] for m in emails] == ["execution"]  # ONE row per email sent
+    ticker = client.get("/api/ticker").json()["events"]
+    assert [e["detail"] for e in ticker if e["source"] == "email"] == ["execution"]
+    # the router restates the kind as a literal (no cockpit -> notify import);
+    # this is the anti-drift pin against the module that WRITES those rows.
+    assert alerts.REJECTION_COVER_KIND in BOOKKEEPING_EMAIL_KINDS
 
 
 # ---- review fixes: stored-error leak posture + the lifecycle-ordered window

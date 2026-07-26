@@ -23,7 +23,25 @@ from typing import Protocol
 
 # The order lifecycle states a broker order can be in. The two "open" states (an order the
 # venue may still fill) are the ones ``list_open_orders`` surfaces; the rest are terminal.
-_OPEN_STATUSES = ("new", "partially_filled")
+# PUBLIC because "is this order still WORKING at the venue?" is asked outside this module
+# too -- ``disarm.ensure_stop_protection`` asks it of an order it found by client_order_id
+# (a duplicate-id rejection is only benign if that order is actually still working).
+OPEN_STATUSES = ("new", "partially_filled")
+
+
+def broker_error_detail(exc: BaseException) -> str:
+    """The ONLY wording a broker failure may wear on a checklist line, a recorded
+    ticket detail, or an HTTP detail: the exception CLASS name, never the message --
+    broker/httpx messages embed venue hosts, URLs, and credentials, and these details
+    reach the cockpit wire verbatim. Operator debuggability belongs in the LOG
+    (callers log with ``exc_info``), never in the detail. Lives HERE -- the leaf
+    broker-contract module -- so every consumer (the preflight checklist, the
+    execution adapters, the guardrails sweep, the cockpit routers) shares one home
+    WITHOUT dragging in preflight's autonomy -> reflect -> replay import chain: the
+    old ``preflight.py`` home gave ``guardrails -> preflight`` an edge that closed
+    the replay<->run import cycle and forced ``pipeline.run`` to lazy-import its own
+    guardrails (dissolved in Task 11)."""
+    return f"broker error ({type(exc).__name__})"
 
 
 @dataclass(frozen=True)
@@ -109,6 +127,7 @@ class BrokerClient(Protocol):
 
     def submit_order(self, spec: BrokerOrderSpec) -> BrokerOrder: ...
     def get_order(self, broker_order_id: str) -> BrokerOrder: ...
+    def get_order_by_client_id(self, client_order_id: str) -> BrokerOrder | None: ...
     def list_open_orders(self) -> list[BrokerOrder]: ...
     def get_positions(self) -> list[BrokerPosition]: ...
     def get_account(self) -> BrokerAccount: ...
@@ -123,9 +142,10 @@ class FakeBroker:
     State is two dicts: ``_orders`` (broker_order_id -> BrokerOrder) and ``_positions``
     (symbol -> BrokerPosition). ``submit_order`` is idempotent on ``client_order_id`` and
     assigns ids from an incrementing counter (``fake-0``, ``fake-1``, ...). The protocol
-    reads (``get_order`` / ``list_open_orders`` / ``get_positions``) and the cancels behave
-    like a real venue; the scripting helpers (``fill`` / ``partially_fill`` / ``reject`` /
-    ``close_position``) let a caller drive an order through its lifecycle by hand."""
+    reads (``get_order`` / ``get_order_by_client_id`` / ``list_open_orders`` /
+    ``get_positions``) and the cancels behave like a real venue; the scripting helpers
+    (``fill`` / ``partially_fill`` / ``reject`` / ``close_position``) let a caller drive
+    an order through its lifecycle by hand."""
 
     name = "fake"
 
@@ -192,9 +212,17 @@ class FakeBroker:
     def get_order(self, broker_order_id: str) -> BrokerOrder:
         return self._orders[broker_order_id]
 
+    def get_order_by_client_id(self, client_order_id: str) -> BrokerOrder | None:
+        """The order submitted under ``client_order_id``, or None when the venue knows no
+        such order -- the LiveAdapter's orphan-adoption lookup (recovering a venue order
+        whose ExecutionLog write died with the process). Reads the same idempotency map
+        ``submit_order`` maintains, so it is consistent with the scripted order store."""
+        broker_order_id = self._by_client_id.get(client_order_id)
+        return None if broker_order_id is None else self._orders[broker_order_id]
+
     def list_open_orders(self) -> list[BrokerOrder]:
         """Every order still working at the venue (``new`` / ``partially_filled``)."""
-        return [o for o in self._orders.values() if o.status in _OPEN_STATUSES]
+        return [o for o in self._orders.values() if o.status in OPEN_STATUSES]
 
     def get_positions(self) -> list[BrokerPosition]:
         return list(self._positions.values())

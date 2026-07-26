@@ -6,10 +6,12 @@ drives the whole lifecycle through the in-memory ``FakeBroker`` + an in-memory D
     LiveAdapter.submit -> reconcile_live (materialize from broker fill) -> reconcile_live
     (exit on a venue close)
 
-and pins down the four load-bearing properties:
+and pins down the five load-bearing properties:
 
 * the live PaperTrade is materialized from the BROKER's fill price (``filled_avg_price``),
   NOT the intent's limit price;
+* the materialized trade carries ``qty`` = the broker's ``filled_qty`` (venue truth, NOT the
+  ticket's requested shares) -- the share count realized-$ math multiplies by;
 * materialization is idempotent -- the ``submitted_live`` -> ``filled_live`` status flip on
   the ExecutionLog is the guard, so a re-poll never opens a second position;
 * the exit is reconciled from broker truth (the venue close removes the position) with a
@@ -133,6 +135,40 @@ def test_partial_fill_materializes_from_broker_price() -> None:
         assert pt.risk == 100.25 - 94.0
         log = s.query(ExecutionLog).one()
         assert log.status == "filled_live" and log.broker_status == "partially_filled"
+
+
+# ---------------------------------------------------------------------------
+# the materialized live trade carries qty = the broker's filled_qty -- the share count
+# the realized-$ math multiplies by downstream.
+# ---------------------------------------------------------------------------
+def test_materialized_live_trade_carries_qty() -> None:
+    with _session() as s:
+        broker = FakeBroker(real_money=False)
+        oid = _submit(s, broker, _intent(shares=3))
+        broker.fill(oid, price=99.5, qty=3)
+
+        reconcile_live(s, broker, today=TODAY)
+
+        pt = s.query(PaperTrade).one()
+        assert pt.account == "live"
+        assert pt.qty == 3
+
+
+# ---------------------------------------------------------------------------
+# a partial fill stamps the BROKER's filled_qty, NOT the ticket's requested shares --
+# a 1-of-3 fill booked as qty=3 would triple the reported $ P&L.
+# ---------------------------------------------------------------------------
+def test_partial_fill_stamps_filled_qty_not_ticket_shares() -> None:
+    with _session() as s:
+        broker = FakeBroker(real_money=False)
+        oid = _submit(s, broker, _intent(shares=3))
+        broker.partially_fill(oid, price=100.25, qty=1)  # 1 of the 3 requested shares
+
+        reconcile_live(s, broker, today=TODAY)
+
+        pt = s.query(PaperTrade).one()
+        assert pt.account == "live"
+        assert pt.qty == 1                               # venue truth wins over the ticket
 
 
 # ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
 from swing_screener.cockpit.common import ActionNonce
+from swing_screener.cockpit.routers.reference import BOOKKEEPING_EMAIL_KINDS
 from swing_screener.db.models import (
     AnalysisRequest,
     AnalystCall,
@@ -168,7 +169,16 @@ def _change_token(engine: Engine, edge_dir: Path) -> dict[str, str]:
             "trade": _watermark(session.scalar(select(func.max(PaperTrade.id)))),
             "trade_real": _watermark(session.scalar(select(func.max(Trade.id)))),
             "exit": _watermark(session.scalar(select(func.max(ExitEvent.id)))),
-            "email": _watermark(session.scalar(select(func.max(EmailLog.sent_at)))),
+            # BOOKKEEPING kinds excluded, exactly as both email SURFACES exclude
+            # them (routers/reference.py's ticker + email list, the only two things
+            # this watermark can wake): one alerted rejection writes N per-row
+            # ``execution-cover`` coverage rows, and waking every open cockpit for
+            # a row neither surface will render is a refetch with nothing to show.
+            # The ONE display row per email still moves the mark.
+            "email": _watermark(session.scalar(
+                select(func.max(EmailLog.sent_at))
+                .where(EmailLog.kind.not_in(BOOKKEEPING_EMAIL_KINDS))
+            )),
             "weather": _watermark(
                 session.scalar(select(func.max(MarketReport.run_date)))
             ),

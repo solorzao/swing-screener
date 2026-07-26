@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { ApiError, postDisarm } from '../lib/api'
-import type { DisarmResult, Gate } from '../lib/api'
+import { ApiError, D503_SWEEP, postDisarm } from '../lib/api'
+import type { DisarmRaw, DisarmResult, DisarmResumePreview, Gate } from '../lib/api'
+import { HelpTerm } from './HelpTerm'
 import { HoldToConfirm } from './HoldToConfirm'
 
 /* The DISARM subsystem (the sixth action — plan Task 15 / scope decision 1),
@@ -17,7 +18,17 @@ import { HoldToConfirm } from './HoldToConfirm'
    in flight" render as distinct dismissible panels. A REAL-run failure (503 or
    the network dying mid-POST) is rendered PARTIAL-loud: the router invalidates
    the snapshot and bumps the wake nonce even on the failure path, because a
-   partial disarm has still moved venue state. */
+   partial disarm has still moved venue state.
+
+   MODE-AWARE (Task 16). The response is a `mode`-tagged union and `mode` alone
+   is what this branches on. `raw` renders exactly as it always has. On a TRIPPED
+   book with an unfinished sweep the endpoint routes through the trip's own
+   resume instead (so both processes derive the same client_order_ids and the
+   venue collapses the duplicate-stop race): `guardrail-resume` cannot itemize
+   what it moved — the pipeline returns a bool — so it renders the sweep's own
+   recorded summary and NEVER the empty arrays, which would read as "nothing
+   moved". Its dry run (`guardrail-resume-preview`) is the one resume path that
+   can itemize, and it does. */
 type DisarmPhase =
   | { kind: 'idle' }
   | { kind: 'preview'; result: DisarmResult | null } // holding; null = in flight
@@ -30,8 +41,15 @@ function disarmFailure(err: unknown, realRun: boolean): DisarmPhase {
   if (err instanceof ApiError) {
     if (err.status === 409) return { kind: 'blocked', detail: err.message }
     // A dry-run failure moved nothing (dry runs never touch the venue); a
-    // real-run failure may have moved SOME venue state before raising.
-    return { kind: 'failed', detail: err.message, partial: realRun }
+    // real-run failure may have moved SOME venue state before raising. The
+    // resume's own 503 (`guardrail sweep did not complete` — one of the three
+    // documented prefixes) is exactly that case stated by the server, so it maps
+    // onto the same PARTIAL panel even if it ever arrives off a non-real run.
+    return {
+      kind: 'failed',
+      detail: err.message,
+      partial: realRun || err.message.startsWith(D503_SWEEP),
+    }
   }
   // A bare TypeError — the backend itself is unreachable. For a real run the
   // POST may or may not have executed server-side: outcome unknown, say so.
@@ -44,11 +62,15 @@ function disarmFailure(err: unknown, realRun: boolean): DisarmPhase {
   }
 }
 
-/** What a run reported, rendered EXACTLY from the wire — verbs follow the
- * response's own dry_run flag, counts come from the arrays as returned, and a
+/** The ITEMIZED rendering — raw runs and the resume PREVIEW, the two shapes whose
+ * arrays actually describe the venue. Rendered EXACTLY from the wire: verbs follow
+ * the response's own dry_run flag, counts come from the arrays as returned, and a
  * non-empty `unprotected` is the alarm. No optimistic rendering, no fabricated
- * zeros: an empty list renders as the wire's honest "none". */
-function DisarmOutcome({ result }: { result: DisarmResult }) {
+ * zeros: an empty list renders as the wire's honest "none".
+ *
+ * NEVER called for `guardrail-resume`: that mode's arrays are empty because the
+ * pipeline returns a bool, and "cancelled no entry orders" would be a lie. */
+function DisarmItemized({ result }: { result: DisarmRaw | DisarmResumePreview }) {
   const dry = result.dry_run
   return (
     <>
@@ -74,13 +96,77 @@ function DisarmOutcome({ result }: { result: DisarmResult }) {
             : 'none'
           : `stops for ${result.stops_restored.join(', ')} — at the recorded level, copied never computed`}
       </div>
-      {result.unprotected.length > 0 && (
-        <div className="dz-alarm" role="alert">
-          UNPROTECTED — no recorded stop level anywhere for{' '}
-          {result.unprotected.join(', ')}. Left alone (never auto-closed) — this
-          needs your hand at the broker.
+      <UnprotectedAlarm unprotected={result.unprotected} />
+    </>
+  )
+}
+
+/** The UNPROTECTED alarm, rendered from `result.unprotected` and from nothing
+ * else — SAME component, SAME condition, every mode. The wire now reports the
+ * field faithfully on all three (the resume reads it back off its sweep event's
+ * values_json), so the alarm posture can no longer depend on which disarm path
+ * ran: identical venue state used to render red-and-no-Escape on the raw path
+ * and as calm body text on the resume. */
+function UnprotectedAlarm({ unprotected }: { unprotected: string[] }) {
+  if (unprotected.length === 0) return null
+  return (
+    <div className="dz-alarm" role="alert">
+      UNPROTECTED — no recorded stop level anywhere for {unprotected.join(', ')}.
+      Left alone (never auto-closed) — this needs your hand at the broker.
+    </div>
+  )
+}
+
+/** The venue-side client_order_id prefix both processes derive from the trip.
+ * Diagnostic, and deliberately behind a disclosure: an operator mid-emergency
+ * should not be handed a raw order key they did not ask for. */
+function ResumeKey({ resumeKey }: { resumeKey: string }) {
+  return (
+    <details className="dz-key">
+      <summary>venue key</summary>
+      <span className="mono">{resumeKey}</span>
+    </details>
+  )
+}
+
+/** The mode dispatcher — `mode` alone decides, never the array contents. */
+function DisarmOutcome({ result }: { result: DisarmResult }) {
+  if (result.mode === 'raw') return <DisarmItemized result={result} />
+  if (result.mode === 'guardrail-resume') {
+    return (
+      <>
+        <div className="dz-row">
+          <span className="dz-verb">resumed</span> the sweep for trip #{result.trip_id}{' '}
+          — the same client_order_ids the tripping process derives, so the venue
+          collapses the race instead of stacking a second live stop.
         </div>
-      )}
+        {/* The sweep event's OWN recorded summary, verbatim: the same text the
+            Auditor and the guardrails history show, so the three cannot disagree.
+            The arrays are empty on this path and are NOT rendered. */}
+        <div className="dz-row">{result.detail}</div>
+        <div className="dz-row">
+          <span className="dz-verb">
+            <HelpTerm term="sweep (guardrail)">sweep</HelpTerm>
+          </span>{' '}
+          {result.sweep_state ?? 'unknown'}
+        </div>
+        {/* The one array this mode DOES fill (routers/safety.py `_sweep_record`):
+            a position with no stop anywhere is an alarm, not a count. */}
+        <UnprotectedAlarm unprotected={result.unprotected} />
+        <ResumeKey resumeKey={result.resume_key} />
+      </>
+    )
+  }
+  return (
+    <>
+      <div className="dz-row">
+        <span className="dz-verb">would resume</span> the sweep for trip #
+        {result.trip_id}
+        {result.sweep_state !== null && ` (sweep ${result.sweep_state})`} rather than
+        running a fresh one
+      </div>
+      <DisarmItemized result={result} />
+      <ResumeKey resumeKey={result.resume_key} />
     </>
   )
 }
@@ -106,6 +192,9 @@ export function DisarmControl({ gate }: { gate: Gate | null }) {
     phase.kind === 'done' || phase.kind === 'blocked' || phase.kind === 'failed'
   // Alarm panels: unprotected positions, or a partial disarm. These demand an
   // explicit focused/pointered dismissal (no Escape) — deliberate friction.
+  // MODE-BLIND on purpose: `unprotected` is on every member of the wire union
+  // and every mode fills it faithfully, so the loud/no-Escape posture is decided
+  // by the VENUE STATE, never by which code path reported it.
   const alarmUp =
     (phase.kind === 'done' && phase.result.unprotected.length > 0) ||
     (phase.kind === 'failed' && phase.partial)
@@ -289,9 +378,17 @@ export function DisarmControl({ gate }: { gate: Gate | null }) {
             // No role here: the panel itself is the alert on this path — a
             // nested role="alert" would double-announce.
             <div className="dz-alarm">
-              The venue may be PARTIALLY disarmed — orders cancelled before the
-              failure stay cancelled. Verify on the Execution Safety screen (7)
-              and at the broker before trusting any resting order.
+              {phase.detail.startsWith(D503_SWEEP)
+                ? // The trip's own sweep, resumed and still not finished. It is
+                  // RETRYING, not dead: every cycle re-runs it and the brake stays
+                  // tripped — but the venue may still hold working entry orders.
+                  'The trip’s sweep did NOT complete — it stays RETRYING (every ' +
+                  'cycle re-runs it, and holding DISARM again resumes the same ' +
+                  'sweep). Resting entry orders may still be working: verify at the ' +
+                  'broker before trusting the book.'
+                : 'The venue may be PARTIALLY disarmed — orders cancelled before the ' +
+                  'failure stay cancelled. Verify on the Execution Safety screen (7) ' +
+                  'and at the broker before trusting any resting order.'}
             </div>
           ) : (
             <div className="dz-foot">the dry run touched nothing — the venue is unchanged</div>

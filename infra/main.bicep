@@ -85,6 +85,21 @@ param riskPct string = ''
 @description('Execution adapter (SWING_EXECUTION_MODE): off | manual | paper | live. Empty = code default off.')
 param executionMode string = ''
 
+// Both empty by default = the intended prod state: no broker, real money disallowed. A
+// re-provision can therefore never arm real money as a side effect. Setting them is the
+// deliberate arming ceremony (docs/runbooks/arming-alpaca-live.md), not a routine deploy.
+@description('Broker adapter for the live path (SWING_BROKER): "alpaca". Empty = no broker -> live falls back to NoOp.')
+param broker string = ''
+
+@description('Explicit real-money flag (SWING_BROKER_ALLOW_REAL_MONEY): "yes"/"true"/"1"/"on". Empty = false. One of the three live locks.')
+param allowRealMoney string = ''
+
+// Not a lock -- it decides WHICH strategy the money goes behind. Empty (the default) is
+// the PERMISSIVE answer: every play type dispatches, continuation included. Set it in the
+// same act as the two params above so a drift-safe re-provision can express the scope.
+@description('Play types the agent may execute (SWING_EXECUTE_PLAY_TYPES), comma separated, e.g. "reversal". Empty = allow-all.')
+param executePlayTypes string = ''
+
 @description('Hard cap: dollars of recorded order notional per account-day (SWING_MAX_DAILY_NOTIONAL). Empty = unbounded.')
 param maxDailyNotional string = ''
 
@@ -244,6 +259,9 @@ module jobs 'modules/jobs.bicep' = {
     accountEquity: accountEquity
     riskPct: riskPct
     executionMode: executionMode
+    broker: broker
+    allowRealMoney: allowRealMoney
+    executePlayTypes: executePlayTypes
     maxDailyNotional: maxDailyNotional
     maxDailyLoss: maxDailyLoss
     maxConcurrent: maxConcurrent
