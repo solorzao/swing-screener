@@ -22,6 +22,8 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+import pytest
+
 from swing_screener.db.models import ExecutionLog, Signal
 from swing_screener.db.session import get_engine
 from swing_screener.notify import run
@@ -32,6 +34,13 @@ from swing_screener.pipeline.insight import OrderIntent
 from swing_screener.pipeline.reflect import Verdict
 
 RUN = date(2026, 6, 15)
+
+
+@pytest.fixture(autouse=True)
+def _unpark(unpark_continuation):
+    """Every test here drives the execution machinery THROUGH continuation picks --
+    parked by default since the Q6 NULL (see tests/notify/conftest.py); un-park so
+    the module keeps its original intent."""
 
 
 def _sig(ticker, rank):
@@ -171,6 +180,41 @@ def test_adapter_raise_never_blocks_the_digest(tmp_path, monkeypatch):
     assert len(sent) == 1  # the digest email was still sent
     body = sent[-1]["text"].lower()
     assert "order ticket" not in body  # nothing rendered for the failed dispatch
+
+
+def test_parked_continuation_never_builds_or_dispatches_intents(tmp_path, monkeypatch):
+    """The parked+armed invariant, pinned rather than held by construction: with
+    continuation PARKED (the real default -- the REAL StrategyConfig is restored over
+    this module's un-park fixture) and execution armed via an injected adapter, NO
+    continuation intent is ever built or dispatched (the parked pickers return [], so
+    ``_build_picks`` never sees a continuation signal), while the reversal pick's
+    intent flows to the adapter exactly as before."""
+    from swing_screener.config import StrategyConfig
+
+    monkeypatch.setattr(run, "StrategyConfig", StrategyConfig)  # parked default is back
+    _enable_deep(monkeypatch)  # top-1 deep per play type
+    url = f"sqlite:///{tmp_path / 'parkexec.sqlite'}"
+    _seed(url, n=2)  # AMD + AEP continuation: must never reach the adapter
+    with Session(get_engine(url)) as s:
+        s.add(Signal(run_date=RUN, ticker="GME", timeframe="1d", horizon="medium",
+                     play_type="reversal", strength="confirmed", score=0.9, rank=1,
+                     trigger_close=50.0, atr=2.0, rsi=22.0, volatility_tier="med",
+                     quality_tier="high", entry_floor=50.0, entry_ceiling=52.0,
+                     stop=47.0, target=58.0))
+        s.commit()
+    sent = []
+    adapter = _FakeAdapter(OrderResult(
+        status="recorded", account="manual", detail="order ticket recorded"))
+
+    res = run.send_digest(**_insight_kwargs(
+        tmp_path, url, smtp_send=lambda **k: sent.append(k), execution_adapter=adapter))
+
+    assert res.sent is True and res.n_picks == 0 and res.n_reversals == 1
+    # ONLY the reversal intent was built and dispatched; continuation appears nowhere.
+    assert [(i.ticker, i.play_type) for i in adapter.calls] == [("GME", "reversal")]
+    body = sent[-1]["text"]
+    assert "AMD" not in body and "AEP" not in body
+    assert "Order ticket" in body  # the reversal ticket still renders
 
 
 def test_off_mode_does_not_dispatch_or_render_or_log(tmp_path, monkeypatch):

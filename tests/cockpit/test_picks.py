@@ -126,11 +126,17 @@ def test_picks_match_digest_surfaced_set(tmp_path: Path) -> None:
     assert datetime.fromisoformat(body["quotes_as_of"]).tzinfo is not None
 
 
-def test_picks_reversal_extended_is_normal(tmp_path: Path) -> None:
+def test_picks_reversal_extended_is_normal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A reversal above its ceiling is a RESTING LIMIT's normal state: it stays
     SURFACED (status ``extended``); the same price on a continuation is the chase
     -- dropped to extras, and the daily list SHRINKS (the digest drops AFTER its
-    cap on the daily side; there is no backfill to invent)."""
+    cap on the daily side; there is no backfill to invent). Continuation is
+    un-parked here: the test exercises its chase-drop, not the parking default
+    (pinned in test_picks_park_continuation_by_default)."""
+    unparked = dataclasses.replace(StrategyConfig(), surface_continuation=True)
+    monkeypatch.setattr(picks_module, "StrategyConfig", lambda: unparked)
     client, engine = _positions_client(tmp_path, {"REV": 108.0, "CONT": 108.0})
     with Session(engine) as s:
         s.add(_pick_signal("REV", 1))
@@ -146,12 +152,18 @@ def test_picks_reversal_extended_is_normal(tmp_path: Path) -> None:
         == [("CONT", "extended")]
 
 
-def test_picks_daily_matches_digest_cap_then_drop(tmp_path: Path) -> None:
+def test_picks_daily_matches_digest_cap_then_drop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The DAILY side mirrors the digest's order exactly: sector cap INSIDE
     ``daily_picks`` (T3 capped out by the 2-per-sector default, O4 promoted),
     THEN the liveness drop with NO backfill (O4 extended -> two survivors).
     Mutation-proof: dropping ``max_per_sector=`` puts T3 in the three; swapping to
-    drop-then-cap backfills a third row (O5); both diverge from the digest chain."""
+    drop-then-cap backfills a third row (O5); both diverge from the digest chain.
+    Continuation is un-parked here: the test exercises the daily cap/drop order,
+    not the parking default."""
+    unparked = dataclasses.replace(StrategyConfig(), surface_continuation=True)
+    monkeypatch.setattr(picks_module, "StrategyConfig", lambda: unparked)
     prices = {"T1": 100.0, "T2": 100.0, "T3": 100.0, "O4": 108.0, "O5": 100.0,
               "F6": 100.0}
     client, engine = _positions_client(tmp_path, prices)
@@ -178,6 +190,25 @@ def test_picks_daily_matches_digest_cap_then_drop(tmp_path: Path) -> None:
         == [("O4", "extended")]
     everywhere = {p["ticker"] for p in body["daily"] + body["extras"]}
     assert "T3" not in everywhere  # cap loser, not liveness-dropped: no extra ride
+
+
+def test_picks_park_continuation_by_default(tmp_path: Path) -> None:
+    """Continuation parking (Q6 NULL, docs/plans/2026-07-25-q6-q7-sweep-results.md)
+    mirrors the digest in the cockpit BY CONSTRUCTION (the shared ``daily_picks``
+    gate): under the DEFAULT config a continuation signal appears NOWHERE on
+    /api/picks -- not in daily, not as a flagged extra -- while the reversal list is
+    untouched. CONT is priced at 108 (extended, the anti-chase drop), which un-parked
+    WOULD ride the extras (pinned by test_picks_reversal_extended_is_normal over this
+    same fixture shape) -- so the empty ``extras`` here proves the parked signal was
+    never SELECTED at all, not merely that it stayed in ``daily``."""
+    client, engine = _positions_client(tmp_path, {"REV": 100.0, "CONT": 108.0})
+    with Session(engine) as s:
+        s.add(_pick_signal("REV", 1))
+        s.add(_pick_signal("CONT", 1, play_type="continuation", strength=None))
+        s.commit()
+    body = client.get("/api/picks").json()
+    assert [p["ticker"] for p in body["reversal"]] == ["REV"]
+    assert body["daily"] == [] and body["extras"] == []
 
 
 def test_picks_surfacing_knobs_follow_config(
@@ -246,12 +277,17 @@ def test_picks_degraded_rows_no_quote_and_bad_zone(tmp_path: Path) -> None:
     assert badz["is_repeat"] is False and badz["has_chart"] is False
 
 
-def test_picks_carry_todays_analyst_grade_with_scored_stats(tmp_path: Path) -> None:
+def test_picks_carry_todays_analyst_grade_with_scored_stats(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The ConvictionChip's data rides each pick: today's AnalystCall grade for the
     pick's (ticker, timeframe, play_type) plus that grade's SCORED record from
     ``analyst_calibration`` -- per play type, so a reversal 'high' never borrows
     continuation history. A grade with no scored calls is an honest n=0/null
-    ('unproven'), and a pick with no call carries null (chip absent)."""
+    ('unproven'), and a pick with no call carries null (chip absent). Continuation
+    is un-parked here so the continuation chip row (CT) still renders."""
+    unparked = dataclasses.replace(StrategyConfig(), surface_continuation=True)
+    monkeypatch.setattr(picks_module, "StrategyConfig", lambda: unparked)
     client, engine = _positions_client(
         tmp_path, {"RV": 100.0, "CT": 100.0, "NC": 100.0})
     with Session(engine) as s:

@@ -17,6 +17,8 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+import pytest
+
 from swing_screener.db.models import AnalystCall, PaperTrade, Signal
 from swing_screener.db.session import get_engine
 from swing_screener.notify import run
@@ -27,6 +29,13 @@ from swing_screener.pipeline.reflect import Verdict
 from swing_screener.pipeline.variants import DEFAULT_VARIANT
 
 RUN = date(2026, 6, 15)
+
+
+@pytest.fixture(autouse=True)
+def _unpark(unpark_continuation):
+    """Every test here drives the insight engine THROUGH continuation picks --
+    parked by default since the Q6 NULL (see tests/notify/conftest.py); un-park so
+    the module keeps its original intent."""
 
 
 def _sig(ticker, rank):

@@ -254,6 +254,23 @@ class StrategyConfig:
     # 2026-07-02: 31 same-day confirmations crowded every software rotation name out of the
     # score-ranked top-N. Unknown sectors are never capped (fail-open); None disables.
     reversal_max_per_sector: int | None = 2
+    # Continuation PARKING (2026-07-25). False = continuation is hidden from ALL surfacing
+    # (daily/weekly/monthly digest sections + PDF, cockpit picks, and the would_surface
+    # stamp -- North Star #7: the gold facet measures only what you'd actually trade).
+    # Detection, scoring, and shadow-BOOKING are unaffected: the default book and the
+    # registered cont_volband/extguard_tight variant books keep accruing for their
+    # SETTLEMENT math (the research-facet clustered deltas). But note the stamp's reach:
+    # screen variants are derived via replace(base) (pipeline.variants), so this flag
+    # propagates and EVERY continuation shadow row -- default and variants alike --
+    # stamps would_surface falsy while parked; the continuation GOLD facet stops
+    # accruing system-wide (intended: nothing continuation is tradable while parked).
+    # WHY: the ceiling_atr_mult sweep (Q6) completed the entry-economics decomposition
+    # with a NULL -- best cell -0.103R, clustered lb -0.120, on the pinned 511-name
+    # corpus (docs/plans/2026-07-25-q6-q7-sweep-results.md) -- after selection, timing,
+    # ordering, gates, and entry price ALL graded no-edge. RE-ENABLE only for a
+    # fundamentally different continuation entry mechanic clearing the replay bar:
+    # clustered 95% lb > 0 net 0.05 ATR.
+    surface_continuation: bool = False
 
     # exits
     # momentum-flip exit: close a trade when the HA candle flips bearish (a shaved head).

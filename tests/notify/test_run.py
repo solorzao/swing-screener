@@ -47,7 +47,7 @@ def _seed(url):
         s.commit()
 
 
-def test_send_digest_emails_with_pdf_and_is_idempotent(tmp_path):
+def test_send_digest_emails_with_pdf_and_is_idempotent(tmp_path, unpark_continuation):
     url = f"sqlite:///{tmp_path / 'd.sqlite'}"
     _seed(url)
     sent = []
@@ -129,7 +129,92 @@ def test_daily_digest_funnel_line_on_filtered_empty_day(tmp_path):
             "0 surfaced") in sent[-1]["text"]
 
 
-def test_send_digest_drops_already_ran_picks(tmp_path):
+def test_daily_digest_parks_continuation_by_default(tmp_path, monkeypatch):
+    """Continuation parking (Q6 NULL completed the falsification, 2026-07-25;
+    docs/plans/2026-07-25-q6-q7-sweep-results.md): under the DEFAULT config the daily
+    digest OMITS the continuation section -- no title, no picks, so no continuation
+    deep calls and (intents are built only for deep picks) no continuation intents --
+    while the reversal section leads the email and the send stays clean. The section
+    is omitted rather than rendered as 'No qualifying setups': a parked book must not
+    read like a quiet market every day (the 2026-07-01 blank-digest ambiguity). The
+    ATTACHMENT mirrors the same convention: the PDF builder receives picks=None (the
+    placeholder-free omitted section), never [] (whose 'No picks.' page-1 placeholder
+    is the same ambiguity in PDF form)."""
+    url = f"sqlite:///{tmp_path / 'park.sqlite'}"
+    _seed(url)  # 2 continuation picks that must NOT surface
+    engine = get_engine(url)
+    with Session(engine) as s:
+        s.add(_rev_sig("GME", 1, "confirmed"))
+        s.commit()
+    sent = []
+    pdf_calls = []
+    real_pdf = run.build_digest_pdf
+
+    def spy_pdf(picks, out_path, **kw):  # records, then builds the REAL pdf
+        pdf_calls.append((picks, kw.get("reversal_picks")))
+        return real_pdf(picks, out_path, **kw)
+
+    monkeypatch.setattr(run, "build_digest_pdf", spy_pdf)
+    res = run.send_digest(kind="daily", db_url=url, run_date=RUN, to="me@example.com",
+                          pdf_dir=tmp_path / "digests", anthropic_client=_FakeClient(),
+                          smtp_send=lambda **k: sent.append(k))
+    assert res.sent is True and res.n_picks == 0 and res.n_reversals == 1
+    body = sent[-1]["text"]
+    assert "Continuation Plays" not in body           # section OMITTED, not "no setups"
+    assert "AMD" not in body and "AEP" not in body    # parked picks appear nowhere
+    assert "GME" in body                              # the confirmed reversal still leads
+    assert "Continuation Plays" not in sent[-1]["html"]
+    assert res.pdf_attached is True                   # the reversal PDF still ships
+    [(pdf_picks_arg, rev_arg)] = pdf_calls
+    assert pdf_picks_arg is None                      # parked -> no placeholder page
+    assert [p.ticker for p in rev_arg] == ["GME"]     # reversal section intact
+
+
+@pytest.mark.parametrize("kind,tf", [("weekly", "1wk"), ("monthly", "1mo")])
+def test_parked_slow_cadence_digest_contract(tmp_path, kind, tf):
+    """What a parked weekly/monthly digest IS: those cadences are continuation-only, so
+    while parked they still SEND -- the always-on health footer (the 'is the cron
+    alive' push) must keep arriving -- with n_picks=0, NO pick sections, NO PDF, and a
+    body that opens clean (no leading blank line from an unconditional separator)."""
+    url = f"sqlite:///{tmp_path / 'slowpark.sqlite'}"
+    engine = get_engine(url)
+    with Session(engine) as s:
+        s.add(_sig_on(RUN, "NVDA", tf, 1, first_seen=RUN))  # would surface un-parked
+        s.commit()
+    sent = []
+    res = run.send_digest(kind=kind, db_url=url, run_date=RUN, to="me@example.com",
+                          pdf_dir=tmp_path / "d", anthropic_client=_FakeClient(),
+                          smtp_send=lambda **k: sent.append(k))
+    assert res.sent is True and res.n_picks == 0
+    assert res.pdf_attached is False and sent[0]["attachments"] == []
+    body = sent[0]["text"]
+    assert "NVDA" not in body and "Plays" not in body   # no pick section at all
+    assert not body.startswith("\n")                    # opens clean...
+    assert body.strip()                                 # ...on the health footer
+
+
+def test_daily_digest_continuation_returns_when_unparked(tmp_path, monkeypatch):
+    """The parking flag is read from config per run (never baked in): flipping
+    surface_continuation back to True restores the continuation section -- the
+    re-enable path for a future entry mechanic that clears the replay bar."""
+    import dataclasses
+
+    from swing_screener.config import StrategyConfig
+
+    unparked = dataclasses.replace(StrategyConfig(), surface_continuation=True)
+    monkeypatch.setattr(run, "StrategyConfig", lambda: unparked)
+    url = f"sqlite:///{tmp_path / 'unpark.sqlite'}"
+    _seed(url)
+    sent = []
+    res = run.send_digest(kind="daily", db_url=url, run_date=RUN, to="me@example.com",
+                          pdf_dir=tmp_path / "digests", anthropic_client=_FakeClient(),
+                          smtp_send=lambda **k: sent.append(k))
+    assert res.sent is True and res.n_picks == 2
+    assert "Top 3 - Continuation Plays" in sent[-1]["text"]
+    assert "AMD" in sent[-1]["text"]
+
+
+def test_send_digest_drops_already_ran_picks(tmp_path, unpark_continuation):
     """A pick whose live price has run past its entry ceiling (or broken its stop) by
     digest time is dropped: the screen ran the prior evening, so a pick can leave its
     entry zone overnight. Mirrors the dashboard's 'hide already ran' filter so the email
@@ -259,7 +344,7 @@ def _sig_on(run_date, ticker, tf, rank, first_seen=None):
 
 @pytest.mark.parametrize("kind,tf", [("weekly", "1wk"), ("monthly", "1mo")])
 def test_slow_cadence_digest_keeps_setups_older_than_the_daily_cooldown(
-        tmp_path, caplog, kind, tf):
+        tmp_path, caplog, kind, tf, unpark_continuation):
     """Per-kind cooldown horizon: a 1wk/1mo setup first seen 4 daily runs ago is still
     fresh on its OWN cadence (slow-timeframe setups persist across many daily screens by
     nature -- first_seen_date inherits the streak start), so it must appear in the
@@ -300,7 +385,7 @@ def test_slow_cadence_digest_keeps_setups_older_than_the_daily_cooldown(
     assert [r for r in caplog.records if "cooldown dropped" in r.getMessage()] == []
 
 
-def test_weekly_cooldown_drop_is_logged_with_true_count(tmp_path, caplog):
+def test_weekly_cooldown_drop_is_logged_with_true_count(tmp_path, caplog, unpark_continuation):
     """A setup that outlives even the weekly horizon (first seen before the last 5 runs)
     is still dropped -- and the drop is LOGGED with the true surfaced-set count, so a
     cooldown-blanked weekly digest is diagnosable from the job log instead of reading
@@ -328,6 +413,31 @@ def test_weekly_cooldown_drop_is_logged_with_true_count(tmp_path, caplog):
     assert drops == ["cooldown dropped 1 pick(s) for weekly digest"]
 
 
+def test_parked_continuation_never_logs_cooldown_drops(tmp_path, caplog):
+    """With continuation PARKED (the default), a weekly digest's empty list is parking,
+    not staleness -- the 'cooldown dropped' diagnostic must NOT fire. The un-parked
+    comparison query would misattribute every would-have-surfaced pick to the cooldown,
+    poisoning the very log line that exists to diagnose blanked slow-cadence digests."""
+    url = f"sqlite:///{tmp_path / 'parkwk.sqlite'}"
+    engine = get_engine(url)
+    with Session(engine) as s:
+        for d in (5, 6, 9, 10, 11, 12):  # the run calendar (same shape as the drop test)
+            s.add(_sig_on(date(2026, 6, d), "FILL", "1d", 9))
+        s.add(_sig_on(RUN, "AAPL", "1wk", 1, first_seen=date(2026, 6, 5)))  # stale
+        s.add(_sig_on(RUN, "MSFT", "1wk", 2, first_seen=RUN))               # fresh
+        s.commit()
+
+    sent = []
+    with caplog.at_level(logging.INFO, logger="swing_screener.notify.run"):
+        res = run.send_digest(kind="weekly", db_url=url, run_date=RUN, to="me@example.com",
+                              pdf_dir=tmp_path / "d", anthropic_client=_FakeClient(),
+                              smtp_send=lambda **k: sent.append(k))
+
+    assert res.sent is True and res.n_picks == 0  # parked: nothing surfaces
+    assert "MSFT" not in sent[0]["text"]
+    assert [r for r in caplog.records if "cooldown dropped" in r.getMessage()] == []
+
+
 def test_bounded_overflow_never_cuts_mid_ticker():
     """The 512-char overflow bound must truncate at a COMMA: a naive slice could leave
     a phantom fragment ("...,WDA") that the cockpit's comma-splitting reader would
@@ -342,7 +452,7 @@ def test_bounded_overflow_never_cuts_mid_ticker():
     assert run._bounded_overflow(["ABCDEFGH"], limit=4) == ""
 
 
-def test_send_digest_keeps_picks_when_quotes_unavailable(tmp_path):
+def test_send_digest_keeps_picks_when_quotes_unavailable(tmp_path, unpark_continuation):
     """Fail-open: when live quotes can't be fetched, no pick is dropped -- a quote outage
     must never silence the digest."""
     url = f"sqlite:///{tmp_path / 'noq.sqlite'}"
@@ -379,7 +489,7 @@ def test_send_digest_force_resends_without_duplicate_log(tmp_path):
     assert len(rows) == 1  # no duplicate marker from the forced resend
 
 
-def test_send_digest_defaults_to_latest_screen_run_date(tmp_path):
+def test_send_digest_defaults_to_latest_screen_run_date(tmp_path, unpark_continuation):
     # No explicit run_date: the morning digest must summarize the LATEST screen run
     # (seeded under RUN, not today's date). With the old date.today() default it would
     # query a run_date with no signals and send an empty digest.
@@ -610,7 +720,7 @@ def test_emit_exit_alert_tolerates_integrity_error(tmp_path, monkeypatch):
         assert len(list(s.scalars(select(EmailLog).where(EmailLog.kind == "exit")))) == 1
 
 
-def test_digest_warns_when_a_surfaced_pick_has_no_chart(tmp_path, caplog):
+def test_digest_warns_when_a_surfaced_pick_has_no_chart(tmp_path, caplog, unpark_continuation):
     """A surfaced pick with no rendered chart reaches the PDF as a chartless section --
     the render/selection gap must be LOUD at digest time (it was invisible for weeks)."""
     import logging

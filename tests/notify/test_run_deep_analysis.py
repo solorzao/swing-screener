@@ -6,6 +6,7 @@ are injected, so no LLM/blob/yfinance/network is touched.
 
 from datetime import date
 
+import pytest
 from sqlalchemy.orm import Session
 
 from swing_screener.db.models import Signal
@@ -15,6 +16,13 @@ from swing_screener.notify.analysis import SignalAnalysis
 from swing_screener.notify.market_context import Fundamentals
 
 RUN = date(2026, 6, 15)
+
+
+@pytest.fixture(autouse=True)
+def _unpark(unpark_continuation):
+    """Every test here drives the deep-analysis gating THROUGH continuation picks --
+    parked by default since the Q6 NULL (see tests/notify/conftest.py); un-park so
+    the module keeps its original intent (top-N gating, kind scoping, seam wiring)."""
 
 
 def _sig(ticker, rank):
@@ -66,6 +74,41 @@ def test_deep_analysis_runs_for_top_n_only_when_enabled(tmp_path, monkeypatch):
     assert deep_calls == ["AMD", "AEP"]          # only the top-2 picks
     assert fund_calls == ["AMD", "AEP"]          # fundamentals fetched for those
     assert loaded == ["20260615/AMD_1d_20260615.png", "20260615/AEP_1d_20260615.png"]
+
+
+def test_parked_continuation_gets_no_deep_calls_reversal_still_does(tmp_path, monkeypatch):
+    """Parking + deep ON: no continuation deep-analysis call is ever billed (the parked
+    pickers return [], so the deep loop never sees a continuation pick) while the
+    reversal pick still gets its deep read. The REAL StrategyConfig is restored over
+    this module's un-park fixture, so this runs under the true parked default."""
+    from swing_screener.config import StrategyConfig
+
+    monkeypatch.setattr(run, "StrategyConfig", StrategyConfig)  # parked default is back
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS", "1")
+    monkeypatch.setenv("SWING_DEEP_ANALYSIS_TOP_N", "2")
+    monkeypatch.delenv("SWING_DEEP_ANALYSIS_KINDS", raising=False)
+    url = f"sqlite:///{tmp_path / 'parkdeep.sqlite'}"
+    _seed(url, n=4)  # AMD/AEP/NVDA/F continuation: none may bill a deep call
+    with Session(get_engine(url)) as s:
+        s.add(Signal(run_date=RUN, ticker="GME", timeframe="1d", horizon="medium",
+                     play_type="reversal", strength="confirmed", score=0.9, rank=1,
+                     trigger_close=50.0, atr=2.0, rsi=22.0, entry_floor=50.0,
+                     entry_ceiling=52.0, stop=47.0, target=58.0))
+        s.commit()
+
+    deep_calls = []
+
+    def fake_deep(facts, **kw):
+        deep_calls.append(facts.ticker)
+        return SignalAnalysis(core_reason=f"deep {facts.ticker}", rationale="deep body")
+
+    res = run.send_digest(**_kwargs(
+        tmp_path, url, deep_analyze_fn=fake_deep, chart_bytes_loader=lambda p: None,
+        fundamentals_fn=lambda t: Fundamentals(ticker=t, ok=False), news_fn=lambda t: [],
+        edge_dir=tmp_path))  # empty edge dir -> the legacy deep path for BOTH play types
+
+    assert res.sent is True and res.n_picks == 0 and res.n_reversals == 1
+    assert deep_calls == ["GME"]  # reversal still billed; continuation never was
 
 
 def test_deep_analysis_skipped_when_flag_off(tmp_path, monkeypatch):

@@ -38,3 +38,14 @@ def test_reversal_surfacing_defaults_to_confirmed_not_premium():
     cfg = StrategyConfig()
     assert cfg.reversal_surface_premium_only is False
     assert cfg.reversal_surface_confirmed_only is True
+
+
+def test_continuation_surfacing_defaults_to_parked():
+    """Pins the continuation PARKING posture: the 2026-07-25 ceiling_atr_mult sweep (Q6)
+    completed the entry-economics decomposition with a NULL (best cell -0.103R, clustered
+    lb -0.120 on the pinned 511-name corpus; docs/plans/2026-07-25-q6-q7-sweep-results.md)
+    after selection, timing, ordering, and gates all graded no-edge -- so continuation
+    must not surface (digest, cockpit picks, would_surface stamp) until a fundamentally
+    different entry mechanic clears the replay bar. Detection/scoring/shadow-booking are
+    deliberately unaffected (the registered forward books keep accruing)."""
+    assert StrategyConfig().surface_continuation is False
