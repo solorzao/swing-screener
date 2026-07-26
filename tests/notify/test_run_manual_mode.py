@@ -20,6 +20,7 @@ import json
 from datetime import date
 from html import escape
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -39,6 +40,13 @@ from swing_screener.pipeline.insight import OrderIntent
 from swing_screener.pipeline.reflect import Verdict
 
 RUN = date(2026, 6, 15)
+
+
+@pytest.fixture(autouse=True)
+def _unpark(unpark_continuation):
+    """Every test here drives the MANUAL dispatch path THROUGH continuation picks --
+    parked by default since the Q6 NULL (see tests/notify/conftest.py); un-park so
+    the module keeps its original intent."""
 
 
 def _sig(ticker, rank):

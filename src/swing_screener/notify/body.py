@@ -167,7 +167,7 @@ def _ticket_html(p: "DigestPick") -> str:
 def compose_digest_body(
     kind: str,
     run_date: date,
-    picks: Sequence[DigestPick],
+    picks: Sequence[DigestPick] | None,
     exit_alerts: Sequence[AlertLine],
     *,
     has_pdf: bool,
@@ -182,10 +182,13 @@ def compose_digest_body(
     """Render a digest into subject, plain-text, and HTML bodies.
 
     ``kind`` selects the subject ("daily"/"weekly"/"monthly"). ``picks`` are the
-    continuation plays. ``reversal_picks`` (when not None) adds a second
-    "Reversal Plays" section -- pass an empty list to show it as "no setups", or
-    None to omit the section entirely (weekly/monthly). Exit alerts get their own
-    badged section, and a PDF pointer is appended when ``has_pdf``.
+    continuation plays -- ``None`` OMITS the section entirely (continuation
+    PARKING, the ``surface_continuation`` config; an empty list instead renders
+    "no setups", which would read like a quiet market every day -- the 2026-07-01
+    blank-digest ambiguity). ``reversal_picks`` (when not None) adds a second
+    "Reversal Plays" section under the same None/empty semantics
+    (None: weekly/monthly omit it). Exit alerts get their own badged section, and
+    a PDF pointer is appended when ``has_pdf``.
 
     ``reversal_funnel`` appends a one-line funnel under the reversal section. The short
     form ``(detected, confirmed)`` renders "N detected · M confirmed · K surfaced"; the
@@ -227,9 +230,18 @@ def compose_digest_body(
             reversal_overflow)
 
     # --- plain text ---
-    lines = _section_text(CONTINUATION_TITLE, picks, run_date)
+    lines: list[str] = []
+
+    def _joint(*rows: str) -> list[str]:
+        """``rows`` preceded by one blank separator -- only when content precedes, so
+        a parked/footer-only body (continuation parking left every section absent)
+        never opens with a stray blank line."""
+        return [*([""] if lines else []), *rows]
+
+    if picks is not None:  # None = continuation parked -> the section is absent
+        lines += _section_text(CONTINUATION_TITLE, picks, run_date)
     if reversal_picks is not None:
-        lines += ["", *_section_text(REVERSAL_TITLE, reversal_picks, run_date)]
+        lines += _joint(*_section_text(REVERSAL_TITLE, reversal_picks, run_date))
         if funnel_line:
             lines.append(funnel_line)
         if overflow_line:
@@ -237,19 +249,20 @@ def compose_digest_body(
     if proposals_text:
         lines += list(proposals_text)
     if exit_alerts:
-        lines += ["", "Exit alerts:"]
+        lines += _joint("Exit alerts:")
         for a in exit_alerts:
             lines.append(f"{_BADGE.get(a.tier, '')} {a.ticker} — {a.reason}: {a.message}")
     if has_pdf:
-        lines += ["", "Full analysis attached (PDF)."]
+        lines += _joint("Full analysis attached (PDF).")
     if autonomy_status:
-        lines += ["", autonomy_status]
+        lines += _joint(autonomy_status)
     if health_status:
-        lines += ["", health_status]
+        lines += _joint(health_status)
     text = "\n".join(lines)
 
     # --- html ---
-    html_parts = [_section_html(CONTINUATION_TITLE, picks, run_date)]
+    html_parts = ([] if picks is None
+                  else [_section_html(CONTINUATION_TITLE, picks, run_date)])
     if reversal_picks is not None:
         html_parts.append(_section_html(REVERSAL_TITLE, reversal_picks, run_date))
         if funnel_line:

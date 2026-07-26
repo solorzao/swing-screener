@@ -83,9 +83,14 @@ def build_picks_router(
             }
 
         cooldown = scfg.digest_repeat_cooldown_days
+        # surface_continuation: the continuation PARKING gate (Q6 NULL, 2026-07-25),
+        # threaded exactly like the reversal flags below so the cockpit's daily list
+        # parks with the digest's -- parked -> ``daily`` is [] and (never selected)
+        # nothing continuation rides the extras.
         daily_five = sel.daily_picks(
             session, run_d, max_age_days=cooldown,
-            max_per_sector=scfg.daily_max_per_sector)
+            max_per_sector=scfg.daily_max_per_sector,
+            surface_continuation=scfg.surface_continuation)
         rev_pool = sel.reversal_picks(
             session, run_d, top_n=sel.REVERSAL_POOL_N, max_age_days=cooldown,
             premium_only=scfg.reversal_surface_premium_only,

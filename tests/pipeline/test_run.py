@@ -436,24 +436,28 @@ def test_run_logs_completion_marker(tmp_path, bars, monkeypatch, caplog):
     assert any("SCREEN_RUN_COMPLETE" in m for m in caplog.messages)
 
 
+def _surface_sig(play_type, strength=None, tier="base"):
+    from swing_screener.pipeline.analyze import SignalResult
+
+    return SignalResult(ticker="X", timeframe="1d", horizon="medium", score=0.5,
+                        mtf_aligned=False, quality_tier="", volatility_tier="",
+                        oversold=False, trigger_close=100.0, atr=2.0, rsi=50.0,
+                        entry_floor=96.0, entry_ceiling=101.0, stop=95.0, target=110.0,
+                        frame=None, ctx=None, zone=None, play_type=play_type,
+                        strength=strength, conviction_tier=tier)
+
+
 def test_would_surface_stamps_strength_and_top5_rank():
     """The booking-time surfacing estimate (North Star #7): reversal EARLY is hidden
     under confirmed_only, the premium bar composes, and rank must hold the digest's
-    top-5 within the play type."""
+    top-5 within the play type. Continuation is un-parked here (surface_continuation=True)
+    because this test exercises its RANK bar, not the parking default."""
     from dataclasses import replace
 
-    from swing_screener.pipeline.analyze import SignalResult
     from swing_screener.pipeline.run import _would_surface
 
-    cfg = StrategyConfig()
-
-    def sig(play_type, strength=None, tier="base"):
-        return SignalResult(ticker="X", timeframe="1d", horizon="medium", score=0.5,
-                            mtf_aligned=False, quality_tier="", volatility_tier="",
-                            oversold=False, trigger_close=100.0, atr=2.0, rsi=50.0,
-                            entry_floor=96.0, entry_ceiling=101.0, stop=95.0, target=110.0,
-                            frame=None, ctx=None, zone=None, play_type=play_type,
-                            strength=strength, conviction_tier=tier)
+    cfg = replace(StrategyConfig(), surface_continuation=True)
+    sig = _surface_sig
 
     assert _would_surface(sig("continuation"), 5, cfg) is True
     assert _would_surface(sig("continuation"), 6, cfg) is False        # below the top-5
@@ -463,3 +467,24 @@ def test_would_surface_stamps_strength_and_top5_rank():
     prem = replace(cfg, reversal_surface_premium_only=True)
     assert _would_surface(sig("reversal", "confirmed", "premium"), 1, prem) is True
     assert _would_surface(sig("reversal", "confirmed", "base"), 1, prem) is False
+
+
+def test_would_surface_parks_continuation_by_default():
+    """Continuation parking (Q6 NULL completed the falsification, 2026-07-25;
+    docs/plans/2026-07-25-q6-q7-sweep-results.md): under the DEFAULT config no
+    continuation signal is stamped surfaceable -- not even rank 1 -- so the gold
+    facet only grades what the digest would actually pitch (North Star #7).
+    Reversal stamping is untouched, and shadow rows still book (the stamp goes
+    falsy; the row itself is the un-gated shadow book)."""
+    from dataclasses import replace
+
+    from swing_screener.pipeline.run import _would_surface
+
+    cfg = StrategyConfig()
+    sig = _surface_sig
+
+    assert cfg.surface_continuation is False               # the parked default
+    assert _would_surface(sig("continuation"), 1, cfg) is False   # parked: best rank hides
+    assert _would_surface(sig("reversal", "confirmed"), 1, cfg) is True  # reversal unaffected
+    unparked = replace(cfg, surface_continuation=True)
+    assert _would_surface(sig("continuation"), 1, unparked) is True  # the re-enable path
