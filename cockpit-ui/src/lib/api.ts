@@ -811,6 +811,12 @@ export interface GuardrailStateCols {
   /** 'pending' | 'partial' | 'complete' | null. pending/partial = the sweep has
    * not finished — the hourly cycle RETRIES it; never render that as "failed". */
   sweep_state: string | null
+  /** The cockpit SUBTRACTION from the env execution ceiling — the play types the
+   * Strategy Board has switched OFF (`routers/safety.py` `_state_body`, sorted).
+   * Read-only HERE like the other state columns: it round-trips through its own
+   * verb (`{action: 'set_scope', disabled}`), never the edit form, and `[]` is
+   * the honest "nothing subtracted", never "no ceiling". */
+  disabled_play_types: string[]
 }
 
 /** GET /api/guardrails — the brake whole: the flat state body + the live breach +
@@ -841,7 +847,7 @@ export interface GuardrailSweep {
  * state keys ABSENT — never guessed. The panel re-polls; that is one tick away. */
 export interface GuardrailsPostResult extends Partial<GuardrailLimits>,
   Partial<GuardrailStateCols> {
-  action: 'edit' | 'halt' | 'clear_halt' | 'clear_trip'
+  action: 'edit' | 'halt' | 'clear_halt' | 'clear_trip' | 'set_scope'
   committed: boolean
   current_breach?: GuardrailBreach | null
   /** `database error (Class)` when the post-commit read failed — the WRITE STANDS. */
@@ -866,6 +872,12 @@ export type GuardrailActionBody =
   /** The clear only matches the trip the operator actually READ, so a stale
    * screen cannot release a newer trip (409 otherwise). */
   | { action: 'clear_trip'; ack_trip_id: number }
+  /** The Strategy Board's tighten-only subtraction. `disabled` is the WHOLE new
+   * set, never a delta: the server SETs it (`[]` re-enables everything the env
+   * ceiling still allows), so a client that sent only its own change would wipe
+   * every other window's. Idempotent by construction — there is no 409 on this
+   * verb, so a double press is safe. Sending it on an `edit` is a 422 by design. */
+  | { action: 'set_scope'; disabled: string[] }
 
 /* ---------- Phase 3 wire shapes (routers/picks.py) ---------- */
 
@@ -1044,6 +1056,101 @@ export interface Playbooks {
   due_play_types: string[]
   store_errors: string[]
   /** The one wire statement of what a verdict's bound IS. */
+  ci_note: string
+}
+
+/* ---------- Phase 4b wire shapes (routers/strategies.py) ---------- */
+
+/** The strongest verdict cell WITHIN a row's best tier — the board's headline
+ * number. `dimension`/`bucket` together are the gate's own confirmed-edge label
+ * ("<dimension>=<bucket>"): `dimension` alone names no condition. `expectancy`
+ * and `ci_low` are `_finite_or_none`d server-side — an empty bucket's bound is
+ * -inf, which JSON cannot carry, so null here is "not a measured number" and
+ * must render as the hollow not-measured tick, NEVER as a zero. */
+export interface StrategyCohort {
+  dimension: string
+  bucket: string
+  expectancy: number | null
+  ci_low: number | null
+  n: number
+}
+
+/** The advisory autonomy gate's own per-play-type calibration report, verbatim.
+ * NOTHING here is recomputed by the router and nothing may be recomputed here:
+ * `countdown` is `pipeline.autonomy._countdown_line`'s exact string (the same
+ * line the CLI and the masthead render, format pinned by
+ * tests/pipeline/test_autonomy_countdown.py) and is rendered VERBATIM — the raw
+ * counts ride along only so a renderer never has to parse that sentence. */
+export interface StrategyCalibration {
+  countdown: string
+  calibrated: boolean
+  n_high: number
+  n_low: number
+  n_clusters_high: number
+  n_clusters_low: number
+  min_per_bucket: number
+  cluster_floor: number
+  /** null = the bound is non-finite (uncertifiable), never a measured number. */
+  ci_low: number | null
+  high_minus_low: number | null
+  reason: string
+}
+
+/** One play type on the Strategy Board, ranked by evidence.
+ *
+ * THE THREE-STATE TIER LAW: `tier: null` is UNGRADED — a missing or unreadable
+ * sidecar, or one carrying no rung of the ladder. It is NOT `hunch`. "we never
+ * measured this" and "we measured it and it is speculative" are different
+ * claims, and a renderer that defaults null to hunch tells the operator the
+ * second one. Same for `best_cohort: null`.
+ *
+ * THE SCOPE TRIAD, and they are three different questions:
+ * - `in_ceiling` — is it in `SWING_EXECUTE_PLAY_TYPES`? `null` = the env
+ *   expresses NO ceiling; null is not false ("unset" is not "excluded").
+ * - `disabled` — has the cockpit subtracted it? The one knob the board moves.
+ * - `effective` — is it traded RIGHT NOW? Membership in
+ *   `effective_scope_from_state`'s answer, the SAME function execution enforces.
+ *   The lamp reads THIS, never `in_ceiling`. */
+export interface StrategyRow {
+  play_type: string
+  /** 1-based under the ranking law: tier DESC, cohort ci_low DESC, ungraded
+   * LAST, ties broken by name so the order is stable across polls. */
+  rank: number
+  in_ceiling: boolean | null
+  disabled: boolean
+  effective: boolean
+  /** `edge/<pt>.md` AND the verdicts sidecar both exist. False suppresses the
+   * tier/cohort cells entirely — prose whose numbers nothing backs is not a
+   * playbook, and a tier read off a half-present book would be a claim. */
+  playbook_present: boolean
+  tier: VerdictTier | null
+  best_cohort: StrategyCohort | null
+  calibration: StrategyCalibration
+  gate_ready: boolean
+  edge_confirmed: boolean
+  /** The gold forward book as a full Stat + the `source` note stating what the
+   * Stat is a statistic OF (a deliberately narrow would_surface slice). */
+  forward: { stat: Stat; source: string }
+}
+
+/** GET /api/strategies — the evidence ranking + the scope it is trading under.
+ *
+ * THE None-MEANS-ALL CONTRACT, and it is a trap worth naming: `effective_scope`
+ * and `ceiling` are `null` for "no scoping applies", which means EVERYTHING is
+ * in — not nothing. A falsy check (`!effective_scope`) collapses null and `[]`
+ * into one branch and would paint an unscoped board as fully OUT. Read the
+ * per-row `effective` / `in_ceiling` booleans, which the server already
+ * resolved against that contract. DB + files only: no broker, no quotes. */
+export interface Strategies {
+  strategies: StrategyRow[]
+  effective_scope: string[] | null
+  ceiling: string[] | null
+  /** The stored subtraction VERBATIM (sorted) — a member outside today's
+   * vocabulary is still visible rather than quietly dropped. */
+  disabled: string[]
+  as_of: string
+  /** The playbooks router's ONE statement of what a `ci_low` means, imported
+   * there rather than re-worded — so the board never invents a second wording. */
   ci_note: string
 }
 
@@ -1508,6 +1615,12 @@ export const getEmails = (limit = 100): Promise<Emails> =>
 
 export const getPlaybooks = (): Promise<Playbooks> =>
   fetchJson<Playbooks>('/api/playbooks')
+
+/** The Strategy Board: every play type ranked by evidence, plus the two-level
+ * scope it trades under. DB + FILES only (no broker, no quotes) — but it does
+ * run four seeded bootstraps server-side, so POLL_MS is the floor here too. */
+export const getStrategies = (): Promise<Strategies> =>
+  fetchJson<Strategies>('/api/strategies')
 
 export const getWeather = (): Promise<WeatherResponse> =>
   fetchJson<WeatherResponse>('/api/weather')

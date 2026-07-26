@@ -1,11 +1,14 @@
 # Agent Guardrails — cockpit brake state for the live agent
 
 **Date:** 2026-07-18
-**Status:** **implemented (Tasks 1–20, plus Strategy Board Task 22)**; Strategy Board
-**Tasks 23–24 (`GET /api/strategies` + the STRATEGY SCOPE panel) pending**. Originally
+**Status:** **implemented (Tasks 1–20) — and the Strategy Board addendum below is complete:
+Tasks 22–24 (the `disabled_play_types` subtraction, `GET /api/strategies`, the STRATEGY
+SCOPE panel) are all built.** Only Task 21 remains: the operator-run final verification +
+Stage-0 paper drill. Originally
 approved by Oliver (trip action, writable scope, mandatory set) and verified against the
 codebase by a 4-lens seam review (enforcement, cockpit, data model, red-team).
-Built on branch `claude/robinhood-agent-deploy-4df19b`, commits `3c0dac8`…`16435ee`.
+Built on branch `claude/robinhood-agent-deploy-4df19b`, commits `3c0dac8`…`3830c8b`
+plus `feat: strategy board panel` (Task 24, the final build commit).
 Every **as-built amendment** noted inline below and in the
 [implementation plan](2026-07-18-agent-guardrails-implementation.md) is binding where it
 diverges from the original design text. Operator-facing truth lives in

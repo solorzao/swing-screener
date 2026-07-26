@@ -7,6 +7,7 @@ import { BracketLamp } from '../components/BracketLamp'
 import { CapGauge } from '../components/CapGauge'
 import { GuardrailsPanel } from '../components/GuardrailsPanel'
 import { PanelBody } from '../components/PanelBody'
+import { StrategyBoard } from '../components/StrategyBoard'
 
 /* Screen 7 — Execution Safety: is real money possible, and why not.
 
@@ -271,6 +272,13 @@ export function SafetyScreen({ wake }: { wake: number }) {
               the clear flow, and the append-only history. Its own DB-only poll —
               it deliberately does not ride the broker-calling safety read. */}
           <GuardrailsPanel wake={wake} />
+
+          {/* The Strategy Board, directly under the brake it shares plumbing
+              with: the same agent_guardrails row, the same 'edit' event trail,
+              the same subordinate posture — it can subtract a strategy from
+              execution scope, never widen past the env ceiling. Its own DB +
+              file poll (no broker), like the brake's. */}
+          <StrategyBoard wake={wake} />
 
           <section className="panel">
             <div className="panel-head">

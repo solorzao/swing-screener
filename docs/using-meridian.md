@@ -212,6 +212,33 @@ Once anything is armed, the Safety screen is where you drive. Its **guardrails p
 Whenever the brake is engaged, the **masthead** carries a `HALTED` / `TRIPPED` chip beside
 the execution-mode chip, clickable straight to this screen. No chip means released.
 
+**The STRATEGY SCOPE board** (directly under the guardrails panel) is the same brake applied
+to *which strategy* trades, and its caption states the model: *"selection is evidence-gated:
+the ceiling changes via env ceremony; the board can only subtract or restore within it."*
+Scope is **two-level**. `SWING_EXECUTE_PLAY_TYPES` is the **ceiling** — the set the agent may
+ever trade, changed only by an env/IaC act. The board writes a **subtraction** under it, so
+one hold takes a strategy out of scope, and re-enabling restores it *up to* the ceiling and
+never past it. A play type the ceiling excludes shows a **dead** toggle that says why. One
+row per play type, **ranked by evidence** — tier first, then the CI lower bound on
+expectancy (the autonomy gate's own number, never the point estimate, which is how a book
+picks noise):
+
+| Cell | Reads |
+|---|---|
+| IN SCOPE / OUT | whether execution dispatches it *right now* — the same effective-scope answer the dispatch filter uses, so the lamp can't disagree with the machine |
+| tier | `hunch` → `replay_screened` → `forward_confirmed`, and a fourth state: **ungraded**, meaning never measured. Ungraded is *not* a hunch, and the board never draws it as one. No playbook (`edge/<pt>.md` + verdicts) means no tier cell at all |
+| bound + n | the strongest cell on the winning rung, with the `dimension=bucket` it belongs to. Not measured renders as a hollow dashed tick, never a zero |
+| countdown | the autonomy gate's own calibration line, verbatim — the same sentence the CLI and the masthead print |
+| gate lamp | that play type's gate readiness (operational, never an edge claim) |
+
+The toggle is a **400 ms hold**, not HALT's 900 ms: it writes one DB column and moves no
+venue state. It saves the *whole* disabled set, so pressing it twice is safe and two windows
+can't half-apply each other. Every change appends an `edit` event with breaker
+`disabled_play_types` to the guardrails history right above it — Auditor-visible like every
+other brake write. If the board's read fails, the lamps and numbers go **UNKNOWN** rather
+than showing you a stale IN SCOPE; the controls stay live and anything you just did stays on
+screen.
+
 **What the System Behavior Auditor makes of all this** (System Audit, `g` `a`): correct
 brake behavior is **expected conduct, counted as facts, never a breach** — the `guardrail:`
 clamps, the trip's own sweep `DisarmEvent`, halt and kill-switch sweeps. **A correctly-braked

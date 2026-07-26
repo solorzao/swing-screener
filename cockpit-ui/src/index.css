@@ -6911,6 +6911,264 @@ button.gr-submit {
   border-color: var(--lamp-amber-border);
 }
 
+/* ---------- STRATEGY SCOPE board (components/StrategyBoard.tsx) ----------
+
+   Under GUARDRAILS on the Safety screen, in that screen's fixed 380px column —
+   so a row is a CARD, not a table row (the same reason .gr-events is a list:
+   six columns of tier / bound / cohort / countdown shred one character wide).
+
+   Colour follows the screen's INVERTED doctrine, and reuses the brake's shared
+   vocabulary wholesale (.gr-pop / .gr-sub / .gr-err / .gr-note-row) rather than
+   forking a second set of result chrome: IN SCOPE is the LIT amber state (this
+   strategy may reach a real-money venue), OUT is calm and inert. Nothing here
+   is ever green — green in this app is the forward_confirmed edge claim alone,
+   and TierChip owns it. */
+.sb-body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* The result pop is a direct child here (in the brake's panel it sits inside a
+   padded .gr-controls), so it carries its own gutter. */
+.sb-body > .gr-pop {
+  margin: 0 12px 10px;
+  max-width: none;
+}
+
+/* --- the scope header: the two-level scope, stated before any row --- */
+.sb-scope {
+  padding: 9px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sb-scope-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.sb-scope-k {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  color: var(--faint);
+  text-transform: uppercase;
+  white-space: nowrap;
+  width: 96px;
+  flex: none;
+}
+
+.sb-scope-v {
+  color: var(--txt);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* "no scoping applies" = EVERYTHING is in. Dim, because it is a resting truth,
+   not an alarm — but never rendered the same as the empty set below it. */
+.sb-scope-all {
+  color: var(--dim);
+}
+
+/* The empty set is the opposite end of the same axis: nothing dispatches. Amber
+   because it is usually a garbled env var failing closed, which is worth a look. */
+.sb-scope-none {
+  color: var(--amber);
+}
+
+.sb-asof {
+  font-size: 9px;
+  color: var(--faint);
+  margin-top: 2px;
+}
+
+/* --- the ranked rows --- */
+.sb-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.sb-row {
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--panel2);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.sb-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sb-rank {
+  font-size: 10px;
+  color: var(--faint);
+}
+
+.sb-pt {
+  font-size: 12px;
+  color: var(--txt);
+  letter-spacing: 0.02em;
+}
+
+/* The lamps sit right-aligned so the scope answer is scannable down the card
+   stack without reading the play type first. */
+.sb-lamp {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+}
+
+.sb-head .sb-lamp {
+  margin-left: auto;
+}
+
+.sb-in .sb-lamp-label {
+  color: var(--amber);
+}
+
+.sb-out .sb-lamp-label {
+  color: var(--dim);
+}
+
+/* Not read this poll — the dashed-unknown treatment, never a lamp with a state. */
+.sb-unread .sb-lamp-label {
+  color: var(--faint);
+}
+
+.sb-unread-note {
+  font-size: 10px;
+  color: var(--faint);
+  line-height: 1.4;
+  border-left: 2px dashed var(--line2);
+  padding-left: 8px;
+}
+
+.sb-evid {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.sb-cohort {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  flex-wrap: wrap;
+  font-size: 10.5px;
+}
+
+.sb-bound {
+  color: var(--txt);
+  font-size: 11.5px;
+}
+
+.sb-n,
+.sb-bucket {
+  font-size: 9.5px;
+  color: var(--dim);
+}
+
+.sb-bucket {
+  overflow-wrap: anywhere;
+}
+
+/* The Stat convention for "not measured": faint + a dashed underline. Same
+   treatment as .stat-value.not-measured — a hollow tick, never a zero. */
+.sb-nm {
+  font-size: 10.5px;
+  color: var(--faint);
+  border-bottom: 1px dashed var(--faint);
+}
+
+.sb-nobook {
+  font-size: 10px;
+  color: var(--faint);
+  line-height: 1.4;
+}
+
+/* The gate's own countdown sentence, verbatim. Mono because it is a quoted
+   machine line, not prose we composed. */
+.sb-countdown {
+  font-size: 10px;
+  color: var(--dim);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/* --- the toggle --- */
+.sb-ctl {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  align-items: flex-start;
+  margin-top: 2px;
+}
+
+/* The light-decision hold tier: quieter chrome than the brake's release (this
+   moves no venue state), and DISABLE is the amber one — it is the direction
+   that changes what the machine may do. */
+button.sb-disable,
+button.sb-enable {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  padding: 3px 11px;
+  border-radius: 3px;
+  background: transparent;
+  border: 1px solid var(--line2);
+  color: var(--dim);
+  cursor: pointer;
+}
+
+button.sb-disable {
+  border-color: color-mix(in srgb, var(--amber) 40%, var(--line2));
+  color: color-mix(in srgb, var(--amber) 75%, var(--txt));
+}
+
+button.sb-disable .htc-fill {
+  background: color-mix(in srgb, var(--amber) 28%, transparent);
+}
+
+button.sb-enable .htc-fill {
+  background: color-mix(in srgb, var(--blue) 22%, transparent);
+}
+
+button.sb-disable:disabled,
+button.sb-enable:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+button.sb-disable .dz-btn-label small,
+button.sb-enable .dz-btn-label small {
+  color: var(--faint);
+}
+
+/* Why a control is dead / acting on stale data — stated on screen, not in a
+   title attribute: a disabled button's tooltip is exactly the thing a keyboard
+   user cannot reach. */
+.sb-why {
+  font-size: 9.5px;
+  color: var(--faint);
+  line-height: 1.4;
+  max-width: 340px;
+}
+
+.sb-strays {
+  padding: 0 12px 10px;
+}
+
 /* ---------- System Audit: the guardrail_breach finding (SystemAuditScreen.tsx) ----------
 
    The caveat is rendered VISIBLY, never as a tooltip: two of the four conduct

@@ -768,13 +768,14 @@
  {
   "term": "Execution scope (ceiling)",
   "cat": "config",
-  "short": "Which play types execution may dispatch at all, set in the environment (SWING_EXECUTE_PLAY_TYPES); unset = every play type. It is the ceiling: cockpit scope controls will subtract within it (Task 22), never widen it.",
-  "why": "It is why a live signal of an out-of-scope play type never reaches the broker. A value with no valid play type in it fails CLOSED — the scope goes empty and nothing dispatches — so a garbled list narrows the gate instead of opening it.",
+  "short": "Which play types execution may dispatch at all, set in the environment (SWING_EXECUTE_PLAY_TYPES); unset = every play type. It is the CEILING: the Strategy Board subtracts within it and restores back up to it, never past it.",
+  "why": "It is why a live signal of an out-of-scope play type never reaches the broker, and why the board's enable control is dead for a play type the environment excludes — widening the ceiling is an env/IaC act, always. A value with no valid play type in it fails CLOSED — the scope goes empty and nothing dispatches — so a garbled list narrows the gate instead of opening it.",
   "appears": [
-   "Execution Safety CONFIGURATION (execute play types)"
+   "Execution Safety CONFIGURATION (execute play types)",
+   "Execution Safety STRATEGY SCOPE"
   ],
   "risk": "medium",
-  "source": "settings.py · db/guardrails_repo.py (effective_execution_scope)"
+  "source": "settings.py · db/guardrails_repo.py (effective_execution_scope, set_disabled_play_types) · docs/plans/2026-07-18-agent-guardrails-design.md (the Strategy Board addendum)"
  },
  {
   "term": "Playbook / edge file",
@@ -1411,5 +1412,18 @@
    "Positions CloseTradeForm"
   ],
   "risk": "medium"
+ },
+ {
+  "term": "Evidence tier (the ranking ladder)",
+  "cat": "provenance",
+  "short": "How much a strategy has proven, in three rungs: hunch → replay_screened → forward_confirmed. A fourth state, UNGRADED, means it was never measured at all — that is not the same as a hunch, and the board shows it as its own dashed chip.",
+  "why": "It is the FIRST sort key on the Strategy Board — tier before the number — because a hunch with a flattering lower bound is not better evidence, it is unproven evidence. Only forward_confirmed means an edge cleared the corrected bound on the live forward book, and only that rung is green.",
+  "appears": [
+   "Execution Safety STRATEGY SCOPE",
+   "Playbooks verdict table",
+   "TierChip"
+  ],
+  "risk": "high",
+  "source": "pipeline/autonomy.py (_CONFIRMED_TIER, the gate's own top rung) · cockpit/routers/strategies.py (_TIER_RANK, the ranking law) · docs/plans/2026-07-18-agent-guardrails-design.md (the Strategy Board addendum)"
  }
 ]

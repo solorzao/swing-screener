@@ -1,11 +1,13 @@
 # Agent Guardrails + Stage-1 Live-Agent Fixes — Implementation Plan
 
-> **STATUS: execution complete through Task 20, plus Task 22.** Phases 1–3, 4 and 5 are
-> built (Tasks 1–20), and Phase 4b's **Task 22** (the `disabled_play_types` cockpit
-> subtraction) has landed. **Task 21** is the operator-run final verification + Stage-0
-> paper drill (its checklist now lives in
-> [the arming runbook](../runbooks/arming-alpaca-live.md#stage-0-drill--the-paper-host-rehearsal-do-this-before-real-money));
-> **Tasks 23–24** (`GET /api/strategies`, the STRATEGY SCOPE panel) are not started.
+> **STATUS: every build task is complete — Tasks 1–20 and Phase 4b's Tasks 22–24.**
+> Phases 1–3, 4 and 5 are built (Tasks 1–20), and the Strategy Board has landed whole:
+> **Task 22** (the `disabled_play_types` cockpit subtraction), **Task 23**
+> (`GET /api/strategies`, the evidence ranking) and **Task 24** (the STRATEGY SCOPE panel
+> + glossary + docs, commit `feat: strategy board panel`). The ONLY thing left is
+> **Task 21**, the operator-run final verification + Stage-0 paper drill (its checklist now
+> lives in
+> [the arming runbook](../runbooks/arming-alpaca-live.md#stage-0-drill--the-paper-host-rehearsal-do-this-before-real-money)).
 > Where a task carries an **AS-BUILT AMENDMENT**, that amendment is the truth and the
 > surrounding original text is historical. Task 10's step-(3) sketch of the rejection alert
 > (`rejected_live`/`canceled`, an `sha1(sorted log ids)` key) was **superseded during Task 11**
@@ -625,6 +627,8 @@ Per play type return: `in_ceiling` (env), `disabled` (cockpit), `effective` (tra
 - Modify: `cockpit-ui/src/screens/SafetyScreen.tsx` (+ new `StrategyBoard.tsx` component below the guardrails panel), glossary terms (evidence tier, CI floor, execution scope/ceiling), docs (`using-meridian.md` Safety section)
 
 Per-strategy row: rank, IN SCOPE/OUT lamp, tier chip, ci-low + n, calibration countdown, gate lamp; disable/enable toggle = 400 ms hold (light-decision tier — no venue state moves; enable is capped at the env ceiling and the control states that). Caption: *"selection is evidence-gated: the ceiling changes via env ceremony; the board can only subtract or restore within it."* Same UI verification ritual (brace balance, vite dev + Playwright states). Commit `feat: strategy board panel`.
+
+**AS-BUILT AMENDMENTS.** (a) A row is a **card, not a table row**: the panel inherits the Safety screen's fixed 380px column, where six columns shred one character wide (the same reason `.gr-events` is a list). (b) The tier cell is **four**-state, not three: `playbook_present: false` suppresses the tier and cohort cells outright, and `tier: null` renders its own dashed **ungraded** chip — never `hunch`, which would turn "never measured" into a grade nobody gave. (c) The IN SCOPE lamp reads **`effective`** only (never `in_ceiling`) and is **amber-lit**, not green: this screen's inverted doctrine makes the dispatchable state the one demanding attention, and green in this app belongs to `forward_confirmed` alone. (d) On a failed poll the row's **claims are withheld** (per-row dashed UNKNOWN) while the **controls stay mounted** and any in-flight toggle result stays on screen — the GuardrailsPanel live/last split, Task-16's lesson. (e) The toggle posts the **whole** disabled set including members outside today's vocabulary, which is exactly the re-save tolerance Task 22's polish put in `set_disabled_play_types`; strays are surfaced in a panel note rather than silently dropped (dropping one would re-enable something nobody asked to re-enable). (f) Glossary: `Execution scope (ceiling)` was rewritten for the live board (it promised the subtraction in future tense) and a new `Evidence tier (the ranking ladder)` term carries the ladder plus the ungraded fourth state.
 
 ---
 
