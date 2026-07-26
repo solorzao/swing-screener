@@ -243,7 +243,44 @@ def build_proposals_story(proposals: "Sequence[ProposedOrder]") -> list:
     return story
 
 
-def build_digest_pdf(picks: Sequence[PdfPick], out_path: Path, *,
+def build_digest_story(picks: Sequence[PdfPick] | None, *,
+                       reversal_picks: Sequence[PdfPick] | None = None,
+                       header: str | None = None,
+                       proposals: "Sequence[ProposedOrder] | None" = None) -> list:
+    """The digest PDF's full flowable list -- factored from :func:`build_digest_pdf`
+    so the section ASSEMBLY is testable without parsing a rendered PDF.
+
+    ``picks=None`` OMITS the continuation section entirely (continuation PARKING --
+    ``StrategyConfig.surface_continuation``): no :func:`build_story` call, no
+    "No picks." placeholder, and no leading PageBreak, so REVERSAL PLAYS opens
+    directly under the header. This mirrors ``compose_digest_body``'s None
+    convention -- a page-1 placeholder while parked would re-introduce in the
+    attachment the exact quiet-market ambiguity the body's omitted section avoids
+    (2026-07-01 blank-digest lesson). An empty SEQUENCE keeps the placeholder: a
+    quiet market must stay visibly different from a parked book.
+    """
+    styles = getSampleStyleSheet()
+    story: list = []
+    if header:
+        story.append(Paragraph(_xml_escape(header), styles["Heading2"]))
+        story.append(Spacer(1, 0.2 * inch))
+    if picks is not None:  # None = continuation parked -> the section is absent
+        story.extend(build_story(picks))
+    if reversal_picks:
+        if picks is not None:  # a section precedes: reversal starts its own page
+            story.append(PageBreak())
+        story.append(Paragraph(
+            '<font color="#b4561a"><b>REVERSAL PLAYS</b></font>', styles["Title"]))
+        story.append(Spacer(1, 0.15 * inch))
+        story.extend(build_story(reversal_picks))
+    if proposals:
+        story.extend(build_proposals_story(proposals))
+    if not story:  # nothing at all (parked, no reversal, no header): keep the PDF valid
+        story.append(Paragraph("No picks.", styles["BodyText"]))
+    return story
+
+
+def build_digest_pdf(picks: Sequence[PdfPick] | None, out_path: Path, *,
                      reversal_picks: Sequence[PdfPick] | None = None,
                      header: str | None = None,
                      proposals: "Sequence[ProposedOrder] | None" = None) -> Path:
@@ -254,7 +291,9 @@ def build_digest_pdf(picks: Sequence[PdfPick], out_path: Path, *,
     chart. One section per pick, separated by page breaks. ``reversal_picks``, when
     non-empty, are appended after a "REVERSAL PLAYS" divider. A pick whose
     ``chart_path`` is ``None``/missing renders without its image; an empty
-    ``picks`` sequence still produces a valid (placeholder) PDF.
+    ``picks`` sequence still produces a valid (placeholder) PDF, while ``None``
+    omits the continuation section entirely (continuation parking -- see
+    :func:`build_digest_story`, which carries the assembly contract).
 
     ``proposals`` (the manual-mode "Proposed orders" shopping list), when non-empty,
     appends the consolidated placeable-instructions section after the picks -- the
@@ -262,22 +301,9 @@ def build_digest_pdf(picks: Sequence[PdfPick], out_path: Path, *,
     """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    styles = getSampleStyleSheet()
-    story: list = []
-    if header:
-        story.append(Paragraph(_xml_escape(header), styles["Heading2"]))
-        story.append(Spacer(1, 0.2 * inch))
-    story.extend(build_story(picks))
-    if reversal_picks:
-        story.append(PageBreak())
-        story.append(Paragraph(
-            '<font color="#b4561a"><b>REVERSAL PLAYS</b></font>', styles["Title"]))
-        story.append(Spacer(1, 0.15 * inch))
-        story.extend(build_story(reversal_picks))
-    if proposals:
-        story.extend(build_proposals_story(proposals))
     doc = SimpleDocTemplate(str(out_path), pagesize=letter)
-    doc.build(story)
+    doc.build(build_digest_story(picks, reversal_picks=reversal_picks,
+                                 header=header, proposals=proposals))
     return out_path
 
 

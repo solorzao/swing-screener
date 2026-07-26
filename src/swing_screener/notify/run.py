@@ -311,7 +311,8 @@ def _warn_chartless(kind: str, signals: list[Signal]) -> None:
 
 
 def _log_cooldown_drops(session: Session, kind: str, run_date: date,
-                        picks: list[Signal], max_age: int | None) -> None:
+                        picks: list[Signal], max_age: int | None, *,
+                        surface_continuation: bool = True) -> None:
     """Log how many picks the staleness cooldown removed from a weekly/monthly digest.
 
     Those cadences have no funnel line, so a cooldown-blanked digest renders exactly
@@ -325,10 +326,15 @@ def _log_cooldown_drops(session: Session, kind: str, run_date: date,
     set-comparison argument assumes ranks are unique within a run (the orchestrator
     assigns them globally), so ``ORDER BY rank`` is a total order and both queries walk
     the same deterministic candidate sequence.
+
+    ``surface_continuation`` must MATCH the sent list's gate: with continuation parked
+    the empty digest is PARKING, not staleness, and re-running the picker un-parked
+    here would misattribute every would-have-surfaced pick to the cooldown.
     """
     if max_age is None or kind not in _COOLDOWN_RUNS:
         return
-    would_surface = _PICKERS[kind](session, run_date, max_age_days=None)
+    would_surface = _PICKERS[kind](session, run_date, max_age_days=None,
+                                   surface_continuation=surface_continuation)
     kept = {s.id for s in picks}
     n_dropped = sum(1 for s in would_surface if s.id not in kept)
     if n_dropped:
@@ -480,16 +486,24 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # same play isn't re-pitched daily (legacy NULL-first_seen rows always pass).
         # Weekly/monthly use their own run-denominated horizon (``_COOLDOWN_RUNS``); a
         # config of None (cooldown disabled) disables it for every cadence.
-        cooldown = StrategyConfig().digest_repeat_cooldown_days
+        scfg = StrategyConfig()
+        cooldown = scfg.digest_repeat_cooldown_days
         # Sector-diversity cap on the DAILY list only (weekly/monthly stay pure rank), so one
         # hot sector can't fill every slot. Fail-open on unknown sectors; None disables it.
+        # ``surface_continuation`` threads the continuation PARKING gate into every
+        # continuation picker (enforced in notify.select, the reversal flags' layer): with
+        # the parked default the pickers return [], so no continuation deep calls run and
+        # -- intents are built only for deep picks -- no continuation intents dispatch.
         if kind == "daily":
             picks = sel.daily_picks(session, run_date, max_age_days=cooldown,
-                                    max_per_sector=StrategyConfig().daily_max_per_sector)
+                                    max_per_sector=scfg.daily_max_per_sector,
+                                    surface_continuation=scfg.surface_continuation)
         else:
             max_age = None if cooldown is None else _COOLDOWN_RUNS[kind]
-            picks = _PICKERS[kind](session, run_date, max_age_days=max_age)
-            _log_cooldown_drops(session, kind, run_date, picks, max_age)
+            picks = _PICKERS[kind](session, run_date, max_age_days=max_age,
+                                   surface_continuation=scfg.surface_continuation)
+            _log_cooldown_drops(session, kind, run_date, picks, max_age,
+                                surface_continuation=scfg.surface_continuation)
         # Already-ran filter: re-check live actionability so the email never pitches a pick
         # that ran past its entry (or broke its stop) overnight. Done BEFORE the (billable)
         # deep analysis so stale picks never cost an Opus call. No-op when the seam is off.
@@ -726,7 +740,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
             # WHICH bar did the filtering (2026-07-02: 31 confirmations, 0 software
             # names surfaced, undiagnosable from the old two-count line).
             detected, confirmed_n = sel.reversal_funnel(session, run_date)
-            scfg = StrategyConfig()
+            # (scfg is the run's single StrategyConfig read, made where the cooldown is.)
             # Over-fetch so the actionability drop and sector cap BACKFILL from below
             # the top-N instead of shrinking the list (top-5-then-filter left the Jul-2
             # digest with no room for the rotation names ranked 6th+).
@@ -833,8 +847,13 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         pdf_path: Path | None = None
         if digest_picks or reversal_pdf:
             try:
+                # Parking mirrors the body's None convention INTO the attachment:
+                # picks=None omits the continuation section (no page-1 "No picks."
+                # placeholder -- that would re-introduce the quiet-market ambiguity
+                # the omitted email section avoids); [] keeps the placeholder.
                 pdf_path = build_digest_pdf(
-                    pdf_picks, Path(pdf_dir) / f"{kind}_{run_date:%Y%m%d}.pdf",
+                    pdf_picks if scfg.surface_continuation else None,
+                    Path(pdf_dir) / f"{kind}_{run_date:%Y%m%d}.pdf",
                     reversal_picks=reversal_pdf or None,
                     header=f"Swing Screener - {kind.capitalize()} Picks ({run_date:%b %d, %Y})",
                     proposals=proposals or None,
@@ -879,7 +898,12 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
             execution_mode=exec_mode,
             gate_ready=post_gate.ready,  # the shared post-scoring read above
         )
-        body = compose_digest_body(kind, run_date, digest_picks, alert_lines,
+        # Continuation parking renders as an OMITTED section (None), never an empty
+        # "No qualifying setups" list -- a parked book reading like a quiet market every
+        # day is the 2026-07-01 blank-digest ambiguity. Reversal leads the email instead.
+        body = compose_digest_body(kind, run_date,
+                                   digest_picks if scfg.surface_continuation else None,
+                                   alert_lines,
                                    has_pdf=pdf_attached, reversal_picks=reversal_digest,
                                    reversal_funnel=rev_funnel,
                                    reversal_overflow=reversal_overflow,

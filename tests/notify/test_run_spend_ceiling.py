@@ -18,6 +18,7 @@ import logging
 from datetime import date
 from typing import ClassVar
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -29,6 +30,13 @@ from swing_screener.notify.market_context import Fundamentals
 from swing_screener.pipeline.reflect import Verdict
 
 RUN = date(2026, 6, 15)
+
+
+@pytest.fixture(autouse=True)
+def _unpark(unpark_continuation):
+    """Every test here drives the spend ceiling THROUGH continuation picks --
+    parked by default since the Q6 NULL (see tests/notify/conftest.py); un-park so
+    the module keeps its original intent."""
 
 
 def _sig(ticker, rank):

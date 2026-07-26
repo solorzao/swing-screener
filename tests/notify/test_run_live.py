@@ -26,6 +26,8 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+import pytest
+
 from swing_screener.db.models import ExecutionLog, PaperTrade, Signal
 from swing_screener.db.session import get_engine
 from swing_screener.notify import run
@@ -35,6 +37,13 @@ from swing_screener.pipeline.broker import FakeBroker
 from swing_screener.pipeline.reflect import Verdict
 
 RUN = date(2026, 6, 15)
+
+
+@pytest.fixture(autouse=True)
+def _unpark(unpark_continuation):
+    """Every test here drives the LIVE dispatch path THROUGH continuation picks --
+    parked by default since the Q6 NULL (see tests/notify/conftest.py); un-park so
+    the module keeps its original intent."""
 
 
 def _sig(ticker, rank):

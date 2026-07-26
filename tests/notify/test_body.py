@@ -168,6 +168,39 @@ def test_reversal_section_omitted_when_none():
     assert "Reversal Plays" not in c.text and "Reversal Plays" not in c.html
 
 
+def test_continuation_section_omitted_when_parked():
+    """picks=None OMITS the continuation section entirely (continuation parking, Q6 NULL)
+    -- deliberately distinct from picks=[], which renders 'No qualifying setups' and
+    would read like a quiet market every day (the 2026-07-01 blank-digest ambiguity).
+    The reversal section must lead the body cleanly: no orphaned title, no leading
+    blank line."""
+    rev = [DigestPick("GME", "GameStop", "short", "Oversold bounce.", score=0.7,
+                      strength="confirmed")]
+    c = compose_digest_body("daily", date(2026, 6, 15), None, [], has_pdf=False,
+                            reversal_picks=rev, reversal_funnel=(3, 1))
+    assert "Continuation Plays" not in c.text and "Continuation Plays" not in c.html
+    assert "No qualifying setups" not in c.text          # omitted, NOT an empty state
+    assert c.text.startswith("Top 5 - Reversal Plays")   # reversal leads, no blank join
+    assert "GME" in c.text
+    assert "Reversal funnel: 3 detected · 1 confirmed · 1 surfaced" in c.text
+    assert c.html.startswith("<h3>Top 5 - Reversal Plays</h3>")
+
+
+def test_parked_body_opens_clean_without_leading_blank():
+    """A parked weekly/monthly body (picks=None, no reversal section) whose only
+    content is exit alerts and/or footers must not open with a blank line: every ''
+    separator is a JOINT between blocks, rendered only when content precedes."""
+    alerts = [AlertLine("MSFT", "hard", "stop", "stopped out @ 410")]
+    c = compose_digest_body("weekly", date(2026, 6, 15), None, alerts, has_pdf=False,
+                            health_status="health: ok")
+    assert c.text.startswith("Exit alerts:")   # the first block leads, no blank prefix
+    assert "\n\n\n" not in c.text              # single-blank joints everywhere
+    # footer-only body (no alerts either): the health line IS the whole text
+    c2 = compose_digest_body("monthly", date(2026, 6, 15), None, [], has_pdf=False,
+                             health_status="health: ok")
+    assert c2.text == "health: ok"
+
+
 def _report():
     reads = [
         TimeframeRead(timeframe="1d", ha_trend="bullish", ema_aligned=True,

@@ -283,7 +283,15 @@ def _would_surface(pr: SignalResult, rank: int, cfg: StrategyConfig) -> bool:
     digest-time state that does not exist at booking -- the stamp is the booking-time
     upper bound of surfacing, which still removes the ~92% hidden-EARLY + rank-6+ bulk
     that made the old full-book verdicts unrepresentative (2026-07 review).
+
+    Continuation PARKING: with ``surface_continuation`` False (the default since the Q6
+    NULL completed the falsification, 2026-07-25 -- docs/plans/
+    2026-07-25-q6-q7-sweep-results.md) no continuation signal surfaces anywhere, so the
+    stamp goes falsy for ALL of them; the shadow rows still book (detection/scoring/
+    booking are untouched -- only what the gold facet counts as tradable changes).
     """
+    if pr.play_type == "continuation" and not cfg.surface_continuation:
+        return False
     if pr.play_type == "reversal" and not _passes_reversal_surface(pr, cfg):
         return False
     return rank <= _SURFACE_TOP_N
