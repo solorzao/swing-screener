@@ -57,9 +57,12 @@ log = logging.getLogger(__name__)
 #: ValueError text rather than a re-worded cockpit message.
 #:
 #: ``disabled`` (set_scope's body key) is DELIBERATELY not listed: adding it would
-#: make ``{"action": "edit", "disabled": [...]}`` a silently-ignored field, and
-#: scope is its own verb. Leaving it out routes it into ``edit_limits``, which
-#: refuses it BY NAME -- the loud outcome a mixed body deserves.
+#: make ``{"action": "edit", "disabled": [...]}`` a silently-ignored field, where
+#: leaving it out routes it into ``edit_limits``, which refuses it BY NAME. That
+#: loudness is ONE-DIRECTIONAL and only this list's doing -- the converse is not
+#: symmetric: a ``set_scope`` body carrying stray limit keys is simply ignored,
+#: exactly as ``halt`` / ``clear_halt`` / ``clear_trip`` ignore them. Only the edit
+#: branch forwards unrecognised keys anywhere.
 _NON_LIMIT_KEYS = frozenset({"action", "ack_trip_id"})
 
 #: How much guardrail history the panel gets in one read. The table is append-only and
@@ -112,10 +115,13 @@ def _client_error(exc: Exception) -> str:
     internal, and the cockpit is not where a user learns the callee's name. The
     SUBSTANCE (which column, which rule, which invalid play type) is kept verbatim:
     it is the same text the repo's own tests pin, and re-wording it would let the two
-    drift."""
+    drift. FIRST MATCH WINS and only one strip ever happens -- chaining removeprefix
+    calls would peel a second prefix out of a message whose BODY legitimately starts
+    with one."""
     text = str(exc)
     for prefix in _REPO_PREFIXES:
-        text = text.removeprefix(prefix)
+        if text.startswith(prefix):
+            return text.removeprefix(prefix)
     return text
 
 

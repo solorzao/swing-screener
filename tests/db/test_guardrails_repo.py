@@ -8,8 +8,10 @@ The brake's load-bearing properties, pinned:
   * clear demands the acknowledged trip_id (a stale ack never releases the brake),
   * halt never downgrades a trip; a trip overwrites a halt,
   * edit_limits can NEVER touch the state columns (nor can the scope verb),
-  * the tighten-only scope subtraction (``set_disabled_play_types``) validates its
-    vocabulary on the WRITE and decodes identically on load / peek / _UNSEEDED,
+  * the tighten-only scope subtraction (``set_disabled_play_types``) validates NEW
+    members against the vocabulary on the WRITE, tolerates already-stored members a
+    shrunk vocabulary no longer lists, and decodes identically on load / peek /
+    _UNSEEDED,
   * every successful transition appends exactly one AgentGuardrailEvent,
   * the four breaker inputs (trades/day, realized $, drawdown-from-HWM, loss
     streak) count exactly the rows they claim to,
@@ -28,6 +30,7 @@ from swing_screener.db import guardrails_repo as gr
 from swing_screener.db import repo
 from swing_screener.db.models import AgentGuardrailEvent, AgentGuardrails, PaperTrade
 from swing_screener.db.session import get_engine
+from swing_screener.pipeline import proposed
 
 
 @pytest.fixture
@@ -433,6 +436,41 @@ def test_set_disabled_play_types_rejects_unknown_members(session: Session) -> No
     assert "reversal" not in str(exc.value).split("valid:")[0]   # only the bad one
     assert session.query(AgentGuardrailEvent).count() == 0
     assert gr.peek_guardrails(session).disabled_play_types == frozenset()
+    # a REFUSED write writes NOTHING -- not even the seed row (the validation read
+    # is the non-seeding peek; the get-or-create happens only past validation).
+    assert session.query(AgentGuardrails).count() == 0
+
+
+def test_set_disabled_tolerates_an_already_stored_stale_member(
+    session: Session, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A play type RETIRED from the vocabulary must not lock the board out.
+
+    Continuation has no confirmed edge, so shrinking ``PLAY_TYPES`` is a live
+    possibility -- and the board POSTs the WHOLE disabled set back on every toggle.
+    If the whole set were re-validated, the stale member would 422 every future
+    scope change, including the one that would have removed it. Only NEW additions
+    are checked; what is already stored rides through."""
+    gr.set_disabled_play_types(session, disabled={"continuation", "reversal"},
+                               source="cockpit")
+    monkeypatch.setattr(proposed, "PLAY_TYPES", ("reversal",))   # continuation retired
+
+    # the board re-enables reversal and re-posts the whole set: the stale member
+    # survives the round trip instead of blocking it.
+    gr.set_disabled_play_types(session, disabled={"continuation"}, source="cockpit")
+    assert gr.load_guardrails(session).disabled_play_types == frozenset(
+        {"continuation"})
+
+    # ...but a genuinely NEW unknown is still refused, by name.
+    with pytest.raises(ValueError, match="breakout"):
+        gr.set_disabled_play_types(session, disabled={"continuation", "breakout"},
+                                   source="cockpit")
+    assert gr.load_guardrails(session).disabled_play_types == frozenset(
+        {"continuation"})
+
+    # and the stale member is droppable -- omitting it from the whole set removes it.
+    gr.set_disabled_play_types(session, disabled=set(), source="cockpit")
+    assert gr.load_guardrails(session).disabled_play_types == frozenset()
 
 
 def test_scope_edit_never_touches_the_state_columns(session: Session) -> None:

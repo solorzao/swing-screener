@@ -46,9 +46,10 @@ LIVE_ACCOUNT = "live"
 # (1) it is a SET, not a scalar, so "presence decides / null unsets" (the edit
 # body's rule) has no meaning for it; (2) it needs vocabulary validation the
 # positivity rule cannot express; (3) these six ARE the cockpit LIMITS form's
-# contract -- tests/cockpit/test_guardrails_router.py pins the 422 text listing
-# exactly what an edit may carry, and widening the whitelist would quietly let a
-# scope change ride an edit body that no scope UI ever sent.
+# contract -- tests/cockpit/test_guardrails_router.py pins the REFUSAL text an edit
+# answers with ("not an editable limit column: <keys>"), so any name added here
+# silently stops being refused, and a scope change could ride an edit body that no
+# scope UI ever sent.
 _EDITABLE_LIMITS = (
     "max_daily_loss_usd",
     "max_trades_per_day",
@@ -454,10 +455,21 @@ def set_disabled_play_types(
     written here can widen scope. Re-enabling returns to the ceiling, never past it
     -- exactly like releasing a HALT returns to what the master arm allows.
 
-    Members are validated against the canonical ``PLAY_TYPES`` vocabulary (ValueError
-    naming the invalid ones), which is also what keeps the stored string inside
-    ``String(64)``: an unbounded free-text set would fail on Azure SQL only. A
-    MIN(id)-pinned plain UPDATE touches ONLY this column + ``updated_at`` -- the
+    NEW members are validated against the canonical ``PLAY_TYPES`` vocabulary
+    (ValueError naming the invalid ones), which is also what keeps the stored string
+    inside ``String(64)``: an unbounded free-text set would fail on Azure SQL only.
+
+    ALREADY-STORED members are tolerated even when the vocabulary no longer contains
+    them, and that is a real case, not defensive padding: continuation has no
+    confirmed edge, so retiring a play type from ``PLAY_TYPES`` is a live
+    possibility. Validating the WHOLE set against the vocabulary would then lock the
+    board out permanently -- it POSTs the whole disabled set back on every toggle,
+    so a stale member nobody can remove would 422 every future scope change,
+    including the ones that would have removed it. Tolerating what is already there
+    keeps the operator able to act; it cannot widen scope either way, since a member
+    outside the vocabulary subtracts nothing that was ever dispatchable.
+
+    A MIN(id)-pinned plain UPDATE touches ONLY this column + ``updated_at`` -- the
     state columns are untouchable here exactly as they are through ``edit_limits``,
     so disabling a strategy while tripped leaves the brake tripped -- and ONE 'edit'
     event (breaker ``'disabled_play_types'``, ``values_json`` carrying old -> new as
@@ -472,7 +484,12 @@ def set_disabled_play_types(
     from swing_screener.pipeline.proposed import PLAY_TYPES  # noqa: PLC0415
 
     wanted = frozenset(str(m).strip().lower() for m in disabled if str(m).strip())
-    unknown = wanted - frozenset(PLAY_TYPES)
+    # PEEK, not load: a REFUSED write must write nothing at all, not even the seed
+    # row. (The get-or-create the UPDATE needs happens below, after validation.)
+    # This read is also what makes the tolerance above possible: only members that
+    # are NEITHER in the vocabulary NOR already stored count as unknown.
+    stored = peek_guardrails(session).disabled_play_types
+    unknown = wanted - frozenset(PLAY_TYPES) - stored
     if unknown:
         raise ValueError(
             f"set_disabled_play_types: not a known play type: "
@@ -752,11 +769,23 @@ def effective_scope_from_state(
     * ceiling UNSET (None = the operator has expressed no ceiling) -> the board may
       still subtract, so the answer is ``frozenset(PLAY_TYPES) - disabled``: the
       cockpit can tighten below an unset ceiling without an env deploy.
-    * ceiling UNSET and NOTHING disabled -> None, i.e. genuinely unscoped, exactly
-      as before Task 22. Materialising ``frozenset(PLAY_TYPES)`` there would be
-      equivalent for every member of today's vocabulary but would make a STALE
-      vocabulary silently exclude a future play type nobody scoped out; None means
-      "no scoping applies", which is the honest reading of two unset knobs.
+    * ceiling UNSET and NOTHING disabled -> None. Two honest reasons, and neither is
+      "stale-vocabulary protection" -- that argument does not survive contact with
+      the bullet above: the moment ANYTHING is disabled the answer materialises
+      ``frozenset(PLAY_TYPES) - disabled``, so a stale vocabulary is load-bearing
+      from the first disable either way. The reasons are (a) NO REGRESSION: with
+      both knobs unset the seam returns exactly what it returned before Task 22, so
+      the subtraction is a pure addition and no existing dispatch path changes
+      behaviour until an operator actually disables something; and (b) the RETURN
+      TYPE cannot express "everything except X" -- ``frozenset[str] | None`` has one
+      token for "all" (None) and no way to say "all, minus X", so the None case is
+      simply the only one where "all" can still be said without naming names.
+
+    CONSUMER CONTRACT: ``None`` means ALL play types are in scope, never none --
+    display consumers must map None -> all-armed. Beware the falsy-None trap:
+    ``scope or frozenset()`` collapses the unscoped answer to the EMPTY set and
+    renders everything OUT of scope, which is the exact inverse of the truth. Test
+    ``is None`` explicitly (that is what both enforcement call sites do).
 
     Split from the seeding entry point below the way ``mandate_from_state`` is split
     from ``guardrails_mandate_ok``: ONE definition of effective scope, two ways in --
