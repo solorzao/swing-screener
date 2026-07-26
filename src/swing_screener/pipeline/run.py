@@ -2,7 +2,7 @@ import argparse
 import logging
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -179,27 +179,72 @@ class RunResult:
 _DIGEST_TIMEFRAMES = ("1wk", "1mo")
 
 
-# Over-render margin: the digest's repeat COOLDOWN (notify.select._fresh_enough) drops
-# stale picks at send time and promotes lower-ranked names -- digest-time state the
-# evening render can't see. A few extra charts per cadence absorb those promotions
-# (deliberate small waste; a promoted pick arriving chartless is worse).
+# Over-render margin: the digest's ALREADY-RAN drop and sector-cap skew (live quotes /
+# live-fetched sectors -- digest-time state the evening render genuinely can't see)
+# still promote lower-ranked names past any deterministic selection. A few extra charts
+# per cadence absorb those promotions (deliberate small waste; a promoted pick arriving
+# chartless is worse). The COOLDOWN half of the gap is deterministic at screen time and
+# handled exactly by the fresh-first union below (2026-07-26: 27.5% of analyzed picks
+# over 5 weeks shipped chartless at booking, almost all cooldown promotions).
 _CHART_MARGIN = 5
+
+# Freshness horizons for the slow cadences, in SCREEN RUNS. Kept in sync with
+# notify.run._COOLDOWN_RUNS (weekly=5, monthly=21) the same way _SURFACE_TOP_N is
+# kept in sync with notify.select's top_n default.
+_TF_COOLDOWN_RUNS = {"1wk": 5, "1mo": 21}
+
+
+def _fresh_predicate(
+    recent_run_dates: "Sequence[date]", horizon_runs: int | None,
+    first_seen_of: "Callable[[SignalResult], date | None]",
+) -> "Callable[[SignalResult], bool]":
+    """Screen-time mirror of ``notify.select._fresh_enough``: will the digest still
+    call this signal fresh after ``horizon_runs`` screen runs? Counts over the
+    distinct run_dates actually stored (``recent_run_dates``, newest first, with
+    today's run already saved), NOT calendar days. Fail-open like the digest:
+    NULL first_seen, a disabled cooldown (None), or a store younger than the
+    window all read as fresh."""
+    if horizon_runs is None:
+        return lambda r: True
+    runs = list(recent_run_dates)[: horizon_runs + 1]
+    if not runs:
+        return lambda r: True
+    cutoff = runs[-1]
+
+    def fresh(r: "SignalResult") -> bool:
+        fs = first_seen_of(r)
+        return fs is None or fs >= cutoff
+
+    return fresh
 
 
 def _digest_chart_indices(
     results: list[SignalResult], top_n: int, *,
     sector_of: "Callable[[SignalResult], str | None] | None" = None,
     max_per_sector: int | None = None,
+    first_seen_of: "Callable[[SignalResult], date | None] | None" = None,
+    recent_run_dates: "Sequence[date] | None" = None,
+    daily_cooldown_runs: int | None = None,
 ) -> list[int]:
     """Indices into score-sorted ``results`` for every signal a digest can pick.
 
     Charts are rendered for the UNION of the global top-N (the daily digest) and
     the top-N within each per-timeframe cadence (weekly=1wk, monthly=1mo) -- each
-    extended by ``_CHART_MARGIN`` to cover cooldown promotions. Without the
-    per-timeframe slices a weekly/monthly pick ranked below the global top-N
-    would reach the digest with no chart. ``results`` is sorted by score
+    extended by ``_CHART_MARGIN`` to cover already-ran/sector-skew promotions.
+    Without the per-timeframe slices a weekly/monthly pick ranked below the global
+    top-N would reach the digest with no chart. ``results`` is sorted by score
     descending, so a timeframe's first ``top_n`` entries are exactly its picks.
     Kept in sync with notify.select, whose pickers all default to top_n=3.
+
+    When ``first_seen_of``/``recent_run_dates`` are given, every slice is ALSO
+    computed over the FRESH-only ordering -- the signals the next digest's
+    staleness cooldown will actually keep (``daily_cooldown_runs`` for the daily
+    slice, ``_TF_COOLDOWN_RUNS`` for the cadences) -- and unioned in. The cooldown
+    is deterministic at screen time, so this closes the promoted-past-the-margin
+    gap exactly (2026-07-26 measurement: 27.5% of analyzed picks chartless at
+    booking, dominated by stale raw leaders crowding the charted set); the margin
+    now only has to absorb the genuinely unpredictable drops (already-ran, live
+    sector skew).
 
     The daily slice is chosen TICKER-wise, mirroring daily_picks' per-ticker dedup:
     first (best-scored) row per ticker, then the sector cap / prefix picks ``depth``
@@ -213,20 +258,32 @@ def _digest_chart_indices(
     the cap is charted (and one capped far OUT isn't needlessly rendered).
     """
     depth = top_n + _CHART_MARGIN
-    deduped = first_per_ticker(list(enumerate(results)), lambda p: p[1].ticker)
-    if max_per_sector is not None and sector_of is not None:
-        chosen = cap_by_sector(deduped, lambda p: sector_of(p[1]),
-                               max_per_sector=max_per_sector, limit=depth)
-    else:
-        chosen = deduped[:depth]  # global top-N DISTINCT tickers (daily digest)
+    indexed = list(enumerate(results))
+
+    def _daily_tickers(pool: "list[tuple[int, SignalResult]]") -> set[str]:
+        deduped = first_per_ticker(pool, lambda p: p[1].ticker)
+        if max_per_sector is not None and sector_of is not None:
+            chosen = cap_by_sector(deduped, lambda p: sector_of(p[1]),
+                                   max_per_sector=max_per_sector, limit=depth)
+        else:
+            chosen = deduped[:depth]  # global top-N DISTINCT tickers (daily digest)
+        return {p[1].ticker for p in chosen}
+
+    tickers = _daily_tickers(indexed)
+    if first_seen_of is not None and recent_run_dates is not None:
+        fresh = _fresh_predicate(recent_run_dates, daily_cooldown_runs, first_seen_of)
+        tickers |= _daily_tickers([p for p in indexed if fresh(p[1])])
     # Chart EVERY row of a chosen ticker (<=4, one per timeframe), not just the row
     # that won the slot: a digest-time cooldown drop of the ticker's best row
     # promotes its other-timeframe row, which a row-wise dedup would leave unrendered.
-    tickers = {p[1].ticker for p in chosen}
-    idx = {i for i, r in enumerate(results) if r.ticker in tickers}
+    idx = {i for i, r in indexed if r.ticker in tickers}
     for tf in _DIGEST_TIMEFRAMES:
-        tf_indices = [i for i, r in enumerate(results) if r.timeframe == tf]
+        tf_indices = [i for i, r in indexed if r.timeframe == tf]
         idx.update(tf_indices[:depth])
+        if first_seen_of is not None and recent_run_dates is not None:
+            fresh_tf = _fresh_predicate(
+                recent_run_dates, _TF_COOLDOWN_RUNS.get(tf), first_seen_of)
+            idx.update([i for i in tf_indices if fresh_tf(results[i])][:depth])
     return sorted(idx)
 
 
@@ -292,7 +349,10 @@ def _would_surface(pr: SignalResult, rank: int, cfg: StrategyConfig) -> bool:
 
 
 def _reversal_chart_indices(results: list[SignalResult], cfg: StrategyConfig, *,
-                            top_n: int, pool_n: int) -> list[int]:
+                            top_n: int, pool_n: int,
+                            first_seen_of: "Callable[[SignalResult], date | None] | None" = None,
+                            recent_run_dates: "Sequence[date] | None" = None,
+                            daily_cooldown_runs: int | None = None) -> list[int]:
     """Indices into score-sorted reversal ``results`` to chart.
 
     The digest picks CONFIRMED-only (per config) from a ``pool_n``-deep pool with an
@@ -308,19 +368,35 @@ def _reversal_chart_indices(results: list[SignalResult], cfg: StrategyConfig, *,
     ``pool_n`` when dups sit inside it, so the charted pool is the eligible rows of
     the first ``pool_n`` distinct tickers -- every row of an admitted ticker charts
     (a digest-time cooldown drop of its best row promotes the other-timeframe one).
+
+    When ``first_seen_of``/``recent_run_dates`` are given, the pool walk ALSO runs
+    over the FRESH-only eligible ordering and unions in -- the digest's own pool is
+    fresh-first (``reversal_picks`` with ``max_age_days``), so stale eligible
+    tickers crowding the raw walk used to push the picks the digest would actually
+    surface past the charted budget (2026-07-09: all 5 emailed reversal picks
+    chartless). With the union, the charted set is a superset of the digest's
+    selectable pool by construction.
     """
     eligible = [i for i, r in enumerate(results) if _passes_reversal_surface(r, cfg)]
-    pool_tickers: set[str] = set()
-    idx: list[int] = []
-    for i in eligible:
-        ticker = results[i].ticker
-        if ticker not in pool_tickers:
-            if len(pool_tickers) >= pool_n:
-                continue  # past the pool's ticker budget (admitted names still chart)
-            pool_tickers.add(ticker)
-        idx.append(i)
+
+    def _pool_rows(candidates: list[int]) -> list[int]:
+        pool_tickers: set[str] = set()
+        rows: list[int] = []
+        for i in candidates:
+            ticker = results[i].ticker
+            if ticker not in pool_tickers:
+                if len(pool_tickers) >= pool_n:
+                    continue  # past the pool's ticker budget (admitted names still chart)
+                pool_tickers.add(ticker)
+            rows.append(i)
+        return rows
+
+    chosen = set(_pool_rows(eligible))
+    if first_seen_of is not None and recent_run_dates is not None:
+        fresh = _fresh_predicate(recent_run_dates, daily_cooldown_runs, first_seen_of)
+        chosen |= set(_pool_rows([i for i in eligible if fresh(results[i])]))
+    idx = sorted(chosen)
     if len(idx) < top_n:
-        chosen = set(idx)
         idx += [i for i in range(len(results)) if i not in chosen][: top_n - len(idx)]
     return sorted(idx)
 
@@ -527,8 +603,18 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
             v = universe_metrics.get(r.ticker, {}).get("sector")
             return v if isinstance(v, str) else None
 
+        # The digest's staleness cooldown is deterministic at screen time (today's rows
+        # are already saved, so the run-date window the digest will count over exists
+        # right here) -- feed it to the chart selectors so tomorrow's fresh-promoted
+        # picks are charted tonight instead of shipping as chartless PDF sections.
+        cooldown = cfg.digest_repeat_cooldown_days
+        window = max(cooldown or 0, *_TF_COOLDOWN_RUNS.values()) + 1
+        recent_runs = repo.recent_run_dates(s, today, limit=window)
         for i in _digest_chart_indices(today_results, top_charts, sector_of=_sector_of,
-                                       max_per_sector=cfg.daily_max_per_sector):
+                                       max_per_sector=cfg.daily_max_per_sector,
+                                       first_seen_of=_first_seen,
+                                       recent_run_dates=recent_runs,
+                                       daily_cooldown_runs=cooldown):
             _render_and_attach(today_results[i], cont_signals[i], chart_dir, today)
             n_charts += 1
         # Reversal charts cover the digest's whole ELIGIBLE pool (confirmed-only to pool
@@ -536,7 +622,10 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         # top-N by score, which EARLY signals dominate -- the emailed picks used to
         # arrive as chartless PDF sections (2026-07-03 diagnosis).
         for i in _reversal_chart_indices(today_reversals, cfg, top_n=top_charts,
-                                         pool_n=REVERSAL_POOL_N):
+                                         pool_n=REVERSAL_POOL_N,
+                                         first_seen_of=_first_seen,
+                                         recent_run_dates=recent_runs,
+                                         daily_cooldown_runs=cooldown):
             _render_and_attach(today_reversals[i], rev_signals[i], chart_dir, today)
             n_charts += 1
         s.commit()

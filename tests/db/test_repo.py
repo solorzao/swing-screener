@@ -72,6 +72,24 @@ def test_prior_first_seen_resets_after_absence_beyond_lookback():
     assert ("AAPL", "1d", "continuation") not in seen
 
 
+def test_recent_run_dates_newest_first_with_limit():
+    """The evening chart pass predicts the digest's freshness window with this: the
+    distinct run-date calendar at or before the run, newest first, INCLUDING the
+    run's own just-saved rows (mirror of notify.select._fresh_enough's query)."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add_all([
+            _sig_on("AAPL", date(2024, 4, 1), date(2024, 4, 1)),
+            _sig_on("MSFT", date(2024, 4, 2), date(2024, 4, 2)),
+            _sig_on("MSFT", date(2024, 4, 2), date(2024, 4, 2)),  # dup run date
+            _sig_on("MSFT", date(2024, 4, 3), date(2024, 4, 2)),
+            _sig_on("NVDA", date(2024, 4, 4), date(2024, 4, 4)),  # after the asked run
+        ])
+        s.commit()
+        got = repo.recent_run_dates(s, date(2024, 4, 3), limit=2)
+    assert got == [date(2024, 4, 3), date(2024, 4, 2)]  # distinct, DESC, capped
+
+
 def test_apply_universe_metrics_writes_sector_and_skips_none():
     """sector is written when present and SKIPPED when None, so a transient yfinance
     failure (None) preserves the prior value rather than wiping it."""
