@@ -149,7 +149,7 @@ function CohortsSection({ facet, cohorts }: { facet: Facet; cohorts: Polled<Coho
 
 /* Zone D — TODAY (the design's right-column pick surface, plan Task 17). The
    digest's surfaced picks in digest order as compact PickCards, then the
-   liveness-dropped extras flagged beneath — never counted in the surfaced five.
+   liveness-dropped extras flagged beneath — never counted in the surfaced three.
    Its own picks poll (per-screen; dies with Mission Control); the facet-scoped
    cohorts poll is HOISTED to the screen and shared with CohortsSection (one
    /api/cohorts per interval, two consumers). The LOG action hands the pick's
@@ -197,7 +197,7 @@ function TodayZone({
               {data.extras.length > 0 && (
                 <>
                   <div className="pk-extra-head">
-                    <HelpTerm term="flagged">flagged extras</HelpTerm> · dropped for liveness, never in the five
+                    <HelpTerm term="flagged">flagged extras</HelpTerm> · dropped for liveness, never in the three
                   </div>
                   {data.extras.map((p) => (
                     <PickCard

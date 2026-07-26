@@ -198,7 +198,7 @@ class StrategyConfig:
     spring_gap: int = 3
 
     # Reversal score weights, lifted from inline literals (2026-07-03) so the replay
-    # machinery can sweep them: the score is the ONLY ordering behind the digest's top-5
+    # machinery can sweep them: the score is the ONLY ordering behind the digest's top-N
     # reversal picks. The LEGACY vector (0.35 bounce / 0.20 downtrend / 0.15 volume /
     # 0.15 confirmed / 0.15 depth, no lag term) graded NON-PREDICTIVE on the fixed
     # confirmed book -- flat quintile ladder, top-quintile-vs-rest clustered delta bound
@@ -252,7 +252,7 @@ class StrategyConfig:
     reversal_surface_confirmed_only: bool = True
     # Sector-diversity cap for the reversal list (the daily_max_per_sector counterpart).
     # 2026-07-02: 31 same-day confirmations crowded every software rotation name out of the
-    # score-ranked top-5. Unknown sectors are never capped (fail-open); None disables.
+    # score-ranked top-N. Unknown sectors are never capped (fail-open); None disables.
     reversal_max_per_sector: int | None = 2
 
     # exits

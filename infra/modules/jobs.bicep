@@ -137,8 +137,11 @@ param analysisModel string = 'claude-sonnet-5'
 @description('Reasoning effort -> extended-thinking budget: none/low/medium/high.')
 param analysisReasoning string = 'medium'
 
+// 5 -> 3 (2026-07-26): the digest lists themselves shrank to top-3, and the deep loop
+// is bounded by list length -- keeping this in lockstep stops the env var from being a
+// silent no-op above the list size.
 @description('How many top picks per digest get the deep treatment.')
-param deepAnalysisTopN string = '5'
+param deepAnalysisTopN string = '3'
 
 @description('Which digest kinds get deep analysis (comma list).')
 param deepAnalysisKinds string = 'daily,weekly,monthly'

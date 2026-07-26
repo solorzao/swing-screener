@@ -162,7 +162,8 @@ class PaperTrade(Base):
     # None = unknown (^VIX unavailable) or a legacy row. Used by breakdown(trades,"vix_bucket").
     vix_bucket: Mapped[str | None] = mapped_column(String(16), default=None)
     # would this signal have SURFACED in the digest (booking-time estimate: strength +
-    # top-5 rank under the live surfacing config)? North Star #7: the gold forward book
+    # top-N rank under the live surfacing config; N=5 before 2026-07-26, 3 after)?
+    # North Star #7: the gold forward book
     # must reflect entries a human could actually take -- reflection grades only
     # would_surface=True rows, the rest are the research facet. None = legacy row
     # (pre-stamping) or a replay row (ticker-major replay ranks are degenerate; see
@@ -457,8 +458,8 @@ class ReversalFunnel(Base):
     confirmed: Mapped[int]                               # strength == "confirmed"
     fresh: Mapped[int]                                   # strength bar + cooldown + pool cap
     actionable: Mapped[int]                              # after the already-ran drop
-    surfaced: Mapped[int]                                # after the sector cap + top-5
-    # comma-joined tickers that cleared every bar but lost the top-5/sector race.
+    surfaced: Mapped[int]                                # after the sector cap + top-N
+    # comma-joined tickers that cleared every bar but lost the top-N/sector race.
     overflow_tickers: Mapped[str] = mapped_column(String(512), default="")
     # the config bars in force when the snapshot was taken.
     pool_n: Mapped[int] = mapped_column(default=20)

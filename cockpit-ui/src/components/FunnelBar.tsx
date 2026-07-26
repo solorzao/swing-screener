@@ -55,7 +55,7 @@ export function FunnelBar({ funnel }: { funnel: Funnel }) {
       ))}
       {funnel.overflow.length > 0 && (
         <div className="funnel-overflow">
-          <span className="funnel-note">lost the top-5/sector race:</span>
+          <span className="funnel-note">lost the top-3/sector race:</span>
           {funnel.overflow.map((t) => (
             <span key={t} className="funnel-chip">
               {t}

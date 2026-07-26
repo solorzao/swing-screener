@@ -1372,7 +1372,7 @@ def run_reflection(
         )
         # North Star #7 ("measure only what I'd actually trade"): the GOLD forward facet
         # is the trades the digest would have surfaced (the booking-time would_surface
-        # stamp -- strength + top-5 rank under the live surfacing config). The full book
+        # stamp -- strength + top-N rank under the live surfacing config). The full book
         # (~92% hidden EARLY reversals + rank-6+ names) stays the research facet; grading
         # it as gold promoted edges proven on a population the system does not trade
         # (2026-07 review). Legacy NULL rows are excluded (None is not surfaced), so the

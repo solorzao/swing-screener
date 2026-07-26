@@ -38,7 +38,7 @@ def _fresh_enough(session: Session, run_date: date,
     return [or_(Signal.first_seen_date.is_(None), Signal.first_seen_date >= cutoff)]
 
 
-def daily_picks(session: Session, run_date: date, *, top_n: int = 5,
+def daily_picks(session: Session, run_date: date, *, top_n: int = 3,
                 max_age_days: int | None = None,
                 max_per_sector: int | None = None) -> list[Signal]:
     """Top-N CONTINUATION signals overall for the run date (any timeframe).
@@ -79,7 +79,7 @@ def daily_picks(session: Session, run_date: date, *, top_n: int = 5,
     return [r[0] for r in capped]
 
 
-# How deep the digest's reversal pool reaches below the top-5: the actionability drop
+# How deep the digest's reversal pool reaches below the top-3: the actionability drop
 # and the sector cap BACKFILL from this pool, so a surfaced pick can sit anywhere in it.
 # Shared with the screen's chart renderer (pipeline.run), which must chart the whole
 # pool -- a pick the digest can surface but the evening render never charted reaches the
@@ -88,7 +88,7 @@ def daily_picks(session: Session, run_date: date, *, top_n: int = 5,
 REVERSAL_POOL_N = 20
 
 
-def reversal_picks(session: Session, run_date: date, *, top_n: int = 5,
+def reversal_picks(session: Session, run_date: date, *, top_n: int = 3,
                    max_age_days: int | None = None,
                    confirmed_only: bool = False, premium_only: bool = False) -> list[Signal]:
     """Top-N REVERSAL signals overall for the run date (any timeframe) -- the
@@ -103,7 +103,7 @@ def reversal_picks(session: Session, run_date: date, *, top_n: int = 5,
 
     One slot per TICKER (``first_per_ticker``, same rule as ``daily_picks``): the
     ``REVERSAL_POOL_N`` pool feeds the sector-cap backfill, so a duplicate would
-    otherwise hold multiple pool -- and possibly top-5 -- slots."""
+    otherwise hold multiple pool -- and possibly top-3 -- slots."""
     where = [Signal.run_date == run_date, Signal.play_type == "reversal",
              *_fresh_enough(session, run_date, max_age_days)]
     if premium_only:
@@ -119,7 +119,7 @@ def cap_signals_by_sector(session: Session, signals: list[Signal], *,
                           max_per_sector: int | None, limit: int) -> list[Signal]:
     """Cap an already-ranked signal list to ``max_per_sector`` per GICS sector, then trim
     to ``limit`` -- the reversal-list counterpart of ``daily_picks``' cap (2026-07-02: 31
-    same-day confirmations crowded every software rotation name out of the top-5).
+    same-day confirmations crowded every software rotation name out of the then-top-5).
 
     Runs over an in-memory list (the caller filters staleness/actionability first, so a
     dropped pick never consumes a sector slot). Unknown sectors are never capped
@@ -168,13 +168,13 @@ def _by_timeframe(session: Session, run_date: date, timeframe: str, top_n: int,
     return list(session.scalars(stmt))
 
 
-def weekly_picks(session: Session, run_date: date, *, top_n: int = 5,
+def weekly_picks(session: Session, run_date: date, *, top_n: int = 3,
                  max_age_days: int | None = None) -> list[Signal]:
     """Top-N weekly-timeframe signals for the run date."""
     return _by_timeframe(session, run_date, "1wk", top_n, max_age_days)
 
 
-def monthly_picks(session: Session, run_date: date, *, top_n: int = 5,
+def monthly_picks(session: Session, run_date: date, *, top_n: int = 3,
                   max_age_days: int | None = None) -> list[Signal]:
     """Top-N monthly-timeframe signals for the run date."""
     return _by_timeframe(session, run_date, "1mo", top_n, max_age_days)

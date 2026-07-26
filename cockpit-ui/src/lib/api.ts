@@ -729,7 +729,7 @@ export interface PickRow {
 }
 
 /** The digest's surfaced sets in digest ORDER, plus liveness-dropped picks as
- * flagged extras that never consumed a cap slot — the five always match the
+ * flagged extras that never consumed a cap slot — the three always match the
  * email. `extended` is NORMAL for a reversal (a resting limit sits above its
  * ceiling by definition). run_date null = no screen run yet, a setup state. */
 export interface Picks {

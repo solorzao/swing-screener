@@ -20,8 +20,8 @@ if TYPE_CHECKING:
 
 _BADGE = {"hard": "🔴", "strong": "🟠", "advisory": "🟡"}
 _KIND_TITLE = {"daily": "Daily", "weekly": "Weekly", "monthly": "Monthly"}
-CONTINUATION_TITLE = "Top 5 - Continuation Plays"
-REVERSAL_TITLE = "Top 5 - Reversal Plays"
+CONTINUATION_TITLE = "Top 3 - Continuation Plays"
+REVERSAL_TITLE = "Top 3 - Reversal Plays"
 
 
 @dataclass(frozen=True)
@@ -223,7 +223,7 @@ def compose_digest_body(
         funnel_line = f"Reversal funnel: {mid} · {len(reversal_picks)} surfaced"
     overflow_line: str | None = None
     if reversal_picks is not None and reversal_overflow:
-        overflow_line = "Also confirmed (lost the top-5/sector race): " + ", ".join(
+        overflow_line = "Also confirmed (lost the top-3/sector race): " + ", ".join(
             reversal_overflow)
 
     # --- plain text ---

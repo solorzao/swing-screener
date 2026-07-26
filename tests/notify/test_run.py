@@ -193,20 +193,21 @@ def test_reversal_top5_sector_cap_backfills(tmp_path):
     res = run.send_digest(kind="daily", db_url=url, run_date=RUN, to="me@example.com",
                           pdf_dir=tmp_path / "digests", anthropic_client=_FakeClient(),
                           smtp_send=lambda **k: sent.append(k))
-    # 2 financials keep their rank slots, the 3 others are capped out, and the software
-    # names ranked 6-7 backfill -> 4 surfaced from the 7 candidates
-    assert res.sent is True and res.n_reversals == 4
+    # 2 financials keep their rank slots, the 3 others are capped out, and the first
+    # software name (rank 6) backfills the last slot -> 3 surfaced from the 7 candidates
+    assert res.sent is True and res.n_reversals == 3
     body = sent[-1]["text"]
-    assert "CRM" in body and "WDAY" in body
-    # capped-out names stay visible on the compact overflow line, not as full picks
-    assert "Also confirmed (lost the top-5/sector race): MS, BAC, C" in body
+    assert "CRM" in body
+    # capped-out and over-limit names stay visible on the compact overflow line,
+    # not as full picks (WDAY cleared every bar but lost the top-3 race)
+    assert "Also confirmed (lost the top-3/sector race): MS, BAC, C, WDAY" in body
 
 
 def test_daily_digest_persists_reversal_funnel_row(tmp_path):
     """The daily digest persists the funnel snapshot: fresh/actionable/surfaced are
     digest-time state (cooldown, live quotes, sector cap) and are unrecoverable later --
     the row is the only record. Sector-cap fixture: 5 financials + 2 software, all
-    confirmed, cap 2/sector + top-5 -> 4 surfaced, 3 on the overflow line."""
+    confirmed, cap 2/sector + top-3 -> 3 surfaced, 4 on the overflow line."""
     url = f"sqlite:///{tmp_path / 'funrow.sqlite'}"
     _seed(url)
     engine = get_engine(url)
@@ -222,15 +223,15 @@ def test_daily_digest_persists_reversal_funnel_row(tmp_path):
                           pdf_dir=tmp_path / "digests", anthropic_client=_FakeClient(),
                           smtp_send=lambda **k: None,
                           latest_closes_fn=lambda tickers: {})  # fail-open: nothing dropped
-    assert res.sent is True and res.n_reversals == 4
+    assert res.sent is True and res.n_reversals == 3
     with Session(get_engine(url)) as s:
         rows = list(s.scalars(select(ReversalFunnel)))
     assert len(rows) == 1
     row = rows[0]
     assert row.run_date == RUN  # the screen run's date, not "today"
     assert (row.detected, row.confirmed, row.fresh, row.actionable,
-            row.surfaced) == (7, 7, 7, 7, 4)
-    assert row.overflow_tickers == "MS,BAC,C"  # cleared every bar, lost the top-5/sector race
+            row.surfaced) == (7, 7, 7, 7, 3)
+    assert row.overflow_tickers == "MS,BAC,C,WDAY"  # cleared every bar, lost the top-3/sector race
     assert row.pool_n == 20
     assert row.confirmed_only is True and row.premium_only is False
     assert row.already_ran_checked is True  # latest_closes_fn was injected

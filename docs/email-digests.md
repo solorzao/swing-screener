@@ -1,7 +1,7 @@
 # Email digests (Phase 4)
 
 After the nightly run, the screener sends a **concise summary email** of the day's top
-picks plus a **detailed PDF attachment** — daily (top 5), weekly, and monthly — with a
+picks plus a **detailed PDF attachment** — daily (top 3), weekly, and monthly — with a
 Claude-written rationale per pick, and fires urgent **exit alerts** for active trades.
 
 - **Email body** = a quick scan: per pick, ticker · **trade type** (short / medium / long) ·
@@ -37,13 +37,13 @@ $env:DIGEST_TO = "you@gmail.com"
 .\.venv\Scripts\python -m swing_screener.notify.run --kind daily --db sqlite:///local.db
 ```
 
-`--kind` is `daily` (top 5 overall), `weekly` (weekly-timeframe plays), or `monthly`. The PDF
+`--kind` is `daily` (top 3 overall), `weekly` (weekly-timeframe plays), or `monthly`. The PDF
 is written to `--pdf-dir` (default `.digests`). Re-running the same `(kind, run_date)` is a
 **no-op** (idempotent via `email_log`), so a retry won't double-send.
 
 ### Where it fits in the nightly cadence
 
-- **Daily** — the pre-open job (after the evening screen) sends the daily top-5 digest.
+- **Daily** — the pre-open job (after the evening screen) sends the daily top-3 digest.
 - **Weekly** — run `--kind weekly` once a week (e.g. after Friday's close).
 - **Monthly** — run `--kind monthly` once a month.
 - **Exit alerts** — sent alongside whichever digest run detects them.
@@ -67,7 +67,7 @@ It's **off by default**. Knobs (all env vars; declared in `infra/modules/jobs.bi
 | `SWING_DEEP_ANALYSIS` | `0` | master switch — `1`/`true` turns it on |
 | `SWING_ANALYSIS_MODEL` | `claude-opus-4-8` | model for the analysis call |
 | `SWING_ANALYSIS_REASONING` | `high` | reasoning effort → extended-thinking budget: `none`/`low`/`medium`/`high` |
-| `SWING_DEEP_ANALYSIS_TOP_N` | `5` | how many top picks per digest get the deep read |
+| `SWING_DEEP_ANALYSIS_TOP_N` | `3` | how many top picks per digest get the deep read |
 | `SWING_DEEP_ANALYSIS_KINDS` | `daily,weekly,monthly` | which digests it applies to |
 | `SWING_ANALYSIS_MAX_SEARCHES` | `4` | cap on web searches per pick (cost bound) |
 

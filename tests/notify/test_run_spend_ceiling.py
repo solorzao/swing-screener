@@ -101,7 +101,7 @@ def test_ceiling_trips_after_first_pick_remaining_use_deterministic(tmp_path, mo
 
     assert res.sent is True
     # Deep conviction ran only until the ceiling: AMD (acc 0.40), AEP (acc 0.80 >= 0.50);
-    # NVDA/INTC fall back to the deterministic narrator (no deep call).
+    # NVDA falls back to the deterministic narrator (INTC is trimmed by the top-3 list).
     assert conv_calls == ["AMD", "AEP"]
     assert deep_calls == []  # continuation has a playbook -> insight engine, never legacy deep
     # Only the two deep picks wrote an AnalystCall row; the deterministic picks did not.
@@ -196,8 +196,8 @@ def test_ceiling_charges_billed_but_failed_calls(tmp_path, monkeypatch, caplog):
     edge = _edge_dir(tmp_path, play_types=("continuation",))
 
     # 80k input tokens at opus $5/MTok == $0.40 per billed-but-empty call: AMD
-    # (acc 0.40) is under the $0.50 ceiling, AEP (acc 0.80) crosses it, NVDA/INTC
-    # must skip the analyst entirely.
+    # (acc 0.40) is under the $0.50 ceiling, AEP (acc 0.80) crosses it, NVDA must
+    # skip the analyst entirely (INTC is trimmed by the top-3 list).
     with caplog.at_level(logging.WARNING):
         res = run.send_digest(**_kwargs(
             tmp_path, url, anthropic_client=_EmptyBilledClient(in_tokens=80_000),

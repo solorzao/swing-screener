@@ -78,14 +78,14 @@ def test_daily_body_lists_picks_and_pdf_pointer():
                    "Weekly uptrend resuming.", score=0.85),
     ]
     c = compose_digest_body("daily", date(2026, 6, 15), picks, [], has_pdf=True)
-    assert c.subject == "Swing Screener - Daily Picks (2026-06-15)"  # no "Top 5", hyphen
-    assert "Top 5 - Continuation Plays" in c.text       # section title, not the repeated subject
+    assert c.subject == "Swing Screener - Daily Picks (2026-06-15)"  # no "Top 3", hyphen
+    assert "Top 3 - Continuation Plays" in c.text       # section title, not the repeated subject
     assert c.subject not in c.text                       # subject is NOT echoed in the body
     assert ("1. AMD - Advanced Micro Devices [medium] · score 0.92 — "
             "Daily continuation, strong momentum.") in c.text
     assert "AEP" in c.text and "American Electric Power" in c.text and "[long]" in c.text
     assert "Full analysis attached (PDF)." in c.text
-    assert "<h3>Top 5 - Continuation Plays</h3>" in c.html
+    assert "<h3>Top 3 - Continuation Plays</h3>" in c.html
     assert "score <b>0.92</b>" in c.html                 # scores bold in HTML
     assert "<b>AMD</b>" in c.html and "Advanced Micro Devices" in c.html
 
@@ -130,9 +130,9 @@ def test_reversal_section_renders_with_strength_tag():
                       strength="confirmed")]
     c = compose_digest_body("daily", date(2026, 6, 15), cont, [], has_pdf=False,
                             reversal_picks=rev)
-    assert "Top 5 - Continuation Plays" in c.text and "Top 5 - Reversal Plays" in c.text
+    assert "Top 3 - Continuation Plays" in c.text and "Top 3 - Reversal Plays" in c.text
     assert "[short · confirmed]" in c.text          # reversal strength tagged
-    assert "<h3>Top 5 - Reversal Plays</h3>" in c.html
+    assert "<h3>Top 3 - Reversal Plays</h3>" in c.html
 
 
 def test_reversal_funnel_line_shows_filtered_empty_state():
