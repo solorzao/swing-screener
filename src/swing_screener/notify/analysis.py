@@ -315,6 +315,7 @@ def _format_sources(sources: list[tuple[str, str]]) -> str:
 # tokens -- used only for cost visibility and the Task-2 safety cap, never billing.
 _MODEL_PRICES: dict[str, tuple[float, float]] = {
     "claude-fable-5": (10.0, 50.0),
+    "claude-opus-5": (5.0, 25.0),  # same list price as opus-4-8 (2026-07 skill table)
     "claude-opus-4-8": (5.0, 25.0),
     "claude-opus-4-7": (5.0, 25.0),
     "claude-opus-4-6": (5.0, 25.0),

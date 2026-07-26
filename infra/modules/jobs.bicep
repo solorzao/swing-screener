@@ -121,14 +121,17 @@ param digestTimeoutSeconds int = 4200
 @description('Master switch for deep analysis: "1"/"true" on, anything else off.')
 param deepAnalysisEnabled string = '1'
 
-// Opus 4.8 ($5/$25 per MTok) is back for the digest analyst (2026-07-26,
-// quality-over-frequency call): the top-5 -> top-3 list cut dropped deep volume
-// to 3/5, which pays for the 5/3 rate step back up from the 2026-07-23 Sonnet-5
-// swap -- net spend ~flat vs Sonnet-at-5, with the stronger model on every pick
-// that ships. The hourly on-demand worker shares this env (so it rides along);
-// only the TICKER LAB runs in the cockpit process off settings.py's own default.
+// Opus 5 ($5/$25 per MTok -- SAME list price as Opus 4.8) for the digest analyst
+// (2026-07-26, quality-over-frequency call): the top-5 -> top-3 list cut dropped
+// deep volume to 3/5, which pays for the 5/3 rate step back up from the 2026-07-23
+// Sonnet-5 swap -- net spend ~flat vs Sonnet-at-5, and Opus 5 is the drop-in
+// successor to 4.8 at the same rate, so it wins on both axes. The hourly on-demand
+// worker shares this env (so it rides along); only the TICKER LAB runs in the
+// cockpit process off settings.py's own default. Priced in notify/analysis.py
+// _MODEL_PRICES (an unpriced model would overcount at the $10/$50 fallback and
+// trip the $2.50 ceiling at half the real spend).
 @description('Model id for the analysis call.')
-param analysisModel string = 'claude-opus-4-8'
+param analysisModel string = 'claude-opus-5'
 
 // Extended thinking bills as OUTPUT tokens at the opus $25/MTok rate, making the
 // thinking budget the digest's dominant output cost -- 'medium' halves that term vs
