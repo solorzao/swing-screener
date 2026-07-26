@@ -196,7 +196,7 @@ def compose_digest_body(
 
     ``reversal_overflow`` (tickers that cleared every surfacing bar but lost the top-N /
     sector-cap race) renders one compact "also confirmed:" line under the funnel, so a
-    broad rotation day is VISIBLE even when the rotating names don't win the five slots
+    broad rotation day is VISIBLE even when the rotating names don't win the three slots
     (on 2026-07-02 CRM/WDAY/PTC were rank 9-12 -- present, invisible). None/empty omits.
 
     ``proposals_text``/``proposals_html`` (the manual-mode "Proposed orders — place on

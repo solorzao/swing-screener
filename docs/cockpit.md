@@ -313,7 +313,7 @@ All GET unless noted. Each route's docstring in
 
 | Endpoint | What it answers |
 |---|---|
-| `/api/picks` | today's surfaced picks in **digest order** (the five always match the email) + the liveness-dropped picks as flagged extras that never consume cap slots |
+| `/api/picks` | today's surfaced picks in **digest order** (the three always match the email) + the liveness-dropped picks as flagged extras that never consume cap slots |
 | `/api/positions` | open real Trades + open live PaperTrades with per-row P/L (per-row degradation — one bad row never 503s the zone), bracket lamps, the three cap gauges, closed trades + equity points, `quotes_as_of`. The caps payload carries the execution mode; under mode `off` the concurrent gauge counts the accounts actually displayed (manual + live), not the research shadow grid |
 | `/api/trade-defaults?signal_id=` | log-trade prefill: signal levels, actionability at the cached quote, `size_order` (shares==0 → "sizing unconfigured"), suggested entry clamped to the zone |
 | `/api/analysis?limit=` | the deep-analysis queue: queued/running/done/failed + `stalled` flag + `worker` mode copy |

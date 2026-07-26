@@ -78,8 +78,9 @@ def _conv_fake(conv_calls, *, cost):
 
 
 def test_ceiling_trips_after_first_pick_remaining_use_deterministic(tmp_path, monkeypatch, caplog):
-    # Ceiling 0.50; each deep call costs 0.40 -> after the 1st call the accumulator (0.40)
-    # is still under, the 2nd runs (0.80) crosses it, the 3rd+ skip to deterministic.
+    # Ceiling 0.50; each deep call costs 0.60 -> the 1st call (0.60) crosses it and the
+    # 2nd+ skip to deterministic. TWO skips inside the top-3 list keep the len==1 cutoff
+    # assertion below able to distinguish once-per-RUN logging from once-per-skip.
     monkeypatch.setenv("SWING_DEEP_ANALYSIS", "1")
     monkeypatch.setenv("SWING_DEEP_ANALYSIS_KINDS", "daily")
     monkeypatch.setenv("SWING_DEEP_ANALYSIS_TOP_N", "5")
@@ -92,7 +93,7 @@ def test_ceiling_trips_after_first_pick_remaining_use_deterministic(tmp_path, mo
     with caplog.at_level(logging.WARNING):
         res = run.send_digest(**_kwargs(
             tmp_path, url,
-            analyze_conviction_fn=_conv_fake(conv_calls, cost=0.40),
+            analyze_conviction_fn=_conv_fake(conv_calls, cost=0.60),
             deep_analyze_fn=lambda f, **k: (deep_calls.append(f.ticker) or
                                             SignalAnalysis(core_reason="d", rationale="r")),
             chart_bytes_loader=lambda p: None, edge_dir=edge,
@@ -100,15 +101,16 @@ def test_ceiling_trips_after_first_pick_remaining_use_deterministic(tmp_path, mo
             market_trend_fn=lambda: "bull"))
 
     assert res.sent is True
-    # Deep conviction ran only until the ceiling: AMD (acc 0.40), AEP (acc 0.80 >= 0.50);
-    # NVDA falls back to the deterministic narrator (INTC is trimmed by the top-3 list).
-    assert conv_calls == ["AMD", "AEP"]
+    # Deep conviction ran only until the ceiling: AMD (acc 0.60 >= 0.50); AEP and NVDA
+    # both fall back to the deterministic narrator (INTC is trimmed by the top-3 list).
+    assert conv_calls == ["AMD"]
     assert deep_calls == []  # continuation has a playbook -> insight engine, never legacy deep
-    # Only the two deep picks wrote an AnalystCall row; the deterministic picks did not.
+    # Only the deep pick wrote an AnalystCall row; the deterministic picks did not.
     with Session(get_engine(url)) as s:
         tickers = sorted(c.ticker for c in s.scalars(select(AnalystCall)))
-        assert tickers == ["AEP", "AMD"]
-    # The cutoff is logged exactly once per run.
+        assert tickers == ["AMD"]
+    # The cutoff is logged exactly once per RUN (two skipped picks would make a
+    # per-skip logger emit two records and fail this).
     cutoffs = [r for r in caplog.records if "spend ceiling" in r.getMessage()]
     assert len(cutoffs) == 1
 
@@ -195,21 +197,22 @@ def test_ceiling_charges_billed_but_failed_calls(tmp_path, monkeypatch, caplog):
     _seed(url, ["AMD", "AEP", "NVDA", "INTC"])
     edge = _edge_dir(tmp_path, play_types=("continuation",))
 
-    # 80k input tokens at opus $5/MTok == $0.40 per billed-but-empty call: AMD
-    # (acc 0.40) is under the $0.50 ceiling, AEP (acc 0.80) crosses it, NVDA must
-    # skip the analyst entirely (INTC is trimmed by the top-3 list).
+    # 120k input tokens at opus $5/MTok == $0.60 per billed-but-empty call: AMD
+    # (acc 0.60) crosses the $0.50 ceiling, so AEP and NVDA must both skip the
+    # analyst entirely (INTC is trimmed by the top-3 list) -- two skips keep the
+    # once-per-RUN cutoff assertion able to catch a per-skip logger.
     with caplog.at_level(logging.WARNING):
         res = run.send_digest(**_kwargs(
-            tmp_path, url, anthropic_client=_EmptyBilledClient(in_tokens=80_000),
+            tmp_path, url, anthropic_client=_EmptyBilledClient(in_tokens=120_000),
             deep_analyze_fn=lambda f, **k: SignalAnalysis(core_reason="d", rationale="r"),
             chart_bytes_loader=lambda p: None, edge_dir=edge,
             fundamentals_fn=lambda t: Fundamentals(ticker=t, ok=False), news_fn=lambda t: [],
             market_trend_fn=lambda: "bull"))
 
     assert res.sent is True
-    # Only the two picks that ran before the ceiling wrote an AnalystCall row.
+    # Only the pick that ran before the ceiling wrote an AnalystCall row.
     with Session(get_engine(url)) as s:
-        assert sorted(c.ticker for c in s.scalars(select(AnalystCall))) == ["AEP", "AMD"]
+        assert sorted(c.ticker for c in s.scalars(select(AnalystCall))) == ["AMD"]
     cutoffs = [r for r in caplog.records if "spend ceiling" in r.getMessage()]
     assert len(cutoffs) == 1
 

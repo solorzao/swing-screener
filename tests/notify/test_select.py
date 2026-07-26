@@ -133,6 +133,18 @@ def test_weekly_and_monthly_filter_by_timeframe():
     assert [p.ticker for p in sel.monthly_picks(s, RUN)] == ["NVDA"]
 
 
+def test_weekly_and_monthly_default_trims_to_top_3():
+    """The slow cadences ride the picker DEFAULT (notify.run passes no top_n), so the
+    top-3 trim must be pinned here: 4 seeded same-timeframe signals, 3 surface."""
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        s.add_all([_sig(t, "1wk", i + 1) for i, t in enumerate(["W1", "W2", "W3", "W4"])])
+        s.add_all([_sig(t, "1mo", i + 5) for i, t in enumerate(["M1", "M2", "M3", "M4"])])
+        s.commit()
+        assert [p.ticker for p in sel.weekly_picks(s, RUN)] == ["W1", "W2", "W3"]
+        assert [p.ticker for p in sel.monthly_picks(s, RUN)] == ["M1", "M2", "M3"]
+
+
 def test_exit_alerts_only_real_trades():
     s, _ = _seed()
     alerts = sel.pending_exit_alerts(s, RUN)
