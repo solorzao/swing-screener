@@ -72,6 +72,16 @@ _POSITIVE_LIMITS = (
 # UPDATE so a typo'd outcome fails loudly on every backend, not just Azure SQL.
 _SWEEP_OUTCOMES = ("pending", "partial", "complete")
 
+#: the ``sweep_state`` values that mean "the sweep has not finished -- RE-RUN it".
+#: PUBLIC, and owned HERE beside the vocabulary it partitions: five surfaces branch
+#: on it (``pipeline.guardrails``'s re-run owner, the digest's once-per-run resume,
+#: the hourly exit job's broker hoist, the cockpit DISARM's resume, and the
+#: Auditor's stuck-sweep rule), and they had five spellings of the same tuple.
+#: DERIVED rather than restated so the subset relation is structural -- adding an
+#: outcome above is the only way to change it, and a finished sweep is exactly the
+#: one state that is not "re-run me".
+INCOMPLETE_SWEEPS = tuple(o for o in _SWEEP_OUTCOMES if o != "complete")
+
 # the snapshot columns, selected raw so the read NEVER routes through the
 # Session's identity map (a long-lived dispatch Session would serve the entity
 # it cached before a cockpit HALT landed).
@@ -478,9 +488,13 @@ def set_disabled_play_types(
     NOT part of ``edit_limits``' whitelist by design (see ``_EDITABLE_LIMITS``):
     scope is its own verb.
     """
-    # Function-level import, mirroring settings._parse_play_types' note: this module
-    # sits UNDER pipeline (pipeline.execution imports it), so a module-level
-    # pipeline.proposed import would close the loop into a cycle.
+    # Function-level import, mirroring settings._parse_play_types': a LAYERING guard,
+    # not a cycle break (``pipeline.proposed`` imports only ``config`` +
+    # ``pipeline.variants`` today, so a module-level import would not actually cycle).
+    # It is kept function-level because ``db`` sits UNDER ``pipeline`` -- the edge that
+    # exists is pipeline.execution -> this module -- and a module-level db -> pipeline
+    # import is the direction that WOULD close the loop the day anything in proposed's
+    # chain reaches back down here. See ``breached_breaker``'s "no cycle can ever form".
     from swing_screener.pipeline.proposed import PLAY_TYPES  # noqa: PLC0415
 
     wanted = frozenset(str(m).strip().lower() for m in disabled if str(m).strip())
@@ -797,6 +811,8 @@ def effective_scope_from_state(
     if ceiling is None:
         if not disabled:
             return None
+        # Function-level for the same LAYERING reason as ``set_disabled_play_types``'
+        # (see there): db must own no module-level edge INTO pipeline.
         from swing_screener.pipeline.proposed import PLAY_TYPES  # noqa: PLC0415
         return frozenset(PLAY_TYPES) - disabled
     return ceiling - disabled

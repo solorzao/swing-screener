@@ -449,8 +449,11 @@ class PaperAdapter:
 def _default_gate_ready(session: Session) -> bool:
     """Whether the advisory autonomy gate is ready (the live adapter's default seam).
 
-    Imported locally so ``execution`` -> ``autonomy`` stays a runtime edge, not an import-time
-    cycle (autonomy pulls in heavier analytics/repo modules). Tests inject ``gate_ready_fn``
+    Imported locally so ``execution`` -> ``autonomy`` stays a RUNTIME edge: a WEIGHT guard,
+    not a cycle break (``autonomy`` does not reach back to ``execution`` today, so a
+    module-level import would import fine). What it drags is the point -- autonomy pulls
+    reflect -> optimize -> replay -> run -> charts.render, i.e. mplfinance and the whole
+    analytics chain, into every importer of the dispatch path. Tests inject ``gate_ready_fn``
     instead, so this is consulted only against a real DB-backed book in production."""
     from swing_screener.pipeline.autonomy import autonomy_gate
 
@@ -658,9 +661,9 @@ class LiveAdapter:
                 return adopted
             # Leak posture: the stored detail reaches the cockpit wire (the Zone E
             # ticker serves ExecutionLog.detail verbatim), and broker/httpx messages
-            # embed venue hosts and credentials -- class name only (preflight's
-            # broker_error_detail, the one home for this wording); the full
-            # traceback goes to the LOG for the operator.
+            # embed venue hosts and credentials -- class name only
+            # (``pipeline.broker.broker_error_detail``, the one home for this
+            # wording); the full traceback goes to the LOG for the operator.
             detail = broker_error_detail(e)
             self._log(session, intent, run_date=run_date, key=key,
                       status="rejected_live", detail=detail)

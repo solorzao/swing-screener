@@ -716,3 +716,17 @@ def test_mandate_ok_requires_three_breakers_set(session: Session) -> None:
                   source="screen")
     assert eid is not None
     assert gr.guardrails_mandate_ok(session) == (False, "guardrails state is tripped")
+
+
+def test_incomplete_sweeps_is_a_subset_of_the_sweep_vocabulary() -> None:
+    """The ONE definition of "the sweep has not finished", pinned to its vocabulary.
+
+    ``INCOMPLETE_SWEEPS`` used to be spelled five times (pipeline.guardrails, the
+    digest resume, the hourly exit hoist, the cockpit DISARM resume, the Auditor's
+    stuck-sweep rule); every one of those now imports THIS tuple, so the invariant
+    worth pinning is that it stays a strict subset of the outcome vocabulary the
+    writer validates against -- a member outside it could never be stored, and
+    'complete' inside it would make every finished sweep re-run forever."""
+    assert gr.INCOMPLETE_SWEEPS == ("pending", "partial")
+    assert set(gr.INCOMPLETE_SWEEPS) < set(gr._SWEEP_OUTCOMES)
+    assert "complete" not in gr.INCOMPLETE_SWEEPS

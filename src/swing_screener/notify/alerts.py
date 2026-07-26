@@ -39,6 +39,7 @@ touching ``notify.run`` (the notify.run -> pipeline cycle).
 
 import hashlib
 import html
+import logging
 from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import Protocol
@@ -50,6 +51,8 @@ from sqlalchemy.orm import Session
 from swing_screener.db import guardrails_repo
 from swing_screener.db.models import AgentGuardrailEvent, EmailLog, ExecutionLog
 from swing_screener.notify.body import EmailContent
+
+log = logging.getLogger(__name__)
 
 _BADGE = {"hard": "🔴", "strong": "🟠", "advisory": "🟡"}
 
@@ -321,6 +324,14 @@ def _covered_rejection_ids(session: Session, ids: set[int]) -> set[int]:
     Deliberately NOT date-filtered (the ``guardrail_alert_sent`` posture): the
     retry owner may run on a later date than the alert that covered a row, and
     a date filter would double-send exactly there.
+
+    The id parse is GUARDED. This set decides what does NOT get alerted, so one
+    unparseable key (a hand-written row, a future key format) must not raise and
+    take the whole at-least-once retry pass down with it -- an unparseable key is
+    dropped with a warning, which merely re-alerts that row. That is the safe way
+    to be wrong here: an extra email, never a silent hole. The ``IN`` filter
+    already restricts the result to keys :func:`_rejection_key` generated, so this
+    is belt-and-braces and should never fire.
     """
     if not ids:
         return set()
@@ -328,7 +339,14 @@ def _covered_rejection_ids(session: Session, ids: set[int]) -> set[int]:
         EmailLog.kind == REJECTION_COVER_KIND,
         EmailLog.alert_key.in_([_rejection_key(i) for i in ids]),
     )
-    return {int(key.removeprefix("xlog-")) for key in session.scalars(stmt)}
+    covered: set[int] = set()
+    for key in session.scalars(stmt):
+        try:
+            covered.add(int(key.removeprefix("xlog-")))
+        except ValueError:  # alert_key is NOT NULL, so a bad VALUE is the only shape
+            log.warning("skipping malformed %s coverage key %r -- the row it "
+                        "covers will be re-alerted", REJECTION_COVER_KIND, key)
+    return covered
 
 
 def pending_rejection_ids(session: Session, *, run_date: date) -> set[int]:

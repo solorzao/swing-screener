@@ -21,8 +21,10 @@ from swing_screener.cockpit.common import (
 )
 from swing_screener.cockpit.routers import events as events_module
 from swing_screener.cockpit.routers.events import _change_token, _safe_change_token
+from swing_screener.cockpit.routers.reference import BOOKKEEPING_EMAIL_KINDS
 from swing_screener.db.models import (
     AnalystCall,
+    EmailLog,
     ExitEvent,
     Trade,
 )
@@ -248,6 +250,30 @@ def test_change_token_watches_the_execution_log(tmp_path: Path) -> None:
     after = _change_token(engine, tmp_path)
     assert after != before
     assert after["execution"] != before["execution"]
+
+
+def test_change_token_email_watermark_ignores_bookkeeping_rows(tmp_path: Path) -> None:
+    """The email watermark excludes exactly what the email SURFACES exclude.
+
+    One alerted live rejection writes N per-row ``execution-cover`` coverage rows
+    beside the ONE display row. Neither email surface renders coverage rows, so
+    waking every open cockpit for one is a refetch with nothing to show. A display
+    row still moves the mark."""
+    url = _db_url(tmp_path)
+    engine = get_engine(url)
+    before = _change_token(engine, tmp_path)
+    with Session(engine) as s:
+        s.add(EmailLog(sent_at=datetime(2026, 7, 25, 12, 0),
+                       kind=BOOKKEEPING_EMAIL_KINDS[0], subject="x",
+                       run_date=date(2026, 7, 25), alert_key="xlog-1"))
+        s.commit()
+    assert _change_token(engine, tmp_path)["email"] == before["email"]
+    with Session(engine) as s:  # the DISPLAY row for the same email does wake it
+        s.add(EmailLog(sent_at=datetime(2026, 7, 25, 12, 1), kind="execution",
+                       subject="live rejections", run_date=date(2026, 7, 25),
+                       alert_key="abc"))
+        s.commit()
+    assert _change_token(engine, tmp_path)["email"] != before["email"]
 
 
 def test_change_token_watches_analyst_calls_and_scoring(tmp_path: Path) -> None:

@@ -51,7 +51,7 @@ import { HoldToConfirm } from './HoldToConfirm'
      are refused. */
 
 //: the sweep_state values that mean the trip's sweep has not finished. Same
-//: vocabulary as pipeline/guardrails.py's _INCOMPLETE_SWEEPS.
+//: vocabulary as db/guardrails_repo.py's INCOMPLETE_SWEEPS (the server-side owner).
 const SWEEP_RETRYING = ['pending', 'partial']
 
 //: how much history the panel shows. Mirrors routers/safety.py's _EVENT_HISTORY

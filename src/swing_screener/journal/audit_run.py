@@ -54,6 +54,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from swing_screener.db.guardrails_repo import (
+    INCOMPLETE_SWEEPS,
     GuardrailsState,
     missing_mandate_breakers,
     peek_guardrails,
@@ -114,9 +115,6 @@ _LIVE_COUNTING_STATUSES = ("submitted_live", "filled_live")
 #: Tuesday), deliberately small so the ordering caveat stays meaningful rather than
 #: swallowing whole weeks. See ``_submit_while_tripped``'s "two clocks".
 _RUN_DATE_BRIDGE_DAYS = 4
-
-#: sweep_state values that mean the trip's sweep never finished.
-_INCOMPLETE_SWEEPS = ("pending", "partial")
 
 #: the trip-alert EmailLog kind (``notify.alerts.send_guardrail_alert`` logs
 #: ``kind=TRIP_ALERT_KIND, alert_key=str(trip_event_id)``). Restated as a literal for
@@ -655,7 +653,7 @@ def _stuck_sweep(
     is not slow -- it is stuck, and the book may hold unprotected live exposure. Keyed
     on the TRIP's day (its state is a fact about NOW, so it is deliberately not window
     filtered: a sweep stuck since before the window still gets recorded once)."""
-    if (g.state != "tripped" or g.sweep_state not in _INCOMPLETE_SWEEPS
+    if (g.state != "tripped" or g.sweep_state not in INCOMPLETE_SWEEPS
             or g.trip_id is None):
         return []
     trip = session.get(AgentGuardrailEvent, g.trip_id)

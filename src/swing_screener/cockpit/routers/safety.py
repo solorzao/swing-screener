@@ -29,7 +29,7 @@ from swing_screener.cockpit.common import (
 from swing_screener.cockpit.livedata import BrokerSnapshot, Snapshot
 from swing_screener.cockpit.spend import spend_rows_since
 from swing_screener.db import guardrails_repo
-from swing_screener.db.guardrails_repo import GuardrailsState
+from swing_screener.db.guardrails_repo import INCOMPLETE_SWEEPS, GuardrailsState
 from swing_screener.db.models import AgentGuardrailEvent, DisarmEvent
 from swing_screener.db.repo import latest_recorded_stop, latest_run_date
 from swing_screener.pipeline import guardrails as gpipe
@@ -702,13 +702,14 @@ def build_safety_router(
                             "sweep (a DISARM is unconditional)", exc_info=True)
                 g = None
                 _rollback_quietly(session, what="the brake read")
-            # ``gpipe._INCOMPLETE_SWEEPS`` rather than a literal: ONE definition of
-            # "the sweep has not finished" across the pipeline and the cockpit.
+            # ``guardrails_repo.INCOMPLETE_SWEEPS`` rather than a literal: ONE
+            # definition of "the sweep has not finished", owned by the module that
+            # owns the sweep_state vocabulary, shared by the pipeline and the cockpit.
             # ``trip_id is None`` on a tripped row is never expected -- if it ever
             # happens the resume could not key a sweep outcome anyway, so fall
             # through to the raw sweep (protection now beats bookkeeping).
             if (g is not None and g.state == "tripped"
-                    and g.sweep_state in gpipe._INCOMPLETE_SWEEPS
+                    and g.sweep_state in INCOMPLETE_SWEEPS
                     and g.trip_id is not None):
                 resumed = _resume_disarm(session, broker, g, dry_run=dry_run)
                 if resumed is not None:

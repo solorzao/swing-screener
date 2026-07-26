@@ -33,7 +33,11 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from swing_screener.db.guardrails_repo import mandate_from_state, peek_guardrails
+from swing_screener.db.guardrails_repo import (
+    mandate_from_state,
+    missing_mandate_breakers,
+    peek_guardrails,
+)
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline.autonomy import autonomy_gate
 
@@ -185,7 +189,10 @@ def _check_guardrails(session: Session, broker: BrokerClient | None) -> Prefligh
     g = peek_guardrails(session)
     ok, reason = mandate_from_state(g)
     engaged = g.state != "ok"
-    unset = None in (g.max_daily_loss_usd, g.max_trades_per_day, g.max_drawdown_usd)
+    # the SAME completeness list ``mandate_from_state`` fails on, not a hand-copied
+    # triple: a fourth mandatory breaker would otherwise change the verdict above
+    # while this split silently kept reading the old three.
+    unset = bool(missing_mandate_breakers(g))
     trip_ctx = f" (trip #{g.trip_id}: {g.trip_reason})" if g.trip_id is not None else ""
     setting_note = " [brake setting — cockpit guardrails, not env]"
     if ok:

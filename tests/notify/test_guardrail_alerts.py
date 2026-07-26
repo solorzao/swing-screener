@@ -32,7 +32,8 @@ The load-bearing properties proven here:
 All tmp-file sqlite + FakeBroker + injected send spies -- no venue, no SMTP.
 """
 
-from datetime import date, timedelta
+import logging
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -331,3 +332,32 @@ def test_canceled_rows_are_never_alertable(tmp_path):
             candidate_ids={row.id}) is False
         assert sent == []
         assert s.query(EmailLog).count() == 0
+
+
+def test_malformed_coverage_key_is_skipped_not_fatal(tmp_path, monkeypatch, caplog):
+    """The coverage-key parse is GUARDED: an unparseable ``execution-cover`` key is
+    dropped with a warning instead of raising, so one bad row can never take the
+    whole at-least-once retry pass down with it. Being wrong here re-alerts a row
+    (an extra email), never a silent hole.
+
+    Unreachable through today's key format -- the ``IN`` filter only ever selects
+    keys ``_rejection_key`` generated -- so the test forces the shape a future key
+    format, or a hand-written row, would produce."""
+    url = f"sqlite:///{tmp_path / 'badkey.sqlite'}"
+    with Session(get_engine(url)) as s:
+        row = repo.add_execution_log(
+            s, created_date=RUN, ticker="NVDA", timeframe="1d",
+            play_type="continuation", run_date=RUN, account="live", mode="live",
+            side="buy", limit_price=100.0, shares=10, stop=95.0, target=110.0,
+            risk_dollars=50.0, notional=1000.0, status="rejected_live",
+            detail="insufficient buying power", idempotency_key="k-nvda")
+        monkeypatch.setattr(alerts, "_rejection_key", lambda i: f"xlog-{i}x")
+        s.add(EmailLog(sent_at=datetime(2026, 6, 15, 12, 0),
+                       kind=alerts.REJECTION_COVER_KIND, subject="covered",
+                       run_date=RUN, alert_key=f"xlog-{row.id}x"))
+        s.commit()
+
+        with caplog.at_level(logging.WARNING, logger="swing_screener.notify.alerts"):
+            # the coverage row exists but cannot be parsed -> the row reads UNCOVERED
+            assert alerts.pending_rejection_ids(s, run_date=RUN) == {row.id}
+        assert "malformed" in caplog.text

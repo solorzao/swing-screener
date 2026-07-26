@@ -170,11 +170,13 @@ def _parse_play_types(value: str | None) -> frozenset[str] | None:
     """
     if value is None or not value.strip():
         return None
-    # Function-level import: this module is the import-light leaf every layer
-    # pulls in, so a module-level pipeline import here would hand every settings
-    # importer a pipeline edge -- and guardrails_repo (which imports settings)
-    # must stay pipeline-free so pipeline.execution -> guardrails_repo can never
-    # become a cycle.
+    # Function-level import: a LAYERING guard, not a cycle break. ``pipeline.proposed``
+    # imports only ``config`` + ``pipeline.variants``, so a module-level import here
+    # would not cycle today -- but this module is the import-light LEAF every layer
+    # pulls in, and a module-level pipeline edge would hand every settings importer
+    # (db, notify, cockpit, the CLIs) the pipeline layer, and would close a real loop
+    # the day anything in proposed's chain imports settings. Kept function-level so
+    # neither can happen.
     from swing_screener.pipeline.proposed import PLAY_TYPES  # noqa: PLC0415
     members = {m.strip().lower() for m in value.split(",") if m.strip()}
     scope = frozenset(m for m in members if m in PLAY_TYPES)

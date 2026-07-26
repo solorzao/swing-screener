@@ -735,9 +735,11 @@ export type DisarmResult = DisarmRaw | DisarmResume | DisarmResumePreview
 
 /** The 503 detail PREFIXES routers/safety.py documents as module constants — the
  * ONLY thing a client may branch on (the text after the prefix is human-facing
- * and may change). */
+ * and may change). Exported per BRANCH that exists, not per prefix the server
+ * defines: safety.py's third prefix (`broker error (`) has no client branch —
+ * a failed broker build renders as the plain failure text — so no constant for
+ * it lives here. Add one when a component actually needs to match it. */
 export const D503_DB = 'database error ('
-export const D503_BROKER = 'broker error ('
 export const D503_SWEEP = 'guardrail sweep did not complete'
 
 export interface PreflightCheck {

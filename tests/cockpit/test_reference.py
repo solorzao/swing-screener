@@ -7,7 +7,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from swing_screener.cockpit.heartbeats import _eod_utc
-from swing_screener.cockpit.routers.reference import _BOOKKEEPING_EMAIL_KINDS, _day_ts
+from swing_screener.cockpit.routers.reference import BOOKKEEPING_EMAIL_KINDS, _day_ts
 from swing_screener.db.models import (
     EmailLog,
     ExitEvent,
@@ -188,7 +188,7 @@ def test_email_surfaces_hide_per_row_rejection_coverage(tmp_path: Path) -> None:
     assert [e["detail"] for e in ticker if e["source"] == "email"] == ["execution"]
     # the router restates the kind as a literal (no cockpit -> notify import);
     # this is the anti-drift pin against the module that WRITES those rows.
-    assert alerts.REJECTION_COVER_KIND in _BOOKKEEPING_EMAIL_KINDS
+    assert alerts.REJECTION_COVER_KIND in BOOKKEEPING_EMAIL_KINDS
 
 
 # ---- review fixes: stored-error leak posture + the lifecycle-ordered window

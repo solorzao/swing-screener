@@ -35,7 +35,11 @@ from swing_screener.db.repo import list_universe
 #: real emails. Restated as a literal (no cockpit -> notify import for one
 #: string); tests/cockpit/test_reference.py pins it against
 #: ``notify.alerts.REJECTION_COVER_KIND`` so the two can never drift.
-_BOOKKEEPING_EMAIL_KINDS = ("execution-cover",)
+#: PUBLIC because ``routers/events.py``'s email watermark must exclude exactly the
+#: same kinds -- a bookkeeping row is invisible on both email surfaces, so waking
+#: the frontend for one would be a wake with nothing to show. ONE cockpit-side
+#: spelling, pinned once.
+BOOKKEEPING_EMAIL_KINDS = ("execution-cover",)
 
 
 def build_reference_router(
@@ -100,7 +104,7 @@ def build_reference_router(
                 "detail": detail,
             }))
         for m in session.scalars(select(EmailLog)
-                                 .where(EmailLog.kind.not_in(_BOOKKEEPING_EMAIL_KINDS))
+                                 .where(EmailLog.kind.not_in(BOOKKEEPING_EMAIL_KINDS))
                                  .order_by(EmailLog.id.desc()).limit(limit)):
             ts = _aware(m.sent_at)
             entries.append((ts, "email", m.id, {
@@ -210,7 +214,7 @@ def build_reference_router(
         SENT, one row per email."""
         rows = session.scalars(
             select(EmailLog)
-            .where(EmailLog.kind.not_in(_BOOKKEEPING_EMAIL_KINDS))
+            .where(EmailLog.kind.not_in(BOOKKEEPING_EMAIL_KINDS))
             .order_by(EmailLog.sent_at.desc(), EmailLog.id.desc())
             .limit(limit))
         return {"emails": [{

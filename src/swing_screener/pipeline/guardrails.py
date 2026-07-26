@@ -31,14 +31,12 @@ from typing import Literal
 from sqlalchemy.orm import Session
 
 from swing_screener.db import guardrails_repo, repo
+from swing_screener.db.guardrails_repo import INCOMPLETE_SWEEPS
 from swing_screener.db.models import AgentGuardrailEvent, DisarmEvent
 from swing_screener.pipeline.broker import BrokerClient, BrokerOrder, broker_error_detail
 from swing_screener.pipeline.disarm import run_protective_sweep
 
 log = logging.getLogger(__name__)
-
-#: the sweep_state values that mean "the sweep has not finished -- re-run it".
-_INCOMPLETE_SWEEPS = ("pending", "partial")
 
 
 @dataclass(frozen=True)
@@ -224,7 +222,7 @@ def resume_incomplete_sweep(
     client_order_ids are keyed by the trip id so venue-side idempotency collapses
     cross-process re-runs)."""
     g = guardrails_repo.load_guardrails(session)
-    if g.state != "tripped" or g.sweep_state not in _INCOMPLETE_SWEEPS:
+    if g.state != "tripped" or g.sweep_state not in INCOMPLETE_SWEEPS:
         return False
     if broker is None:
         return False

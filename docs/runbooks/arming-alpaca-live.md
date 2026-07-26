@@ -71,7 +71,7 @@ breaker breached). Both non-`ok` states block identically.
 | Breaker | Column | Mandatory for real money? | What it counts |
 |---|---|---|---|
 | max daily loss ($) | `max_daily_loss_usd` | **yes** | Σ `(exit − entry) × qty` over live trades closed on the run date |
-| max trades/day | `max_trades_per_day` | **yes** | counting-status (`submitted_live`/`filled_live`) live `ExecutionLog` rows for the run date |
+| max trades/day | `max_trades_per_day` | **yes** | counting-status (`submitted_live`/`filled_live`) live `ExecutionLog` rows for the run date — a **runaway detector**, so set it **ABOVE** your expected daily intent count: breaching it *trips the brake*, and the trip sweep then cancels the day's own unfilled entries and needs a manual clear |
 | max drawdown ($) | `max_drawdown_usd` | **yes** | gap from the high-water mark of cumulative realized live $ since the anchor date |
 | loss streak | `loss_streak_halt` | optional | consecutive losing live closes, newest-first |
 
@@ -82,6 +82,20 @@ enforce everywhere, paper included — which is what makes the Stage-0 drill mea
 
 These are **dollars and counts** and they are **separate from the env caps above** (which
 are R-denominated / notional). Both nets stay in place; neither replaces the other.
+
+> **KNOWN LIMIT — the partial-fill residual (verify this before you size up).** A
+> `partially_filled` order is materialized **once**, at its `filled_avg_price` with
+> `qty = filled_qty`, and the residual (unfilled) shares are **never reconciled** if the venue
+> fills more later — the scope note in `pipeline/reconcile.py::reconcile_live` says so
+> outright. Whole-share Alpaca **paper** fills are effectively atomic, so this is invisible on
+> the Stage-0 host. A **real-money** endpoint partially fills for real, and then `qty`
+> *understates* the position: every `$` breaker above multiplies by it, so
+> `max_daily_loss_usd` and `max_drawdown_usd` **under-count the loss**, and the positions
+> screen sizes the tile low too. Treat this as an open item, not a footnote: during the drill,
+> **check whether this account's fills are ever partial at all** (D1 below) — and **re-check it
+> on the live host before raising size**, since fill behaviour is a property of the venue and
+> the order size, not of the code. Residual reconciliation must land before real money runs at
+> a size where a partial fill is likely.
 
 ### Where you set them
 
@@ -684,6 +698,13 @@ or a clean no-op), and that a **same-evening re-run produced no duplicate stop**
 duplicate-id rejection makes the second pass idempotent. A duplicate live GTC sell stop on
 a margin account closes the position and then shorts it; this is the check that proves it
 can't happen.
+
+**And while you have a fill in front of you — the partial-fill check** (the residual limit
+above): record the order's `filled_qty` against the ticket's requested `shares`, and the
+materialized `PaperTrade.qty` against both. **Any** pass through `partially_filled` — even
+one that later completes — is the finding: it means this account's fills are *not* atomic,
+the residual never reconciles, and the `$` breakers would under-count on the live host.
+Write the answer down; it is the precondition for sizing up.
 
 ### D2 — Forced HALT mid-dispatch (the ≤1-order leak bound)
 

@@ -55,6 +55,7 @@ from sqlalchemy.orm import Session
 
 from swing_screener.config import StrategyConfig
 from swing_screener.db import guardrails_repo, repo
+from swing_screener.db.guardrails_repo import INCOMPLETE_SWEEPS
 from swing_screener.db.models import Trade
 from swing_screener.db.session import get_engine
 from swing_screener.pipeline import guardrails as gpipe
@@ -269,7 +270,7 @@ def _hourly_live_sync(session: Session, *, today: date,
             # settings.broker gates the build exactly as live_sync's does: with
             # no broker configured there is nothing to build and nothing this
             # hoist could ever have swept, so don't reach for a venue client.
-            if (g0.state == "tripped" and g0.sweep_state in ("pending", "partial")
+            if (g0.state == "tripped" and g0.sweep_state in INCOMPLETE_SWEEPS
                     and settings.broker):
                 broker = build_broker(settings)
         except Exception:  # noqa: BLE001 -- the sweep broker must never block the exit job

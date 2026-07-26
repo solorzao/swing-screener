@@ -153,6 +153,36 @@ def test_positions_live_rows_r_only_vs_shares_join(tmp_path: Path) -> None:
     assert pend["last_close"] == 52.0
 
 
+def test_positions_live_size_prefers_venue_truth_over_the_ticket(tmp_path: Path) -> None:
+    """A PARTIALLY FILLED live entry sizes the tile at what the venue actually filled.
+
+    ``PaperTrade.qty`` is the broker's ``filled_qty`` (reconcile stamps it); the
+    ExecutionLog ticket carries what we ASKED for. Asked 3, filled 1 -> the tile must
+    read 1, and the dollar P/L must be computed on 1: the ticket's number would
+    overstate both the position and the money on the line. The join stays the fallback
+    for legacy rows whose ``qty`` is NULL."""
+    client, engine = _positions_client(tmp_path, {"PARTIAL": 52.0, "LEGACY": 52.0})
+    with Session(engine) as s:
+        s.add(_live_paper(ticker="PARTIAL", qty=1))
+        s.add(_live_paper(ticker="LEGACY"))  # qty NULL: pre-column live row
+        # both tickets asked for 3 shares; only PARTIAL has venue truth on file
+        s.add(_exec_log(ticker="PARTIAL", account="live", mode="live", shares=3,
+                        side="long", status="filled_live"))
+        s.add(_exec_log(ticker="LEGACY", account="live", mode="live", shares=3,
+                        side="long", status="filled_live"))
+        s.commit()
+    rows = {row["ticker"]: row for row in client.get("/api/positions").json()["open"]}
+
+    partial = rows["PARTIAL"]
+    assert partial["size"] == 1.0                                   # venue truth wins
+    assert partial["pl"]["unrealized_pl"] == pytest.approx(2.0)     # (52-50)*1
+    assert partial["pl"]["r_multiple"] == pytest.approx(0.4)        # size-independent
+
+    legacy = rows["LEGACY"]  # NULL qty -> the ExecutionLog join still answers
+    assert legacy["size"] == 3.0
+    assert legacy["pl"]["unrealized_pl"] == pytest.approx(6.0)      # (52-50)*3
+
+
 def test_positions_live_join_reads_the_side_the_adapters_write(tmp_path: Path) -> None:
     """THE production-shape pin: a real live ticket carries ``side="long"``.
 

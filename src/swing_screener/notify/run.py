@@ -32,6 +32,7 @@ from swing_screener.data.fetch import fetch_bars
 from swing_screener.data.quotes import latest_closes
 from swing_screener.data.universe import names_by_ticker
 from swing_screener.db import guardrails_repo, repo
+from swing_screener.db.guardrails_repo import INCOMPLETE_SWEEPS
 from swing_screener.db.models import (
     EmailLog,
     ExitEvent,
@@ -531,7 +532,7 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # so the broker is only ever built when there is a sweep to finish.
         try:
             g0 = guardrails_repo.load_guardrails(session)
-            if g0.state == "tripped" and g0.sweep_state in ("pending", "partial"):
+            if g0.state == "tripped" and g0.sweep_state in INCOMPLETE_SWEEPS:
                 resume_broker = live_broker or broker or build_broker(cfg)
                 gpipe.resume_incomplete_sweep(session, broker=resume_broker,
                                               source="digest")
