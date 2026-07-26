@@ -142,10 +142,14 @@ param maxDailyNotional string = ''
 param maxDailyLoss string = ''
 param maxConcurrent string = ''
 
-// 1800s (30 min) comfortably covers deep (Opus + web-search) analysis of the
-// top-N picks (~1 min/pick) plus the email build.
+// Synchronous digest runs finish in minutes (deep analysis ~1 min/pick + email build).
+// The higher ceiling accommodates the OPTIONAL Batch path (SWING_DEEP_ANALYSIS_BATCH): a
+// daily run submits up to two batches (continuation + reversal), each polled up to
+// notify.run._DIGEST_BATCH_MAX_WAIT_S (30 min); 4200s covers 2 x 30 min + work. A batch
+// that exceeds its poll budget falls its picks back to the narrator, so the run still
+// finishes and emails -- the timeout only needs to outlast the polling, not the batch.
 @description('Replica timeout (seconds) for digest/alert jobs.')
-param digestTimeoutSeconds int = 1800
+param digestTimeoutSeconds int = 4200
 
 // --- Deep-analysis (Opus web-search analyst) knobs. Default ON: the insight engine is
 // the qualitative learning loop (analyst calls recorded + scored -> calibration -> the
@@ -156,8 +160,14 @@ param digestTimeoutSeconds int = 1800
 @description('Master switch for deep analysis: "1"/"true" on, anything else off.')
 param deepAnalysisEnabled string = '1'
 
+// Sonnet 5 ($3/$15 per MTok) replaces Opus 4.8 ($5/$25) for the digest analyst
+// (2026-07-23 cost audit): ~40% cheaper both directions on the recurring ~$50/mo
+// deep-analysis pool, and it keeps ALL top_n picks (unlike a top-N cut). The
+// conviction nudge is a bounded, code-clamped +/-1 decision, so the tier drop
+// trades a little rationale nuance, not correctness. On-demand + the TICKER LAB
+// run in the cockpit process (settings.py default), which stays on Opus.
 @description('Model id for the analysis call.')
-param analysisModel string = 'claude-opus-4-8'
+param analysisModel string = 'claude-sonnet-5'
 
 // Extended thinking bills as OUTPUT tokens at the opus $25/MTok rate, making the
 // thinking budget the digest's dominant output cost -- 'medium' halves that term vs
@@ -172,8 +182,12 @@ param deepAnalysisTopN string = '5'
 @description('Which digest kinds get deep analysis (comma list).')
 param deepAnalysisKinds string = 'daily,weekly,monthly'
 
+// Cut 4 -> 2 (2026-07-23 cost audit). The agentic web-search loop re-injects
+// growing result context each round (uncached), so it is the dominant INPUT term;
+// halving searches cuts both the ~$0.01/search server fee and that re-billed input.
+// Trade: fewer sourced citations per pick; 2 searches still ground each analysis.
 @description('Max web searches per deep-analysis call (cost cap).')
-param analysisMaxSearches string = '4'
+param analysisMaxSearches string = '2'
 
 // The per-RUN dollar ceiling pairs with the ON-by-default master switch above: once a
 // digest run's accumulated deep-analysis spend reaches it, remaining picks fall back to
@@ -181,6 +195,14 @@ param analysisMaxSearches string = '4'
 // as None = unbounded) must never be a template default.
 @description('Per-run deep-analysis spend ceiling in USD (SWING_DEEP_ANALYSIS_MAX_USD).')
 param deepAnalysisMaxUsd string = '2.50'
+
+// Route the digest's per-pick conviction calls through the Message Batches API (50% off
+// all tokens) instead of synchronous calls. Default '1' (ON) since 2026-07-24 -- the
+// template default MUST match the intended prod state. It trades up to ~1h added email
+// latency (batches are async) for the ~50% token discount; a slow/failed batch falls its
+// picks back to the deterministic narrator, so the digest always sends. Set '0' to revert.
+@description('Batch the digest deep-analysis conviction calls (SWING_DEEP_ANALYSIS_BATCH).')
+param deepAnalysisBatch string = '1'
 
 // The weekly Market Weather LLM read: ONE deep call per Sunday run. The code-level
 // switch (StrategyConfig.market_report_enabled) is ON and market_run ANDs this env
@@ -355,6 +377,10 @@ var commonEnv = concat(equityEnv, riskPctEnv, executionModeEnv, brokerEnv, allow
   {
     name: 'SWING_DEEP_ANALYSIS_MAX_USD'
     value: deepAnalysisMaxUsd
+  }
+  {
+    name: 'SWING_DEEP_ANALYSIS_BATCH'
+    value: deepAnalysisBatch
   }
   {
     name: 'SWING_ANALYSIS_MODEL'

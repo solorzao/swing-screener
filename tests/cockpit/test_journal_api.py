@@ -6,7 +6,7 @@ summaries, notes and records are plain hand-rolled dicts. Writes (POST notes, PO
 tag) require the ``X-Cockpit`` header -- headerless is a 403 before anything runs.
 """
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -272,6 +272,6 @@ def test_change_token_watches_journal_tables(tmp_path: Path) -> None:
     before = _change_token(engine, tmp_path)
     with Session(engine) as s:
         add_note(s, day=date(2026, 1, 5), kind="adhoc", body="x", source="human",
-                 created_at=datetime(2026, 1, 5, 9, 0))
+                 created_at=datetime(2026, 1, 5, 9, 0, tzinfo=UTC))
     after = _change_token(engine, tmp_path)
     assert before["journal_notes"] != after["journal_notes"]

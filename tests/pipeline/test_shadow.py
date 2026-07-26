@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 from sqlalchemy import select
@@ -121,7 +121,7 @@ def test_same_trigger_is_not_rebooked_across_runs():
     (prior_frames drops only the partial current bucket) -- without trigger dedup each setup
     was booked 5-12 times, inflating the evidence base with correlated pseudo-samples."""
     engine = get_engine("sqlite:///:memory:")
-    trig = datetime(2024, 1, 5, 16, 0)  # the completed weekly flip bar's timestamp
+    trig = datetime(2024, 1, 5, 16, 0, tzinfo=UTC)  # the completed weekly flip bar's timestamp
     cand = FillCandidate(ticker="AAPL", timeframe="1wk", horizon="long", signal_score=0.8,
                          rank=1, mtf_aligned=True, signal_id=None, zone=ZONE,
                          trigger_ts=trig)
@@ -135,7 +135,7 @@ def test_same_trigger_is_not_rebooked_across_runs():
         # a NEW trigger bar (next week's flip) books normally
         cand2 = FillCandidate(ticker="AAPL", timeframe="1wk", horizon="long", signal_score=0.8,
                               rank=1, mtf_aligned=True, signal_id=None, zone=ZONE,
-                              trigger_ts=datetime(2024, 1, 12, 16, 0))
+                              trigger_ts=datetime(2024, 1, 12, 16, 0, tzinfo=UTC))
         open_from_signals(s, [cand2], {("AAPL", "1wk"): (106.0, 98.0)},
                           fill_date=date(2024, 1, 16))
         assert len(_all_paper_trades(s)) == 2 * n_first
@@ -145,7 +145,7 @@ def test_trigger_dedup_is_scoped_per_variant():
     """The same trigger booked under two screen VARIANTS is two separate books --
     dedup must never collapse the variant leaderboard."""
     engine = get_engine("sqlite:///:memory:")
-    trig = datetime(2024, 1, 5, 16, 0)
+    trig = datetime(2024, 1, 5, 16, 0, tzinfo=UTC)
     cand = FillCandidate(ticker="AAPL", timeframe="1wk", horizon="long", signal_score=0.8,
                          rank=1, mtf_aligned=True, signal_id=None, zone=ZONE,
                          trigger_ts=trig)

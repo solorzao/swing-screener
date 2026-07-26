@@ -116,6 +116,7 @@ def test_short_open_is_flagged_needs_review() -> None:
 
 def test_store_fills_is_idempotent() -> None:
     from sqlalchemy.orm import Session
+
     from swing_screener.db.session import get_engine
 
     engine = get_engine("sqlite:///:memory:")
@@ -133,6 +134,7 @@ def test_store_fills_is_idempotent() -> None:
 def test_commit_episodes_respects_tags_and_is_idempotent() -> None:
     from sqlalchemy import select
     from sqlalchemy.orm import Session
+
     from swing_screener.db.models import OptionPaperTrade
     from swing_screener.db.session import get_engine
 

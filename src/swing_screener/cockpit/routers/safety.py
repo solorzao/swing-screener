@@ -28,17 +28,17 @@ from swing_screener.cockpit.common import (
 )
 from swing_screener.cockpit.livedata import BrokerSnapshot, Snapshot
 from swing_screener.cockpit.spend import spend_rows_since
+from swing_screener.config import StrategyConfig
 from swing_screener.db import guardrails_repo
 from swing_screener.db.guardrails_repo import INCOMPLETE_SWEEPS, GuardrailsState
 from swing_screener.db.models import AgentGuardrailEvent, DisarmEvent
 from swing_screener.db.repo import latest_recorded_stop, latest_run_date
+from swing_screener.options.config import GexConfig
 from swing_screener.pipeline import guardrails as gpipe
 from swing_screener.pipeline.autonomy import autonomy_gate, gate_countdown
 from swing_screener.pipeline.broker import BrokerClient, BrokerOrder, broker_error_detail
 from swing_screener.pipeline.disarm import ensure_stop_protection, pull_entry_orders
 from swing_screener.pipeline.preflight import PreflightReport, preflight
-from swing_screener.config import StrategyConfig
-from swing_screener.options.config import GexConfig
 from swing_screener.settings import (
     load_settings,
     real_money_limits_ok,
@@ -46,7 +46,6 @@ from swing_screener.settings import (
     resolve_execution,
     resolve_risk_unit,
 )
-
 
 log = logging.getLogger(__name__)
 
@@ -293,14 +292,14 @@ def _current_breach(session: Session, g: GuardrailsState) -> dict[str, str] | No
     STATE-BLIND by design (``breached_breaker`` takes no state input): it answers "is
     a breaker breached" even while the brake is already tripped, which is exactly what
     the clear dialog needs to warn that clearing will simply re-trip within the hour.
-    DAY KEY: ``latest_run_date(session) or date.today()`` -- the trading day of record
+    DAY KEY: ``latest_run_date(session) or datetime.now(UTC).date()`` -- the trading day of record
     the digest stamps on ExecutionLog.run_date, the same key every non-screen consult
     resolves (a wall-clock key would count zero of the day's own live orders).
     COST: one ``latest_run_date`` select (evaluated eagerly, whatever the snapshot
     says) plus AT MOST one query per breaker that is actually SET -- an all-unset row
     costs exactly the one, since ``breached_breaker`` skips each unset check."""
     hit = guardrails_repo.breached_breaker(
-        session, g, run_date=latest_run_date(session) or date.today())
+        session, g, run_date=latest_run_date(session) or datetime.now(UTC).date())
     return None if hit is None else {"breaker": hit[0], "reason": hit[1]}
 
 
@@ -375,11 +374,11 @@ def _record_disarm(session: Session, *, reason: str, orders_cancelled: int) -> N
         session.add(DisarmEvent(
             created_at=datetime.now(UTC), reason=reason, orders_cancelled=orders_cancelled))
         session.commit()
-    except Exception:  # noqa: BLE001 -- audit logging is best-effort; the disarm stands
+    except Exception:
         log.warning("failed to persist DisarmEvent", exc_info=True)
         try:
             session.rollback()
-        except Exception:  # noqa: BLE001 -- a dead session must not mask the response either
+        except Exception:
             log.warning("DisarmEvent rollback also failed", exc_info=True)
 
 
@@ -459,7 +458,7 @@ def build_safety_router(
         identity map).
         """
         report = autonomy_gate(session, edge_dir=resolve_edge_dir(edge_dir))
-        today = date.today()
+        today = datetime.now(UTC).date()
         # union across analyst calls + Journal v2 coach/audit spend (NULL costs -> 0.0)
         spend_today = sum(
             (c or 0.0) for d, c in spend_rows_since(session, today) if d == today
@@ -832,7 +831,7 @@ def build_safety_router(
         broker_error: str | None = None
         try:
             broker = resolved_broker_factory()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- best-effort broker init; error surfaced in report
             broker = None
             broker_error = broker_error_detail(exc)
         report = preflight(session, settings, broker=broker,

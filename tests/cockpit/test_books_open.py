@@ -7,11 +7,11 @@ per row -- a quote miss is not an error, a raising fetch stamps class names
 only, and one sick row never blanks the panel.
 """
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
-from fastapi.testclient import TestClient
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
@@ -72,7 +72,7 @@ def test_open_book_slice_ordering_and_live_math(tmp_path: Path) -> None:
     (the arm x variant fill multiplication dedup). Rows order opened_date DESC
     then ticker ASC; the live grades are _live_grades' math verbatim, with a
     breached stop reading a NEGATIVE to_stop_r."""
-    recent, older = date.today() - timedelta(days=3), date.today() - timedelta(days=10)
+    recent, older = datetime.now(UTC).date() - timedelta(days=3), datetime.now(UTC).date() - timedelta(days=10)
     client, engine = _client(
         tmp_path, {"NEWA": 104.0, "NEWB": 94.0, "OLDR": 104.0})
     with Session(engine) as s:
@@ -127,7 +127,7 @@ def test_open_book_gold_facet_and_label(tmp_path: Path) -> None:
     """The gold facet is settlement's facet_filter verbatim: would_surface must
     be TRUTHY -- False and None (legacy/replay) both stay research-only. The
     label says so; a bogus facet is FastAPI's 422 via the Literal."""
-    opened = date.today() - timedelta(days=1)
+    opened = datetime.now(UTC).date() - timedelta(days=1)
     client, engine = _client(tmp_path, {"GOLD": 104.0, "NOPE": 104.0, "LEGC": 104.0})
     with Session(engine) as s:
         s.add(_open_trade("GOLD", opened=opened, would_surface=True))
@@ -151,7 +151,7 @@ def test_open_book_quote_miss_and_sick_row_degrade_per_row(tmp_path: Path) -> No
     the live fields null, quote_error null. A priced row whose entry is
     pathologically null keeps last_close (the quote was fine) with null live
     fields. Healthy rows in the same response stay fully graded."""
-    opened = date.today() - timedelta(days=2)
+    opened = datetime.now(UTC).date() - timedelta(days=2)
     client, engine = _client(tmp_path, {"GOOD": 104.0, "NOEN": 104.0})
     with Session(engine) as s:
         s.add(_open_trade("GOOD", opened=opened))
@@ -190,8 +190,8 @@ def test_open_book_raising_fetch_stamps_class_name_only(tmp_path: Path) -> None:
 
     client, engine = _client(tmp_path, fetch=boom)
     with Session(engine) as s:
-        s.add(_open_trade("AAA", opened=date.today() - timedelta(days=1)))
-        s.add(_open_trade("BBB", opened=date.today() - timedelta(days=1)))
+        s.add(_open_trade("AAA", opened=datetime.now(UTC).date() - timedelta(days=1)))
+        s.add(_open_trade("BBB", opened=datetime.now(UTC).date() - timedelta(days=1)))
         s.commit()
     r = client.get("/api/books/open")
     assert r.status_code == 200

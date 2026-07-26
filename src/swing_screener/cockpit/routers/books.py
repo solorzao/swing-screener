@@ -41,13 +41,13 @@ from swing_screener.cockpit.common import (
     connection_label,
 )
 from swing_screener.cockpit.heartbeats import Heartbeat, collect_heartbeats
+from swing_screener.cockpit.routers.trades import _live_grades
 from swing_screener.cockpit.settlement import (
     STATES,
     SettlementCard,
     build_cards,
     facet_filter,
 )
-from swing_screener.cockpit.routers.trades import _live_grades
 from swing_screener.cockpit.stats import stat_from_paired_delta, stat_from_summary
 from swing_screener.db.models import PaperTrade
 from swing_screener.db.repo import (
@@ -93,7 +93,7 @@ def build_books_router(
         try:
             with _engine().connect() as conn:
                 conn.execute(text("SELECT 1"))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- best-effort health probe: report any failure as disconnected
             return {"connected": False, "label": label, "error": _down_summary(exc),
                     "azure": _is_azure(db_url)}
         return {"connected": True, "label": label, "error": None, "azure": _is_azure(db_url)}
@@ -210,8 +210,8 @@ def build_books_router(
             "decided_at": decided.decided_at,
             "note": "uncommitted working-tree edit -- commit it with the roster removal",
             "checklist": [
-                f"{roster} -- DELETE the '{decided.name}' roster line "
-                "(the lockstep test fails a commit that keeps it)",
+                (f"{roster} -- DELETE the '{decided.name}' roster line "
+                "(the lockstep test fails a commit that keeps it)"),
                 "edge/experiments.json -- this retire flip (done)",
                 f"one commit for both, e.g.: settle({decided.name}): {body.reason}",
             ],
@@ -282,7 +282,7 @@ def build_books_router(
         except Exception as exc:  # noqa: BLE001 -- degrade the panel, never 503 it
             batch_error = type(exc).__name__
 
-        today = date.today()
+        today = datetime.now(UTC).date()
         rows = [
             _open_book_row(t, prices.get(t.ticker), today=today,
                            quote_error=batch_error)
@@ -363,7 +363,7 @@ def build_books_router(
         # page parity: an undated row drops from windowed views, stays in "all".
         baseline = [t for t in trades if t.arm == BASELINE]
         if window != "all":
-            cutoff = date.today() - timedelta(days=int(window))
+            cutoff = datetime.now(UTC).date() - timedelta(days=int(window))
             baseline = [t for t in baseline if t.opened_date and t.opened_date >= cutoff]
         by_variant = breakdown(baseline, "variant")
         leaderboard = [

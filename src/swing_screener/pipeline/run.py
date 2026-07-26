@@ -4,7 +4,7 @@ import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -21,19 +21,10 @@ from swing_screener.data.fetch import (
 from swing_screener.data.resample import resample_ohlcv
 from swing_screener.data.universe import load_universe
 from swing_screener.db import repo
-from swing_screener.notify.select import REVERSAL_POOL_N
 from swing_screener.db.models import Signal
 from swing_screener.db.session import get_engine
-from swing_screener.pipeline.analyze import (
-    SignalResult,
-    analyze_frames,
-    analyze_reversals,
-    build_frames,
-)
-from swing_screener.pipeline.arms import BASELINE, build_arms
-from swing_screener.pipeline.diversity import cap_by_sector, first_per_ticker
-from swing_screener.pipeline.broker import BrokerClient
-from swing_screener.pipeline.broker_alpaca import build_broker
+from swing_screener.notify.select import REVERSAL_POOL_N
+
 # Module-level ON PURPOSE (Task 11): the old guardrails -> preflight -> autonomy ->
 # reflect -> replay -> run cycle is dissolved (broker_error_detail moved to
 # pipeline.broker), so run.py may finally import its own guardrails at import time.
@@ -41,7 +32,17 @@ from swing_screener.pipeline.broker_alpaca import build_broker
 # import staying cycle-free (pytest collection order hides an import cycle; only a
 # fresh `import swing_screener.pipeline.run` as the ROOT probes it honestly).
 from swing_screener.pipeline import guardrails as gpipe
+from swing_screener.pipeline.analyze import (
+    SignalResult,
+    analyze_frames,
+    analyze_reversals,
+    build_frames,
+)
+from swing_screener.pipeline.arms import BASELINE, build_arms
+from swing_screener.pipeline.broker import BrokerClient
+from swing_screener.pipeline.broker_alpaca import build_broker
 from swing_screener.pipeline.disarm import ensure_stop_protection
+from swing_screener.pipeline.diversity import cap_by_sector, first_per_ticker
 from swing_screener.pipeline.live_sync import maybe_reconcile_live
 from swing_screener.pipeline.regime import MARKET_PROXY, classify_regime
 from swing_screener.pipeline.shadow import (
@@ -127,8 +128,9 @@ def _alembic_upgrade(db_url: str) -> None:
     the optional ``azure`` extra and is absent in CI / local sqlite runs; tests
     monkeypatch this whole function so it never executes there.
     """
-    from alembic import command
     from alembic.config import Config
+
+    from alembic import command
 
     base = _alembic_dir()
     cfg = Config(str(base / "alembic.ini"))
@@ -157,7 +159,7 @@ def _migrate_with_retry(
         try:
             upgrade(db_url)
             return
-        except Exception as exc:  # noqa: BLE001 -- inspect message, decide retry
+        except Exception as exc:
             if _SERVERLESS_RESUMING not in str(exc):
                 raise  # not a resume; fail fast on the real error
             if attempt == attempts:
@@ -277,9 +279,7 @@ def _passes_reversal_surface(pr: SignalResult, cfg: StrategyConfig) -> bool:
     renderer (both must agree with the digest about WHICH reversals can reach the email)."""
     if cfg.reversal_surface_premium_only and pr.conviction_tier != "premium":
         return False
-    if cfg.reversal_surface_confirmed_only and pr.strength != "confirmed":
-        return False
-    return True
+    return not (cfg.reversal_surface_confirmed_only and pr.strength != "confirmed")
 
 
 def _would_surface(pr: SignalResult, rank: int, cfg: StrategyConfig) -> bool:
@@ -436,7 +436,7 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
                migrate_fn: Callable[[str], None] | None = None,
                broker: BrokerClient | None = None) -> RunResult:
     cfg = cfg or StrategyConfig()
-    today = today or date.today()
+    today = today or datetime.now(UTC).date()
     # Live reconcile cadence: the BROKER owns live fills/exits, so when execution_mode=="live"
     # AND a broker is configured we reconcile the live book right where positions are advanced
     # (a fill materializes an account="live" PaperTrade; a venue close reconciles its exit).

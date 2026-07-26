@@ -20,7 +20,7 @@ import logging
 import statistics
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
-from datetime import date
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -581,10 +581,10 @@ def render_edge_file(
             forward_closed_at_last_reflection=n_closed_now, last_reflected=None,
         )),
         "",
-        "> This playbook is maintained by the **reflection** pass (`pipeline/reflect.py`):"
+        ("> This playbook is maintained by the **reflection** pass (`pipeline/reflect.py`):"
         " code deterministically grades each pre-registered condition into a tiered verdict"
         " and an Opus seam authors the prose. Every change lands as a **human-gated PR** --"
-        " nothing here is auto-merged. The file is also **hand-editable**.",
+        " nothing here is auto-merged. The file is also **hand-editable**."),
         "",
         f"## Thesis\n\n{thesis}\n",
         _section(
@@ -769,8 +769,11 @@ def author_edge_file(
 # code owns the schema, the validation, and the human gate:
 #   * ``to_config`` is the HARD gate: an illegal (frozen-indicator) or malformed (unknown-key /
 #     wrong-shape) draft is DROPPED with a warning -- never persisted, never swept.
-#   * On ANY failure (client error / empty / unparseable) -> draft NOTHING (the store is simply
-#     not updated), exactly like ``author_edge_file``'s deterministic fallback.
+#   * The reachability SMOKE guard (Q10) is the second gate: a delta ``to_config`` accepts but
+#     this play type's path never READS (a continuation-only knob on a reversal draft) replays
+#     an identical scoped book and is DROPPED -- it could only ever mint a false null.
+#   * On ANY failure (client error / empty / unparseable / smoke replay) -> draft NOTHING (the
+#     store is simply not updated), exactly like ``author_edge_file``'s deterministic fallback.
 #   * Promotion stays human-gated: a surviving candidate is only QUEUED; the existing
 #     ``propose()`` PR gate (and the human reflection PR) still owns promotion to ``config.py``.
 # The drafter is an injectable seam (``DrafterFn``): tests pass a fake (no network); prod uses
@@ -785,53 +788,83 @@ def author_edge_file(
 # are what validate it.
 DrafterFn = Callable[[str, list[Verdict], StrategyConfig], list[dict]]
 
-# The tool the model fills in to PROPOSE variants (structured output). Code owns this schema;
-# the model only supplies values, and ``to_config`` still re-validates every delta.
-_DRAFT_TOOL = {
-    "name": "propose_screen_variants",
-    "description": (
-        "Propose 0 or more candidate screen variants to walk-forward test. Each variant is a "
-        "SMALL delta of non-indicator StrategyConfig detection/zone/scoring knobs (e.g. "
-        "max_extension_atr, min_pullback_bars, oversold_rsi_max), a one-line rationale, and the "
-        "hunch it is meant to test. Propose nothing if no hunch warrants a test."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "variants": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "delta": {
-                            "type": "object",
-                            "description": (
-                                "A flat map of StrategyConfig field -> scalar value. NON-indicator "
-                                "fields only (never an EMA/ATR/RSI/MACD/HA period)."
-                            ),
-                        },
-                        "rationale": {"type": "string"},
-                        "hunch_ref": {"type": "string"},
-                    },
-                    "required": ["delta", "rationale", "hunch_ref"],
-                },
-            },
-        },
-        "required": ["variants"],
-    },
+# Code-owned example knobs PER PLAY TYPE (Q10 B, docs/plans/2026-07-25-strategy-review-
+# experiment-queue.md). The old prompt listed continuation knobs as its examples for BOTH
+# play types, and the model pattern-matched them: 4 of the 5 reversal proposals ever
+# minted carried continuation-only deltas (max_extension_atr twice, min_pullback_bars,
+# oversold_rsi_max) -- structural no-ops the sweep would have graded as false nulls.
+# Each list names knobs the play type's OWN detection/zone path actually reads.
+_KNOB_EXAMPLES = {
+    "continuation": "max_extension_atr, min_pullback_bars, ceiling_atr_mult",
+    "reversal": "reversal_min_flip_rvol, reversal_retrace_frac, reversal_confirm_window",
 }
 
-_DRAFT_SYSTEM = (
-    "You are the AUTHOR of a swing-trading edge playbook. Some pre-registered conditions are "
-    "HUNCHES -- watched ideas that have NOT cleared the evidence bound on either book. For a "
-    "hunch you believe is worth a controlled test, you may PROPOSE a candidate screen variant: "
-    "a SMALL delta of NON-indicator StrategyConfig knobs (detection / zone / scoring -- e.g. "
-    "max_extension_atr, min_pullback_bars, oversold_rsi_max). NEVER propose a change to a frozen "
-    "indicator period (EMA/ATR/RSI/MACD/HA classification): the shadow book reuses shared frames, "
-    "so such a variant is illegal and will be dropped. You ONLY propose; a human + the optimizer's "
-    "evidence gate decide whether anything is promoted. Propose nothing if no hunch warrants a "
-    "test. Use the propose_screen_variants tool."
-)
+
+def _draft_tool(play_type: str) -> dict:
+    """The tool the model fills in to PROPOSE variants (structured output), conditioned
+    on the play type: the example knobs are the code-owned ``_KNOB_EXAMPLES`` list for
+    THIS play type's path, and the description states that a wrong-play-type knob will
+    be rejected. Code owns this schema; the model only supplies values, and ``to_config``
+    plus the reachability smoke guard still re-validate every delta."""
+    return {
+        "name": "propose_screen_variants",
+        "description": (
+            f"Propose 0 or more candidate {play_type} screen variants to walk-forward "
+            "test. Each variant is a SMALL delta of non-indicator StrategyConfig knobs "
+            f"that the {play_type.upper()} detection/zone/scoring path actually reads "
+            f"(e.g. {_KNOB_EXAMPLES[play_type]}), a one-line rationale, and the hunch it "
+            "is meant to test. A knob that only the other play type's path reads cannot "
+            "change this book and will be rejected. Propose nothing if no hunch "
+            "warrants a test."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "variants": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "delta": {
+                                "type": "object",
+                                "description": (
+                                    "A flat map of StrategyConfig field -> scalar value. "
+                                    "NON-indicator fields only (never an EMA/ATR/RSI/"
+                                    "MACD/HA period)."
+                                ),
+                            },
+                            "rationale": {"type": "string"},
+                            "hunch_ref": {"type": "string"},
+                        },
+                        "required": ["delta", "rationale", "hunch_ref"],
+                    },
+                },
+            },
+            "required": ["variants"],
+        },
+    }
+
+
+def _draft_system(play_type: str) -> str:
+    """The drafter's system prompt, conditioned on the play type (Q10 B): the example
+    knobs are this play type's own, and the wrong-play-type rejection is stated up
+    front -- the prompt-side half of the reachability fix (the smoke guard in
+    ``draft_variants`` is the enforcement half)."""
+    return (
+        "You are the AUTHOR of a swing-trading edge playbook. Some pre-registered "
+        f"conditions on the {play_type} book are HUNCHES -- watched ideas that have NOT "
+        "cleared the evidence bound on either book. For a hunch you believe is worth a "
+        "controlled test, you may PROPOSE a candidate screen variant: a SMALL delta of "
+        f"NON-indicator StrategyConfig knobs that the {play_type.upper()} detection / "
+        f"zone / scoring path actually reads (e.g. {_KNOB_EXAMPLES[play_type]}). NEVER "
+        "propose a change to a frozen indicator period (EMA/ATR/RSI/MACD/HA "
+        "classification): the shadow book reuses shared frames, so such a variant is "
+        "illegal and will be dropped. NEVER propose a knob that only the other play "
+        "type's path reads: it cannot change this play type's book, and it will be "
+        "rejected by a reachability smoke test. You ONLY propose; a human + the "
+        "optimizer's evidence gate decide whether anything is promoted. Propose nothing "
+        "if no hunch warrants a test. Use the propose_screen_variants tool."
+    )
 
 
 def _draft_user_content(play_type: str, hunches: list[Verdict]) -> str:
@@ -868,12 +901,13 @@ def _opus_drafter(
         # Build kwargs as a plain dict (like notify/analysis.py): the SDK's create() overloads
         # don't reconcile with the heterogeneous tool/tool_choice literals, and this is the
         # untrusted-output seam to_config re-validates anyway.
+        tool = _draft_tool(play_type)
         kwargs: dict = {
             "model": model,
             "max_tokens": 2000,
-            "system": _DRAFT_SYSTEM,
-            "tools": [_DRAFT_TOOL],
-            "tool_choice": {"type": "tool", "name": _DRAFT_TOOL["name"]},
+            "system": _draft_system(play_type),
+            "tools": [tool],
+            "tool_choice": {"type": "tool", "name": tool["name"]},
             "messages": [
                 {"role": "user", "content": _draft_user_content(play_type, hunches)}
             ],
@@ -884,15 +918,15 @@ def _opus_drafter(
                 b.input
                 for b in resp.content
                 if getattr(b, "type", None) == "tool_use"
-                and getattr(b, "name", None) == _DRAFT_TOOL["name"]
+                and getattr(b, "name", None) == tool["name"]
             ),
             None,
         )
         if not isinstance(tool_input, dict):
-            raise ValueError("no propose_screen_variants tool_use block in response")
+            raise ValueError("no propose_screen_variants tool_use block in response")  # noqa: TRY004 -- intentional ValueError for malformed API response
         variants = tool_input.get("variants", [])
         if not isinstance(variants, list):
-            raise ValueError("propose_screen_variants 'variants' is not a list")
+            raise ValueError("propose_screen_variants 'variants' is not a list")  # noqa: TRY004 -- intentional ValueError for malformed API response
         return variants
 
     return _fn
@@ -953,6 +987,100 @@ def _candidate(
     return pv
 
 
+# The smoke guard's evidence floor: an identical scoped book only DROPS a candidate when
+# the default book put at least this many scoped trades on the smoke corpus. An
+# identical-but-thin book proves nothing (maybe the corpus just never triggers this play
+# type), so below the floor the candidate queues with a "smoke-inconclusive" warning.
+_SMOKE_MIN_TRADES = 30
+# Cap on the smoke corpus ``run_reflection`` hands the guard (the first N tickers of the
+# replay universe, sorted): enough breadth to book a trustworthy default book per play
+# type, small enough that the weekly draft stays a smoke test, not a second full replay.
+_SMOKE_TICKERS = 50
+# The incumbent config's variant key inside the smoke replay. Dunder-fenced so it can
+# never collide with a drafted candidate's ``_draft_name`` (those are slug-derived).
+_SMOKE_DEFAULT = "__smoke_default__"
+
+
+def _smoke_canon(
+    trades: list[PaperTrade], play_type: str, variant: str
+) -> list[tuple]:
+    """One replay book as a canonical multiset of per-trade tuples, SCOPED to
+    ``play_type`` + ``variant`` -- the comparison key of the reachability smoke guard.
+
+    Two deliberate choices, each closing a real false-verdict hole:
+
+      * SCOPED to the play type: an unscoped (pooled) diff would see a continuation-only
+        knob move the continuation book and call a reversal-targeted delta "reachable"
+        -- the exact defect class the guard exists to catch.
+      * ECONOMICS in the tuple (entry/stop/target/exit/R), not just fill identity: an
+        economics-only delta (``reversal_retrace_frac`` moves the target, not which
+        fills happen) books the same fill IDs with different numbers -- a fill-ID-only
+        diff would flag it as a no-op.
+    """
+    return sorted(
+        (t.ticker, t.timeframe, str(t.trigger_ts), t.fill_status, str(t.entry_date),
+         t.entry_price, t.stop, t.target, str(t.exit_date), t.exit_price, t.realized_r)
+        for t in trades
+        if t.play_type == play_type and t.variant == variant
+    )
+
+
+def _smoke_survivors(
+    valid: list[ProposedVariant],
+    play_type: str,
+    base: StrategyConfig,
+    smoke_frames: dict[str, pd.DataFrame],
+) -> list[ProposedVariant]:
+    """Replay-certify each validated candidate's PATH REACHABILITY (Q10 C) and return
+    the survivors; may RAISE on a replay failure (the caller fail-safes to queueing
+    nothing).
+
+    ``to_config`` checks that a delta's fields exist and are not frozen indicators --
+    it cannot see whether this play type's code path ever READS them (the defect behind
+    4 of the 5 reversal proposals ever minted: continuation-only knobs whose sweep
+    replays the identical reversal book and grades the hunch a false null). So the
+    guard runs the one check that settles it: ONE replay of the smoke corpus screening
+    the incumbent config beside every candidate, then a scoped-book diff per candidate
+    (``_smoke_canon``). Identical book + a default book at/above ``_SMOKE_MIN_TRADES``
+    scoped trades -> DROP as unreachable; identical-but-thin -> queue with a
+    "smoke-inconclusive" warning (a corpus that never triggers the play type proves
+    nothing either way).
+
+    The guard certifies SWEEPABLE, not live-promotable: the smoke replay is bare 1d
+    bars (no SPY regime, no VIX), so a knob whose effect needs context data the smoke
+    lacks (``max_vix_rank`` is replay-only and VIX-gated) reads unreachable here --
+    conservatively dropped rather than falsely certified.
+    """
+    configs = {_SMOKE_DEFAULT: base}
+    configs.update({pv.name: to_config(pv, base) for pv in valid})
+    trades = replay_book(
+        smoke_frames, timeframe="1d", base_cfg=base, variants=configs, spy_daily=None,
+    )
+    default_book = _smoke_canon(trades, play_type, _SMOKE_DEFAULT)
+    survivors: list[ProposedVariant] = []
+    for pv in valid:
+        if _smoke_canon(trades, play_type, pv.name) != default_book:
+            survivors.append(pv)
+        elif len(default_book) < _SMOKE_MIN_TRADES:
+            log.warning(
+                "smoke-inconclusive: drafted variant %r for %s (delta %r) left the "
+                "scoped smoke book identical, but the default booked only %d %s "
+                "trade(s) there (< %d) -- too thin to trust the null, queueing anyway",
+                pv.name, play_type, pv.delta, len(default_book), play_type,
+                _SMOKE_MIN_TRADES,
+            )
+            survivors.append(pv)
+        else:
+            log.warning(
+                "dropping path-unreachable drafted variant %r for %s: delta %r left "
+                "the %s-scoped smoke book identical to the default's (%d trades) -- "
+                "sweeping it would replay the same book and mint a false null on the "
+                "hunch (the 2026-07 no-op proposal class)",
+                pv.name, play_type, pv.delta, play_type, len(default_book),
+            )
+    return survivors
+
+
 def draft_variants(
     play_type: str,
     hunches: list[Verdict],
@@ -961,12 +1089,17 @@ def draft_variants(
     edge_dir: Path,
     today: str,
     drafter: DrafterFn,
+    smoke_frames: dict[str, pd.DataFrame] | None = None,
 ) -> list[ProposedVariant]:
     """Draft + validate + QUEUE candidate screen variants for one play type's hunches.
 
     The flow: ask the (injectable, fallible) ``drafter`` for raw candidate dicts; validate each
     via ``_candidate`` (``to_config`` is the hard gate -- illegal/malformed drafts are DROPPED +
-    warned); and, IF any survive, MERGE them into ``edge/<pt>.proposed.json``.
+    warned); with ``smoke_frames``, replay-certify the survivors' path REACHABILITY
+    (``_smoke_survivors`` -- a candidate whose delta cannot move this play type's book is
+    DROPPED as a would-be false null); and, IF any survive, MERGE them into
+    ``edge/<pt>.proposed.json``. ``smoke_frames=None`` skips the smoke (the historical
+    behavior); ``run_reflection`` passes a capped subsample of its replay universe.
 
     The merge (Phase 3): ONLY the ``QUEUED`` rows are machine-owned, so only THEY are replaced
     by the fresh set (a redraft supersedes stale queued ideas). Every non-queued row -- an
@@ -1002,6 +1135,17 @@ def draft_variants(
         if (pv := _candidate(item, play_type=play_type, base=base, today=today, index=i))
         is not None
     ]
+    if valid and smoke_frames:
+        try:
+            valid = _smoke_survivors(valid, play_type, base, smoke_frames)
+        except Exception:
+            # Same fail-safe as a raising drafter: a broken smoke replay must neither
+            # crash the reflection nor certify anything -- queue nothing, store untouched.
+            log.warning(
+                "reachability smoke replay failed for %s; queueing nothing "
+                "(store untouched)", play_type, exc_info=True,
+            )
+            return []
     if not valid:
         return []
     try:
@@ -1284,11 +1428,14 @@ def run_reflection(
 
         # North Star #9: on the "needs a test" hunches, let the (optional, fail-safe) drafter
         # QUEUE validated candidate screen variants for the optimizer to sweep. The LLM only
-        # proposes; ``to_config`` gates and promotion stays human-gated (queue-only).
+        # proposes; ``to_config`` gates, the reachability smoke (a capped, deterministic
+        # subsample of this run's replay universe -- Q10) drops a delta this play type's
+        # path cannot reach, and promotion stays human-gated (queue-only).
         if drafter is not None and today is not None:
             hunches = [v for v in verdicts if v.tier == "hunch"]
             draft_variants(
                 pt, hunches, base, edge_dir=edge_dir, today=today, drafter=drafter,
+                smoke_frames=dict(sorted(replay_frames.items())[:_SMOKE_TICKERS]),
             )
     return due
 
@@ -1366,7 +1513,7 @@ def main() -> None:
     with Session(engine) as session:
         reflected = run_reflection(
             session, replay_frames=replay_frames, spy_daily=spy_daily,
-            edge_dir=resolve_edge_dir(args.edge_dir), today=date.today().isoformat(),
+            edge_dir=resolve_edge_dir(args.edge_dir), today=datetime.now(UTC).date().isoformat(),
             # belt-and-braces; the carve already skips drafting
             drafter=None if args.verdicts_only else _opus_drafter(), force=args.force,
             corpus_id=corpus_id, verdicts_only=args.verdicts_only,

@@ -14,16 +14,15 @@ server_default / backfill is needed. Purely additive, behavior-preserving. Mirro
 AnalystCall model in db/models.py exactly.
 """
 from collections.abc import Sequence
-from typing import Union
 
 import sqlalchemy as sa
 
 from alembic import op
 
 revision: str = "bc856e48d4dc"
-down_revision: Union[str, Sequence[str], None] = "079234d7c819"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "079234d7c819"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

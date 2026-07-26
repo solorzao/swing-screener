@@ -25,18 +25,18 @@ from swing_screener.db.models import (
     EmailLog,
     ExecutionLog,
     ExitEvent,
+    GexSnapshot,
     JournalNote,
     JournalReview,
     JournalThesis,
     JournalTradeTag,
-    GexSnapshot,
     LabAnalysis,
-    SystemAudit,
     MarketReport,
     OptionPaperTrade,
     OptionSetup,
     PaperTrade,
     Signal,
+    SystemAudit,
     Trade,
 )
 from swing_screener.db.repo import latest_reversal_funnel
@@ -290,7 +290,7 @@ def _safe_change_token(
     swallowed by the sentinel."""
     try:
         token = _change_token(engine_factory(), resolve_edge_dir(edge_dir))
-    except Exception:
+    except Exception:  # noqa: BLE001 -- best-effort DB probe; sentinel on any failure
         token = {"db": "down"}
     token["action"] = _watermark(action_nonce.value)
     return token

@@ -19,7 +19,7 @@ def _available_odbc_drivers() -> list[str]:
     """Installed ODBC drivers, or [] if pyodbc is unavailable (optional azure extra)."""
     try:
         import pyodbc
-    except Exception:
+    except Exception:  # noqa: BLE001 -- optional azure extra; any import failure means no drivers
         return []
     return list(pyodbc.drivers())
 
@@ -102,7 +102,7 @@ def _attach_aad_token(engine: Engine) -> None:
     static_token = os.environ.get("SWING_DB_ACCESS_TOKEN")
     if static_token:
         @event.listens_for(engine, "do_connect")
-        def _provide_static_token(dialect, conn_rec, cargs, cparams):  # type: ignore[no-untyped-def]  # noqa: ARG001
+        def _provide_static_token(dialect, conn_rec, cargs, cparams):  # type: ignore[no-untyped-def]
             cparams["attrs_before"] = _token_attrs(static_token)
         return
 
@@ -111,7 +111,7 @@ def _attach_aad_token(engine: Engine) -> None:
     credential = DefaultAzureCredential()
 
     @event.listens_for(engine, "do_connect")
-    def _provide_token(dialect, conn_rec, cargs, cparams):  # type: ignore[no-untyped-def]  # noqa: ARG001
+    def _provide_token(dialect, conn_rec, cargs, cparams):  # type: ignore[no-untyped-def]
         cparams["attrs_before"] = _token_attrs(credential.get_token(_DB_TOKEN_SCOPE).token)
 
 

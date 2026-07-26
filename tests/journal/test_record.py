@@ -8,7 +8,7 @@ never leak in. Designed so a future GEX OptionPaperTrade folds in as module="gex
 without changing consumers.
 """
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy.orm import Session
 
@@ -41,7 +41,7 @@ def test_trade_records_shape_tags_and_theses():
         # dead -- 2026-07-17 audit L8; the table + read path stay).
         s.add(JournalThesis(trade_id=closed.id, book="research", event_kind="entry",
                             source="screener", body="pullback into 20EMA",
-                            created_at=datetime(2026, 7, 1, 9, 30)))
+                            created_at=datetime(2026, 7, 1, 9, 30, tzinfo=UTC)))
         # a thesis on the SAME trade id but a different book must not attach here
         s.add(JournalThesis(trade_id=closed.id, book="paper", event_kind="entry",
                             source="human", body="wrong book"))

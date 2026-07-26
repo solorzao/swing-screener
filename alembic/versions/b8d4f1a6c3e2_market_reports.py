@@ -9,16 +9,15 @@ regime, yield inversion, bond trend) plus the analyst's read. A history of how t
 and a flip log. Standalone table -- no FKs.
 """
 from collections.abc import Sequence
-from typing import Union
 
 import sqlalchemy as sa
 
 from alembic import op
 
 revision: str = "b8d4f1a6c3e2"
-down_revision: Union[str, Sequence[str], None] = "a7c2e9f4d8b6"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "a7c2e9f4d8b6"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

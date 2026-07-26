@@ -1,6 +1,6 @@
 """Weather router (split from test_api.py): /api/weather."""
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -11,7 +11,6 @@ from swing_screener.db.models import (
 from tests.cockpit.conftest import (
     _client_and_engine,
 )
-
 
 WEATHER_KEYS = {"run_date", "ha_alignment", "flipped", "spy_vs_200dma",
                 "vol_bucket", "vix", "vix_rank", "vix_spike", "ten_year",
@@ -42,7 +41,7 @@ def test_weather_null_then_latest(tmp_path: Path) -> None:
                            core="new core", report="full text", is_deep=False,
                            vix=13.2, vix_rank=0.31, spy_vs_200dma="above",
                            yield_inverted=False, recession_prob=0.18,
-                           created_at=datetime(2026, 7, 5, 13, 0)))
+                           created_at=datetime(2026, 7, 5, 13, 0, tzinfo=UTC)))
         s.commit()
     body = client.get("/api/weather").json()
     w = body["weather"]

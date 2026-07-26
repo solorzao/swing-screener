@@ -87,8 +87,8 @@ def _drop_non_finite(f: MarketFacts) -> MarketFacts:
 def facts_block(f: MarketFacts) -> str:
     """Render the deterministic market facts as a text block (prompt + fallback report)."""
     f = _drop_non_finite(f)
-    rows = [f"- SPY Heiken-Ashi (monthly/weekly/daily): {f.ha_alignment_note} "
-            f"[alignment: {f.ha_alignment}]"]
+    rows = [(f"- SPY Heiken-Ashi (monthly/weekly/daily): {f.ha_alignment_note} "
+            f"[alignment: {f.ha_alignment}]")]
     for tf in ("1mo", "1wk", "1d"):
         h = f.ha.get(tf)
         if h is not None:

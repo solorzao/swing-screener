@@ -1,6 +1,6 @@
 """Suite-wide spend gathering: the gate must see coach/audit costs, not just analyst."""
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy import event
 from sqlalchemy.orm import Session
@@ -19,9 +19,9 @@ def test_spend_unions_all_three_tables():
                           final_conviction="high", nudge_reason="", model="m", est_cost_usd=0.10))
         s.add(JournalReview(identity_key="k1", kind="trade_close", book="manual_equity",
                             facts_json="{}", source="analyst", est_cost_usd=0.20,
-                            generated_at=datetime(2026, 7, 12, 10, 0)))
+                            generated_at=datetime(2026, 7, 12, 10, 0, tzinfo=UTC)))
         s.add(SystemAudit(kind="weekly", period_from=_TODAY, period_to=_TODAY,
-                          est_cost_usd=0.05, generated_at=datetime(2026, 7, 12, 11, 0)))
+                          est_cost_usd=0.05, generated_at=datetime(2026, 7, 12, 11, 0, tzinfo=UTC)))
         s.commit()
         rows = spend_rows_since(s, _TODAY)
         total = sum(c for _d, c in rows if c is not None)
@@ -32,7 +32,7 @@ def test_null_costs_are_returned_for_counting_not_dropped():
     with Session(get_engine("sqlite:///:memory:")) as s:
         s.add(JournalReview(identity_key="k2", kind="trade_close", book="manual_equity",
                             facts_json="{}", source="analyst", est_cost_usd=None,
-                            generated_at=datetime(2026, 7, 12, 10, 0)))
+                            generated_at=datetime(2026, 7, 12, 10, 0, tzinfo=UTC)))
         s.commit()
         rows = spend_rows_since(s, _TODAY)
         assert rows == [(_TODAY, None)]           # disclosed undercount, not absorbed as 0
@@ -41,7 +41,7 @@ def test_null_costs_are_returned_for_counting_not_dropped():
 def test_rows_before_the_window_are_excluded():
     with Session(get_engine("sqlite:///:memory:")) as s:
         s.add(SystemAudit(kind="weekly", period_from=date(2026, 6, 1), period_to=date(2026, 6, 1),
-                          est_cost_usd=9.0, generated_at=datetime(2026, 6, 1, 11, 0)))
+                          est_cost_usd=9.0, generated_at=datetime(2026, 6, 1, 11, 0, tzinfo=UTC)))
         s.commit()
         assert spend_rows_since(s, _TODAY) == []
 
@@ -55,15 +55,15 @@ def test_cutoff_rides_the_sql_where_not_python():
     statements: list[str] = []
 
     @event.listens_for(engine, "before_cursor_execute")
-    def _capture(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001, ARG001
+    def _capture(conn, cursor, statement, parameters, context, executemany):
         statements.append(statement)
 
     with Session(engine) as s:
         s.add(JournalReview(identity_key="old", kind="trade_close", book="manual_equity",
                             facts_json="{}", source="analyst", est_cost_usd=9.0,
-                            generated_at=datetime(2026, 6, 1, 10, 0)))
+                            generated_at=datetime(2026, 6, 1, 10, 0, tzinfo=UTC)))
         s.add(SystemAudit(kind="weekly", period_from=_TODAY, period_to=_TODAY,
-                          est_cost_usd=0.05, generated_at=datetime(2026, 7, 12, 11, 0)))
+                          est_cost_usd=0.05, generated_at=datetime(2026, 7, 12, 11, 0, tzinfo=UTC)))
         s.commit()
         statements.clear()
         rows = spend_rows_since(s, _TODAY)

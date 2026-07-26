@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pandas as pd
 from sqlalchemy.orm import Session
@@ -37,7 +37,7 @@ def test_tangled_daily_is_stand_down() -> None:
 def test_save_snapshot_persists_levels_and_profile() -> None:
     engine = get_engine("sqlite:///:memory:")
     with Session(engine) as s:
-        row = save_snapshot(s, underlying="SPY", ts=datetime(2026, 7, 13, 9, 10),
+        row = save_snapshot(s, underlying="SPY", ts=datetime(2026, 7, 13, 9, 10, tzinfo=UTC),
                             levels=_levels("positive"), thin=False)
         assert row.id is not None
         got = s.get(GexSnapshot, row.id)

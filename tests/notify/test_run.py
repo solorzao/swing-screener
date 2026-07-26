@@ -282,8 +282,8 @@ def test_slow_cadence_digest_keeps_setups_older_than_the_daily_cooldown(
         s.commit()
 
     sent = []
-    kw = dict(db_url=url, run_date=RUN, to="me@example.com", pdf_dir=tmp_path / "d",
-              anthropic_client=_FakeClient(), smtp_send=lambda **k: sent.append(k))
+    kw = {"db_url": url, "run_date": RUN, "to": "me@example.com", "pdf_dir": tmp_path / "d",
+              "anthropic_client": _FakeClient(), "smtp_send": lambda **k: sent.append(k)}
 
     with caplog.at_level(logging.INFO, logger="swing_screener.notify.run"):
         daily = run.send_digest(kind="daily", **kw)
@@ -366,8 +366,8 @@ def test_send_digest_force_resends_without_duplicate_log(tmp_path):
     def recorder(**kwargs):
         sent.append(kwargs)
 
-    kw = dict(kind="daily", db_url=url, run_date=RUN, to="me@example.com",
-              pdf_dir=tmp_path / "digests", anthropic_client=_FakeClient(), smtp_send=recorder)
+    kw = {"kind": "daily", "db_url": url, "run_date": RUN, "to": "me@example.com",
+              "pdf_dir": tmp_path / "digests", "anthropic_client": _FakeClient(), "smtp_send": recorder}
 
     assert run.send_digest(**kw).sent is True and len(sent) == 1
     assert run.send_digest(**kw).sent is False and len(sent) == 1  # normal re-run: no-op
@@ -423,8 +423,8 @@ def test_exit_alert_delivered_on_rerun_after_event(tmp_path):
     def recorder(**kwargs):
         sent.append(kwargs)
 
-    kw = dict(kind="daily", db_url=url, run_date=RUN, to="me@example.com",
-              pdf_dir=tmp_path / "digests", anthropic_client=_FakeClient(), smtp_send=recorder)
+    kw = {"kind": "daily", "db_url": url, "run_date": RUN, "to": "me@example.com",
+              "pdf_dir": tmp_path / "digests", "anthropic_client": _FakeClient(), "smtp_send": recorder}
     run.send_digest(**kw)  # first run: digest only (no exit events yet)
     assert len(sent) == 1
 
@@ -460,7 +460,7 @@ def test_kind_exit_produces_and_sends_exit_alert(tmp_path):
         sent.append(kwargs)
 
     # fake live bar source: AMD's low breaches its stop -> hard exit.
-    def fake_bars(tickers, timeframe):  # noqa: ARG001
+    def fake_bars(tickers, timeframe):
         bar = {"low": 93.0, "high": 100.0, "close": 95.0, "shaved_head": False, "bearish": True}
         return {t: bar for t in tickers}
 
@@ -584,7 +584,7 @@ def test_emit_exit_alert_tolerates_integrity_error(tmp_path, monkeypatch):
 
     # pre-insert the row that the orchestrator's insert will collide with.
     with Session(engine) as s:
-        s.add(EmailLog(sent_at=datetime.now(), kind="exit", subject="dup",
+        s.add(EmailLog(sent_at=datetime.now(UTC), kind="exit", subject="dup",
                        run_date=RUN, alert_key=key))
         s.commit()
 

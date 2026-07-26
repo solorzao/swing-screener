@@ -16,7 +16,7 @@ import random
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -99,13 +99,13 @@ def _fetch_chain_raw(ticker: str, max_expiries: int, *, retries: int = 3,
             frames: list[pd.DataFrame] = []
             for exp in t.options[:max_expiries]:
                 oc = t.option_chain(exp)
-                exp_date = datetime.strptime(exp, "%Y-%m-%d").date()
+                exp_date = datetime.strptime(exp, "%Y-%m-%d").replace(tzinfo=UTC).date()
                 frames.append(_side(oc.calls, "C", exp_date))
                 frames.append(_side(oc.puts, "P", exp_date))
             if not frames:
                 raise ValueError("no expiries returned")
             return float(spot), pd.concat(frames, ignore_index=True)
-        except Exception as err:  # network/parse failure: retry, then raise
+        except Exception as err:  # noqa: BLE001 -- network/parse failure: retry, then raise
             last_err = err
             if attempt < retries - 1:  # don't sleep after the final attempt
                 time.sleep(backoff * (2 ** attempt) + random.uniform(0, jitter))

@@ -18,7 +18,7 @@ so the scoreboard and the journal/leaderboards can never drift.
 """
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Literal, TypedDict
 
 from sqlalchemy import select
@@ -105,7 +105,7 @@ def _cutoff(window: str) -> date | None:
     natural axis for a realized-P&L view."""
     if window == "all":
         return None
-    return date.today() - timedelta(days=int(window))
+    return datetime.now(UTC).date() - timedelta(days=int(window))
 
 
 def _in_window(closed: date | None, cutoff: date | None) -> bool:

@@ -24,16 +24,15 @@ create_all-born local.db already carries the schema but no alembic_version -- ``
 stamp head`` it first (existing convention: local sqlite never self-migrates).
 """
 from collections.abc import Sequence
-from typing import Union
 
 import sqlalchemy as sa
 
 from alembic import op
 
 revision: str = "e8b4c2a7f9d1"
-down_revision: Union[str, Sequence[str], None] = "a2e6c9f4b1d7"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "a2e6c9f4b1d7"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

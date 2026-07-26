@@ -43,7 +43,6 @@ from tests.cockpit.conftest import (
     _grade_call,
 )
 
-
 TOP_KEYS = {"strategies", "effective_scope", "ceiling", "disabled", "as_of", "ci_note"}
 ROW_KEYS = {"play_type", "rank", "in_ceiling", "disabled", "effective",
             "playbook_present", "tier", "best_cohort", "calibration", "gate_ready",

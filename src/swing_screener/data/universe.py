@@ -64,7 +64,7 @@ def main() -> None:
     parser.add_argument("--path", type=Path, default=DEFAULT_SEED,
                         help="universe CSV (columns: ticker,name,exchange)")
     args = parser.parse_args()
-    print(",".join(e.ticker for e in load_universe(args.path)[: args.first]))  # noqa: T201 -- CLI output is the point
+    print(",".join(e.ticker for e in load_universe(args.path)[: args.first]))
 
 
 if __name__ == "__main__":

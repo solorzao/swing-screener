@@ -68,9 +68,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Protocol
 
-from sqlalchemy.orm import Session
-
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from swing_screener.db import guardrails_repo
 from swing_screener.db.models import PaperTrade
@@ -649,7 +648,7 @@ class LiveAdapter:
                 take_profit=intent.target if bracket else None,
             ))
         except Exception as e:  # noqa: BLE001 -- a venue boundary: any failure must not raise.
-            log.error("broker submit failed for %s", intent.ticker, exc_info=True)
+            log.exception("broker submit failed for %s", intent.ticker)
             # ORPHAN ADOPTION (the crash-window recovery): before giving up as
             # rejected_live, ask the venue whether an order ALREADY exists under our
             # key. Deliberately attempted on ANY submit exception -- Alpaca's

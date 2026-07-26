@@ -21,7 +21,6 @@ from tests.cockpit.conftest import (
     _grade_call,
 )
 
-
 TICKER_BASE_KEYS = {"source", "ts", "ticker", "headline", "detail"}
 EXIT_ROW_KEYS = {"id", "date", "trade_id", "is_paper", "account", "tier", "reason",
                  "message"}
@@ -43,12 +42,12 @@ def test_ticker_merges_sources_desc(tmp_path: Path) -> None:
                         account="research", tier="t1", reason="stop_violation",
                         message="AAA stopped"))
         s.add(_exec_log(created_date=date(2026, 7, 9)))
-        s.add(EmailLog(sent_at=datetime(2026, 7, 10, 12, 0), kind="daily",
+        s.add(EmailLog(sent_at=datetime(2026, 7, 10, 12, 0), kind="daily",  # noqa: DTZ001 -- naive test fixture
                        subject="Digest", run_date=date(2026, 7, 9)))
         s.add(_grade_call("NVO", run_date=date(2026, 7, 7)))
         # requested LONG ago but finished recently: the finish is the event
-        s.add(_analysis_row(requested_at=datetime(2026, 7, 1, 9, 0), status="done",
-                            finished_at=datetime(2026, 7, 10, 15, 0),
+        s.add(_analysis_row(requested_at=datetime(2026, 7, 1, 9, 0), status="done",  # noqa: DTZ001 -- naive test fixture
+                            finished_at=datetime(2026, 7, 10, 15, 0),  # noqa: DTZ001 -- naive test fixture
                             summary="done summary"))
         s.commit()
     r = client.get("/api/ticker")
@@ -149,7 +148,7 @@ def test_emails_limit_default_100(tmp_path: Path) -> None:
     SELECT: default 100, newest sent first, ``sent_at`` served as unambiguous
     UTC."""
     client, engine = _client_and_engine(tmp_path)
-    base = datetime(2026, 7, 1, 8, 0)
+    base = datetime(2026, 7, 1, 8, 0)  # noqa: DTZ001 -- naive test fixture
     with Session(engine) as s:
         for i in range(105):
             s.add(EmailLog(sent_at=base + timedelta(minutes=i), kind="daily",
@@ -222,10 +221,10 @@ def test_ticker_analysis_window_orders_by_lifecycle_not_id(tmp_path: Path) -> No
     of a limit-1 candidate window entirely."""
     client, engine = _client_and_engine(tmp_path)
     with Session(engine) as s:
-        s.add(_analysis_row(ticker="OLD", requested_at=datetime(2026, 7, 1, 9, 0),
+        s.add(_analysis_row(ticker="OLD", requested_at=datetime(2026, 7, 1, 9, 0),  # noqa: DTZ001 -- naive test fixture
                             status="done",
-                            finished_at=datetime(2026, 7, 10, 15, 0)))
-        s.add(_analysis_row(ticker="NEW", requested_at=datetime(2026, 7, 9, 9, 0)))
+                            finished_at=datetime(2026, 7, 10, 15, 0)))  # noqa: DTZ001 -- naive test fixture
+        s.add(_analysis_row(ticker="NEW", requested_at=datetime(2026, 7, 9, 9, 0)))  # noqa: DTZ001 -- naive test fixture
         s.commit()
     events = client.get("/api/ticker", params={"limit": 1}).json()["events"]
     assert [e["ticker"] for e in events] == ["OLD"]  # id-desc would starve OLD out

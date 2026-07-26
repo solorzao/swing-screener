@@ -22,21 +22,21 @@ from swing_screener.pipeline.insight import (
 
 
 def _facts(**over: object) -> SignalFacts:
-    base: dict[str, object] = dict(
-        ticker="AMD", timeframe="1d", trade_type="medium", score=0.85,
-        mtf_aligned=True, quality_tier="high", volatility_tier="med", oversold=False,
-        trigger_close=100.0, atr=2.0, rsi=55.0,
-        entry_floor=99.0, entry_ceiling=101.0, stop=95.0, target=110.0,
-    )
+    base: dict[str, object] = {
+        "ticker": "AMD", "timeframe": "1d", "trade_type": "medium", "score": 0.85,
+        "mtf_aligned": True, "quality_tier": "high", "volatility_tier": "med", "oversold": False,
+        "trigger_close": 100.0, "atr": 2.0, "rsi": 55.0,
+        "entry_floor": 99.0, "entry_ceiling": 101.0, "stop": 95.0, "target": 110.0,
+    }
     base.update(over)
     return SignalFacts(**base)  # type: ignore[arg-type]
 
 
 def _conv(**over: object) -> ConvictionResult:
-    base: dict[str, object] = dict(
-        conviction="high", nudge_reason="sector momentum confirms",
-        insight="Strong continuation; key risk is earnings next week.", is_deep=True,
-    )
+    base: dict[str, object] = {
+        "conviction": "high", "nudge_reason": "sector momentum confirms",
+        "insight": "Strong continuation; key risk is earnings next week.", "is_deep": True,
+    }
     base.update(over)
     return ConvictionResult(**base)  # type: ignore[arg-type]
 

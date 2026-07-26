@@ -76,10 +76,12 @@ class Settings:
     broker: str
     allow_real_money: bool
     # TICKER LAB deep analysis: reasoning effort for the lab's user-triggered Opus
-    # call. Defaults to "max" -- the lab exists for the user's own deep research,
-    # so it runs at full effort unless dialled down (SWING_LAB_REASONING). Lives in
-    # the defaulted tail so direct Settings(...) constructions stay valid.
-    lab_reasoning: str = "max"
+    # call. Defaults to "xhigh" -- near-max quality at ~25% less thinking budget
+    # (thinking bills as OUTPUT at $25/MTok, the dominant per-call term), the
+    # 2026-07-23 cost audit's low-risk trim; raise to "max" via SWING_LAB_REASONING
+    # for a specific deep dive. Lives in the defaulted tail so direct Settings(...)
+    # constructions stay valid.
+    lab_reasoning: str = "xhigh"
     # Submit live entries as BRACKET orders (venue-held stop + target), so a filled
     # position stays protected even if the screener dies. Default ON; SWING_BRACKET_ORDERS
     # ="off" falls back to plain limit entries (reconcile-managed exits only).
@@ -98,6 +100,12 @@ class Settings:
     # garbage never widens scope). Task 22's cockpit subtraction sits BENEATH this
     # ceiling (see guardrails_repo.effective_execution_scope).
     execute_play_types: frozenset[str] | None = None
+    # Route the digest's per-pick conviction calls through the Message Batches API (50%
+    # off ALL tokens) instead of synchronous calls (SWING_DEEP_ANALYSIS_BATCH). Default
+    # OFF -- opt-in only: it trades up-to-~1h added digest-email latency for the discount,
+    # acceptable because the digest is a scheduled (non-interactive) job. See notify.batch
+    # + notify.analysis.analyze_convictions_batched.
+    deep_analysis_batch: bool = False
 
 
 _TRUE = {"1", "true", "yes", "on"}
@@ -205,9 +213,9 @@ def load_settings() -> Settings:
     reasoning = env.get("SWING_ANALYSIS_REASONING", "high").strip().lower()
     if reasoning not in _REASONING:  # invalid -> strong reasoning rather than silently weaker
         reasoning = "high"
-    lab_reasoning = env.get("SWING_LAB_REASONING", "max").strip().lower()
-    if lab_reasoning not in _REASONING:  # invalid -> the lab's full-effort default
-        lab_reasoning = "max"
+    lab_reasoning = env.get("SWING_LAB_REASONING", "xhigh").strip().lower()
+    if lab_reasoning not in _REASONING:  # invalid -> the lab's near-max default
+        lab_reasoning = "xhigh"
     kinds_raw = env.get("SWING_DEEP_ANALYSIS_KINDS", "daily,weekly,monthly")
     kinds = frozenset(k.strip().lower() for k in kinds_raw.split(",") if k.strip())
     execution_mode = env.get("SWING_EXECUTION_MODE", "off").strip().lower()
@@ -232,6 +240,7 @@ def load_settings() -> Settings:
         deep_analysis_top_n=_int(env.get("SWING_DEEP_ANALYSIS_TOP_N"), 5),
         deep_analysis_kinds=kinds,
         analysis_max_searches=_int(env.get("SWING_ANALYSIS_MAX_SEARCHES"), 4),
+        deep_analysis_batch=(env.get("SWING_DEEP_ANALYSIS_BATCH", "").strip().lower() in _TRUE),
         lab_reasoning=lab_reasoning,
         deep_analysis_max_usd=_opt_float(env.get("SWING_DEEP_ANALYSIS_MAX_USD")),
         coach_enabled=(env.get("SWING_COACH_ENABLED", "").strip().lower() in _TRUE),

@@ -20,8 +20,9 @@ import pytest
 # ships in the optional azure extra, so CI (.[dev] only) skips these.
 pytest.importorskip("alembic.command")
 
-from alembic import command  # noqa: E402
-from alembic.config import Config  # noqa: E402
+from alembic.config import Config
+
+from alembic import command
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_TABLES = {"universe", "signals", "trades", "paper_trades", "exit_events",

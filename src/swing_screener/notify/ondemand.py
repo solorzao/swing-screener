@@ -167,13 +167,13 @@ def process_one(session, request, *, settings, cfg, today, now,
             # the persisted estimate is its only cost visibility. None = no billed
             # call captured (deterministic fallback), an honest unknown not a $0.
             est_cost_usd=analysis.usage.est_cost_usd if analysis.usage else None)
-    except Exception as exc:  # noqa: BLE001 -- per-request isolation; never abort the batch
+    except Exception as exc:
         # Leak posture: the stored error reaches the cockpit wire (/api/analysis and
         # the Zone E ticker), and fetch/SDK messages can embed hosts, URLs, and keys
         # -- persist the exception CLASS only (the broker_error_detail convention);
         # the full traceback goes to the LOG for the operator. The curated
         # "no data for {ticker}" branch above stays verbatim (safe by construction).
-        log.error("on-demand request %s failed", request.id, exc_info=True)
+        log.exception("on-demand request %s failed", request.id)
         session.rollback()
         repo.fail_analysis_request(
             session, request.id, error=f"error ({type(exc).__name__})", finished_at=now)

@@ -20,9 +20,8 @@ The load-bearing properties proven here:
 All in-memory sqlite + FakeBroker -- no venue, no network, no mail.
 """
 
-from datetime import date
-
 import json
+from datetime import date
 
 import pytest
 from sqlalchemy.orm import Session

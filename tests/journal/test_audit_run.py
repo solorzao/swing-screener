@@ -157,7 +157,7 @@ def test_breach_scan_writes_cap_and_disarm_breaches_idempotently(monkeypatch):
     s_ = _settings(monkeypatch, audit_enabled=False, max_notional=1000.0)
     with Session(get_engine("sqlite:///:memory:")) as s:
         s.add_all([_log(notional=800.0, key="a"), _log(notional=800.0, key="b")])
-        s.add(DisarmEvent(created_at=datetime(2026, 7, 8, 10, 0), reason="cockpit"))
+        s.add(DisarmEvent(created_at=datetime(2026, 7, 8, 10, 0, tzinfo=UTC), reason="cockpit"))
         s.commit()
         rows = run_breach_scan(s, settings=s_, day_from=date(2026, 7, 8),
                                day_to=date(2026, 7, 8), now=_NOW)
@@ -176,7 +176,7 @@ def test_breach_row_narrates_the_actual_breach(monkeypatch):
     s_ = _settings(monkeypatch, audit_enabled=False, max_notional=1000.0)
     with Session(get_engine("sqlite:///:memory:")) as s:
         s.add_all([_log(notional=800.0, key="a"), _log(notional=800.0, key="b")])
-        s.add(DisarmEvent(created_at=datetime(2026, 7, 8, 10, 0),
+        s.add(DisarmEvent(created_at=datetime(2026, 7, 8, 10, 0, tzinfo=UTC),
                           reason="cockpit kill switch", orders_cancelled=3))
         s.commit()
         rows = run_breach_scan(s, settings=s_, day_from=date(2026, 7, 8),
@@ -226,7 +226,7 @@ def test_guardrail_breach_scan_is_a_no_op_on_an_empty_book(monkeypatch):
 def test_weekend_disarm_is_recorded_by_mondays_scan(monkeypatch):
     s_ = _settings(monkeypatch, audit_enabled=False)
     with Session(get_engine("sqlite:///:memory:")) as s:
-        s.add(DisarmEvent(created_at=datetime(2026, 7, 11, 18, 30), reason="weekend kill"))
+        s.add(DisarmEvent(created_at=datetime(2026, 7, 11, 18, 30, tzinfo=UTC), reason="weekend kill"))
         s.commit()
         day_from, day_to = _breach_scan_window(date(2026, 7, 13))  # Monday's run
         rows = run_breach_scan(s, settings=s_, day_from=day_from, day_to=day_to, now=_NOW)

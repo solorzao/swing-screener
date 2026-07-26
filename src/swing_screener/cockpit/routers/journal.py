@@ -48,8 +48,6 @@ from swing_screener.journal.curve import drawdown_series, max_drawdown
 from swing_screener.journal.discipline import discipline_report
 from swing_screener.journal.excursions import excursion_summary
 from swing_screener.journal.mistakes import mistake_cost
-from swing_screener.pipeline.arms import BASELINE
-from swing_screener.pipeline.variants import DEFAULT_VARIANT
 from swing_screener.journal.record import (
     TradeRecord,
     manual_equity_records,
@@ -57,6 +55,8 @@ from swing_screener.journal.record import (
     trade_records,
 )
 from swing_screener.journal.repo import add_note, add_tag, notes_for_day, tag_trade
+from swing_screener.pipeline.arms import BASELINE
+from swing_screener.pipeline.variants import DEFAULT_VARIANT
 
 # The note's slot in the trading day / the tag vocabulary partition -- constrained at
 # the wire so a bad value is FastAPI's 422, never a stored junk string.
@@ -327,7 +327,7 @@ def _parse_month(month: str | None) -> date | None:
     if month is None:
         return None
     try:
-        return datetime.strptime(month, "%Y-%m").date()
+        return datetime.strptime(month, "%Y-%m").replace(tzinfo=UTC).date()
     except ValueError as exc:
         raise HTTPException(
             status_code=422, detail="month must be YYYY-MM") from exc

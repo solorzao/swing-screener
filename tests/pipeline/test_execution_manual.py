@@ -30,13 +30,13 @@ NO_LIMITS = Limits(max_daily_notional=None, max_daily_loss=None, max_concurrent=
 
 
 def _intent(**over: object) -> OrderIntent:
-    base: dict[str, object] = dict(
-        ticker="AMD", timeframe="1d", play_type="continuation",
-        entry_floor=99.0, entry_ceiling=101.0, stop=95.0, target=110.0,
-        conviction="high", shares=10, risk_dollars=60.0,
-        edge_played="e", key_risk="", insight="i",
-        side="long", limit_price=101.0,
-    )
+    base: dict[str, object] = {
+        "ticker": "AMD", "timeframe": "1d", "play_type": "continuation",
+        "entry_floor": 99.0, "entry_ceiling": 101.0, "stop": 95.0, "target": 110.0,
+        "conviction": "high", "shares": 10, "risk_dollars": 60.0,
+        "edge_played": "e", "key_risk": "", "insight": "i",
+        "side": "long", "limit_price": 101.0,
+    }
     base.update(over)
     return OrderIntent(**base)  # type: ignore[arg-type]
 

@@ -13,7 +13,7 @@ import json
 import os
 import tempfile
 from dataclasses import asdict, dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 
@@ -85,7 +85,7 @@ def decide_experiment(
     decided = dataclasses.replace(
         row,
         status="retired",
-        decided_at=(today or date.today()).isoformat(),
+        decided_at=(today or datetime.now(UTC).date()).isoformat(),
         decision=decision,
     )
     save_experiments(

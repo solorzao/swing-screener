@@ -393,7 +393,7 @@ def test_run_reflection_without_drafter_writes_no_proposed_file(tmp_path):
 # main -- thin glue smoke (no network, no real LLM)
 # =====================================================================================
 def test_main_smoke(monkeypatch, tmp_path):
-    import swing_screener.pipeline.reflect as reflect
+    from swing_screener.pipeline import reflect
 
     edge_dir = _seed_edge_dir(tmp_path)
     captured: dict = {}
@@ -515,7 +515,7 @@ def test_main_as_of_loads_pinned_cache_only_and_threads_corpus_id(
     pin is threaded through to run_reflection as corpus_id."""
     import logging
 
-    import swing_screener.pipeline.reflect as reflect
+    from swing_screener.pipeline import reflect
 
     cache = tmp_path / ".cache"
     _write_vintage_parquet(cache, "AMD_20260601", rows=3)   # the pinned (older) vintage
@@ -561,7 +561,7 @@ def test_main_as_of_loads_pinned_cache_only_and_threads_corpus_id(
 def test_main_verdicts_only_withholds_the_drafter(monkeypatch, tmp_path: Path):
     """--verdicts-only reaches run_reflection AND main withholds the drafter outright
     (belt-and-braces on top of the in-run carve, which already skips drafting)."""
-    import swing_screener.pipeline.reflect as reflect
+    from swing_screener.pipeline import reflect
 
     edge_dir = _seed_edge_dir(tmp_path)
     engine = get_engine("sqlite:///:memory:")

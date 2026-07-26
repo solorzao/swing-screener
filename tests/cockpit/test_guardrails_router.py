@@ -46,6 +46,7 @@ from swing_screener.db.session import get_engine
 from swing_screener.pipeline import guardrails as gpipe
 from swing_screener.pipeline.broker import FakeBroker
 from tests.cockpit.conftest import (
+    _HDR,
     _broker_app,
     _db_url,
     _deny_all,
@@ -53,12 +54,10 @@ from tests.cockpit.conftest import (
     _deny_writes,
     _disarm_broker,
     _exec_log,
-    _HDR,
     _kill_sell_legs,
     _nonce_of,
     _recorded_stop_row,
 )
-
 
 STATE_KEYS = {"state", "max_daily_loss_usd", "max_trades_per_day", "max_drawdown_usd",
               "loss_streak_halt", "hwm_anchor_date", "hwm_baseline_usd", "trip_id",
@@ -99,8 +98,10 @@ def _tripped_partial_book(
 def _live_order(session: Session) -> None:
     """One live ExecutionLog on TODAY's run_date -- the max_trades_per_day input
     (``latest_run_date`` is None with no Signal rows, so the endpoint's day key
-    falls back to ``date.today()``)."""
-    session.add(_exec_log(run_date=date.today(), created_date=date.today(),
+    falls back to ``datetime.now(UTC).date()`` -- seeded with the SAME expression so
+    the row and the endpoint agree in every host timezone, not just UTC ones)."""
+    today = datetime.now(UTC).date()
+    session.add(_exec_log(run_date=today, created_date=today,
                           account="live", mode="live", status="submitted_live"))
     session.commit()
 

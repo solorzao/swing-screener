@@ -89,11 +89,11 @@ def test_file_sqlite_creates_tables_without_static_pool(monkeypatch):
     assert rec_create_all.calls == 1
 
 
-import struct  # noqa: E402
-import sys  # noqa: E402
-import types  # noqa: E402
+import struct
+import sys
+import types
 
-from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy import create_engine
 
 
 def test_token_attrs_packs_utf16_length_prefixed():
@@ -136,7 +136,7 @@ def test_without_env_token_uses_default_azure_credential(monkeypatch):
     assert engine.dialect.dispatch.do_connect
 
 
-from swing_screener.db.session import _best_sql_server_driver, _resolve_driver  # noqa: E402
+from swing_screener.db.session import _best_sql_server_driver, _resolve_driver
 
 
 def test_best_driver_picks_highest_numbered():

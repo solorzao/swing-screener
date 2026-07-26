@@ -14,14 +14,13 @@ from swing_screener.db.models import (
     PaperTrade,
     Trade,
 )
-from swing_screener.settings import _EXECUTION_MODES
 from swing_screener.pipeline.broker import BrokerOrderSpec, FakeBroker
+from swing_screener.settings import _EXECUTION_MODES
 from tests.cockpit.conftest import (
     _exec_log,
     _positions_client,
     _signal_row,
 )
-
 
 # ---- trade READ endpoints: GET /api/positions + GET /api/trade-defaults ----
 
@@ -40,11 +39,11 @@ CLOSED_KEYS = {"trade_id", "ticker", "entry_date", "exit_date", "entry_price",
 
 def _live_paper(**over: object) -> PaperTrade:
     """An OPEN account='live' PaperTrade shaped like reconcile's materialized fill."""
-    row: dict[str, object] = dict(
-        ticker="LIV", timeframe="1d", horizon="", signal_score=0.0, rank=0,
-        account="live", play_type="continuation", fill_status="filled",
-        entry_price=50.0, stop=45.0, target=60.0, risk=5.0, status="open",
-    )
+    row: dict[str, object] = {
+        "ticker": "LIV", "timeframe": "1d", "horizon": "", "signal_score": 0.0, "rank": 0,
+        "account": "live", "play_type": "continuation", "fill_status": "filled",
+        "entry_price": 50.0, "stop": 45.0, "target": 60.0, "risk": 5.0, "status": "open",
+    }
     row.update(over)
     return PaperTrade(**row)
 

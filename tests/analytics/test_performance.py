@@ -327,7 +327,7 @@ def _arm_pair(ticker: str, ts_day: int, base_r: float, arm_r: float) -> list[Pap
     """A closed baseline/be_1r twin sharing one fill identity, for paired-delta tests."""
     from datetime import datetime
 
-    ts = datetime(2026, 6, ts_day)
+    ts = datetime(2026, 6, ts_day)  # noqa: DTZ001 -- naive in-memory trigger_ts fixture
     a = _pt(realized_r=base_r, opened_date=date(2026, 6, ts_day))
     a.ticker, a.arm, a.trigger_ts = ticker, "baseline", ts
     b = _pt(realized_r=arm_r, opened_date=date(2026, 6, ts_day))
@@ -344,11 +344,11 @@ def test_paired_arm_delta_pairs_on_fill_identity():
               + _arm_pair("BBB", 3, 0.5, 0.5))
     # an UNPAIRED arm row (no baseline twin) and a pair with an open leg must be skipped
     lone = _pt(realized_r=2.0)
-    lone.ticker, lone.arm, lone.trigger_ts = "CCC", "be_1r", datetime(2026, 6, 4)
+    lone.ticker, lone.arm, lone.trigger_ts = "CCC", "be_1r", datetime(2026, 6, 4)  # noqa: DTZ001 -- naive in-memory trigger_ts fixture
     open_base = _pt(status="open", realized_r=None)
-    open_base.ticker, open_base.arm, open_base.trigger_ts = "DDD", "baseline", datetime(2026, 6, 5)
+    open_base.ticker, open_base.arm, open_base.trigger_ts = "DDD", "baseline", datetime(2026, 6, 5)  # noqa: DTZ001 -- naive in-memory trigger_ts fixture
     open_arm = _pt(realized_r=1.0)
-    open_arm.ticker, open_arm.arm, open_arm.trigger_ts = "DDD", "be_1r", datetime(2026, 6, 5)
+    open_arm.ticker, open_arm.arm, open_arm.trigger_ts = "DDD", "be_1r", datetime(2026, 6, 5)  # noqa: DTZ001 -- naive in-memory trigger_ts fixture
 
     d = paired_arm_delta(trades + [lone, open_base, open_arm], "be_1r")
     assert d.n_pairs == 3

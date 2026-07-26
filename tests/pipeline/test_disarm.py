@@ -24,9 +24,9 @@ from swing_screener.pipeline.broker import BrokerOrder, BrokerOrderSpec, FakeBro
 
 
 def _spec(key: str, symbol: str, **overrides: object) -> BrokerOrderSpec:
-    base: dict[str, object] = dict(client_order_id=key, symbol=symbol, side="buy",
-                                   qty=10, order_type="limit", limit_price=100.0,
-                                   time_in_force="day")
+    base: dict[str, object] = {"client_order_id": key, "symbol": symbol, "side": "buy",
+                                   "qty": 10, "order_type": "limit", "limit_price": 100.0,
+                                   "time_in_force": "day"}
     base.update(overrides)
     return BrokerOrderSpec(**base)  # type: ignore[arg-type]
 
@@ -59,13 +59,13 @@ def _kill_legs(broker: FakeBroker) -> None:
 
 def _log_fields(*, ticker: str = "NVDA", stop: float = 95.0,
                 **overrides: object) -> dict[str, object]:
-    base: dict[str, object] = dict(
-        created_date=date(2026, 7, 3), ticker=ticker, timeframe="1d",
-        play_type="continuation", run_date=date(2026, 7, 3), account="live",
-        mode="alpaca", side="buy", limit_price=100.0, shares=8, stop=stop,
-        target=110.0, risk_dollars=40.0, notional=800.0, status="submitted_live",
-        detail="live order",
-        idempotency_key=f"{ticker}|{stop}|test")
+    base: dict[str, object] = {
+        "created_date": date(2026, 7, 3), "ticker": ticker, "timeframe": "1d",
+        "play_type": "continuation", "run_date": date(2026, 7, 3), "account": "live",
+        "mode": "alpaca", "side": "buy", "limit_price": 100.0, "shares": 8, "stop": stop,
+        "target": 110.0, "risk_dollars": 40.0, "notional": 800.0, "status": "submitted_live",
+        "detail": "live order",
+        "idempotency_key": f"{ticker}|{stop}|test"}
     base.update(overrides)
     return base
 

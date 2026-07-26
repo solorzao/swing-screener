@@ -1,7 +1,7 @@
 """Analyst router (split from test_api.py): /api/analyst calibration,
 freshness, and spend windows."""
 
-from datetime import date, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -16,12 +16,11 @@ from swing_screener.db.repo import (
     analyst_call_freshness,
 )
 from tests.cockpit.conftest import (
+    _RUN_D,
     _client,
     _client_and_engine,
     _grade_call,
-    _RUN_D,
 )
-
 
 ANALYST_KEYS = {"play_types", "spend", "today", "r_basis"}
 ANALYST_PT_KEYS = {"play_type", "calibration", "nudge", "freshness", "progress"}
@@ -89,7 +88,7 @@ def test_unfilled_fraction_three_way(tmp_path: Path) -> None:
     filled; unscored forever). Boundary pinned on the pure helper: on the exact
     window-end day a trade can still open, so the call is pending; one day past
     it is expired."""
-    today = date.today()
+    today = datetime.now(UTC).date()
     client, engine = _client_and_engine(tmp_path)
     with Session(engine) as s:
         s.add(_grade_call("SCR", run_date=today - timedelta(days=20),
@@ -125,7 +124,7 @@ def test_analyst_spend_windows_and_undercount(tmp_path: Path) -> None:
     power-of-two costs so any misassignment changes a sum uniquely), the same
     treatment the freshness split's boundary got. A 40-day-old row is outside
     every window."""
-    today = date.today()
+    today = datetime.now(UTC).date()
     client, engine = _client_and_engine(tmp_path)
 
     def _costed(ticker: str, days_ago: int, cost: float | None) -> AnalystCall:

@@ -11,16 +11,15 @@ setup -- the earliest of the consecutive runs it has been firing -- so the surfa
 age out repeats. Both are nullable; existing rows backfill to NULL (treated as fresh).
 """
 from collections.abc import Sequence
-from typing import Union
 
 import sqlalchemy as sa
 
 from alembic import op
 
 revision: str = "e9c7b3a15d24"
-down_revision: Union[str, Sequence[str], None] = "f7a1c2d4e5b8"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "f7a1c2d4e5b8"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

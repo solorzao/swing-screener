@@ -303,8 +303,8 @@ def main() -> None:
         log.error("no data to replay (looked in %s/1d)", args.cache_dir)
         return
     board = replay(frames, timeframe="1d")
-    print(corpus_stamp(args.cache_dir, tickers, args.as_of))  # noqa: T201 -- CLI output
-    print(format_leaderboard(board))  # noqa: T201 -- CLI output is the point
+    print(corpus_stamp(args.cache_dir, tickers, args.as_of))
+    print(format_leaderboard(board))
 
 
 if __name__ == "__main__":

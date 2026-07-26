@@ -23,7 +23,7 @@ touching the venue.
 import argparse
 import logging
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
@@ -169,9 +169,9 @@ def ensure_stop_protection(
                          "nothing to do", pos.symbol, client_order_id)
                 continue
             unprotected.append(pos.symbol)
-            log.error("UNPROTECTED position %s x%d: the protective stop re-submit "
-                      "failed (%s) -- protect it manually NOW", pos.symbol, pos.qty,
-                      broker_error_detail(e), exc_info=True)
+            log.exception("UNPROTECTED position %s x%d: the protective stop re-submit "
+                          "failed (%s) -- protect it manually NOW", pos.symbol, pos.qty,
+                          broker_error_detail(e))
             continue
         restored.append(pos.symbol)
         log.info("re-submitted protective stop: %s x%d @ %.2f (level copied from the "
@@ -208,8 +208,8 @@ def _recorded_stop_lookup(settings: Settings) -> Callable[[str], float | None]:
     try:
         engine = get_engine(settings.db_url)
     except Exception:
-        log.error("DB unreachable (%s): dead stop legs cannot be restored from the "
-                  "ExecutionLog tickets", settings.db_url, exc_info=True)
+        log.exception("DB unreachable (%s): dead stop legs cannot be restored from the "
+                  "ExecutionLog tickets", settings.db_url)
         return lambda symbol: None
 
     def lookup(symbol: str) -> float | None:
@@ -245,7 +245,7 @@ def main() -> None:
     if positions:
         restored, unprotected = ensure_stop_protection(
             broker, _recorded_stop_lookup(settings),
-            key_suffix=datetime.now().strftime("%Y%m%d%H%M%S"), dry_run=args.dry_run)
+            key_suffix=datetime.now(UTC).strftime("%Y%m%d%H%M%S"), dry_run=args.dry_run)
     for pos in positions:
         log.info("OPEN POSITION (not auto-closed): %s x%d @ %.2f",
                  pos.symbol, pos.qty, pos.avg_entry_price)

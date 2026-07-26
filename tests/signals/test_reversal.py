@@ -316,12 +316,12 @@ def test_reversal_pullback_entry_gives_sane_rr():
 
 
 def _rev_ctx(**over):
-    base = dict(
-        trigger_ts=pd.Timestamp("2026-06-15"), trigger_close=110.0, atr=2.0,
-        reversal_low=100.0, bounce_high=110.0, rsi=42.0, min_rsi=22.0,
-        strength=CONFIRMED, body_frac=0.5, shaved_bottom=True, red_run=4, decline_bars=6,
-        volume_ratio=1.5, ema_slow=108.0, decline_high=118.0,
-    )
+    base = {
+        "trigger_ts": pd.Timestamp("2026-06-15"), "trigger_close": 110.0, "atr": 2.0,
+        "reversal_low": 100.0, "bounce_high": 110.0, "rsi": 42.0, "min_rsi": 22.0,
+        "strength": CONFIRMED, "body_frac": 0.5, "shaved_bottom": True, "red_run": 4, "decline_bars": 6,
+        "volume_ratio": 1.5, "ema_slow": 108.0, "decline_high": 118.0,
+    }
     base.update(over)
     return ReversalContext(**base)
 
@@ -352,8 +352,8 @@ def test_reversal_risk_is_anchored_on_the_ceiling():
 
 
 def _score_inputs(**over):
-    base = dict(body_frac=0.4, shaved_bottom=False, red_run=3, decline_bars=6,
-                volume_ratio=1.0, confirmed=False, min_rsi=20.0, rsi_floor=25.0)
+    base = {"body_frac": 0.4, "shaved_bottom": False, "red_run": 3, "decline_bars": 6,
+                "volume_ratio": 1.0, "confirmed": False, "min_rsi": 20.0, "rsi_floor": 25.0}
     base.update(over)
     return ReversalScoreInputs(**base)
 

@@ -1,3 +1,4 @@
+# ruff: noqa: DTZ001 -- naive datetime fixtures matching the naive DateTime columns SQLite stores (aware values would break round-trip equality)
 from datetime import date
 
 import pytest
@@ -106,9 +107,10 @@ def test_open_paper_trades_and_record_exit():
 
 def test_list_universe_orders_and_filters_by_ticker():
     from sqlalchemy.orm import Session
+
+    from swing_screener.db import repo
     from swing_screener.db.models import Universe
     from swing_screener.db.session import get_engine
-    from swing_screener.db import repo
     engine = get_engine("sqlite:///:memory:")
     with Session(engine) as s:
         s.add_all([Universe(ticker="NVDA", name="Nvidia"),
@@ -138,10 +140,11 @@ def test_list_universe_escapes_like_wildcards():
 
 def test_sync_universe_mirrors_seed_and_preserves_metrics():
     from sqlalchemy.orm import Session
+
     from swing_screener.data.universe import UniverseEntry
+    from swing_screener.db import repo
     from swing_screener.db.models import Universe
     from swing_screener.db.session import get_engine
-    from swing_screener.db import repo
     engine = get_engine("sqlite:///:memory:")
     with Session(engine) as s:
         s.add_all([
@@ -165,9 +168,10 @@ def test_sync_universe_mirrors_seed_and_preserves_metrics():
 
 def test_apply_universe_metrics_skips_none_and_unknown():
     from sqlalchemy.orm import Session
+
+    from swing_screener.db import repo
     from swing_screener.db.models import Universe
     from swing_screener.db.session import get_engine
-    from swing_screener.db import repo
     engine = get_engine("sqlite:///:memory:")
     with Session(engine) as s:
         s.add(Universe(ticker="A", name="A", exchange="NYSE", market_cap=1.0,
@@ -185,10 +189,12 @@ def test_apply_universe_metrics_skips_none_and_unknown():
 
 def test_list_email_log_newest_first():
     from datetime import datetime
+
     from sqlalchemy.orm import Session
+
+    from swing_screener.db import repo
     from swing_screener.db.models import EmailLog
     from swing_screener.db.session import get_engine
-    from swing_screener.db import repo
     engine = get_engine("sqlite:///:memory:")
     with Session(engine) as s:
         s.add_all([EmailLog(sent_at=datetime(2026, 1, 1), kind="daily", subject="old"),
@@ -315,10 +321,10 @@ def test_requeue_stale_running():
 
 
 def _save_funnel(s: Session, run_date: date, **overrides: object) -> None:
-    kwargs: dict[str, object] = dict(
-        detected=31, confirmed=12, fresh=9, actionable=7, surfaced=5,
-        overflow_tickers="CRM,WDAY", pool_n=20, confirmed_only=True,
-        premium_only=False, already_ran_checked=True)
+    kwargs: dict[str, object] = {
+        "detected": 31, "confirmed": 12, "fresh": 9, "actionable": 7, "surfaced": 5,
+        "overflow_tickers": "CRM,WDAY", "pool_n": 20, "confirmed_only": True,
+        "premium_only": False, "already_ran_checked": True}
     kwargs.update(overrides)
     repo.save_reversal_funnel(s, run_date=run_date, **kwargs)  # type: ignore[arg-type]
 

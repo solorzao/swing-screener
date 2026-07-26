@@ -113,10 +113,10 @@ def draft_audit(
     always matches the model actually called (a default here duplicated that constant --
     a stamp/call mismatch hazard flagged by the 2026-07-17 audit)."""
     try:
-        from swing_screener.notify.analysis import _capture_usage  # noqa: PLC0415
+        from swing_screener.notify.analysis import _capture_usage
 
         if client is None:
-            import anthropic  # noqa: PLC0415
+            import anthropic
 
             client = anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
         resp = client.messages.create(
@@ -134,6 +134,6 @@ def draft_audit(
         if not text.strip():
             raise ValueError("empty model response")
         return DraftResult(text=text.strip(), usage=_capture_usage(resp, model))
-    except Exception:  # noqa: BLE001 -- any failure degrades; the audit never blocks on the LLM
+    except Exception:
         log.warning("audit authoring failed; using deterministic template", exc_info=True)
         return DraftResult(text=template_audit(findings), usage=None)

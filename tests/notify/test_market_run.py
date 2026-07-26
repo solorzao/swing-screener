@@ -1,4 +1,5 @@
 from dataclasses import replace
+from typing import ClassVar
 
 import numpy as np
 import pandas as pd
@@ -50,7 +51,7 @@ class _FakeClient:
                 self.citations = []
 
         class _Resp:
-            content = [_Block()]
+            content: ClassVar = [_Block()]
 
         _Resp.usage = self._usage
 
@@ -179,9 +180,9 @@ def test_run_market_report_is_idempotent_per_run_date(tmp_path):
     (observed in prod: two identical MarketReport rows + two emails for 2026-06-26)."""
     sent: list[dict] = []
     db = f"sqlite:///{tmp_path / 'm.db'}"
-    kwargs = dict(db_url=db, to="me@example.com", fetch=_fake_fetch({"SPY": _rising()}),
-                  smtp_send=lambda **kw: sent.append(kw), migrate_fn=lambda _u: None,
-                  cfg=replace(CFG, market_report_enabled=False))
+    kwargs = {"db_url": db, "to": "me@example.com", "fetch": _fake_fetch({"SPY": _rising()}),
+                  "smtp_send": lambda **kw: sent.append(kw), "migrate_fn": lambda _u: None,
+                  "cfg": replace(CFG, market_report_enabled=False)}
     first = run_market_report(**kwargs)
     assert first is not None and len(sent) == 1
     second = run_market_report(**kwargs)  # same data -> same as_of -> a no-op

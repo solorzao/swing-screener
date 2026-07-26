@@ -46,7 +46,7 @@ module-import surface).
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from types import ModuleType
 
@@ -353,7 +353,7 @@ def run_exit_check(*, db_url: str, today: date | None = None,
     resolve ONCE per job and the hourly alert paths are injectable); either one
     missing -> each alert phase resolves lazily on its own, as before.
     """
-    today = today or date.today()
+    today = today or datetime.now(UTC).date()
     cfg = StrategyConfig()
     engine = get_engine(db_url)
 

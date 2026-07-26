@@ -3,10 +3,10 @@ test_api.py monolith): the app/client builders, seeded-row factories, the
 read-only-grant listeners, and closed wire-shape sets used across the per-router
 test files."""
 
+import itertools
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date, datetime
-import itertools
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +35,6 @@ from swing_screener.pipeline.proposed import (
     store_filename,
 )
 from swing_screener.pipeline.registry import Experiment
-
 
 STAT_KEYS = {"value", "n", "n_clusters", "ci_low", "ci_high", "cost_level",
              "corpus_id", "facet", "unit", "thin_clusters"}
@@ -195,11 +194,11 @@ def _trade_body(**over: object) -> dict[str, object]:
 
 def _signal_row(**over: object) -> Signal:
     """A prefill-source Signal: zone [96, 101], stop 95 (zone-R risk = 6), target 110."""
-    row: dict[str, object] = dict(
-        run_date=date(2026, 7, 10), ticker="AMD", timeframe="1d", horizon="medium",
-        score=0.9, rank=1, trigger_close=100.0, atr=4.0, rsi=55.0,
-        entry_floor=96.0, entry_ceiling=101.0, stop=95.0, target=110.0,
-    )
+    row: dict[str, object] = {
+        "run_date": date(2026, 7, 10), "ticker": "AMD", "timeframe": "1d", "horizon": "medium",
+        "score": 0.9, "rank": 1, "trigger_close": 100.0, "atr": 4.0, "rsi": 55.0,
+        "entry_floor": 96.0, "entry_ceiling": 101.0, "stop": 95.0, "target": 110.0,
+    }
     row.update(over)
     return Signal(**row)
 
@@ -231,21 +230,22 @@ def _positions_client(
 
 def _exec_log(**over: object) -> ExecutionLog:
     """One ExecutionLog row; idempotency_key auto-uniqued so seeds never collide."""
-    row: dict[str, object] = dict(
-        created_date=date(2026, 7, 8), ticker="AMD", timeframe="1d",
-        play_type="continuation", run_date=date(2026, 7, 8), account="manual",
-        mode="manual", side="buy", limit_price=100.0, shares=10, stop=95.0,
-        target=110.0, risk_dollars=50.0, notional=1000.0, status="recorded",
-        detail="seeded", idempotency_key=f"seed-{next(_IDEM)}",
-    )
+    row: dict[str, object] = {
+        "created_date": date(2026, 7, 8), "ticker": "AMD", "timeframe": "1d",
+        "play_type": "continuation", "run_date": date(2026, 7, 8), "account": "manual",
+        "mode": "manual", "side": "buy", "limit_price": 100.0, "shares": 10, "stop": 95.0,
+        "target": 110.0, "risk_dollars": 50.0, "notional": 1000.0, "status": "recorded",
+        "detail": "seeded", "idempotency_key": f"seed-{next(_IDEM)}",
+    }
     row.update(over)
     return ExecutionLog(**row)
 
 
 def _analysis_row(**over: object) -> AnalysisRequest:
     """One queue row; datetimes are NAIVE, exactly as sqlite/mssql hand them back."""
-    row: dict[str, object] = dict(
-        ticker="AMD", requested_at=datetime(2026, 7, 10, 12, 0), status="queued")
+    row: dict[str, object] = {
+        "ticker": "AMD", "requested_at": datetime(2026, 7, 10, 12, 0),  # noqa: DTZ001 -- naive, mirrors sqlite/mssql
+        "status": "queued"}
     row.update(over)
     return AnalysisRequest(**row)
 

@@ -111,6 +111,6 @@ def test_settings_is_frozen(monkeypatch):
     raised = False
     try:
         s.db_url = "x"  # type: ignore[misc]
-    except Exception:
+    except Exception:  # noqa: BLE001 -- asserting any error on frozen-model mutation
         raised = True
     assert raised

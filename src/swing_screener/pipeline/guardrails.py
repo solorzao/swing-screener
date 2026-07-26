@@ -259,8 +259,8 @@ def _record_outcome_guarded(
             session, trip_id=trip_id, outcome=outcome, detail=detail, source=source,
             unprotected=unprotected)
     except Exception:  # noqa: BLE001 -- bookkeeping must never outrank the caller
-        log.error("failed to record sweep outcome for trip %d (%s) -- sweep_state "
-                  "stays re-runnable", trip_id, outcome, exc_info=True)
+        log.exception("failed to record sweep outcome for trip %d (%s) -- sweep_state "
+                      "stays re-runnable", trip_id, outcome)
         try:
             session.rollback()
         except Exception:  # noqa: BLE001 -- a dead session must not break the protocol
@@ -307,8 +307,8 @@ def _run_sweep(
     except Exception as e:  # noqa: BLE001 -- a venue boundary: record 'partial', never raise
         # Leak posture: the recorded detail reaches the cockpit (guardrail events
         # render there) -- class name only; the traceback goes to the LOG.
-        log.error("guardrail sweep for trip %d failed -- sweep_state stays "
-                  "re-runnable ('partial')", trip_id, exc_info=True)
+        log.exception("guardrail sweep for trip %d failed -- sweep_state stays "
+                      "re-runnable ('partial')", trip_id)
         outcome = "partial"
         detail = broker_error_detail(e)
         # The exception may have landed anywhere inside the sweep, so what IS

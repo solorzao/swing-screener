@@ -11,16 +11,15 @@ answerable offline from the accrued book instead of each burning weeks as a new 
 Nullable (NULL = legacy row); not indexed, matching the other stepper-state columns.
 """
 from collections.abc import Sequence
-from typing import Union
 
 import sqlalchemy as sa
 
 from alembic import op
 
 revision: str = "c8f3a6d1e9b4"
-down_revision: Union[str, Sequence[str], None] = "b6e2d9f4a1c7"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "b6e2d9f4a1c7"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

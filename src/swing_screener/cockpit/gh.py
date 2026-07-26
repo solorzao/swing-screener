@@ -83,7 +83,7 @@ def open_research_prs() -> list[dict[str, str]]:
 
 def _fetch_open_prs(repo: str, token: str) -> list[dict[str, str]]:
     url = f"https://api.github.com/repos/{repo}/pulls?state=open&per_page=100"
-    req = Request(  # noqa: S310 -- fixed https host, path from config, never user input
+    req = Request(
         url,
         headers={
             "Authorization": f"Bearer {token}",
@@ -92,7 +92,7 @@ def _fetch_open_prs(repo: str, token: str) -> list[dict[str, str]]:
         },
     )
     try:
-        with urlopen(req, timeout=10) as resp:  # noqa: S310
+        with urlopen(req, timeout=10) as resp:
             payload = json.load(resp)
         rows: list[dict[str, str]] = []
         for pr in payload:
@@ -103,14 +103,14 @@ def _fetch_open_prs(repo: str, token: str) -> list[dict[str, str]]:
                                  "url": str(pr["html_url"]), "kind": kind})
                     break
         return rows
-    except Exception:  # the module invariant: degrade to [], never crash the strip
+    except Exception:  # noqa: BLE001 -- best-effort: degrade to [], never crash the strip
         return []
 
 
 def _fetch(repo: str, workflow: str, token: str) -> tuple[datetime, str] | None:
     url = (f"https://api.github.com/repos/{repo}/actions/workflows/{workflow}/runs"
            "?per_page=1&status=completed")
-    req = Request(  # noqa: S310 -- fixed https host, path from config, never user input
+    req = Request(
         url,
         headers={
             "Authorization": f"Bearer {token}",
@@ -119,12 +119,12 @@ def _fetch(repo: str, workflow: str, token: str) -> tuple[datetime, str] | None:
         },
     )
     try:
-        with urlopen(req, timeout=10) as resp:  # noqa: S310
+        with urlopen(req, timeout=10) as resp:
             payload = json.load(resp)
         run = payload["workflow_runs"][0]
         completed = datetime.fromisoformat(run["updated_at"])
         if completed.tzinfo is None:  # defensive: the API always sends Z, but still
             completed = completed.replace(tzinfo=UTC)
         return completed, str(run["conclusion"] or "unknown")
-    except Exception:  # the module invariant: degrade to None, never crash the rail
+    except Exception:  # noqa: BLE001 -- best-effort: degrade to None, never crash the rail
         return None

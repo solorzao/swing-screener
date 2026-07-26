@@ -87,9 +87,9 @@ def test_process_pending_completes_and_emails(settings, _patch_fetch, _patch_ana
     sender = _FakeSender()
     with Session(engine) as s:
         req = repo.create_analysis_request(
-            s, ticker="AAPL", requested_at=datetime(2026, 6, 16, 9, 0))
+            s, ticker="AAPL", requested_at=datetime(2026, 6, 16, 9, 0))  # noqa: DTZ001 -- naive test fixture
         n = ondemand.process_pending(
-            s, settings=settings, now=datetime(2026, 6, 16, 12, 0),
+            s, settings=settings, now=datetime(2026, 6, 16, 12, 0),  # noqa: DTZ001 -- naive test fixture
             today=date(2026, 6, 16), sender=sender)
         assert n == 1
         done = repo.get_analysis_request(s, req.id)
@@ -110,9 +110,9 @@ def test_process_pending_persists_est_cost(settings, _patch_fetch, _patch_analyz
     engine = get_engine(settings.db_url)
     with Session(engine) as s:
         req = repo.create_analysis_request(
-            s, ticker="AAPL", requested_at=datetime(2026, 6, 16, 9, 0))
+            s, ticker="AAPL", requested_at=datetime(2026, 6, 16, 9, 0))  # noqa: DTZ001 -- naive test fixture
         ondemand.process_pending(
-            s, settings=settings, now=datetime(2026, 6, 16, 12, 0),
+            s, settings=settings, now=datetime(2026, 6, 16, 12, 0),  # noqa: DTZ001 -- naive test fixture
             today=date(2026, 6, 16), sender=_FakeSender())
         done = repo.get_analysis_request(s, req.id)
         assert done.status == "done"
@@ -130,9 +130,9 @@ def test_process_pending_est_cost_null_on_fallback(settings, _patch_fetch, monke
     engine = get_engine(settings.db_url)
     with Session(engine) as s:
         req = repo.create_analysis_request(
-            s, ticker="AAPL", requested_at=datetime(2026, 6, 16, 9, 0))
+            s, ticker="AAPL", requested_at=datetime(2026, 6, 16, 9, 0))  # noqa: DTZ001 -- naive test fixture
         ondemand.process_pending(
-            s, settings=settings, now=datetime(2026, 6, 16, 12, 0),
+            s, settings=settings, now=datetime(2026, 6, 16, 12, 0),  # noqa: DTZ001 -- naive test fixture
             today=date(2026, 6, 16), sender=_FakeSender())
         done = repo.get_analysis_request(s, req.id)
         assert done.status == "done"
@@ -144,13 +144,13 @@ def test_process_pending_is_idempotent(settings, _patch_fetch, _patch_analyze):
     sender = _FakeSender()
     with Session(engine) as s:
         repo.create_analysis_request(
-            s, ticker="AAPL", requested_at=datetime(2026, 6, 16, 9, 0))
+            s, ticker="AAPL", requested_at=datetime(2026, 6, 16, 9, 0))  # noqa: DTZ001 -- naive test fixture
         ondemand.process_pending(
-            s, settings=settings, now=datetime(2026, 6, 16, 12, 0),
+            s, settings=settings, now=datetime(2026, 6, 16, 12, 0),  # noqa: DTZ001 -- naive test fixture
             today=date(2026, 6, 16), sender=sender)
         # second pass: no queued rows remain, so nothing processed and no new email
         n2 = ondemand.process_pending(
-            s, settings=settings, now=datetime(2026, 6, 16, 13, 0),
+            s, settings=settings, now=datetime(2026, 6, 16, 13, 0),  # noqa: DTZ001 -- naive test fixture
             today=date(2026, 6, 16), sender=sender)
     assert n2 == 0
     assert len(sender.calls) == 1  # still exactly one email
@@ -165,10 +165,10 @@ def test_process_one_isolates_failure(settings, monkeypatch):
     sender = _FakeSender()
     with Session(engine) as s:
         req = repo.create_analysis_request(
-            s, ticker="AAPL", requested_at=datetime(2026, 6, 16, 9, 0))
+            s, ticker="AAPL", requested_at=datetime(2026, 6, 16, 9, 0))  # noqa: DTZ001 -- naive test fixture
         # never raises, despite the fetch blowing up
         n = ondemand.process_pending(
-            s, settings=settings, now=datetime(2026, 6, 16, 12, 0),
+            s, settings=settings, now=datetime(2026, 6, 16, 12, 0),  # noqa: DTZ001 -- naive test fixture
             today=date(2026, 6, 16), sender=sender)
         assert n == 1
         failed = repo.get_analysis_request(s, req.id)
@@ -188,9 +188,9 @@ def test_process_one_no_data_fails_cleanly(settings, monkeypatch):
     sender = _FakeSender()
     with Session(engine) as s:
         req = repo.create_analysis_request(
-            s, ticker="ZZZ", requested_at=datetime(2026, 6, 16, 9, 0))
+            s, ticker="ZZZ", requested_at=datetime(2026, 6, 16, 9, 0))  # noqa: DTZ001 -- naive test fixture
         ondemand.process_pending(
-            s, settings=settings, now=datetime(2026, 6, 16, 12, 0),
+            s, settings=settings, now=datetime(2026, 6, 16, 12, 0),  # noqa: DTZ001 -- naive test fixture
             today=date(2026, 6, 16), sender=sender)
         failed = repo.get_analysis_request(s, req.id)
         assert failed.status == "failed"
@@ -204,15 +204,15 @@ def test_process_pending_requeues_stale_running(settings, _patch_fetch, _patch_a
     sender = _FakeSender()
     with Session(engine) as s:
         req = repo.create_analysis_request(
-            s, ticker="AAPL", requested_at=datetime(2026, 6, 16, 9, 0))
+            s, ticker="AAPL", requested_at=datetime(2026, 6, 16, 9, 0))  # noqa: DTZ001 -- naive test fixture
         # Simulate a crashed worker: row left 'running', started_at well over the
         # 30-min stale window before `now`.
         req.status = "running"
-        req.started_at = datetime(2026, 6, 16, 10, 0)
+        req.started_at = datetime(2026, 6, 16, 10, 0)  # noqa: DTZ001 -- naive test fixture
         s.commit()
 
         n = ondemand.process_pending(
-            s, settings=settings, now=datetime(2026, 6, 16, 12, 0),
+            s, settings=settings, now=datetime(2026, 6, 16, 12, 0),  # noqa: DTZ001 -- naive test fixture
             today=date(2026, 6, 16), sender=sender)
         assert n == 1  # requeued, then claimed and processed
         done = repo.get_analysis_request(s, req.id)
@@ -226,9 +226,9 @@ def test_email_logged_for_dedup(settings, _patch_fetch, _patch_analyze):
     sender = _FakeSender()
     with Session(engine) as s:
         req = repo.create_analysis_request(
-            s, ticker="AAPL", requested_at=datetime(2026, 6, 16, 9, 0))
+            s, ticker="AAPL", requested_at=datetime(2026, 6, 16, 9, 0))  # noqa: DTZ001 -- naive test fixture
         ondemand.process_pending(
-            s, settings=settings, now=datetime(2026, 6, 16, 12, 0),
+            s, settings=settings, now=datetime(2026, 6, 16, 12, 0),  # noqa: DTZ001 -- naive test fixture
             today=date(2026, 6, 16), sender=sender)
         logs = [
             e for e in repo.list_email_log(s)
@@ -245,9 +245,9 @@ def test_email_dedup_survives_a_cross_midnight_retry(settings, _patch_fetch, _pa
     sender = _FakeSender()
     with Session(engine) as s:
         req = repo.create_analysis_request(
-            s, ticker="AAPL", requested_at=datetime(2026, 6, 16, 23, 50))
+            s, ticker="AAPL", requested_at=datetime(2026, 6, 16, 23, 50))  # noqa: DTZ001 -- naive test fixture
         ondemand.process_pending(
-            s, settings=settings, now=datetime(2026, 6, 16, 23, 55),
+            s, settings=settings, now=datetime(2026, 6, 16, 23, 55),  # noqa: DTZ001 -- naive test fixture
             today=date(2026, 6, 16), sender=sender)
         assert len(sender.calls) == 1
         # Simulate the crash window: the email committed but complete_analysis_request
@@ -259,6 +259,6 @@ def test_email_dedup_survives_a_cross_midnight_retry(settings, _patch_fetch, _pa
         s.commit()
         # The retry lands after midnight.
         ondemand.process_pending(
-            s, settings=settings, now=datetime(2026, 6, 17, 0, 10),
+            s, settings=settings, now=datetime(2026, 6, 17, 0, 10),  # noqa: DTZ001 -- naive test fixture
             today=date(2026, 6, 17), sender=sender)
     assert len(sender.calls) == 1  # deduped on the request's own date, not today

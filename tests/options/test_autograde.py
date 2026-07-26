@@ -1,3 +1,6 @@
+# ruff: noqa: DTZ001 -- naive datetime fixtures: `now` args are compared against
+# naive pandas bar timestamps (autograde._last_completed_pos) and the snapshot ts
+# is a naive lab-clock value; tz-aware values raise aware/naive TypeErrors.
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -42,8 +45,8 @@ def _five_min(closes: list[float], vols: list[float], *, greens: list[bool],
     rows = []
     for c, v, green in zip(closes, vols, greens, strict=True):
         o = c - 0.2 if green else c + 0.2  # body sign, closes drive the stack
-        rows.append(dict(open=o, high=max(o, c) + 0.1, low=min(o, c) - 0.1,
-                         close=c, volume=v))
+        rows.append({"open": o, "high": max(o, c) + 0.1, "low": min(o, c) - 0.1,
+                         "close": c, "volume": v})
     return make_bars(rows, start=start, freq="5min")
 
 
@@ -63,10 +66,10 @@ def _downtrend_5m(n: int = 105) -> pd.DataFrame:
 
 
 def _snap(**kw: object) -> SimpleNamespace:
-    base: dict[str, object] = dict(
-        ts=datetime(2026, 7, 13, 10, 0), spot=152.0, call_wall=155.0,
-        put_wall=148.0, gamma_flip=151.0, regime="negative",
-    )
+    base: dict[str, object] = {
+        "ts": datetime(2026, 7, 13, 10, 0), "spot": 152.0, "call_wall": 155.0,
+        "put_wall": 148.0, "gamma_flip": 151.0, "regime": "negative",
+    }
     base.update(kw)
     return SimpleNamespace(**base)
 

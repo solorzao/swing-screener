@@ -28,6 +28,8 @@ seeded confirmed REVERSAL signal so the run builds one intent per play type).
 import json
 from datetime import date
 
+from sqlalchemy.orm import Session
+
 from swing_screener.db import guardrails_repo
 from swing_screener.db.models import Signal
 from swing_screener.db.session import get_engine
@@ -38,7 +40,6 @@ from swing_screener.pipeline.execution import OrderResult
 from swing_screener.pipeline.insight import OrderIntent
 from swing_screener.pipeline.reflect import Verdict
 from swing_screener.settings import load_settings
-from sqlalchemy.orm import Session
 
 RUN = date(2026, 6, 15)
 
