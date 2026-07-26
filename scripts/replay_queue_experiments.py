@@ -11,6 +11,16 @@
                the flip bar itself).
   V_thrust  -- the volume-thrust denominator A/B on the cont_volband combo (the legacy
                baseline window includes the pullback's own dried-up volume).
+  C_ceil_lo / C_ceil_hi -- queue Q6 (2026-07-25): the ceiling_atr_mult entry-economics
+               sweep, 0.15-0.65 around the 0.35 default (the default rides in C_ceil_lo
+               as the sanity anchor -- it must reproduce the -0.161R / n~16.2k
+               continuation book). Decision rule pre-registered in
+               docs/plans/2026-07-25-strategy-review-experiment-queue.md.
+  R_stop_a / R_stop_b -- queue Q7 (2026-07-25): reversal stop-width sweep,
+               stop_buffer_atr {0.35, 0.50, 0.75} vs the 0.25 default (default rides in
+               R_stop_a). stop_buffer_atr is a SHARED knob -- analysis filters
+               play_type=="reversal"; a stage-2 forward variant would need a
+               reversal-specific knob. Same pre-registration doc.
 
 Each walk books <=3 variants (a 6-variant full-universe walk gets killed) and dumps its
 baseline-arm trades (both play types) to parquet for post-hoc cuts. Shard for speed:
@@ -67,6 +77,24 @@ def walks_for(base: StrategyConfig) -> dict[str, dict[str, StrategyConfig]]:
                                       min_trigger_body_frac=0.5,
                                       max_trigger_lower_wick_frac=1.0,
                                       vol_thrust_excl_pullback=True),
+        },
+        "C_ceil_lo": {
+            "ceil_015": replace(base, ceiling_atr_mult=0.15),
+            "ceil_025": replace(base, ceiling_atr_mult=0.25),
+            "default": base,
+        },
+        "C_ceil_hi": {
+            "ceil_045": replace(base, ceiling_atr_mult=0.45),
+            "ceil_055": replace(base, ceiling_atr_mult=0.55),
+            "ceil_065": replace(base, ceiling_atr_mult=0.65),
+        },
+        "R_stop_a": {
+            "default": base,
+            "stop_035": replace(base, stop_buffer_atr=0.35),
+        },
+        "R_stop_b": {
+            "stop_050": replace(base, stop_buffer_atr=0.50),
+            "stop_075": replace(base, stop_buffer_atr=0.75),
         },
     }
 

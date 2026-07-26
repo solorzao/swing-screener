@@ -136,6 +136,17 @@ filters leave it too thin to certify).
 
 ### B. Offline replay sweeps (pinned corpus as-of 20260703, sharded)
 
+> **RUN 2026-07-25 — both sweeps decided, verdicts independently verified. Full tables:
+> [2026-07-25-q6-q7-sweep-results.md](2026-07-25-q6-q7-sweep-results.md).**
+> Q6: **NULL** — best ceiling (0.15) still −0.103R (lb −0.120) at 93% fill; monotone
+> gradient proves entry price is a real lever that cannot rescue the edge; the
+> **parking rule activates** (surface_continuation PR pre-authorized). Q7: **FALSIFIED** —
+> all three wider stops negative vs default (lbs ≈ −0.028); stopouts convert to
+> time_stops, not targets; 0.25 stands. SIDE FINDING: D_dump's reversal book is a stale
+> target vintage (pre-retrace-flip) — all four Part-A reversal verdicts were re-graded on
+> the current-default book and SURVIVE (bear×high strengthens to lb +0.255); use
+> R_stop_a/C_ceil default as the canonical reversal book for future post-hoc cuts.
+
 **Q6. cont_ceiling_sweep_then_park** — *The last continuation entry-economics lever, then
 park on a null.* (Retest-limit entry is settled-dead per 2026-07-04 MAE studies — worse at
 every depth; `ceiling_atr_mult` is what remains: it moves fill price, R denominator,
