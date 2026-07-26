@@ -83,6 +83,24 @@ def prior_first_seen(
     return out
 
 
+def recent_run_dates(session: Session, run_date: date, *, limit: int) -> list[date]:
+    """Distinct signal run_dates at or before ``run_date``, newest first.
+
+    The screen-run calendar the digest's staleness cooldown counts over -- the same
+    window query as ``notify.select._fresh_enough``, exposed so the evening chart
+    pass can predict WHICH signals the next morning's digest will still consider
+    fresh (and therefore must chart). Includes ``run_date`` itself when its rows
+    are already stored.
+    """
+    return list(session.scalars(
+        select(Signal.run_date)
+        .where(Signal.run_date <= run_date)
+        .distinct()
+        .order_by(Signal.run_date.desc())
+        .limit(limit)
+    ))
+
+
 def delete_signals_for(session: Session, run_date: date) -> None:
     session.execute(delete(Signal).where(Signal.run_date == run_date))
     session.commit()

@@ -170,6 +170,7 @@ def build_story(picks: Sequence[PdfPick]) -> list:
             )
         )
         story.append(Spacer(1, 0.1 * inch))
+        chart_missing: str | None = None  # reason line rendered in place of the image
         if blob_enabled():
             # chart_path is a blob KEY, not a filesystem path -- stat'ing it would
             # always miss, so fetch by key instead. A missing/aged-out blob (any
@@ -181,8 +182,25 @@ def build_story(picks: Sequence[PdfPick]) -> list:
                 except Exception:  # noqa: BLE001 -- degrade chartless, but never silently
                     log.warning("blob chart fetch failed for %s (key %s); "
                                 "rendering chartless", p.ticker, p.chart_path)
-        elif p.chart_path and Path(p.chart_path).exists():
-            story.append(_chart_image(p.chart_path))
+                    chart_missing = "chart unavailable (fetch failed)"
+            else:
+                chart_missing = "chart unavailable (not rendered at screen time)"
+        elif p.chart_path:
+            if Path(p.chart_path).exists():
+                story.append(_chart_image(p.chart_path))
+                story.append(Spacer(1, 0.1 * inch))
+            else:
+                # Previously the ONLY fully silent chartless path (2026-07-26 audit).
+                log.warning("local chart file missing for %s (%s); rendering chartless",
+                            p.ticker, p.chart_path)
+                chart_missing = "chart unavailable (file missing)"
+        else:
+            chart_missing = "chart unavailable (not rendered at screen time)"
+        if chart_missing:
+            # Make the absence VISIBLE: a bare section used to read as a formatting
+            # choice, which hid the 2026-07-03 regression for weeks and let 27.5% of
+            # analyzed picks ship chartless unnoticed (2026-07-26 measurement).
+            story.append(Paragraph(f"<i>[{chart_missing}]</i>", styles["BodyText"]))
             story.append(Spacer(1, 0.1 * inch))
         levels = [
             ["Company", p.name],

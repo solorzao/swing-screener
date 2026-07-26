@@ -110,6 +110,78 @@ def test_reversal_chart_indices_respect_the_pool_depth():
     assert idx == list(range(20))     # the whole eligible pool, capped at pool depth
 
 
+def test_digest_chart_indices_fresh_union_charts_cooldown_promotions():
+    """The digest's staleness cooldown drops stale raw leaders at send time and
+    promotes fresh names from below -- deterministic at screen time, so the charted
+    set must include the FRESH-first selection too (2026-07-26 measurement: 27.5%
+    of analyzed picks shipped chartless at booking, dominated by this gap)."""
+    from datetime import date
+
+    today, prev, old = date(2026, 7, 24), date(2026, 7, 23), date(2026, 7, 1)
+    results = [_r("1d") for _ in range(12)]
+    # raw leaders 0..8 are stale (first seen weeks ago); 9..11 are today's fresh setups
+    first_seen = {r.ticker: (today if i >= 9 else old) for i, r in enumerate(results)}
+    idx = run._digest_chart_indices(
+        results, top_n=3,
+        first_seen_of=lambda r: first_seen[r.ticker],
+        recent_run_dates=[today, prev], daily_cooldown_runs=1)
+    assert set(range(8)) <= set(idx)   # raw top-(3+margin) still fully charted
+    assert {9, 10, 11} <= set(idx)     # tomorrow's fresh promotions charted TONIGHT
+    assert 8 not in idx                # stale + beyond both selections: not rendered
+
+
+def test_digest_chart_indices_per_timeframe_slice_uses_cadence_horizon():
+    """The weekly/monthly slices count freshness over THEIR digest horizons
+    (notify.run._COOLDOWN_RUNS: 5/21 runs), not the daily cooldown -- a 1wk setup
+    mid-streak is daily-stale but still weekly-fresh and must be charted."""
+    from datetime import date, timedelta
+
+    runs = [date(2026, 7, 24) - timedelta(days=i) for i in range(22)]  # newest first
+    results = [_r("1wk") for _ in range(10)]
+    # raw 1wk leaders 0..8 are ancient; index 9 was first seen 4 runs ago: stale for
+    # the daily cooldown (1 run) but fresh for the weekly horizon (5 runs).
+    first_seen = {r.ticker: date(2026, 1, 1) for r in results}
+    first_seen[results[9].ticker] = runs[4]
+    idx = run._digest_chart_indices(
+        results, top_n=3,
+        first_seen_of=lambda r: first_seen[r.ticker],
+        recent_run_dates=runs, daily_cooldown_runs=1)
+    assert 9 in idx                    # weekly-fresh promotion charted
+    assert 8 not in idx                # ancient + beyond depth everywhere
+
+
+def test_tf_cooldown_horizons_stay_synced_with_digest():
+    """_TF_COOLDOWN_RUNS mirrors notify.run._COOLDOWN_RUNS by convention; silent
+    drift would quietly reopen the chartless gap for the slow cadences."""
+    from swing_screener.notify.run import _COOLDOWN_RUNS
+
+    assert run._TF_COOLDOWN_RUNS == {"1wk": _COOLDOWN_RUNS["weekly"],
+                                     "1mo": _COOLDOWN_RUNS["monthly"]}
+
+
+def test_reversal_chart_indices_fresh_pool_union():
+    """The digest's reversal pool is FRESH-first (reversal_picks with max_age_days),
+    so stale eligible tickers crowding the raw pool walk used to push the actual
+    digest picks past the charted budget (2026-07-09: all 5 emailed reversal picks
+    chartless). The fresh-pool union makes the charted set a superset of the
+    digest-selectable pool by construction."""
+    from datetime import date
+
+    today, prev, old = date(2026, 7, 24), date(2026, 7, 23), date(2026, 7, 1)
+    cfg = StrategyConfig()
+    results = [_rev_r("confirmed", ticker="S0"), _rev_r("confirmed", ticker="S1"),
+               _rev_r("confirmed", ticker="F1")]
+    first_seen = {"S0": old, "S1": old, "F1": today}
+    # without fresh info: the 2-ticker budget fills with the stale leaders; the
+    # digest's actual pick (F1, the only fresh eligible name) goes unrendered
+    assert run._reversal_chart_indices(results, cfg, top_n=1, pool_n=2) == [0, 1]
+    idx = run._reversal_chart_indices(
+        results, cfg, top_n=1, pool_n=2,
+        first_seen_of=lambda r: first_seen[r.ticker],
+        recent_run_dates=[today, prev], daily_cooldown_runs=1)
+    assert idx == [0, 1, 2]            # raw pool + the fresh pool, unioned
+
+
 def test_reversal_chart_indices_pool_counts_distinct_tickers():
     """E4 follow-up: reversal_picks holds ONE pool slot per ticker and reaches past
     raw index pool_n when dups sit inside it -- the chart walk must count DISTINCT

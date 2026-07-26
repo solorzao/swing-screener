@@ -282,6 +282,45 @@ def test_blob_chart_fetch_failure_logs_ticker_and_key(monkeypatch, caplog):
     assert story  # the pick still renders, chartless
     assert any("AMD" in r.message and "20260615/AMD_1d_20260615.png" in r.message
                for r in caplog.records), caplog.records
+    rendered = " ".join(getattr(f, "text", "") for f in story)
+    assert "chart unavailable (fetch failed)" in rendered  # visible in the PDF too
+
+
+def test_chartless_pick_renders_visible_marker():
+    """A pick with no chart at all must SAY so in the PDF: a bare section reads as
+    a formatting choice, which hid the chartless-pick gap for weeks (2026-07-26
+    measurement: 27.5% of analyzed picks chartless at booking, unnoticed)."""
+    from swing_screener.notify.pdf import build_story
+
+    story = build_story([_pick("AMD", None)])
+    rendered = " ".join(getattr(f, "text", "") for f in story)
+    assert "chart unavailable (not rendered at screen time)" in rendered
+
+
+def test_local_chart_file_missing_logs_and_marks(tmp_path, caplog):
+    """The local-path miss was the ONE fully silent chartless branch: it must now
+    log the ticker + path AND render the visible marker."""
+    import logging
+
+    from swing_screener.notify.pdf import build_story
+
+    missing = str(tmp_path / "nope.png")
+    with caplog.at_level(logging.WARNING, logger="swing_screener.notify.pdf"):
+        story = build_story([_pick("AMD", missing)])
+    rendered = " ".join(getattr(f, "text", "") for f in story)
+    assert "chart unavailable (file missing)" in rendered
+    assert any("AMD" in r.message and "nope.png" in r.message
+               for r in caplog.records), caplog.records
+
+
+def test_present_chart_has_no_unavailable_marker(tmp_path):
+    from swing_screener.notify.pdf import build_story
+
+    chart = tmp_path / "AMD.png"
+    chart.write_bytes(_PNG)
+    story = build_story([_pick("AMD", str(chart))])
+    rendered = " ".join(getattr(f, "text", "") for f in story)
+    assert "chart unavailable" not in rendered
 
 
 def test_ticker_report_blob_chart_failure_logs_ticker_and_key(monkeypatch, caplog):
