@@ -136,7 +136,9 @@ class StrategyConfig:
     # 1.0 -> +0.043R full book at 0.05 ATR slippage; confirmed cohort +0.057R, corrected
     # low +0.029) -- the old 0.786 capped winners early. At 0.10 slippage the 1.0 bound
     # is -0.002 (the same fragility profile the shipped confirmed+no-flip edge had). The
-    # legacy 0.786 stays measured forward as the `rev_retrace786` screen variant.
+    # legacy 0.786 was measured forward as the `rev_retrace786` screen variant and LOST
+    # (+0.104R vs 1.0's +0.190R on the live book, n=1,886) -- variant retired 2026-08-15,
+    # the flip is now vindicated live as well as in replay. See edge/experiments.json.
     reversal_retrace_frac: float = 1.0
     reversal_target_r_multiple: float = 1.0   # measured-move fallback if the target sits below entry
     # edge-discovery wave 1: A/B the reversal flip-bar volume sign. The scorer rewards HIGH flip
@@ -168,8 +170,10 @@ class StrategyConfig:
     # flips that pause a bar or two before confirming, permanently invisible at window=1 --
     # graded +0.110R (clustered 95%low +0.065) net of 0.05 ATR slippage and HELD at 0.10
     # (+0.079R, low +0.034), while the legacy-only confirmed book no longer clears the bar
-    # (+0.004R at 0.05, negative at 0.10). The legacy rule stays measured forward as the
-    # `rev_confirm1` screen variant. See docs/plans/2026-07-03-reversal-rotation-capture.md.
+    # (+0.004R at 0.05, negative at 0.10). The legacy rule was measured forward as the
+    # `rev_confirm1` screen variant and LOST (+0.121R vs window=3's +0.190R on the live
+    # book, n=1,672) -- variant retired 2026-08-15, flip vindicated live. See
+    # docs/plans/2026-07-03-reversal-rotation-capture.md and edge/experiments.json.
     reversal_confirm_window: int = 3
     # Anchor the CONFIRMED entry band on the top of the bounce-so-far (max high of the
     # trailing green run) instead of the flip bar's high. The flip anchor leaves every
@@ -274,15 +278,20 @@ class StrategyConfig:
 
     # exits
     # momentum-flip exit: close a trade when the HA candle flips bearish (a shaved head).
-    # True = on (the historical behavior). False powers the `no_flip` experiment arm, which
-    # the offline edge study found is a mild, consistent drag (it cuts trades at ~-0.3R that
-    # average ~-0.13R if held) -- so it's A/B'd in the live shadow book rather than switched.
+    # True = on (the historical behavior). False powered the `no_flip` experiment arm: the
+    # offline study called it a mild, consistent drag, but the live paired A/B graded the
+    # difference at +0.003R over 2,810 pairs (95% CI [-0.016, +0.018]) -- and EXACTLY 0.0000
+    # over 1,880 reversal pairs, where the exit never binds at all. Arm retired 2026-08-15;
+    # the flip stays ON because switching it off changes nothing measurable.
     momentum_flip_exit: bool = True
     # Breakeven ratchet (the be_1r ARM, 2026-07 queue): once the PRIOR bar's high-water
     # clears entry + this many R, raise the stop to breakeven (never down; same
     # prior-bar/no-intra-bar-lookahead discipline as the Chandelier trail). 0 = off.
     # Pre-partial trades otherwise ride FULL initial risk to the end. Arm-tested only
     # (exit knob): the variants guard rejects it from screen variants by design.
+    # Arm RETIRED 2026-08-15 -- futile: -0.015R over 2,845 paired fills (95% CI
+    # [-0.040, +0.002]); continuation-only it is genuinely positive (+0.010R, clustered
+    # lb +0.003) but ~10x under the 0.10R MDE, in a book that is now parked.
     breakeven_after_r: float = 0.0
     # per-play-type override for the REVERSAL book: the same 503-name replay found the eager
     # momentum-flip exit is a net drag on reversals (it converts +0.77R time-stops and target

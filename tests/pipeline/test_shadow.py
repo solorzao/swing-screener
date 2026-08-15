@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, date, datetime
 
 import pytest
@@ -418,6 +419,22 @@ def test_collision_flip_and_target_same_bar_flips_no_partial():
 ARMS = ("baseline", "partial33_cond")
 
 
+def _arm_cfgs(base=None):
+    """An explicit two-arm mapping for the per-arm machinery tests.
+
+    The live roster went baseline-only when the four exit arms settled futile
+    (2026-08-15, edge/experiments.json), but ``advance_open``'s per-arm divergence is
+    exactly what the NEXT arm will ride -- so these tests exercise it through a local
+    mapping rather than through ``build_arms``, which would silently reduce them to
+    single-book no-ops the moment the roster changed again.
+    """
+    base = base or StrategyConfig()
+    return {
+        "baseline": replace(base, partial_frac=0.0),
+        "partial33_cond": replace(base, partial_frac=0.33, partial_require_softening=True),
+    }
+
+
 def _open_dual(s):
     """Open the default candidate under both arms (baseline + conditional partial)."""
     open_from_signals(s, [_cand()], {("AAPL", "1d"): (105.0, 97.0)},
@@ -450,7 +467,7 @@ def test_dual_book_arms_diverge_on_same_bar():
     # Same fill, same bar: the baseline arm books the full all-or-nothing target exit
     # while the conditional-partial arm scales out and keeps the runner. That clean
     # divergence on identical inputs is the whole point of the dual-book.
-    arms = build_arms(StrategyConfig())
+    arms = _arm_cfgs()
     engine = get_engine("sqlite:///:memory:")
     with Session(engine) as s:
         _open_dual(s)
@@ -472,7 +489,7 @@ def test_dual_book_arms_diverge_on_same_bar():
 
 def test_breakdown_by_arm_gives_per_arm_books():
     # breakdown(trades, "arm") reads the books back as a same-sample A/B.
-    arms = build_arms(StrategyConfig())
+    arms = _arm_cfgs()
     engine = get_engine("sqlite:///:memory:")
     with Session(engine) as s:
         _open_dual(s)
@@ -585,11 +602,10 @@ def test_is_softening_predicate():
 
 
 def test_build_arms_baseline_pinned_all_or_nothing():
-    # baseline stays all-or-nothing even if the base config carries a stray partial.
+    # baseline stays all-or-nothing even if the base config carries a stray partial --
+    # the control must not drift with the live config.
     arms = build_arms(StrategyConfig(partial_frac=0.5))
     assert arms["baseline"].partial_frac == 0.0
-    assert arms["partial33_cond"].partial_frac == 0.33
-    assert arms["partial33_cond"].partial_require_softening is True
 
 
 # --- Chandelier runner trail (Step D) ---------------------------------------
@@ -694,12 +710,13 @@ def test_breakeven_arm_keeps_static_stop_after_partial():
         assert held.status == "open" and held.stop == 101.0   # unchanged breakeven
 
 
-def test_build_arms_has_chandelier_arm():
-    arms = build_arms(StrategyConfig())
-    chand = arms["partial33_chand"]
-    assert chand.partial_frac == 0.33 and chand.partial_require_softening is True
-    assert chand.trail_mode == "chandelier" and chand.chandelier_atr_mult == 3.0
-    assert arms["partial33_cond"].trail_mode == "breakeven"   # incumbent is untrailed
+def test_chandelier_trail_is_opt_in_not_a_live_default():
+    # The Chandelier runner shipped as the partial33_chand ARM, retired futile on
+    # 2026-08-15 (edge/experiments.json). The trail MACHINERY stays -- the CHAND tests
+    # below exercise it -- but no roster arm turns it on any more, so the live book must
+    # be untrailed. This is the regression guard on that retirement.
+    assert build_arms(StrategyConfig())["baseline"].trail_mode == "breakeven"
+    assert CHAND.trail_mode == "chandelier" and CHAND.chandelier_atr_mult == 3.0
 
 
 def test_high_water_tracks_highest_high_since_fill():
@@ -888,7 +905,7 @@ def test_reversal_trade_trails_under_chandelier_arm():
 def test_arm_ab_is_sliceable_by_play_type():
     # Every arm holds a reversal book, so filtering by play_type then breakdown(.,"arm")
     # gives a reversal-only A/B (the Step E measurement slice).
-    arms = build_arms(StrategyConfig())
+    arms = _arm_cfgs()
     engine = get_engine("sqlite:///:memory:")
     with Session(engine) as s:
         open_from_signals(s, [_rev_cand()], {("AAPL", "1d"): (105.0, 97.0)},

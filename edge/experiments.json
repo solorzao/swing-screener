@@ -12,9 +12,9 @@
     "registered_sha": "c2662eb432cf37ef66f2a4b0b48c62107fb2e36d",
     "doc_ref": "docs/plans/2026-06-23-momentum-flip-exit-arm-design.md",
     "provenance": "Settle bar (target_ci_halfwidth_r) recalibrated 2026-07-12 from the 0.15R placeholder seed to 0.10R -- the reviewed value, now equal to mde_r so a 'settled' verdict can distinguish a real edge from a dud rather than settling on an interval wider than the effect it tests. Experiment originally registered 2026-06-23 under sha 8a395ac927be12bfc1449e445cac6eae5f64fd72. Back-registered 2026-07-10 from the build_arms docstring in src/swing_screener/pipeline/arms.py; sha is the PR #64 commit that introduced the roster line.",
-    "status": "active",
-    "decided_at": null,
-    "decision": null
+    "status": "retired",
+    "decided_at": "2026-08-15",
+    "decision": "RETIRED 2026-08-15 -- FUTILE on the live forward book. Paired same-sample delta vs baseline: +0.003R over 2,810 pairs (498 tickers), 95% CI [-0.016, +0.018]; the IID upper bound sits an order of magnitude below the +0.10R MDE, so the pre-registered retirement clause fires. Reversal-only the delta is EXACTLY 0.0000 over 1,880 pairs -- the momentum-flip exit never binds on a reversal trade -- so the entire (null) signal came from continuation, now parked. Consequence: the momentum-flip exit STAYS ON in the live config; the arm asked whether disabling it helps and the answer is no measurable difference."
   },
   {
     "name": "partial33_cond",
@@ -29,9 +29,9 @@
     "registered_sha": "c2662eb432cf37ef66f2a4b0b48c62107fb2e36d",
     "doc_ref": "docs/plans/2026-06-16-target-exit-overhaul-design.md",
     "provenance": "Settle bar (target_ci_halfwidth_r) recalibrated 2026-07-12 from the 0.15R placeholder seed to 0.10R -- the reviewed value, now equal to mde_r so a 'settled' verdict can distinguish a real edge from a dud rather than settling on an interval wider than the effect it tests. Experiment originally registered 2026-06-16 under sha 84aca0a2afc0b9cb0908fb2a8bc69b20e70a5099. Back-registered 2026-07-10 from the build_arms docstring in src/swing_screener/pipeline/arms.py; sha is the PR #33 (Step C parallel-arm dual-book) commit that introduced the roster line.",
-    "status": "active",
-    "decided_at": null,
-    "decision": null
+    "status": "retired",
+    "decided_at": "2026-08-15",
+    "decision": "RETIRED 2026-08-15 -- FUTILE on the live forward book. Paired same-sample delta vs baseline: -0.006R over 2,754 pairs (498 tickers), 95% CI [-0.037, +0.017]; upper bound far below the +0.10R MDE. The Step C conditional 33% scale-out does not beat the all-or-nothing baseline. Consequence: partial_frac stays 0.0 live."
   },
   {
     "name": "partial33_chand",
@@ -46,9 +46,9 @@
     "registered_sha": "c2662eb432cf37ef66f2a4b0b48c62107fb2e36d",
     "doc_ref": "docs/plans/2026-06-16-target-exit-overhaul-design.md",
     "provenance": "Settle bar (target_ci_halfwidth_r) recalibrated 2026-07-12 from the 0.15R placeholder seed to 0.10R -- the reviewed value, now equal to mde_r so a 'settled' verdict can distinguish a real edge from a dud rather than settling on an interval wider than the effect it tests. Experiment originally registered 2026-06-16 under sha a4691f6e82e0cf9cdca307380bd9b4c3d0adbb2a. Back-registered 2026-07-10 from the build_arms docstring in src/swing_screener/pipeline/arms.py; sha is the PR #34 (Step D Chandelier runner trail) commit that introduced the roster line.",
-    "status": "active",
-    "decided_at": null,
-    "decision": null
+    "status": "retired",
+    "decided_at": "2026-08-15",
+    "decision": "RETIRED 2026-08-15 -- FUTILE on the live forward book. Paired same-sample delta vs baseline: -0.011R over 2,774 pairs (498 tickers), 95% CI [-0.040, +0.010]; upper bound far below the +0.10R MDE. This settles the Step D bake-off: neither partial arm beats baseline, and swapping the post-partial runner onto a 3.0-ATR Chandelier trail does not rescue the partial (it grades marginally WORSE than partial33_cond). Consequence: no partial, no trail change live."
   },
   {
     "name": "be_1r",
@@ -63,9 +63,9 @@
     "registered_sha": "c2662eb432cf37ef66f2a4b0b48c62107fb2e36d",
     "doc_ref": "docs/plans/2026-07-03-queued-experiments.md",
     "provenance": "Settle bar (target_ci_halfwidth_r) recalibrated 2026-07-12 from the 0.15R placeholder seed to 0.10R -- the reviewed value, now equal to mde_r so a 'settled' verdict can distinguish a real edge from a dud rather than settling on an interval wider than the effect it tests. Experiment originally registered 2026-07-03 under sha e4a8b7006a963cce3f8bc34bbac9796949e68fdc. Back-registered 2026-07-10 from the roster comment in src/swing_screener/pipeline/arms.py; sha is the PR #93 (2026-07 experiment queue) commit that introduced the roster line.",
-    "status": "active",
-    "decided_at": null,
-    "decision": null
+    "status": "retired",
+    "decided_at": "2026-08-15",
+    "decision": "RETIRED 2026-08-15 -- FUTILE on the live forward book. Paired same-sample delta vs baseline: -0.015R over 2,845 pairs (499 tickers), 95% CI [-0.040, +0.002]; upper bound below the +0.10R MDE. On continuation alone the ratchet is positive and significant (+0.010R, clustered lb +0.003, n=1,044) but an order of magnitude under the MDE -- a real effect too small to matter, in a book that is now parked. Consequence: breakeven_after_r stays 0.0 live; give-backs are not worth the conversion of winners into scratches at this size."
   },
   {
     "name": "extguard_tight",
@@ -131,9 +131,9 @@
     "registered_sha": "c2662eb432cf37ef66f2a4b0b48c62107fb2e36d",
     "doc_ref": "docs/plans/2026-07-03-reversal-rotation-capture.md",
     "provenance": "Settle bar (target_ci_halfwidth_r) recalibrated 2026-07-12 from the 0.15R placeholder seed to 0.10R -- the reviewed value, now equal to mde_r so a 'settled' verdict can distinguish a real edge from a dud rather than settling on an interval wider than the effect it tests. Experiment originally registered 2026-07-03 under sha b3ca487d22400881e44683c4eb764771f8617127. Back-registered 2026-07-10 from the roster comment in src/swing_screener/pipeline/variants.py; sha is the PR #87 (rotation-miss root-cause) commit that introduced the roster line.",
-    "status": "active",
-    "decided_at": null,
-    "decision": null
+    "status": "retired",
+    "decided_at": "2026-08-15",
+    "decision": "RETIRED 2026-08-15 -- FUTILE on the live forward book. Clustered two-sample delta vs the default screen: -0.069R, 95% CI [-0.222, +0.088] on n=1,672 (411 tickers); upper bound below the +0.10R MDE, so the pre-registered retirement clause fires and the 'reverse the flip' clause does NOT. The legacy next-bar-only confirmation books +0.121R against the shipped reversal_confirm_window=3's +0.190R -- the 2026-07-03 rotation-capture flip is vindicated live, not merely in replay. Consequence: reversal_confirm_window stays 3; the counterfactual book is no longer needed."
   },
   {
     "name": "rev_retrace786",
@@ -148,8 +148,8 @@
     "registered_sha": "c2662eb432cf37ef66f2a4b0b48c62107fb2e36d",
     "doc_ref": "docs/plans/2026-07-03-queued-experiments.md",
     "provenance": "Settle bar (target_ci_halfwidth_r) recalibrated 2026-07-12 from the 0.15R placeholder seed to 0.10R -- the reviewed value, now equal to mde_r so a 'settled' verdict can distinguish a real edge from a dud rather than settling on an interval wider than the effect it tests. Experiment originally registered 2026-07-03 under sha dfa0da0afd5695c7b4e4bea0f52ef1636fb2ca80. Back-registered 2026-07-10 from the roster comment in src/swing_screener/pipeline/variants.py; sha is the PR #94 (full-retrace target default) commit that introduced the roster line.",
-    "status": "active",
-    "decided_at": null,
-    "decision": null
+    "status": "retired",
+    "decided_at": "2026-08-15",
+    "decision": "RETIRED 2026-08-15 -- FUTILE on the live forward book. Clustered two-sample delta vs the default screen: -0.087R, 95% CI [-0.228, +0.060] on n=1,886 (417 tickers); upper bound below the +0.10R MDE, so the retirement clause fires and the 'reverse the flip' clause does NOT. The legacy 78.6% retrace target books +0.104R against the shipped full-breakdown target's +0.190R -- the 2026-07-03 target-geometry flip is vindicated live. Consequence: reversal_retrace_frac stays 1.0; the counterfactual book is retired, freeing a slot under the roster's 'keep this SMALL' ceiling."
   }
 ]
