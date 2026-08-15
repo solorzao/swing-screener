@@ -30,7 +30,12 @@ from swing_screener.pipeline.analyze import (
     analyze_reversals,
     build_frames,
 )
-from swing_screener.pipeline.arms import BASELINE, build_arms
+from swing_screener.pipeline.arms import (
+    BASELINE,
+    build_arms,
+    build_draining_arms,
+    build_stepping_arms,
+)
 from swing_screener.pipeline.broker import BrokerClient
 from swing_screener.pipeline.broker_alpaca import build_broker
 from swing_screener.pipeline.diversity import cap_by_sector, first_per_ticker
@@ -409,6 +414,25 @@ def _reversal_chart_indices(results: list[SignalResult], cfg: StrategyConfig, *,
     return sorted(idx)
 
 
+def _log_drained_arms(session: Session, cfg: StrategyConfig) -> None:
+    """Emit ``DRAIN_COMPLETE`` for any draining arm with no open rows left.
+
+    A retired arm stays in ``build_draining_arms`` only until its last in-flight trade
+    closes. Without this the removal date is unknowable without a hand-written query, so
+    the entry lingers -- and every lingering entry is one more config the stepper carries
+    and one more thing the next reader has to reason about. The log line IS the removal
+    trigger; nothing here mutates the roster on its own (that stays a human source edit,
+    same as the retirement itself)."""
+    draining = build_draining_arms(cfg)
+    if not draining:
+        return
+    open_counts = repo.count_open_by_arm(session, sorted(draining))
+    for name in sorted(draining):
+        if not open_counts.get(name):
+            log.info("DRAIN_COMPLETE arm=%s: no open rows left -- delete it from "
+                     "build_draining_arms (pipeline/arms.py)", name)
+
+
 def _shadow_candidates(
     prior_list: list[tuple[SignalResult, float, float, datetime | None]],
     surface_cfg: StrategyConfig | None = None,
@@ -664,7 +688,11 @@ def run_screen(*, universe_path: Path, db_url: str, cache_dir: Path, chart_dir: 
         resolve_pending(s, latest_bars, today=today,
                         window={n: c.reversal_fill_window_bars
                                 for n, c in screen_variants.items()})
-        advance_open(s, latest_bars, arms, today=today)
+        # Step the OPENING roster plus the draining set: a retired arm books no new
+        # fills but must still advance the ones it has, or its in-flight rows sit open
+        # forever (advance_open will not guess an exit policy for an unknown arm).
+        advance_open(s, latest_bars, build_stepping_arms(cfg), today=today)
+        _log_drained_arms(s, cfg)
         # Live book: the bar-stepper above excludes account="live" rows -- the BROKER owns
         # their fills/exits. Reconcile them here (same cadence) so a broker fill materializes
         # a live position + a venue close reconciles its exit. Runs in live mode -- AND,

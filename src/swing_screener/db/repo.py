@@ -519,6 +519,24 @@ def count_open_positions(session: Session, *, account: str) -> int:
     return session.scalar(stmt) or 0
 
 
+def count_open_by_arm(session: Session, arms: Sequence[str]) -> dict[str, int]:
+    """OPEN row counts for each name in ``arms`` (a name with no open rows is absent).
+
+    Reads the whole book rather than one account: the caller asks "has this retired arm
+    finished draining", and scoping to the research grid would hide a straggler booked
+    anywhere else. ``== "open"`` renders ``status = 'open'`` (portable to SQL Server),
+    not a boolean ``.is_()``; an empty ``arms`` short-circuits so we never emit
+    ``IN ()``, which SQL Server rejects."""
+    if not arms:
+        return {}
+    stmt = (
+        select(PaperTrade.arm, func.count())
+        .where(PaperTrade.status == "open", PaperTrade.arm.in_(list(arms)))
+        .group_by(PaperTrade.arm)
+    )
+    return {arm: n for arm, n in session.execute(stmt).all()}
+
+
 def record_exit_event(session: Session, *, is_paper: bool, trade_id: int | None,
                       tier: str, reason: str, message: str, created_date: date,
                       account: str = "research") -> ExitEvent:
