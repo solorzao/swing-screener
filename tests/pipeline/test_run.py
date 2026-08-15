@@ -364,7 +364,7 @@ def test_run_books_screen_variant_paper_trades(tmp_path, bars, monkeypatch):
     # default carries all exit arms, the alt only the baseline exit.
     from dataclasses import replace
 
-    from swing_screener.pipeline.arms import BASELINE
+    from swing_screener.pipeline.arms import BASELINE, build_arms
     from swing_screener.pipeline.variants import DEFAULT_VARIANT
 
     def stub_variants(base):
@@ -384,11 +384,14 @@ def test_run_books_screen_variant_paper_trades(tmp_path, bars, monkeypatch):
         papers = list(s.scalars(select(PaperTrade)))
     variants = {p.variant for p in papers}
     assert {"default", "alt"} <= variants                       # both books exist
-    # the alt variant is booked under the baseline exit only (no partial arms)
+    # the alt variant is booked under the baseline exit only (never the arm dimension)
     alt_arms = {p.arm for p in papers if p.variant == "alt"}
     assert alt_arms == {BASELINE}
-    # the default variant still carries the full exit-arm A/B
-    assert len({p.arm for p in papers if p.variant == "default"}) >= 2
+    # the default variant carries the arm dimension -- EXACTLY the opening roster, which
+    # is baseline-only since the four exit arms settled (2026-08-15). Asserted against
+    # build_arms rather than a hard-coded count so a newly registered arm is covered
+    # automatically, and so a retired arm reappearing here fails loudly.
+    assert {p.arm for p in papers if p.variant == "default"} == set(build_arms(_NO_EXT_GATE))
 
 
 def _spy_bull(bars):
