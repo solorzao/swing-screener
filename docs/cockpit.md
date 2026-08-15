@@ -437,6 +437,19 @@ without a registry row (or vice versa) fails CI, not the UI.
   the lockstep test matches active entries only. The Forward Books card renders this
   settle/retire procedure as a caption at the point of decision, so the recipe is in
   front of you the moment a stopping rule fires.
+- **Retiring an ARM has an in-flight consequence — handle it in the same PR.**
+  `advance_open` refuses to guess an exit policy for an arm that is no longer on the
+  roster, so deleting the line while the arm still holds open trades strands them:
+  they stay `status="open"` and unstepped forever (the 2026-08-15 retirement would
+  have left 4,242 open + 1,836 pending rows that way). Move the arm's config from
+  `build_arms` into **`build_draining_arms`** (`pipeline/arms.py`) rather than deleting
+  it outright — `build_arms` remains the OPENING roster the lockstep test matches, so
+  no new fills are booked, while `build_stepping_arms` (what `advance_open` walks)
+  keeps advancing the existing ones to a natural close on their original policy. The
+  screen logs `DRAIN_COMPLETE arm=<name>` once that arm has no open rows left; that is
+  the signal to delete the entry for good. Retiring a **variant** needs none of this:
+  its rows are baseline-arm, so they keep advancing, and `resolve_pending` already
+  falls back to the default variant's fill window for an unmapped variant.
 
 The cockpit's **approve/withdraw** actions write the *proposal* decision (a working-tree
 edit under `edge/`); the promotion into this registry stays a deliberate human commit —

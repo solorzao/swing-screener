@@ -10,7 +10,7 @@ from swing_screener.config import StrategyConfig
 from swing_screener.db import repo
 from swing_screener.db.models import PaperTrade
 from swing_screener.db.session import get_engine
-from swing_screener.pipeline.arms import build_arms
+from swing_screener.pipeline.arms import build_arms, build_stepping_arms
 from swing_screener.pipeline.shadow import (
     FillCandidate,
     _is_softening,
@@ -505,6 +505,44 @@ def test_breakdown_by_arm_gives_per_arm_books():
         assert set(groups) == {"baseline", "partial33_cond"}
         assert groups["baseline"].n_closed == 1
         assert groups["partial33_cond"].n_closed == 1
+
+
+def test_draining_arm_trade_still_advances_to_a_close():
+    """The retirement drain, end to end: a fill booked under a RETIRED arm is absent from
+    the opening roster but present in the stepping set, so it keeps advancing and closes
+    on its own policy instead of sitting open forever."""
+    base = StrategyConfig()
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        pt = _open_default(s)
+        pt.arm = "no_flip"          # retired 2026-08-15, still draining
+        s.commit()
+        assert "no_flip" not in build_arms(base)          # books no new fills
+        assert "no_flip" in build_stepping_arms(base)     # but is still stepped
+
+        bar = {"low": 93.0, "high": 100.0, "close": 95.0, "shaved_head": False}
+        advance_open(s, {("AAPL", "1d"): bar}, build_stepping_arms(base),
+                     today=date(2024, 1, 4))
+        closed = s.get(PaperTrade, pt.id)
+        assert closed.status == "closed" and closed.exit_reason == "stop"
+        assert closed.realized_r == (94.0 - 101.0) / 7.0
+
+
+def test_draining_arm_honors_its_own_exit_policy_not_baselines():
+    """no_flip exists to NOT close on a momentum flip. Draining it under the baseline
+    config would close the trade here -- and quietly corrupt the settled book."""
+    base = StrategyConfig()
+    engine = get_engine("sqlite:///:memory:")
+    with Session(engine) as s:
+        pt = _open_default(s)
+        pt.arm = "no_flip"
+        s.commit()
+        flip = {"low": 100.0, "high": 104.0, "close": 102.5, "shaved_head": True}
+        advance_open(s, {("AAPL", "1d"): flip}, build_stepping_arms(base),
+                     today=date(2024, 1, 4))
+        held = s.get(PaperTrade, pt.id)
+        assert held.status == "open" and held.exit_reason is None   # flip exit disabled
+        assert held.hold_bars == 1                                  # but it DID advance
 
 
 def test_advance_skips_trade_with_unknown_arm():
