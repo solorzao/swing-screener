@@ -61,10 +61,11 @@ def _assert_shared_indicators(base: StrategyConfig, name: str, cfg: StrategyConf
 def build_screen_variants(base: StrategyConfig) -> dict[str, StrategyConfig]:
     """The active screen variants, derived from ``base``.
 
-    ``default`` is the live screen config (carries the full exit-arm A/B); the others
-    are booked under the baseline exit only. Keep this set SMALL -- each extra variant
-    adds one more book to the shadow book per run. The current bake-off forward-tests
-    the freshness gate threshold we ship at 2.0 ATR against a tighter 1.5.
+    ``default`` is the live screen config (the only variant that carries the exit-arm
+    dimension, currently baseline-only -- see pipeline/arms.py); the others are booked
+    under the baseline exit. Keep this set SMALL -- each extra variant adds one more
+    book to the shadow book per run. The current bake-off forward-tests the freshness
+    gate threshold we ship at 2.0 ATR against a tighter 1.5.
     """
     variants = {
         DEFAULT_VARIANT: base,
@@ -81,19 +82,13 @@ def build_screen_variants(base: StrategyConfig) -> dict[str, StrategyConfig]:
         # of 0.05 ATR slippage, n=823) -- the strongest, broadest reversal conviction filter
         # found. Measured here, not yet surfaced/traded; pending full-503 + forward confirm.
         "rev_highvol": replace(base, reversal_min_flip_rvol=1.3),
-        # The LEGACY next-bar-only confirmation, kept as the counterfactual book after the
-        # default flipped to reversal_confirm_window=3 (2026-07-03 rotation-capture screen:
-        # the late-confirm increment graded +0.110R, 95%low +0.065 at 0.05 slippage and held
-        # at 0.10, while legacy-only no longer cleared the bar). If the live forward books
-        # disagree with the replay, this is the variant that reverses the flip.
-        "rev_confirm1": replace(base, reversal_confirm_window=1),
-        # The LEGACY 78.6% retrace target, kept as the counterfactual book after the default
-        # flipped to the full breakdown level (2026-07-03 target-geometry sweep: monotone
-        # same-sample gradient, 1.0 graded +0.043R full book / +0.057R confirmed with the
-        # corrected low +0.027/+0.029 at 0.05 slippage vs 0.786's +0.024/+0.039). Reverses
-        # the flip if the forward books disagree. Roster note: 7 books/run -- at the stated
-        # "keep this SMALL" ceiling; retire a settled variant before adding another.
-        "rev_retrace786": replace(base, reversal_retrace_frac=0.786),
+        # Roster note: 4 books/run, down from 7. The two LEGACY counterfactual books --
+        # `rev_confirm1` (next-bar-only confirmation) and `rev_retrace786` (the 78.6%
+        # retrace target), each kept to second-guess a 2026-07-03 flip -- were RETIRED
+        # 2026-08-15. Both settled futile against the default AND, more usefully, both
+        # LOST to it on the live forward book (+0.121R and +0.104R vs the default's
+        # +0.190R), so neither "reverse the flip" clause fires and both flips are
+        # vindicated live rather than only in replay. See edge/experiments.json.
     }
     for name, cfg in variants.items():
         if name != DEFAULT_VARIANT:

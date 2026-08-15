@@ -1,5 +1,12 @@
 from swing_screener.config import StrategyConfig
 from swing_screener.pipeline.arms import BASELINE, build_arms
+from swing_screener.pipeline.registry import load_experiments
+from tests.pipeline.test_registry import REPO_EDGE
+
+# Settled futile against baseline on 2026-08-15 and removed from the roster; the
+# registry keeps their numbers. Named here so a re-add without a fresh registration is
+# a test failure, not a silent resurrection of a decided question.
+RETIRED_ARMS = ("no_flip", "partial33_cond", "partial33_chand", "be_1r")
 
 
 def test_baseline_arm_is_all_or_nothing_with_flip_on():
@@ -8,22 +15,22 @@ def test_baseline_arm_is_all_or_nothing_with_flip_on():
     assert arms[BASELINE].momentum_flip_exit is True
 
 
-def test_no_flip_arm_disables_only_the_momentum_flip():
-    """The no_flip arm mirrors baseline (all-or-nothing) and differs ONLY in the
-    momentum_flip exit, so breakdown(trades, "arm") is a clean same-sample A/B of the flip."""
+def test_roster_is_baseline_only_after_the_exit_arms_settled():
+    """All four exit-policy arms settled futile, so the shadow book books ONE row per
+    fill per screen variant instead of five -- the accrual-dilution relief that made the
+    retirement worth doing. A new arm belongs here only with a new registry row."""
     arms = build_arms(StrategyConfig())
-    assert "no_flip" in arms
-    nf = arms["no_flip"]
-    assert nf.momentum_flip_exit is False
-    assert nf.partial_frac == 0.0  # identical entry/partial economics to baseline
+    assert set(arms) == {BASELINE}
+    for name in RETIRED_ARMS:
+        assert name not in arms
 
 
-def test_be_1r_arm_is_registered_with_the_breakeven_knob():
-    from swing_screener.config import StrategyConfig
-    from swing_screener.pipeline.arms import build_arms
-
-    arms = build_arms(StrategyConfig())
-    be = arms["be_1r"]
-    assert be.breakeven_after_r == 1.0
-    assert be.partial_frac == 0.0        # all-or-nothing apart from the ratchet
-    assert arms["baseline"].breakeven_after_r == 0.0
+def test_retired_arms_keep_their_audit_record():
+    """Retirement deletes the roster line but NEVER the registry row: the decision text
+    and decided_at are the audit half of a settlement (docs/cockpit.md 'To retire')."""
+    rows = {e.name: e for e in load_experiments(REPO_EDGE)}
+    for name in RETIRED_ARMS:
+        row = rows[name]
+        assert row.status == "retired"
+        assert row.decided_at == "2026-08-15"
+        assert row.decision and "FUTILE" in row.decision

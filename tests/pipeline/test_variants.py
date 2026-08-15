@@ -58,6 +58,19 @@ def test_shadow_tracks_reversal_highvol_combo():
     assert variants["rev_highvol"].reversal_min_flip_rvol >= 1.3
 
 
+def test_legacy_counterfactual_variants_are_retired():
+    """`rev_confirm1` and `rev_retrace786` existed to second-guess the two 2026-07-03
+    flips. Both LOST to the default on the live forward book and were retired
+    2026-08-15, so the roster must ship the flipped defaults with no counterfactual
+    book -- and a re-add needs a fresh registry row, not a quiet roster line."""
+    base = StrategyConfig()
+    variants = build_screen_variants(base)
+    assert "rev_confirm1" not in variants and "rev_retrace786" not in variants
+    # the defaults those books challenged, still in force
+    assert base.reversal_confirm_window == 3
+    assert base.reversal_retrace_frac == 1.0
+
+
 def test_detection_only_fields_are_allowed_in_variants():
     # the outside-bar trigger and entry-depth gate are DETECTION fields (computed from the
     # shared frame), not indicator periods -- a variant may set them without rebuilding frames.
