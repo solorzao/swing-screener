@@ -47,7 +47,8 @@ def _seed(url):
         s.commit()
 
 
-def test_send_digest_emails_with_pdf_and_is_idempotent(tmp_path, unpark_continuation):
+def test_send_digest_emails_with_pdf_and_is_idempotent(tmp_path, unpark_continuation,
+                                                       no_conviction_floor):
     url = f"sqlite:///{tmp_path / 'd.sqlite'}"
     _seed(url)
     sent = []
@@ -85,7 +86,8 @@ def _rev_sig(ticker, rank, strength):
                   entry_ceiling=52.0, stop=47.0, target=58.0)
 
 
-def test_daily_digest_surfaces_confirmed_reversals_with_funnel_line(tmp_path):
+def test_daily_digest_surfaces_confirmed_reversals_with_funnel_line(tmp_path,
+                                                                    no_conviction_floor):
     """Under the default config the CONFIRMED reversal surfaces (premium_only must not
     silently blank the list -- the 2026-06-28..07-01 drought) and the body carries the
     detected/confirmed/surfaced funnel so a filtered-empty day is visibly different
@@ -129,7 +131,8 @@ def test_daily_digest_funnel_line_on_filtered_empty_day(tmp_path):
             "0 surfaced") in sent[-1]["text"]
 
 
-def test_daily_digest_parks_continuation_by_default(tmp_path, monkeypatch):
+def test_daily_digest_parks_continuation_by_default(tmp_path, monkeypatch,
+                                                    no_conviction_floor):
     """Continuation parking (Q6 NULL completed the falsification, 2026-07-25;
     docs/plans/2026-07-25-q6-q7-sweep-results.md): under the DEFAULT config the daily
     digest OMITS the continuation section -- no title, no picks, so no continuation
@@ -193,7 +196,8 @@ def test_parked_slow_cadence_digest_contract(tmp_path, kind, tf):
     assert body.strip()                                 # ...on the health footer
 
 
-def test_daily_digest_continuation_returns_when_unparked(tmp_path, monkeypatch):
+def test_daily_digest_continuation_returns_when_unparked(tmp_path, monkeypatch,
+                                                         no_conviction_floor):
     """The parking flag is read from config per run (never baked in): flipping
     surface_continuation back to True restores the continuation section -- the
     re-enable path for a future entry mechanic that clears the replay bar."""
@@ -201,7 +205,12 @@ def test_daily_digest_continuation_returns_when_unparked(tmp_path, monkeypatch):
 
     from swing_screener.config import StrategyConfig
 
-    unparked = dataclasses.replace(StrategyConfig(), surface_continuation=True)
+    # min_conviction="" alongside the un-park: this test's subject is the PARKING flag,
+    # and it never arms the insight engine, so the armed floor would drop both picks as
+    # ungraded and the restored section would render empty (see the no_conviction_floor
+    # fixture -- this call rebuilds the config from the real default, overriding it).
+    unparked = dataclasses.replace(StrategyConfig(), surface_continuation=True,
+                                   min_conviction="")
     monkeypatch.setattr(run, "StrategyConfig", lambda: unparked)
     url = f"sqlite:///{tmp_path / 'unpark.sqlite'}"
     _seed(url)
@@ -214,7 +223,8 @@ def test_daily_digest_continuation_returns_when_unparked(tmp_path, monkeypatch):
     assert "AMD" in sent[-1]["text"]
 
 
-def test_send_digest_drops_already_ran_picks(tmp_path, unpark_continuation):
+def test_send_digest_drops_already_ran_picks(tmp_path, unpark_continuation,
+                                             no_conviction_floor):
     """A pick whose live price has run past its entry ceiling (or broken its stop) by
     digest time is dropped: the screen ran the prior evening, so a pick can leave its
     entry zone overnight. Mirrors the dashboard's 'hide already ran' filter so the email
@@ -235,7 +245,7 @@ def test_send_digest_drops_already_ran_picks(tmp_path, unpark_continuation):
     assert "Advanced Micro Devices" not in body       # AMD already ran -> dropped
 
 
-def test_reversal_pick_extended_is_kept_broken_is_dropped(tmp_path):
+def test_reversal_pick_extended_is_kept_broken_is_dropped(tmp_path, no_conviction_floor):
     """Play-type-aware already-ran semantics: a REVERSAL pick is a resting limit with a
     multi-bar fill window, so sitting above its ceiling at digest time is its NORMAL
     state (a confirmed reversal closes above the flip high by definition) -- it must be
@@ -260,7 +270,7 @@ def test_reversal_pick_extended_is_kept_broken_is_dropped(tmp_path):
     assert "BBBY" not in body   # broken stop: the setup failed before entry
 
 
-def test_reversal_top5_sector_cap_backfills(tmp_path):
+def test_reversal_top5_sector_cap_backfills(tmp_path, no_conviction_floor):
     """A one-sector wave can't fill the reversal list: with reversal_max_per_sector=2 the
     third+ same-sector names give way to the next sectors' picks (the Jul-2 crowding)."""
     url = f"sqlite:///{tmp_path / 'revcap.sqlite'}"
@@ -288,7 +298,7 @@ def test_reversal_top5_sector_cap_backfills(tmp_path):
     assert "Also confirmed (lost the top-3/sector race): MS, BAC, C, WDAY" in body
 
 
-def test_daily_digest_persists_reversal_funnel_row(tmp_path):
+def test_daily_digest_persists_reversal_funnel_row(tmp_path, no_conviction_floor):
     """The daily digest persists the funnel snapshot: fresh/actionable/surfaced are
     digest-time state (cooldown, live quotes, sector cap) and are unrecoverable later --
     the row is the only record. Sector-cap fixture: 5 financials + 2 software, all
@@ -344,7 +354,7 @@ def _sig_on(run_date, ticker, tf, rank, first_seen=None):
 
 @pytest.mark.parametrize("kind,tf", [("weekly", "1wk"), ("monthly", "1mo")])
 def test_slow_cadence_digest_keeps_setups_older_than_the_daily_cooldown(
-        tmp_path, caplog, kind, tf, unpark_continuation):
+        tmp_path, caplog, kind, tf, unpark_continuation, no_conviction_floor):
     """Per-kind cooldown horizon: a 1wk/1mo setup first seen 4 daily runs ago is still
     fresh on its OWN cadence (slow-timeframe setups persist across many daily screens by
     nature -- first_seen_date inherits the streak start), so it must appear in the
@@ -385,7 +395,8 @@ def test_slow_cadence_digest_keeps_setups_older_than_the_daily_cooldown(
     assert [r for r in caplog.records if "cooldown dropped" in r.getMessage()] == []
 
 
-def test_weekly_cooldown_drop_is_logged_with_true_count(tmp_path, caplog, unpark_continuation):
+def test_weekly_cooldown_drop_is_logged_with_true_count(tmp_path, caplog, unpark_continuation,
+                                                        no_conviction_floor):
     """A setup that outlives even the weekly horizon (first seen before the last 5 runs)
     is still dropped -- and the drop is LOGGED with the true surfaced-set count, so a
     cooldown-blanked weekly digest is diagnosable from the job log instead of reading
@@ -452,7 +463,8 @@ def test_bounded_overflow_never_cuts_mid_ticker():
     assert run._bounded_overflow(["ABCDEFGH"], limit=4) == ""
 
 
-def test_send_digest_keeps_picks_when_quotes_unavailable(tmp_path, unpark_continuation):
+def test_send_digest_keeps_picks_when_quotes_unavailable(tmp_path, unpark_continuation,
+                                                         no_conviction_floor):
     """Fail-open: when live quotes can't be fetched, no pick is dropped -- a quote outage
     must never silence the digest."""
     url = f"sqlite:///{tmp_path / 'noq.sqlite'}"
@@ -489,7 +501,8 @@ def test_send_digest_force_resends_without_duplicate_log(tmp_path):
     assert len(rows) == 1  # no duplicate marker from the forced resend
 
 
-def test_send_digest_defaults_to_latest_screen_run_date(tmp_path, unpark_continuation):
+def test_send_digest_defaults_to_latest_screen_run_date(tmp_path, unpark_continuation,
+                                                        no_conviction_floor):
     # No explicit run_date: the morning digest must summarize the LATEST screen run
     # (seeded under RUN, not today's date). With the old date.today() default it would
     # query a run_date with no signals and send an empty digest.

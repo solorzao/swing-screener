@@ -81,8 +81,10 @@ from swing_screener.pipeline.exitcheck import ExitCheckResult, LatestBarsFn, run
 from swing_screener.pipeline.health import health_line
 from swing_screener.pipeline.insight import (
     OrderIntent,
+    best_reachable_conviction,
     build_order_intent,
     conviction_baseline,
+    meets_conviction_floor,
     record_analyst_call,
 )
 from swing_screener.pipeline.reflect import load_verdicts, verdicts_filename
@@ -252,6 +254,10 @@ def _facts(sig: Signal) -> SignalFacts:
         volatility_tier=sig.volatility_tier, oversold=sig.oversold,
         trigger_close=sig.trigger_close, atr=sig.atr, rsi=sig.rsi, entry_floor=sig.entry_floor,
         entry_ceiling=sig.entry_ceiling, stop=sig.stop, target=sig.target,
+        # NULL on legacy rows screened before the volume profile existed -- carried through
+        # as None so the prompt omits the term rather than inventing a neutral read.
+        rvol_trigger=sig.rvol_trigger, rvol_pullback=sig.rvol_pullback,
+        pocket_pivot=sig.pocket_pivot,
     )
 
 
@@ -625,6 +631,37 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         spend = [0.0]
         ceiling_logged = [False]
 
+        # CONVICTION FLOOR (StrategyConfig.min_conviction): the lowest graded conviction
+        # this digest will surface. Empty -> the whole mechanism is off and the loop below
+        # is byte-identical to the pre-floor behavior. Counters accumulate across BOTH
+        # _build_picks calls (continuation + reversal share one attribution line), because
+        # an empty digest must say WHICH stage emptied it -- a quiet market and a broken
+        # playbook are the same silent email otherwise (the 2026-07 outage).
+        floor = scfg.min_conviction
+        conv_counts = {"graded": 0, "skipped": 0, "below": 0}
+
+        def _can_reach_floor(sig: Signal, play_type: str, gradeable: bool) -> bool:
+            """True iff this pick could STILL end at or above the floor -- the pre-call
+            test that decides whether spending anything on it is justified.
+
+            A pick that isn't gradeable can never carry a conviction at all, so it is
+            False. A gradeable one is judged on its deterministic baseline lifted by the
+            play type's EARNED nudge, so a certified +-2 play type automatically regains
+            the "avoid" baselines a +-1 one skips (never a constant to keep in sync).
+
+            ``conviction_baseline`` is recomputed here rather than threaded out of
+            ``_deep_one``: it is a pure read over a handful of verdicts, and calling the
+            same function with the same arguments cannot drift from itself."""
+            pb = playbooks.get(play_type)
+            if not gradeable or pb is None:
+                return False
+            _playbook_text, verdicts = pb
+            baseline, _edge = conviction_baseline(
+                score=sig.score, volatility_tier=sig.volatility_tier,
+                market_trend=market_trend, verdicts=verdicts)
+            return meets_conviction_floor(
+                best_reachable_conviction(baseline, nudge_steps.get(play_type, 1)), floor)
+
         # Deep-analysis BATCH pre-pass (SWING_DEEP_ANALYSIS_BATCH, default off). When on, the
         # top-N playbook picks for a play type are analyzed in ONE Message Batch (50% off all
         # tokens) instead of N synchronous calls; ``_deep_one`` then assembles from the
@@ -646,6 +683,12 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
             for i, sig in enumerate(sigs):
                 if i >= cfg.deep_analysis_top_n:
                     break
+                # Same floor gate as the synchronous path: an un-reachable pick must not
+                # be SUBMITTED either -- batching it is half price, not free. Its
+                # custom_id is simply absent from the results, and _build_picks skips the
+                # pick on the identical test, so the two paths agree by construction.
+                if floor and not _can_reach_floor(sig, play_type, True):
+                    continue
                 baseline, _edge = conviction_baseline(
                     score=sig.score, volatility_tier=sig.volatility_tier,
                     market_trend=market_trend, verdicts=verdicts)
@@ -700,14 +743,38 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                     log.warning("deep-analysis spend ceiling $%.2f reached; remaining picks "
                                 "use deterministic text", max_usd)
                     ceiling_logged[0] = True
+                # A pick is GRADEABLE only on the insight-engine path: deep analysis on,
+                # within top-N, under the ceiling, and its play type has a playbook. Any
+                # other pick ends with conviction=None.
+                gradeable = (want_deep and not over_ceiling
+                             and playbooks.get(play_type) is not None)
+                if floor and not _can_reach_floor(sig, play_type, gradeable):
+                    # Cannot reach the floor -> can never be surfaced -> must not bill ANY
+                    # model call. Note this skips analyze_signal too: the "cheap"
+                    # deterministic narrator still hits the API, and narrating a pick we
+                    # are about to drop is pure waste.
+                    conv_counts["skipped"] += 1
+                    continue
+                built_intent: OrderIntent | None = None
                 if want_deep and not over_ceiling:
                     analysis, order_intent, built_intent, cost = _deep_one(
                         facts, sig, play_type, batched_cr=batched.get(f"{play_type}:{i}"))
                     spend[0] += cost
-                    if built_intent is not None:
-                        collect_intents.append(built_intent)
                 else:
                     analysis = analyze_signal(facts, client=anthropic_client)  # type: ignore[arg-type]
+                if floor:
+                    # POST-call filter: the analyst's nudge may have landed below the floor
+                    # (a "medium" baseline talked down to "low"). Drop it from the body,
+                    # the PDF, AND the dispatched intents -- but the AnalystCall row was
+                    # already written inside _deep_one and STAYS, because a paid grade is
+                    # evidence the calibration test needs, whether or not we trade it.
+                    conv_counts["graded"] += 1
+                    graded = order_intent.conviction if order_intent is not None else None
+                    if not meets_conviction_floor(graded, floor):
+                        conv_counts["below"] += 1
+                        continue
+                if built_intent is not None:
+                    collect_intents.append(built_intent)
                 name = names.get(sig.ticker, "")
                 dps.append(DigestPick(sig.ticker, name, sig.horizon, analysis.core_reason,
                                       score=sig.score, strength=sig.strength,
@@ -901,6 +968,16 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
         # Continuation parking renders as an OMITTED section (None), never an empty
         # "No qualifying setups" list -- a parked book reading like a quiet market every
         # day is the 2026-07-01 blank-digest ambiguity. Reversal leads the email instead.
+        # Conviction attribution. Rendered whenever the floor is armed -- INCLUDING on a
+        # full day -- so the reader learns the shape of the funnel before an empty day
+        # arrives, and an empty one is never mistaken for a quiet market.
+        conviction_status: str | None = None
+        if floor:
+            n_surfaced = len(digest_picks) + len(reversal_digest or [])
+            conviction_status = (
+                f"Conviction: {conv_counts['graded']} graded · "
+                f"{conv_counts['skipped']} skipped · "
+                f"{conv_counts['below']} below {floor} · {n_surfaced} surfaced")
         body = compose_digest_body(kind, run_date,
                                    digest_picks if scfg.surface_continuation else None,
                                    alert_lines,
@@ -910,7 +987,8 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
                                    proposals_text=proposals_text(proposals),
                                    proposals_html=proposals_html(proposals),
                                    autonomy_status=autonomy_status,
-                                   health_status=health_status)
+                                   health_status=health_status,
+                                   conviction_status=conviction_status)
         send(to=recipient, subject=body.subject, text=body.text, html=body.html,
              attachments=([pdf_path] if pdf_path is not None else []))
 
@@ -918,7 +996,11 @@ def send_digest(*, kind: str, db_url: str, run_date: date | None = None, to: str
             session.add(EmailLog(sent_at=datetime.now(UTC), kind=kind, subject=body.subject,
                                  run_date=run_date))
             session.commit()
-        return DigestResult(n_picks=len(picks), pdf_attached=pdf_attached, sent=True,
+        # Both counts are SURFACED counts (post conviction floor), not selected ones:
+        # n_reversals has always read the built list, and n_picks now matches it. With the
+        # floor armed the two differ -- reporting "2 picks" for an email that shows none
+        # would misstate the run in the CLI summary log.
+        return DigestResult(n_picks=len(digest_picks), pdf_attached=pdf_attached, sent=True,
                             n_reversals=len(reversal_digest or []))
 
 

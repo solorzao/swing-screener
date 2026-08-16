@@ -4,6 +4,12 @@ from dataclasses import dataclass, replace
 import pandas as pd
 
 from swing_screener.config import StrategyConfig
+from swing_screener.signals.volume import (
+    is_pocket_pivot,
+    pre_setup_baseline,
+    pullback_dryup,
+    volume_thrust,
+)
 
 
 @dataclass(frozen=True)
@@ -31,13 +37,11 @@ def _quality_gates_pass(f: pd.DataFrame, last, pullback: list, swing_low: float,
     # pullback's own dried-up volume, flattering thrust ratios on longer pullbacks; the
     # excl variant measures the window BEFORE the pullback (matching the dry-up gate).
     if cfg.vol_thrust_min > 0:
-        n = cfg.vol_avg_window
-        if cfg.vol_thrust_excl_pullback:
-            k = len(pullback)
-            base_vol = f["volume"].iloc[-(n + 1 + k):-(k + 1)].mean()
-        else:
-            base_vol = f["volume"].iloc[-(n + 1):-1].mean()
-        rvol = float(last["volume"]) / base_vol if base_vol and base_vol > 0 else 1.0
+        # setup_bars=0 IS the legacy inclusive denominator, so both A/B arms are the one
+        # shared window function (signals.volume) the analyst's reported facts also use.
+        k = len(pullback) if cfg.vol_thrust_excl_pullback else 0
+        base_vol = pre_setup_baseline(f, window=cfg.vol_avg_window, setup_bars=k)
+        rvol = volume_thrust(float(last["volume"]), base_vol)
         # NaN volume rows are deliberately kept at the download seam (index
         # tickers), so rvol can be NaN -- and NaN < min is False, silently
         # no-opping the gate. An unmeasurable thrust rejects (2026-07 audit).
@@ -83,20 +87,15 @@ def _quality_gates_pass(f: pd.DataFrame, last, pullback: list, swing_low: float,
             return False
     # volume dry-up: the pullback must trade on contracting volume vs the pre-pullback baseline
     if cfg.pullback_vol_dryup_max > 0:
-        n, k = cfg.vol_avg_window, len(pullback)
-        base = f["volume"].iloc[-(n + 1 + k):-(k + 1)].mean()
-        pull_vol = sum(float(b["volume"]) for b in pullback) / k
-        dryup = pull_vol / base if base and base > 0 else 1.0
+        base = pre_setup_baseline(f, window=cfg.vol_avg_window, setup_bars=len(pullback))
+        dryup = pullback_dryup([float(b["volume"]) for b in pullback], base)
         # same NaN fail-safe as the thrust gate: an unmeasurable dry-up rejects
         if math.isnan(dryup) or dryup > cfg.pullback_vol_dryup_max:
             return False
     # pocket pivot: the up trigger bar's volume must exceed the worst recent down-day volume
-    if cfg.require_pocket_pivot:
-        window = f.iloc[-(cfg.pocket_pivot_lookback + 1):-1]
-        down = window.loc[window["close"] < window["open"], "volume"]
-        down_vol_max = float(down.max()) if len(down) else 0.0
-        if not (float(last["close"]) > float(last["open"]) and float(last["volume"]) > down_vol_max):
-            return False
+    if cfg.require_pocket_pivot and not is_pocket_pivot(
+            f, lookback=cfg.pocket_pivot_lookback):
+        return False
     return True
 
 

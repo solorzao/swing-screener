@@ -178,6 +178,7 @@ def compose_digest_body(
     proposals_html: str | None = None,
     autonomy_status: str | None = None,
     health_status: str | None = None,
+    conviction_status: str | None = None,
 ) -> EmailContent:
     """Render a digest into subject, plain-text, and HTML bodies.
 
@@ -213,6 +214,12 @@ def compose_digest_body(
     ``health_status`` (the one-line "is the cron alive" footer: freshness + money posture +
     gate verdict) is appended when present -- pushed on every digest so a silently-dead cron
     is visible in the inbox. Mirrors ``autonomy_status``: None -> the body is unchanged.
+
+    ``conviction_status`` (the conviction-FLOOR attribution: graded / skipped / below-floor /
+    surfaced) is appended when present. It is what keeps a floor-emptied list from reading
+    like a quiet market: with the floor on, "no setups" alone cannot distinguish a genuinely
+    thin day from a playbook that has stopped grading anything -- the same silent-empty
+    ambiguity that hid the 2026-07 outage. None -> the body is unchanged.
     """
     subject = f"Swing Screener - {_KIND_TITLE[kind]} Picks ({run_date})"
 
@@ -254,6 +261,8 @@ def compose_digest_body(
             lines.append(f"{_BADGE.get(a.tier, '')} {a.ticker} — {a.reason}: {a.message}")
     if has_pdf:
         lines += _joint("Full analysis attached (PDF).")
+    if conviction_status:
+        lines += _joint(conviction_status)
     if autonomy_status:
         lines += _joint(autonomy_status)
     if health_status:
@@ -280,6 +289,8 @@ def compose_digest_body(
         html_parts.append(f"<h3>Exit alerts</h3><ul>{items}</ul>")
     if has_pdf:
         html_parts.append("<p>Full analysis attached (PDF).</p>")
+    if conviction_status:
+        html_parts.append(f"<p><i>{escape(conviction_status)}</i></p>")
     if autonomy_status:
         html_parts.append(f"<p><i>{escape(autonomy_status)}</i></p>")
     if health_status:

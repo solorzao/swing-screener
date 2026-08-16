@@ -54,6 +54,13 @@ class SignalFacts:
     entry_ceiling: float
     stop: float
     target: float
+    # The setup's VOLUME footprint (signals.volume.volume_profile), measured in the
+    # pipeline and carried on the Signal row. None = NOT MEASURED (legacy row, NaN volume,
+    # or too little history) and is rendered as SILENCE, never as a neutral 1.0 -- the
+    # analyst would weigh a fabricated "average volume" as though it were evidence.
+    rvol_trigger: float | None = None
+    rvol_pullback: float | None = None
+    pocket_pivot: bool | None = None
 
     @property
     def risk_reward(self) -> float:
@@ -119,6 +126,25 @@ def _deterministic_rationale(facts: SignalFacts) -> str:
     )
 
 
+def _volume_line(facts: SignalFacts) -> str:
+    """The setup's volume footprint as one bullet, or "" when nothing was measurable.
+
+    Each term is LABELLED rather than left as a bare ratio: "0.62x" alone leaves the
+    model to infer whether lower is better, whereas naming the shape (dry-up vs heavier
+    than baseline) makes it usable evidence. Terms that could not be measured are simply
+    absent -- a "not measured" placeholder would still put volume in the model's head.
+    """
+    parts: list[str] = []
+    if facts.rvol_trigger is not None:
+        parts.append(f"trigger bar {facts.rvol_trigger:.2f}x the pre-setup average")
+    if facts.rvol_pullback is not None:
+        shape = "dry-up" if facts.rvol_pullback < 1.0 else "heavier than baseline"
+        parts.append(f"setup window {facts.rvol_pullback:.2f}x ({shape})")
+    if facts.pocket_pivot is not None:
+        parts.append(f"pocket pivot {'yes' if facts.pocket_pivot else 'no'}")
+    return f"- Recent volume: {' · '.join(parts)}\n" if parts else ""
+
+
 def _facts_lines(facts: SignalFacts) -> str:
     """The deterministic fact bullets, shared by the simple and deep prompts."""
     return (
@@ -137,6 +163,7 @@ def _facts_lines(facts: SignalFacts) -> str:
         f"- Stop: {facts.stop:g}\n"
         f"- Target: {facts.target:g}\n"
         f"- Reward/risk: {facts.risk_reward:.1f}R\n"
+        f"{_volume_line(facts)}"
     )
 
 
@@ -814,6 +841,17 @@ _CONVICTION_SYSTEM = (
     "or say 'agree with baseline' if you keep it. NEVER invent or alter price "
     "levels. Use the web_search tool to check current sentiment / sector trends "
     "that bear on the thesis; cite sources for external claims.\n\n"
+    "WEIGH THE RECENT VOLUME that set the play up, when it is given. The "
+    "constructive shape is contraction THROUGH the setup (supply exhausting -- a "
+    "'dry-up') followed by EXPANSION on the trigger bar (demand returning); a "
+    "pocket pivot -- an up bar out-trading every recent down day -- says the same "
+    "thing without needing a baseline. The warning shape is the inverse: a setup "
+    "that traded HEAVIER than its baseline is distribution, and a trigger that "
+    "fired on thin volume is unconfirmed. Treat this as ONE input among many, not "
+    "a rule -- it is measured, not yet proven, so it should rarely be your sole "
+    "reason to move a grade. When it does bear on your decision, say so explicitly "
+    "in your REASON line. If no volume facts are given, do not speculate about "
+    "volume at all.\n\n"
     "Output ONLY the finished assessment. Do NOT narrate your process or include "
     "preamble. Format your reply EXACTLY like this:\n"
     "CONVICTION: <avoid|low|medium|high>\n"

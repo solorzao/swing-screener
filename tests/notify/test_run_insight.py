@@ -422,7 +422,11 @@ def test_uncalibrated_continuation_keeps_max_step_one(tmp_path, monkeypatch):
     assert seen and all(v == 1 for v in seen)  # no track record -> hard ±1
 
 
-def test_falls_back_to_deep_path_when_no_playbook(tmp_path, monkeypatch):
+def test_falls_back_to_deep_path_when_no_playbook(tmp_path, monkeypatch,
+                                                  no_conviction_floor):
+    """(Floor disarmed: this test's subject is the legacy no-playbook FALLBACK. With the
+    floor armed a playbook-less pick is ungraded, so it is skipped before the fallback
+    can run at all -- which is its own behavior, pinned in test_run_conviction_floor.)"""
     monkeypatch.setenv("SWING_DEEP_ANALYSIS", "1")
     monkeypatch.setenv("SWING_DEEP_ANALYSIS_TOP_N", "1")
     monkeypatch.delenv("SWING_DEEP_ANALYSIS_KINDS", raising=False)

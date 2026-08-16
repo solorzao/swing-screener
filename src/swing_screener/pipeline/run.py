@@ -477,6 +477,8 @@ def _to_signal(r: SignalResult, rank: int, run_date: date, first_seen: date) -> 
         atr=r.atr, rsi=r.rsi, entry_floor=r.entry_floor, entry_ceiling=r.entry_ceiling,
         stop=r.stop, target=r.target,
         extension_atr=r.extension_atr, first_seen_date=first_seen,
+        rvol_trigger=r.rvol_trigger, rvol_pullback=r.rvol_pullback,
+        pocket_pivot=r.pocket_pivot,
     )
 
 

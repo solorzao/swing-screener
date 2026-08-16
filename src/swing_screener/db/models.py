@@ -65,6 +65,16 @@ class Signal(Base):
     # Equal to run_date for a freshly-appearing setup; None for legacy rows.
     first_seen_date: Mapped[date | None] = mapped_column(default=None)
     chart_path: Mapped[str | None] = mapped_column(String(512), default=None)
+    # VOLUME FOOTPRINT of the setup (signals.volume.volume_profile), measured at screen
+    # time because only the pipeline holds the OHLCV frame -- the digest reads these rows.
+    # Fed to the conviction analyst as context: it gates nothing and is absent from the
+    # score (volume dry-up / pocket pivot are still unrun backlog experiments).
+    # NULL means NOT MEASURED -- a legacy row, NaN volume (index tickers keep those at the
+    # download seam), or too little history. Never coerce a NULL to a neutral 1.0: the
+    # analyst would read that as "volume was unremarkable" instead of "volume is unknown".
+    rvol_trigger: Mapped[float | None] = mapped_column(default=None)
+    rvol_pullback: Mapped[float | None] = mapped_column(default=None)
+    pocket_pivot: Mapped[bool | None] = mapped_column(default=None)
 
 
 class Trade(Base):
