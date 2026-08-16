@@ -276,6 +276,23 @@ class StrategyConfig:
     # clustered 95% lb > 0 net 0.05 ATR.
     surface_continuation: bool = False
 
+    # CONVICTION FLOOR: the lowest graded conviction the digest will surface, applied to
+    # BOTH play types. Two halves of one rule read this field so they cannot drift:
+    #   * the SPEND gate -- a pick whose baseline can't REACH the floor under its earned
+    #     nudge (pipeline.insight.best_reachable_conviction) never bills a model call at
+    #     all, deep or narrator. Because conviction_baseline returns avoid/medium/high
+    #     (never "low"), an "avoid" baseline tops out at "low" under the hard +-1 clamp
+    #     and is provably un-surfaceable -- so skipping it costs nothing but the spend.
+    #   * the DISPLAY filter -- anything graded below the floor, or never graded at all,
+    #     is dropped from the body, the PDF, and the dispatched order intents.
+    # Set 2026-08-16 to "medium": the low-conviction plays weren't producing results and
+    # were still billing Opus. An empty string is the OFF switch (restores the pre-floor
+    # behavior, including surfacing ungraded picks); no rung of the ladder can express
+    # that, since every real floor drops ungraded picks.
+    # A filtered-empty list is NEVER silent -- notify.run renders a conviction
+    # attribution line so a quiet market and a broken playbook read differently.
+    min_conviction: str = "medium"
+
     # exits
     # momentum-flip exit: close a trade when the HA candle flips bearish (a shaved head).
     # True = on (the historical behavior). False powered the `no_flip` experiment arm: the

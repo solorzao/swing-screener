@@ -33,6 +33,45 @@ _CONVICTIONS = ("avoid", "low", "medium", "high")
 _MULT = {"high": 1.0, "medium": 0.5, "low": 0.25, "avoid": 0.0}
 
 
+def best_reachable_conviction(baseline: str, max_step: int) -> str:
+    """The HIGHEST final conviction ``baseline`` could reach under a ``max_step`` nudge.
+
+    The digest's spend gate keys on this: a pick whose best REACHABLE grade already sits
+    below the surfacing floor can never be displayed, so paying for its conviction call
+    is pure waste. Because ``conviction_baseline`` never returns "low" (avoid/medium/high
+    only), under the hard +-1 clamp an "avoid" baseline tops out at "low" -- provably
+    un-surfaceable at the default floor.
+
+    Takes ``max_step`` rather than assuming 1 so the gate follows the EARNED bound
+    (``analytics.calibration.max_conviction_step``): a play type that certifies for +-2
+    can lift "avoid" to "medium", and its picks must resume being analyzed automatically
+    -- no constant here to keep in sync with ``_NUDGE_CEILING``. Saturates at the top of
+    the ladder.
+    """
+    return _CONVICTIONS[min(_CONVICTIONS.index(baseline) + max_step, len(_CONVICTIONS) - 1)]
+
+
+def meets_conviction_floor(conviction: str | None, floor: str) -> bool:
+    """True iff a GRADED ``conviction`` sits at or above ``floor`` (inclusive).
+
+    ``None`` -- a pick that was never graded (deep analysis off, playbook missing, spend
+    ceiling reached, or ranked beyond top-N) -- is False at EVERY floor: absent is not a
+    grade, and failing open would resurface exactly the low-conviction noise the floor
+    exists to remove. The caller is responsible for making that drop visible rather than
+    silent (the digest's conviction attribution line).
+
+    An EMPTY ``floor`` is the explicit off switch, admitting everything including
+    ungraded picks. No rung of the ladder can express that: every real floor drops
+    ungraded picks, whereas the pre-floor digest surfaced them -- so ``""`` is the only
+    faithful way back to the legacy behavior.
+    """
+    if not floor:
+        return True
+    if conviction is None:
+        return False
+    return _CONVICTIONS.index(conviction) >= _CONVICTIONS.index(floor)
+
+
 @dataclass(frozen=True)
 class OrderIntent:
     """A single fully-specified, ready-to-render trade intent for one candidate.

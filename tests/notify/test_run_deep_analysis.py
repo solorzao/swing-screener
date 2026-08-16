@@ -43,7 +43,8 @@ def _kwargs(tmp_path, url, **extra):
                 pdf_dir=tmp_path / "digests", smtp_send=lambda **kw: None, **extra)
 
 
-def test_deep_analysis_runs_for_top_n_only_when_enabled(tmp_path, monkeypatch):
+def test_deep_analysis_runs_for_top_n_only_when_enabled(tmp_path, monkeypatch,
+                                                        no_conviction_floor):
     monkeypatch.setenv("SWING_DEEP_ANALYSIS", "1")
     monkeypatch.setenv("SWING_DEEP_ANALYSIS_TOP_N", "2")
     monkeypatch.delenv("SWING_DEEP_ANALYSIS_KINDS", raising=False)  # default includes daily
@@ -79,11 +80,18 @@ def test_deep_analysis_runs_for_top_n_only_when_enabled(tmp_path, monkeypatch):
 def test_parked_continuation_gets_no_deep_calls_reversal_still_does(tmp_path, monkeypatch):
     """Parking + deep ON: no continuation deep-analysis call is ever billed (the parked
     pickers return [], so the deep loop never sees a continuation pick) while the
-    reversal pick still gets its deep read. The REAL StrategyConfig is restored over
-    this module's un-park fixture, so this runs under the true parked default."""
+    reversal pick still gets its deep read. The REAL parked default is restored over this
+    module's un-park fixture, so this runs under the true parked posture.
+
+    The conviction floor is disarmed alongside it: this test's subject is PARKING, and
+    with no playbook in the pinned-empty edge dir the reversal pick would be dropped as
+    ungraded before it could demonstrate that it still gets its deep read."""
+    import dataclasses
+
     from swing_screener.config import StrategyConfig
 
-    monkeypatch.setattr(run, "StrategyConfig", StrategyConfig)  # parked default is back
+    parked = dataclasses.replace(StrategyConfig(), min_conviction="")
+    monkeypatch.setattr(run, "StrategyConfig", lambda: parked)  # parked default is back
     monkeypatch.setenv("SWING_DEEP_ANALYSIS", "1")
     monkeypatch.setenv("SWING_DEEP_ANALYSIS_TOP_N", "2")
     monkeypatch.delenv("SWING_DEEP_ANALYSIS_KINDS", raising=False)
