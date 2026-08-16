@@ -18,6 +18,7 @@ from swing_screener.signals.reversal import (
     score_reversal,
 )
 from swing_screener.signals.score import score_signal
+from swing_screener.signals.volume import volume_profile
 
 # low -> high timeframe order
 TIMEFRAME_ORDER: list[str] = ["4h", "1d", "1wk", "1mo"]
@@ -57,6 +58,13 @@ class SignalResult:
     # conviction tier for tiered surfacing + sizing: premium / strong / base (reversal only;
     # continuation defaults to base).
     conviction_tier: str = "base"
+    # VOLUME FOOTPRINT of the setup (signals.volume.volume_profile), measured here because
+    # only the pipeline has the OHLCV frame -- the digest reads persisted rows. Reported to
+    # the conviction analyst as context; it gates nothing and does not enter the score.
+    # None = not measurable (NaN volume rows, or too little history), never a fabricated 1.0.
+    rvol_trigger: float | None = None
+    rvol_pullback: float | None = None
+    pocket_pivot: bool | None = None
 
 
 def _is_uptrend(frame: pd.DataFrame) -> bool:
@@ -155,6 +163,11 @@ def analyze_frames(
         price = ctx.trigger_close
         avg_dollar_vol = _avg_dollar_volume(frame, cfg)
         atr_pct = ctx.atr / price
+        # The pullback IS this play's setup window, so the dry-up and the thrust share one
+        # baseline (the bars before it) and are directly comparable to each other.
+        vol = volume_profile(frame, setup_bars=ctx.pullback_bars,
+                             window=cfg.vol_avg_window,
+                             pocket_lookback=cfg.pocket_pivot_lookback)
 
         results.append(
             SignalResult(
@@ -177,6 +190,9 @@ def analyze_frames(
                 ctx=ctx,
                 zone=zone,
                 extension_atr=ctx.extension_atr,
+                rvol_trigger=vol.rvol_trigger,
+                rvol_pullback=vol.rvol_pullback,
+                pocket_pivot=vol.pocket_pivot,
             )
         )
 
@@ -214,6 +230,14 @@ def analyze_reversals(
             min_rsi=ctx.min_rsi, rsi_floor=cfg.reversal_oversold_rsi_max,
             confirm_lag=ctx.confirm_lag,
         ), cfg)
+        # The DECLINE window is this play's setup window -- the reversal analog of the
+        # pullback -- so both play types hand the analyst the same three facts, measured
+        # the same way. Note this is deliberately NOT ctx.volume_ratio: that keeps its own
+        # tail-window denominator for the premium tier, which would make the reported
+        # trigger and pullback numbers incomparable to each other.
+        vol = volume_profile(frame, setup_bars=cfg.reversal_decline_bars,
+                             window=cfg.vol_avg_window,
+                             pocket_lookback=cfg.pocket_pivot_lookback)
         results.append(SignalResult(
             ticker=ticker, timeframe=tf, horizon=_HORIZON_BY_TF[tf], score=score,
             mtf_aligned=False,  # reversals are counter-trend; no MTF requirement
@@ -225,5 +249,7 @@ def analyze_reversals(
             play_type="reversal", strength=ctx.strength,
             conviction_tier=reversal_conviction_tier(
                 ctx.volume_ratio, ctx.is_spring, ctx.strength, cfg),
+            rvol_trigger=vol.rvol_trigger, rvol_pullback=vol.rvol_pullback,
+            pocket_pivot=vol.pocket_pivot,
         ))
     return results

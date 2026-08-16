@@ -146,9 +146,20 @@ values. Same code path, so a reported number and a future gate can never disagre
 3. **`pocket_pivot`** — bool: up trigger bar whose volume exceeds the largest down-day
    volume of the last `pocket_pivot_lookback` bars.
 
-Reversal gets the same three, with the decline window standing in for the pullback, and
-`rvol_trigger` sourced from the existing `ReversalContext.volume_ratio` so it cannot drift
-from the premium-tier logic.
+Reversal gets the same three, with the decline window standing in for the pullback.
+
+**Changed during implementation.** The plan was to source reversal's `rvol_trigger` from
+the existing `ReversalContext.volume_ratio` so it could not drift from the premium-tier
+logic. It is computed with the shared `volume_profile` instead, because `volume_ratio`
+uses a `tail(window)` denominator that *includes* the decline it is measured against.
+Mixing conventions would have made the two reported numbers incomparable to each other —
+"trigger 1.8x vs setup 0.62x" only means something when both share a baseline, and that
+comparison is the entire dry-up-then-expansion read.
+
+The trade-off is real and accepted: the reported `rvol_trigger` and the premium tier's
+`volume_ratio` can now disagree in magnitude for the same bar. `volume_ratio` keeps its
+own arithmetic and the premium tier is untouched, so nothing that gates or sizes changed;
+only the analyst's reported fact is new.
 
 ### NaN handling differs from the gates — deliberately
 

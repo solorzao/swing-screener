@@ -254,6 +254,10 @@ def _facts(sig: Signal) -> SignalFacts:
         volatility_tier=sig.volatility_tier, oversold=sig.oversold,
         trigger_close=sig.trigger_close, atr=sig.atr, rsi=sig.rsi, entry_floor=sig.entry_floor,
         entry_ceiling=sig.entry_ceiling, stop=sig.stop, target=sig.target,
+        # NULL on legacy rows screened before the volume profile existed -- carried through
+        # as None so the prompt omits the term rather than inventing a neutral read.
+        rvol_trigger=sig.rvol_trigger, rvol_pullback=sig.rvol_pullback,
+        pocket_pivot=sig.pocket_pivot,
     )
 
 
