@@ -88,6 +88,26 @@ def walks_for(base: StrategyConfig) -> dict[str, dict[str, StrategyConfig]]:
             "ceil_055": replace(base, ceiling_atr_mult=0.55),
             "ceil_065": replace(base, ceiling_atr_mult=0.65),
         },
+        # C_retest_a / C_retest_b -- the RETEST-LIMIT entry (2026-08-16). Q6 swept
+        # ceiling_atr_mult over 0.15-0.65, i.e. a limit ABOVE the trigger close: every
+        # cell is a variation on chasing the flip bar, which is why "entry price is a
+        # real lever, no price rescues the edge" only settled the chase family. NEGATIVE
+        # values invert the mechanic: the limit sits BELOW the trigger close, so the bar
+        # must retrace into it to fill. That is the "fundamentally different entry
+        # mechanic" the parking rule names -- it changes both the PRICE (lower entry,
+        # smaller ceiling-stop risk, so the same move is a larger R) and the SELECTION
+        # (only setups that actually pull back get taken). The default 0.35 rides in
+        # C_retest_a as the sanity anchor: it must reproduce the pinned ~-0.161R book.
+        "C_retest_a": {
+            "default": base,
+            "retest_000": replace(base, ceiling_atr_mult=0.0),
+            "retest_015": replace(base, ceiling_atr_mult=-0.15),
+        },
+        "C_retest_b": {
+            "retest_030": replace(base, ceiling_atr_mult=-0.30),
+            "retest_050": replace(base, ceiling_atr_mult=-0.50),
+            "retest_075": replace(base, ceiling_atr_mult=-0.75),
+        },
         "R_stop_a": {
             "default": base,
             "stop_035": replace(base, stop_buffer_atr=0.35),
