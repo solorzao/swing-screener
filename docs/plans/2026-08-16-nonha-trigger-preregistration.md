@@ -103,36 +103,27 @@ retold as a mechanism story afterwards.
 - **Earlier means wronger.** Firing before HA confirms should produce more false starts.
   Expect stop% to rise; the question is whether the improved R-per-target-hit outweighs it.
 
-## RESULTS PENDING — resume instructions (2026-08-16)
+## RESULTS — graded 2026-08-16: **NULL**
 
-The grading walk did not finish before the session ended. **No cell has been graded and no
-verdict exists.** The decision rule above was fixed before any walk ran and is unchanged by
-this interruption.
+Both walks completed (16/16 shards, zero failures) and were graded against the rule above,
+unchanged. Full table: `docs/plans/2026-08-16-nonha-trigger-results.md`.
 
-State on disk (`.cache/queue_experiments/`, main repo — not the worktree):
+No non-HA trigger clears clustered 95% lb > 0. The mechanism check is what makes the
+result interpretable, and it split the grid in two:
 
-- `X_trig_b` — **complete**, 8/8 shards (`X_trig_b_s*_slip0.05.parquet`). One variant
-  (`raw_reclaim_hl`), the most restrictive kind, so it finished fast.
-- `X_trig_a` — **incomplete, 0/8 shards.** Three variants including `raw_up`, which fires
-  on any up close and books a large multiple of the HA-flip book. This is the long pole.
+- **`raw_up` engaged the mechanism and lost.** Mean risk 0.819× the anchor — it genuinely
+  fired nearer the low — and expectancy got *worse* (−0.178R, lb −0.196R vs the anchor's
+  −0.161R). It also flooded, 26,746 signals vs 16,813 (+59%), with stop exits jumping
+  28.8% → 38.5%. Both failure modes named in the pre-registration ("signal flood",
+  "earlier means wronger") occurred exactly as described.
+- **`raw_reclaim` / `raw_reclaim_hl` never engaged it.** Mean risk 1.048× and 1.081× the
+  anchor — *higher*, because demanding a close above the prior bar's high puts the trigger
+  bar FURTHER above the low, not nearer. Their milder expectancies (−0.156R, −0.148R) are
+  therefore **not** evidence about entry timing; they are a selection effect from firing
+  less often (10,776 signals vs 16,813). Per the pre-registration this reading was fixed in
+  advance, and both cells still fail the bar regardless.
 
-To resume, re-run only the missing walk (it is idempotent — each shard overwrites its own
-parquet), then grade:
-
-```
-# from the repo root, 8 shards in parallel
-python scripts/replay_queue_experiments.py --walk X_trig_a --shard I/8 \
-    --as-of 20260703 --slippage 0.05 --cache-dir .cache --out .cache/queue_experiments
-
-PYTHONPATH=src python scripts/replay_nonha_trigger.py --cache-root .cache \
-    --out docs/plans/2026-08-16-nonha-trigger-results.md
-```
-
-The grader's anchor gate is the safety net against a partial corpus: it requires the
-`default` cell to reproduce the pinned book (`n_closed` ∈ [15 900, 16 500]), so an
-incomplete `X_trig_a` fails the gate and stops rather than grading a half-book.
-
-## What a NULL would mean
+## What a NULL means (as written before the walk)
 
 If firing nearer the low — the single mechanism D1 identified and Q8 corroborated — also
 fails to clear the bar, then entry timing is exhausted as an explanation. The remaining
