@@ -27,6 +27,39 @@ class PullbackContext:
     extension_atr: float = 0.0
 
 
+def _trigger_fires(last, prev, kind: str) -> bool:
+    """Does the resumption trigger fire on ``last``? The ONLY thing a trigger kind varies.
+
+    ``ha_flip`` (the shipped default) reads the SMOOTHED Heiken-Ashi series, which is why it
+    cannot fire at the pullback low: HA lags by construction. D1 measured the cost --
+    the entry lands a median 1.56 ATR above the setup's own low against 1.81 ATR of total
+    risk, so ~86% of every R risked is give-back of a move that already happened
+    (docs/plans/2026-08-16-trigger-geometry-results.md). Q8 corroborated it: bidding 0.50
+    ATR lower recovered +0.146R, but only filled on setups that retraced.
+
+    The raw kinds (Q9) attack that by firing on the raw candle instead, trading a later,
+    surer read for an earlier, cheaper one. They are ordered by how much confirmation they
+    demand: ``raw_up`` (any up close) < ``raw_reclaim`` (up close above the prior high) <
+    ``raw_reclaim_hl`` (that, plus a higher low -- a structural turn rather than a spike).
+    All are DEFAULT-OFF experiment arms; see
+    docs/plans/2026-08-16-nonha-trigger-preregistration.md.
+    """
+    close_up = float(last["close"]) > float(last["open"])
+    if kind == "raw_up":
+        return close_up
+    if kind == "raw_reclaim":
+        return close_up and float(last["close"]) > float(prev["high"])
+    if kind == "raw_reclaim_hl":
+        return (close_up and float(last["close"]) > float(prev["high"])
+                and float(last["low"]) > float(prev["low"]))
+    if kind == "outside_bar":
+        # engulfs the prior bar on BOTH sides and closes up
+        is_outside = (float(last["high"]) > float(prev["high"])
+                      and float(last["low"]) < float(prev["low"]))
+        return is_outside and close_up
+    return bool(last["bullish"])  # ha_flip -- the shipped smoothed trigger
+
+
 def _quality_gates_pass(f: pd.DataFrame, last, pullback: list, swing_low: float,
                         atr: float, cfg: StrategyConfig) -> bool:
     """Tier-A continuation quality gates (edge tournament round 1). Each is a detection-only
@@ -166,13 +199,7 @@ def detect_last_bar(f: pd.DataFrame, cfg: StrategyConfig) -> PullbackContext | N
     # 1) uptrend context at the trigger bar
     if not (last["ema_fast"] > last["ema_slow"] and last["close"] > last["ema_slow"]):
         return None
-    # trigger: the incumbent bullish HA flip, or (experiment) a raw bullish outside bar
-    # whose range engulfs the prior bar on BOTH sides and closes up.
-    if cfg.trigger_kind == "outside_bar":
-        is_outside = last["high"] > prev["high"] and last["low"] < prev["low"]
-        if not (is_outside and last["close"] > last["open"]):
-            return None
-    elif not bool(last["bullish"]):
+    if not _trigger_fires(last, prev, cfg.trigger_kind):
         return None
 
     # 2) walk back over the immediately preceding bars looking for the pullback

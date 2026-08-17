@@ -108,6 +108,21 @@ def walks_for(base: StrategyConfig) -> dict[str, dict[str, StrategyConfig]]:
             "retest_050": replace(base, ceiling_atr_mult=-0.50),
             "retest_075": replace(base, ceiling_atr_mult=-0.75),
         },
+        # X_trig_a / X_trig_b -- the NON-HA trigger (Q9, 2026-08-16). D1 measured that the
+        # shipped HA flip enters a median 1.56 ATR above the setup's own low against 1.81
+        # ATR of risk (~86% give-back), because a SMOOTHED series cannot fire at the low.
+        # Q8 showed reclaiming that give-back is worth +0.146R but cost 60% of the fills.
+        # These fire nearer the low on the RAW candle instead, so the price improvement
+        # arrives without waiting for a retrace. Ordered by confirmation demanded:
+        # raw_up < raw_reclaim < raw_reclaim_hl. Default rides in X_trig_a as the anchor.
+        "X_trig_a": {
+            "default": base,
+            "raw_up": replace(base, trigger_kind="raw_up"),
+            "raw_reclaim": replace(base, trigger_kind="raw_reclaim"),
+        },
+        "X_trig_b": {
+            "raw_reclaim_hl": replace(base, trigger_kind="raw_reclaim_hl"),
+        },
         "R_stop_a": {
             "default": base,
             "stop_035": replace(base, stop_buffer_atr=0.35),

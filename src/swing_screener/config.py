@@ -30,11 +30,20 @@ class StrategyConfig:
     # < 1 ATR of extension while a late chase fires at ~2.7 ATR. 0 disables the gate.
     max_extension_atr: float = 2.0
 
-    # entry-trigger kind (experiment). "ha_flip" = the incumbent bullish Heiken-Ashi flip;
-    # "outside_bar" = a raw-candle bullish outside/engulfing bar at the trigger (its range
-    # breaks BOTH the prior bar's high and low AND it closes up). A raw-price commitment
-    # signal vs the smoothed HA flip. DETECTION-only (computed from the shared frame, no new
-    # indicator), so it is a legal screen variant.
+    # entry-trigger kind (experiment). "ha_flip" = the incumbent bullish Heiken-Ashi flip.
+    # Raw-candle alternatives, all DETECTION-only (computed from the shared frame, no new
+    # indicator), so each is a legal screen variant:
+    #   "outside_bar"    -- bullish outside/engulfing bar (breaks BOTH the prior bar's high
+    #                       and low AND closes up)
+    #   "raw_up"         -- any up close (the earliest possible resumption read)
+    #   "raw_reclaim"    -- up close ABOVE the prior bar's high (a decisive reclaim)
+    #   "raw_reclaim_hl" -- that, plus a higher low (a structural turn, not a spike)
+    # WHY the raw kinds exist (Q9): HA is smoothed, so a flip CANNOT fire at the pullback
+    # low. D1 measured the cost -- the entry lands a median 1.56 ATR above the setup's own
+    # low against 1.81 ATR of total risk, i.e. ~86% of every R risked is give-back of a move
+    # that already happened (docs/plans/2026-08-16-trigger-geometry-results.md). The raw
+    # kinds fire nearer the low, trading a surer read for a cheaper one. Pre-registration:
+    # docs/plans/2026-08-16-nonha-trigger-preregistration.md.
     trigger_kind: str = "ha_flip"
     # entry-depth gate (experiment). When True, require the pullback to have reached into the
     # EMA20-EMA50 band (swing_low <= ema_fast), not merely stayed above ema_slow -- i.e. price
